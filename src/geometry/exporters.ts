@@ -3,6 +3,7 @@ import type { BufferGeometry } from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js'
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js'
+import { EXPORT_MODEL_NAME, LOG_TAG } from '../appInfo'
 
 export type ExportFormat = 'glb' | 'obj'
 
@@ -14,8 +15,6 @@ export type ExportResult = {
   /** False when welding was skipped, so the caller can stay honest about it. */
   welded: boolean
 }
-
-const MODEL_NAME = 'EZ3D_Model'
 
 export const FORMAT_INFO: Record<ExportFormat, { label: string; mime: string; ext: string }> = {
   glb: { label: 'GLB', mime: 'model/gltf-binary', ext: 'glb' },
@@ -55,7 +54,7 @@ export function prepareForExport(geometry: BufferGeometry): {
       merged.dispose()
     }
   } catch (err) {
-    console.warn('[EZ3D] vertex welding skipped', err)
+    console.warn(`[${LOG_TAG}] vertex welding skipped`, err)
   }
 
   // Always hand back a geometry we own, so the caller can normalise and
@@ -89,7 +88,7 @@ export async function buildExportBlob(
     roughness: 0.55,
   })
   const mesh = new Mesh(geom, material)
-  mesh.name = MODEL_NAME
+  mesh.name = EXPORT_MODEL_NAME
   mesh.updateMatrixWorld(true)
 
   try {

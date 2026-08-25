@@ -66,8 +66,19 @@ body {
 
 .brand-mark {
   font-weight: 650;
-  letter-spacing: 0.08em;
+  /* Near-zero tracking: the wide spacing here suited a short uppercase
+     acronym, but it reads as stretched on a mixed-case name. */
+  letter-spacing: 0.005em;
   font-size: 14px;
+  white-space: nowrap;
+}
+
+/* The tagline is the first thing to go when the window gets tight; the name
+   itself must never be the part that truncates. */
+@media (max-width: 900px) {
+  .brand-sub {
+    display: none;
+  }
 }
 
 .brand-sub {

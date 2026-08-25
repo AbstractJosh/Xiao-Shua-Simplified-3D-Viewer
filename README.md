@@ -1,4 +1,4 @@
-# Xiao Shua's Simplified 3D Viewer
+# Xiao Shua's 3D Viewer
 
 A 3D editor built around one gesture: **drop a 2D shape onto a solid, then push or pull it perpendicular to the surface.**
 

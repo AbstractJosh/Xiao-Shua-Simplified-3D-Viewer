@@ -11,6 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { NGON_NAMES, NGON_SIDES, NGON_SIDES_TOP_DOWN, ngonPoints } from '../src/console/ngon'
+import { APP_NAME } from '../src/appInfo'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const css = readFileSync(resolve(here, '../src/styles.css'), 'utf8')
@@ -100,7 +101,7 @@ const html = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>EZ3D shape palette preview</title>
+<title>${APP_NAME} shape palette preview</title>
 <style>
 ${css}
 

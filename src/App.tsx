@@ -6,6 +6,7 @@ import { Section } from './console/Field'
 import { useDoc } from './store/docStore'
 import { useEvalStatus } from './store/evalStore'
 import { Viewport } from './viewport/Viewport'
+import { APP_NAME, APP_TAGLINE } from './appInfo'
 
 function BaseSwitcher() {
   const base = useDoc((s) => s.doc.base)
@@ -63,8 +64,8 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">EZ3D</span>
-          <span className="brand-sub">drop a shape, push or pull it</span>
+          <span className="brand-mark">{APP_NAME}</span>
+          <span className="brand-sub">{APP_TAGLINE}</span>
         </div>
         <div className="topbar-right">
           <BaseSwitcher />

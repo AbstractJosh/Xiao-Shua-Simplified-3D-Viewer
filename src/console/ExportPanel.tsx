@@ -3,6 +3,7 @@ import { evaluateDoc } from '../geometry/evaluate'
 import { FORMAT_INFO, exportSolid } from '../geometry/exporters'
 import type { ExportFormat } from '../geometry/exporters'
 import { useDoc } from '../store/docStore'
+import { APP_SLUG } from '../appInfo'
 import { Section } from './Field'
 
 function formatBytes(bytes: number): string {
@@ -25,7 +26,7 @@ export function ExportPanel() {
       // Re-evaluating is free: the prefix cache returns the geometry already on
       // screen, so the file always matches exactly what the user is looking at.
       const { geometry } = evaluateDoc(doc)
-      const baseName = `ez3d-${doc.base.kind}${doc.features.length ? `-${doc.features.length}f` : ''}`
+      const baseName = `${APP_SLUG}-${doc.base.kind}${doc.features.length ? `-${doc.features.length}f` : ''}`
       const r = await exportSolid(geometry, format, baseName)
       setStatus(
         `${r.filename} · ${formatBytes(r.bytes)} · ${r.triangles.toLocaleString()} tris` +

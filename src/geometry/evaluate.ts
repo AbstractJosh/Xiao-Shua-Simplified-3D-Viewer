@@ -11,6 +11,7 @@ import {
 import { buildSweptPrism, outlineOnSurface } from './prism'
 import { anchorIsCurved, hostSurfaceFor, surfaceFor } from './surfaces'
 import type { BaseSolid, Doc, Feature } from './types'
+import { LOG_TAG } from '../appInfo'
 
 export type EvalResult = {
   geometry: BufferGeometry
@@ -136,7 +137,7 @@ export function evaluateDoc(doc: Doc): EvalResult {
       } catch (err) {
         // A malformed tool must never take the whole document down; skip the
         // feature, keep the solid, and let the UI flag it.
-        console.warn(`[EZ3D] feature ${feature.id} failed to evaluate`, err)
+        console.warn(`[${LOG_TAG}] feature ${feature.id} failed to evaluate`, err)
         failed.push(feature.id)
         next = prev
       }

@@ -53,6 +53,7 @@ console.warn = (...args: unknown[]) => {
 
 import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
 import { buildExportBlob, prepareForExport, triangleCount } from '../src/geometry/exporters'
+import { EXPORT_MODEL_NAME } from '../src/appInfo'
 import type { Doc } from '../src/geometry/types'
 
 let failures = 0
@@ -170,7 +171,7 @@ console.log('\n3. OBJ output')
   const vnLines = (text.match(/^vn /gm) ?? []).length
   const fLines = (text.match(/^f /gm) ?? []).length
 
-  check('declares an object name', text.includes('o EZ3D_Model'), text.split('\n')[0])
+  check('declares an object name', text.includes(`o ${EXPORT_MODEL_NAME}`), text.split('\n')[0])
   check('vertex count matches', vLines === vertices, `${vLines} v lines`)
   check('normals were written', vnLines > 0, `${vnLines} vn lines`)
   check('face count matches triangles', fLines === triangles, `${fLines} f lines`)
@@ -210,7 +211,7 @@ console.log('\n4. GLB output')
     const json = JSON.parse(
       new TextDecoder().decode(new Uint8Array(buf, 20, jsonLen)).replace(/\0+$/, '')
     )
-    check('mesh is named', JSON.stringify(json).includes('EZ3D_Model'), '')
+    check('mesh is named', JSON.stringify(json).includes(EXPORT_MODEL_NAME), '')
     check('has exactly one mesh', json.meshes?.length === 1, `${json.meshes?.length}`)
     check(
       'declares POSITION and NORMAL',

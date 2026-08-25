@@ -44,6 +44,7 @@ import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
 import { buildExportBlob } from '../src/geometry/exporters'
 import type { Doc } from '../src/geometry/types'
 import type { ExportFormat } from '../src/geometry/exporters'
+import { APP_SLUG } from '../src/appInfo'
 
 const outDir = resolve(process.argv[2] ?? join(process.cwd(), 'samples'))
 mkdirSync(outDir, { recursive: true })
@@ -53,7 +54,7 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
     // The distinctive case: a square boss on a sphere. Its top must be a
     // curved patch concentric with the sphere, and its walls must converge
     // toward the centre -- visible immediately in any 3D viewer.
-    name: 'ez3d-sphere-curved-boss',
+    name: `${APP_SLUG}-sphere-curved-boss`,
     format: 'glb',
     doc: {
       base: { kind: 'sphere', radius: 1.2 },
@@ -80,7 +81,7 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
     },
   },
   {
-    name: 'ez3d-cube-boss-and-pocket',
+    name: `${APP_SLUG}-cube-boss-and-pocket`,
     format: 'glb',
     doc: {
       base: { kind: 'box', size: [2, 2, 2] },
@@ -116,7 +117,7 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
     },
   },
   {
-    name: 'ez3d-cube-boss-and-pocket',
+    name: `${APP_SLUG}-cube-boss-and-pocket`,
     format: 'obj',
     doc: {
       base: { kind: 'box', size: [2, 2, 2] },
