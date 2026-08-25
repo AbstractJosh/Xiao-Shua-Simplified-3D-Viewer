@@ -1,0 +1,16 @@
+node_modules
+dist
+*.local
+
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# Default output of scripts/sample-export.ts and scripts/palette-preview.ts
+samples/
+palette-preview.html
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
