@@ -1,15 +1,26 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Shape2D } from '../geometry/types'
 import {
   DEFAULT_SIDES,
+  NGON_HOLD_MS,
+  NGON_LABEL,
+  NGON_MORPH_MS,
   NGON_NAMES,
   NGON_SIDES_TOP_DOWN,
+  morphPoints,
+  nextNgonSides,
   ngonPoints,
 } from './ngon'
 import { useDoc } from '../store/docStore'
 import { Section } from './Field'
 
 const NGON_RADIUS = 0.35
+
+/** Motion the user did not ask for and cannot stop; honour the system setting. */
+function prefersReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
+
 function ChipIcon({ children }: { children: React.ReactNode }) {
   return (
     <svg viewBox="0 0 32 32" className="chip-icon" aria-hidden>
@@ -25,15 +36,56 @@ function ChipIcon({ children }: { children: React.ReactNode }) {
  * band under the pointer previews its polygon in the chip's own icon, so the
  * side count is chosen by *where* the drag starts rather than by a separate
  * control. Bands carry no visible edges by design.
+ *
+ * Left alone, it morphs through every polygon it can place, named for the
+ * family rather than for whichever member is on screen: a chip sitting still
+ * on a hexagon labelled "Hexagon" looks like a hexagon button, and the bands
+ * that make it more than that are invisible until the pointer finds them.
+ * Under the pointer it stops cycling and behaves exactly as before -- a hover
+ * is a question about one band, and an icon that kept moving would answer a
+ * different one every beat.
  */
 function NgonChip() {
   const startPlacing = useDoc((s) => s.startPlacing)
   const [hovered, setHovered] = useState<number | null>(null)
-  // Remembering the last pick means the chip rests on what you actually use,
-  // instead of snapping back to a default every time the pointer leaves.
-  const [lastUsed, setLastUsed] = useState(DEFAULT_SIDES)
+  // Where the cycle has got to. A pick drops it onto that polygon, so letting
+  // go of a drag does not throw the chip somewhere unrelated to what you did.
+  const [resting, setResting] = useState(DEFAULT_SIDES)
 
-  const shown = hovered ?? lastUsed
+  const outline = useRef<SVGPolygonElement>(null)
+
+  // One run of this effect is one turn of the cycle: hold what is on screen,
+  // morph off it, then hand the finished polygon back to React -- which
+  // re-renders, re-runs this, and holds again.
+  //
+  // Frames go straight to the node. Re-rendering to move an outline would push
+  // 33 fresh coordinates through the reconciler sixty times a second for
+  // something no other part of the UI reads.
+  useEffect(() => {
+    if (hovered !== null || prefersReducedMotion()) return
+    let frame = 0
+    const hold = setTimeout(() => {
+      const to = nextNgonSides(resting)
+      const begun = performance.now()
+      const draw = (now: number) => {
+        // Clamped both ends: a frame timestamp can predate the call that
+        // scheduled it, and t < 0 would extrapolate past the shape we left.
+        const t = Math.min(1, Math.max(0, (now - begun) / NGON_MORPH_MS))
+        outline.current?.setAttribute('points', morphPoints(resting, to, t))
+        if (t < 1) frame = requestAnimationFrame(draw)
+        // The final frame drew `to` exactly, so this hands the shape back
+        // without changing it -- and starts the next hold.
+        else setResting(to)
+      }
+      frame = requestAnimationFrame(draw)
+    }, NGON_HOLD_MS)
+    return () => {
+      clearTimeout(hold)
+      cancelAnimationFrame(frame)
+    }
+  }, [hovered, resting])
+
+  const shown = hovered ?? resting
 
   return (
     <div
@@ -43,9 +95,13 @@ function NgonChip() {
     >
       <div className="chip-face">
         <ChipIcon>
-          <polygon points={ngonPoints(shown)} />
+          {/* Keyed: a morph leaves coordinates on the node that React never
+              wrote, so landing back on a shape it has already rendered --
+              hovering the band the cycle is resting on -- needs a remount to
+              repaint rather than a prop it considers unchanged. */}
+          <polygon key={shown} ref={outline} points={ngonPoints(shown)} />
         </ChipIcon>
-        <span>{NGON_NAMES[shown]}</span>
+        <span>{hovered === null ? NGON_LABEL : NGON_NAMES[hovered]}</span>
       </div>
 
       <div className="ngon-bands">
@@ -61,7 +117,7 @@ function NgonChip() {
             onBlur={() => setHovered(null)}
             onPointerDown={(e) => {
               e.preventDefault()
-              setLastUsed(sides)
+              setResting(sides)
               startPlacing({ type: 'ngon', r: NGON_RADIUS, sides })
             }}
           />

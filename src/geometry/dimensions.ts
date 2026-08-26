@@ -212,6 +212,36 @@ function dimensionsOf(base: BaseSolid): { value: number; min: number; max: numbe
 }
 
 /**
+ * A base's numbers in a fixed order, so two can be compared for "no change".
+ *
+ * Here rather than in the store because a merged object is compared the same
+ * way -- every solid in it, in tree order -- and neither caller should be
+ * writing down which fields a kind has for a second time.
+ */
+export function baseParams(base: BaseSolid): number[] {
+  return dimensionsOf(base).map((d) => d.value)
+}
+
+/**
+ * The range of uniform factors this solid can take without any one of its
+ * dimensions leaving its limits.
+ *
+ * Separated from `scaleUniform` because a merged object has to INTERSECT this
+ * across every solid in it before scaling any of them: clamping each part on
+ * its own is what would let one part hit the ceiling while the rest kept
+ * growing, quietly changing the proportions of the assembly.
+ */
+export function scaleLimits(base: BaseSolid): { lo: number; hi: number } {
+  let lo = 0
+  let hi = Infinity
+  for (const d of dimensionsOf(base)) {
+    lo = Math.max(lo, d.min / d.value)
+    hi = Math.min(hi, d.max / d.value)
+  }
+  return { lo, hi }
+}
+
+/**
  * Scale every dimension by one factor.
  *
  * The factor is clamped ONCE, against the tightest bound any single dimension
@@ -221,13 +251,7 @@ function dimensionsOf(base: BaseSolid): { value: number; min: number; max: numbe
  * the one thing a uniform scale must not do.
  */
 export function scaleUniform(base: BaseSolid, factor: number): BaseSolid {
-  const dims = dimensionsOf(base)
-  let lo = 0
-  let hi = Infinity
-  for (const d of dims) {
-    lo = Math.max(lo, d.min / d.value)
-    hi = Math.min(hi, d.max / d.value)
-  }
+  const { lo, hi } = scaleLimits(base)
   const f = clamp(factor, lo, hi)
 
   switch (base.kind) {

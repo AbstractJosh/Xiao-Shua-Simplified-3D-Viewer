@@ -24,6 +24,7 @@ import {
 import type {
   BaseSolid,
   BoxFace,
+  Feature,
   FeatureOp,
   Shape2D,
   SurfaceAnchor,
@@ -1264,6 +1265,25 @@ export function hostSurfaceFor(base: BaseSolid, anchor: SurfaceAnchor): SurfaceD
 /** True when the anchor sits on a genuinely curved patch. */
 export function anchorIsCurved(anchor: SurfaceAnchor): boolean {
   return isCurvedAnchor(anchor)
+}
+
+/**
+ * Any edit that resizes a sketch, or the solid under it, can push it off its
+ * face; pull it back on.
+ *
+ * Here rather than in the store because three callers now need it and they must
+ * not answer it differently: a panel edit, a gizmo resize, and the uniform
+ * scale that walks a whole merged assembly.
+ */
+export function reseat(base: BaseSolid, f: Feature): Feature {
+  return { ...f, anchor: hostSurfaceFor(base, f.anchor).clampAnchor(f.anchor, f.shape) }
+}
+
+/** Reseating plus a depth clamp, for edits that shrink the solid underneath. */
+export function conform(base: BaseSolid, f: Feature): Feature {
+  const next = reseat(base, f)
+  const limit = hostSurfaceFor(base, next.anchor).maxDepth(next.op, next.anchor)
+  return { ...next, depth: Math.min(next.depth, limit) }
 }
 
 /**

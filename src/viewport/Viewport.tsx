@@ -1,24 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Grid, OrbitControls } from '@react-three/drei'
 import { Mesh, Raycaster, Vector3 } from 'three'
-import type { BufferGeometry, Camera, MeshBasicMaterial } from 'three'
+import type { Camera, MeshBasicMaterial } from 'three'
 import {
   maxShapeSize,
   resizeAlongAxis,
   scaleShape,
-  scaleUniform,
 } from '../geometry/dimensions'
+import { assemblyAnchor, assemblyHalfExtent } from '../geometry/assembly'
 import type { SnapTarget } from '../geometry/snap'
 import { snapSinglePoint } from '../geometry/snap'
 import { hostSurfaceFor, samePatch, slideAnchor, surfaceFor } from '../geometry/surfaces'
 import { endFaceFrame } from '../geometry/prism'
 import { toLocalPoint, toLocalRay, toWorldDir, toWorldPoint } from '../geometry/transform'
-import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../geometry/types'
+import type { SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import type { Drag, GizmoAxis, GizmoHandle } from '../store/docStore'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
+import { useLibrary } from '../store/libraryStore'
 import {
   CUT_POSITION_LIMIT,
   CUT_SIZE_MAX,
@@ -33,6 +34,9 @@ import {
   pickPlanePoint,
   pointerNdc,
 } from './picking'
+import { dropCacheFor, releaseDropCache } from './dropCache'
+import { ObjectMenu, useObjectMenu } from './ObjectMenu'
+import type { DropCache } from './dropCache'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
 import { RotationDial } from './RotationDial'
 import { SceneObjects } from './SceneObjects'
@@ -44,6 +48,7 @@ import {
   beginAxisDrag,
   nearestViewAxis,
   pointerAngle,
+  turnedPosition,
   turnedRotation,
 } from './gizmoDrag'
 import type { AxisGrab, TurnGrab } from './gizmoDrag'
@@ -141,7 +146,18 @@ type GizmoGrab = {
   axis: AxisGrab | null
   /** Distance from the gizmo centre at grab time, for the ring. */
   radius: number
-  base: BaseSolid | null
+  /**
+   * The whole object as it stood at the grab, not just its base: a merged one
+   * is scaled as an assembly, and every frame recomputes that from here rather
+   * than from the result of the last frame.
+   */
+  object: SceneObject | null
+  /**
+   * Half the object's reach along the grabbed axis, pinned. A merged object has
+   * no single width to write, so its arrows scale the whole thing by how far
+   * the pointer pulls the skin relative to where that skin started.
+   */
+  half: number
   size: number
 }
 
@@ -193,14 +209,7 @@ function ownTargets(objectId: string): SnapTarget[] {
   return snapTargets().filter((t) => t.objectId === objectId)
 }
 
-/**
- * What one drag of a palette template needs measured about it, built once per
- * gesture: the height that rests it on the grid, and the mesh whose corners the
- * drop seeks the scene with.
- */
-type DropCache = { base: BaseSolid; lift: number; geometry: BufferGeometry }
-
-/** Drop point for a fresh primitive, resting on the grid under the pointer. */
+/** Drop point for a solid dragged in, resting on the grid under the pointer. */
 function dragPlacingSolid(s: Store, raycaster: Raycaster, drop: DropCache): void {
   const ground = pickGroundPoint(raycaster)
   if (!ground) {
@@ -432,7 +441,9 @@ function readTurn(
   raycaster: Raycaster,
   camera: Camera,
   centre: Vector3,
-  rotation: Vec3
+  rotation: Vec3,
+  /** The target's ORIGIN, which is `centre` for everything but a merged object. */
+  position: Vec3
 ): { grab: TurnGrab; total: number } | null {
   const facing = camera.quaternion.clone()
   const right = new Vector3(1, 0, 0).applyQuaternion(facing)
@@ -451,6 +462,7 @@ function readTurn(
       // visibly jump onto a different axis part-way through one gesture.
       axis: nearestViewAxis(rotation, normal).axis,
       rotation,
+      position,
       lastAngle: angle,
       total: 0,
     }
@@ -477,7 +489,20 @@ function ringRadius(
   return hit ? hit.distanceTo(centre) : null
 }
 
-/** Slide or resize an object with its gizmo. */
+/**
+ * Slide or resize an object with its gizmo.
+ *
+ * Every gesture here is measured from the object's ASSEMBLY ANCHOR -- the centre
+ * of the solids merged into it -- rather than from its host primitive's origin,
+ * because that is where the gizmo is drawn and a gesture read from anywhere else
+ * would not be the one the user grabbed. For an object with nothing merged into
+ * it the anchor IS the origin, so none of this changes what a bare solid does.
+ *
+ * The anchor is recomputed each frame rather than pinned, and stays still while
+ * it is used: a turn runs about it, and `scaleAssembly` translates the object so
+ * a scale leaves it where it was. Only a MOVE carries it, which is the one
+ * gesture whose measurement is already pinned to the grab's own origin.
+ */
 function dragGizmo(
   s: Store,
   drag: DragOf<'gizmo'>,
@@ -488,14 +513,17 @@ function dragGizmo(
   if (!object) return
 
   const { rotation, position } = object.transform
-  const centre = new Vector3(position[0], position[1], position[2])
+  const anchor = assemblyAnchor(object)
+  const centre = new Vector3(anchor[0], anchor[1], anchor[2])
   const key = `${drag.objectId}|${drag.handle.mode}|${drag.handle.axis}`
 
   if (drag.handle.mode === 'rotate') {
-    const turn = readTurn(key, raycaster, camera, centre, rotation)
+    const turn = readTurn(key, raycaster, camera, centre, rotation, position)
     if (!turn) return
     s.setObjectTransform(object.id, {
-      position,
+      // About the ring, not about the host's origin: a merged object has to spin
+      // where the gizmo is, not orbit a point off to one side of it.
+      position: turnedPosition(turn.grab, turn.total, anchor),
       rotation: turnedRotation(turn.grab, turn.total),
     })
     return
@@ -507,40 +535,67 @@ function dragGizmo(
     const grab = gizmoGrabFor(key, () => ({
       axis: null,
       radius,
-      base: object.base,
+      object,
+      half: 0,
       size: 0,
     }))
     // A grab that landed on the exact centre has no radius to scale from, and
     // dividing by it would send the solid to infinity on the first frame.
-    if (!grab || grab.radius < 1e-4 || !grab.base) return
-    s.resizeObjectTo(scaleUniform(grab.base, radius / grab.radius))
+    if (!grab || grab.radius < 1e-4 || !grab.object) return
+    s.scaleObjectTo(grab.object, radius / grab.radius)
     return
   }
 
   const dir = axisWorld(rotation, drag.handle.axis)
-  // `centre` is read ONLY here, on the frame that starts the gesture. From then
+  // `anchor` is read ONLY here, on the frame that starts the gesture. From then
   // on the grab's own origin is the axis, which is what keeps a still pointer
   // from walking the object back and forth -- see gizmoDrag.ts.
   const grab = gizmoGrabFor(key, () => {
-    const axis = beginAxisDrag(raycaster.ray, position, dir)
-    return axis && { axis, radius: 0, base: object.base, size: 0 }
+    const axis = beginAxisDrag(raycaster.ray, anchor, dir)
+    return (
+      axis && {
+        axis,
+        radius: 0,
+        object,
+        half: assemblyHalfExtent(object, drag.handle.axis as GizmoAxis),
+        size: 0,
+      }
+    )
   })
-  if (!grab?.axis) return
+  if (!grab?.axis || !grab.object) return
 
   const travel = axisTravel(grab.axis, raycaster.ray, dir)
   if (travel === null) return
 
   if (drag.handle.mode === 'size') {
-    if (!grab.base) return
-    s.resizeObjectTo(resizeAlongAxis(grab.base, drag.handle.axis, travel))
+    if (grab.object.parts.length === 0) {
+      s.resizeObjectTo(resizeAlongAxis(grab.object.base, drag.handle.axis, travel))
+      return
+    }
+    // A merged object cannot be resized along one axis: the parts are rotated
+    // relative to each other and a `BaseSolid` carries no scale, so there is no
+    // way to write the result down. The arrow still says how far, though, so it
+    // scales the whole assembly by how far it pulled this axis's skin.
+    if (grab.half < 1e-4) return
+    s.scaleObjectTo(grab.object, (grab.half + travel) / grab.half)
     return
   }
+
+  // The anchor is what the pointer is dragging, and the origin trails it by a
+  // fixed offset -- fixed because a move leaves the rotation, and therefore the
+  // whole assembly's shape, alone.
+  const landed = axisTarget(grab.axis, dir, travel)
+  const desired: Vec3 = [
+    landed[0] - (anchor[0] - position[0]),
+    landed[1] - (anchor[1] - position[1]),
+    landed[2] - (anchor[2] - position[2]),
+  ]
 
   // Snapped ALONG the axis only, so the arrow's whole promise -- that nothing
   // but this one coordinate changes -- survives the snap. The snapped result is
   // never fed back in: the next frame recomputes from the grab, so a catch
   // cannot drag the origin along with it.
-  s.moveObjectTo(resolveAxisMove(object.id, axisTarget(grab.axis, dir, travel), dir))
+  s.moveObjectTo(resolveAxisMove(object.id, desired, dir))
 }
 
 /**
@@ -575,7 +630,11 @@ function dragSketchGizmo(
   // and a sketch's is the one direction it has.
   if (handle.mode === 'rotate') {
     const normal = toWorldDir(object.transform, host.frame(feature.anchor).normal).normalize()
-    const turn = readTurn(key, raycaster, camera, centre, [0, 0, 0])
+    const turn = readTurn(key, raycaster, camera, centre, [0, 0, 0], [
+      centre.x,
+      centre.y,
+      centre.z,
+    ])
     if (!turn) return
     // The measured sweep is in the CAMERA's plane; the sketch spins in its own.
     // Facing the normal away from the viewer flips which way round that is, so
@@ -680,7 +739,7 @@ function dragCutGizmo(
     // The plane's rotation IS its tilt, so the ring drives the same three
     // numbers the Tilt rows do -- one axis at a time, which is exactly the
     // move a blade wants and the hardest one to dial in by typing.
-    const turn = readTurn(key, raycaster, camera, centre, plane.rotation)
+    const turn = readTurn(key, raycaster, camera, centre, plane.rotation, plane.position)
     if (!turn) return
     tools.setCutPlane({ rotation: turnedRotation(turn.grab, turn.total) })
     return
@@ -692,7 +751,8 @@ function dragCutGizmo(
     const grab = gizmoGrabFor(key, () => ({
       axis: null,
       radius,
-      base: null,
+      object: null,
+      half: 0,
       size: plane.size,
     }))
     if (!grab || grab.radius < 1e-4) return
@@ -709,7 +769,7 @@ function dragCutGizmo(
   // the pointer is measured against.
   const grab = gizmoGrabFor(key, () => {
     const axis = beginAxisDrag(raycaster.ray, plane.position, dir)
-    return axis && { axis, radius: 0, base: null, size: plane.size }
+    return axis && { axis, radius: 0, object: null, half: 0, size: plane.size }
   })
   if (!grab?.axis) return
 
@@ -739,19 +799,12 @@ function dragCutGizmo(
 function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
   const { camera, gl } = useThree()
   const raycaster = useMemo(() => new Raycaster(), [])
-  // Rebuilding a faceted surface just to read its extents costs a full face
-  // list, and sampling its corners for the drop snap costs a topology pass; the
-  // base being dragged never changes mid-gesture, so both are measured once.
-  const drop = useRef<DropCache | null>(null)
-
-  // `surfaceFor().geometry()` hands back a fresh BufferGeometry whose GPU
-  // buffers outlive the JS wrapper, so the cache is freed rather than dropped:
-  // once per gesture, and again if the canvas goes away mid-drag.
-  const releaseDrop = useCallback(() => {
-    drop.current?.geometry.dispose()
-    drop.current = null
-  }, [])
-  useEffect(() => releaseDrop, [releaseDrop])
+  // Solving a template's booleans and sampling its corners costs real work, and
+  // the template never changes mid-gesture, so both are measured once -- into a
+  // cache the ghost reads too, so the two cannot disagree about where the drop
+  // is going. Freed rather than dropped, here and again if the canvas goes away
+  // mid-drag: the geometry's GPU buffers outlive its wrapper.
+  useEffect(() => releaseDropCache, [])
 
   useFrame(() => {
     const s = useDoc.getState()
@@ -762,7 +815,7 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
     // the per-gesture caches are dropped -- before the early returns below,
     // which a released drag takes on its way out.
     clearGrabs(drag.kind)
-    if (drag.kind !== 'placing-solid') releaseDrop()
+    if (drag.kind !== 'placing-solid') releaseDropCache()
     if (drag.kind === 'idle') {
       snapIndicator.hit = null
       return
@@ -780,19 +833,9 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
     raycaster.setFromCamera(ndc, camera)
 
     switch (drag.kind) {
-      case 'placing-solid': {
-        if (drop.current?.base !== drag.base) {
-          releaseDrop()
-          const surface = surfaceFor(drag.base)
-          drop.current = {
-            base: drag.base,
-            lift: -surface.bounds().min.y,
-            geometry: surface.geometry(),
-          }
-        }
-        dragPlacingSolid(s, raycaster, drop.current)
+      case 'placing-solid':
+        dragPlacingSolid(s, raycaster, dropCacheFor(drag.template))
         return
-      }
       case 'placing':
         dragPlacingSketch(s, raycaster, meshes.current)
         return
@@ -1016,7 +1059,7 @@ function DragHint() {
         : true
   )
   const solid = useDoc((s) =>
-    s.drag.kind === 'placing-solid' ? solidLabel(s.drag.base).toLowerCase() : ''
+    s.drag.kind === 'placing-solid' ? solidLabel(s.drag.template.base).toLowerCase() : ''
   )
   const handle = useDoc((s) => {
     if (s.drag.kind === 'gizmo' || s.drag.kind === 'cut-gizmo') return s.drag.handle
@@ -1109,6 +1152,7 @@ export function Viewport() {
       if (e.key === 'Escape') {
         s.endDrag()
         clearGrabs()
+        useObjectMenu.getState().closeMenu()
         s.selectObject(null)
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         // A feature is the finer selection, so it goes first: deleting the
@@ -1123,6 +1167,23 @@ export function Viewport() {
         e.preventDefault()
         if (e.shiftKey) s.redo()
         else s.undo()
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        // Whole objects only. A sketch is not something the clipboard can put
+        // down on its own -- it needs a face to sit on -- so a copy with one
+        // selected takes the solid that hosts it, which is the object the user
+        // is looking at either way.
+        const selected = primarySelection(s)
+        const object = selected && s.doc.objects.find((o) => o.id === selected)
+        if (object) {
+          e.preventDefault()
+          useLibrary.getState().copyObject(object)
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        const { clipboard } = useLibrary.getState()
+        if (clipboard) {
+          e.preventDefault()
+          s.pasteObject(clipboard)
+        }
       }
     }
 
@@ -1157,6 +1218,7 @@ export function Viewport() {
       </Canvas>
       <RotationReadout />
       <DragHint />
+      <ObjectMenu />
     </div>
   )
 }

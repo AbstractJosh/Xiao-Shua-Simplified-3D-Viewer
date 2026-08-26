@@ -1,7 +1,6 @@
-import { useEffect, useMemo } from 'react'
 import { DoubleSide, type Object3D } from 'three'
-import { surfaceFor } from '../geometry/surfaces'
 import { useDoc } from '../store/docStore'
+import { peekDropCache } from './dropCache'
 import { COLORS } from './SketchLayer'
 
 /**
@@ -11,26 +10,27 @@ import { COLORS } from './SketchLayer'
 const noRaycast: Object3D['raycast'] = () => {}
 
 /**
- * Ghost of a 3D template being dragged in from the console.
+ * Ghost of a solid being dragged in from the console.
  *
  * Nothing is drawn while the position is null -- the pointer is off the canvas
  * and `commitPlacingSolid` will cancel -- so an empty viewport is the honest
  * preview of releasing there, the same convention the 2D placing preview uses.
+ *
+ * The geometry is BORROWED from the drop cache rather than built here, and that
+ * is the point: the shape the ghost draws and the shape the snapper seeks a
+ * landing for are then the same one. A clipboard template is a whole object --
+ * pockets, cuts, merged parts -- and a ghost that showed only its host primitive
+ * would be promising a different solid from the one about to land.
+ *
+ * The cache is filled by the frame loop, which also sets the position this
+ * reads; by the time there is a position to draw at, there is a geometry.
  */
 export function PlacingSolidPreview() {
   const drag = useDoc((s) => s.drag)
-  const base = drag.kind === 'placing-solid' ? drag.base : null
+  if (drag.kind !== 'placing-solid' || !drag.position) return null
 
-  // `updatePlacingSolid` spreads the drag, so `base` keeps its identity for the
-  // whole gesture and this builds once per template rather than once per frame.
-  const geometry = useMemo(() => (base ? surfaceFor(base).geometry() : null), [base])
-
-  // surfaceFor().geometry() hands back a fresh BufferGeometry every call, and
-  // dropping one only frees the JS wrapper -- the GPU buffers behind it survive
-  // until dispose. Across a drag-and-drop session that is a real leak.
-  useEffect(() => () => geometry?.dispose(), [geometry])
-
-  if (drag.kind !== 'placing-solid' || !drag.position || !geometry) return null
+  const cache = peekDropCache()
+  if (!cache || cache.template !== drag.template) return null
 
   // Sits at drag.position verbatim, because commitPlacingSolid feeds that same
   // value straight into the new object's transform. Adding anything here -- the
@@ -38,9 +38,12 @@ export function PlacingSolidPreview() {
   // placement the drop does not deliver. That lift belongs upstream, where the
   // ground point is picked, which is also the only place the snapper can see
   // the would-be object's real corners.
+  //
+  // No rotation either: the cache baked the template's own into the geometry,
+  // so turning the group here would apply it twice.
   return (
     <group position={drag.position}>
-      <mesh geometry={geometry} raycast={noRaycast}>
+      <mesh geometry={cache.geometry} raycast={noRaycast}>
         <meshBasicMaterial
           color={COLORS.placing}
           transparent
@@ -51,7 +54,7 @@ export function PlacingSolidPreview() {
       </mesh>
       {/* The fill alone reads as a flat blob at low opacity; the wireframe is
           what makes a bean distinguishable from a cylinder mid-drag. */}
-      <mesh geometry={geometry} raycast={noRaycast}>
+      <mesh geometry={cache.geometry} raycast={noRaycast}>
         <meshBasicMaterial
           color={COLORS.placing}
           wireframe

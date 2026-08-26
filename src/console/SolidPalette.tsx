@@ -108,14 +108,14 @@ function SolidRow({
 }
 
 /**
- * The drag source for 3D primitives. A gesture begins on pointerdown here and is
- * tracked on the window from then on, so the pointer can travel from this panel
- * onto the canvas without either element losing the thread.
+ * Every template as a row, in a scroller four rows tall. All ten open at once
+ * made the console's tallest panel the one you look at least: the scene tree and
+ * the selected object both sat below the fold.
  *
- * Side counts live per row and persist: the list rests on what the user actually
- * builds with instead of snapping back to a default between drags.
+ * Its own component so it can be rendered -- and checked -- without the closed
+ * header above it.
  */
-export function SolidPalette() {
+export function SolidList() {
   const [sides, setSides] = useState<Record<string, number>>(() => {
     const seed: Record<string, number> = {}
     for (const t of SOLID_TEMPLATES) {
@@ -126,22 +126,42 @@ export function SolidPalette() {
   })
 
   return (
+    <div className="solid-list">
+      {SOLID_TEMPLATES.map((t) => (
+        <SolidRow
+          key={t.key}
+          template={t}
+          sides={sides[t.key]}
+          onPickSides={(n) => setSides((prev) => ({ ...prev, [t.key]: n }))}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The drag source for 3D primitives. A gesture begins on pointerdown here and is
+ * tracked on the window from then on, so the pointer can travel from this panel
+ * onto the canvas without either element losing the thread.
+ *
+ * Side counts live per row and persist: the list rests on what the user actually
+ * builds with instead of snapping back to a default between drags.
+ *
+ * Open at rest, but only four rows tall: the catalogue is what a session starts
+ * with, so it should be there without a click -- what it must not do is push the
+ * scene tree and the selected object off the bottom of the console, which all
+ * ten rows at once did.
+ */
+export function SolidPalette() {
+  return (
     <Section
       title="Solids"
+      hint={`${SOLID_TEMPLATES.length}`}
       tip="Drag a row out of this list and onto the grid. The ghost follows the ground plane and the solid lands resting on it; hold Shift while moving one to lift it instead."
       collapsible
       defaultOpen
     >
-      <div className="solid-list">
-        {SOLID_TEMPLATES.map((t) => (
-          <SolidRow
-            key={t.key}
-            template={t}
-            sides={sides[t.key]}
-            onPickSides={(n) => setSides((prev) => ({ ...prev, [t.key]: n }))}
-          />
-        ))}
-      </div>
+      <SolidList />
     </Section>
   )
 }

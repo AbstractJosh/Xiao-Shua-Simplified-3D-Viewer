@@ -19,6 +19,9 @@ Existing 3D editors demand a lot of tool-specific knowledge before you can make 
 - **Cut** with a plane you place with that same gizmo and tilt by XYZ. Each half stays a live parametric object, base and features intact.
 - **Stack** features - sketch on a face an earlier feature created
 - **Merge** any number of objects into one. Shift-click to gather them, then Merge in the Scene section: they become a single object with a single gizmo.
+- **Copy** an object with Ctrl+C and **paste** it with Ctrl+V, or right-click it for the same two, plus **Save as custom object**.
+- **Keep** what you build: saved objects land in the Clipboard panel as `Custom 1`, `Custom 2`... Rename them there, and drag a tile back into the scene to place a full copy -- sketches, cuts, merged parts and the rotation it was saved at.
+- **Inspect** a saved object on its tile: each one is a live turntable seen from 30 degrees above, turning about the same point its gizmo sits on. Sweep the pointer across it to spin it a full revolution per tile width; vertical movement is ignored.
 - **Export** the whole scene as `.glb` or `.obj`
 
 ## The document
@@ -85,7 +88,13 @@ The app is split by what a control is *about*, and nothing appears in both halve
 
 **The bar across the top** holds the tools: Snap, Cut, and Export. None of them describe the scene -- they are modes and actions that apply to whatever is selected. Engaging one is a single click on its button; its parameters sit behind the caret beside it, in a panel that opens under the tool. Arming the cut plane opens its panel with it, because a plane you cannot position is not a tool.
 
-**The console on the right** holds the document: what you can drop in, what is selected, and what the scene now contains.
+**The console on the right** holds the document: what you can drop in, what is selected, and what the scene now contains. The Clipboard sits at the top of it, above the fixed catalogue of primitives: what you saved is yours and specific to this scene, so it should not be ten rows of scrolling away. The Solids list below it is open but four rows tall -- all ten at once pushed the scene tree and the selected object off the bottom.
+
+**The clipboard shows three models, not all of them.** Each live thumbnail is a WebGL context, and a browser hands out somewhere between eight and sixteen before it starts evicting the oldest -- which on this page would mean the main viewport going black because a shelf scrolled. So the row scrolls sideways, three tiles wide, and the three *most visible* tiles get models; the rest show a circular loading bar until they arrive. It is a scrolling row rather than a wrapping grid for the same reason: a wrapped fourth tile would sit below the first, permanently in view and permanently unable to have a model. Meshes are cached behind the cap, bounded and disposed on eviction, so sweeping back and forth over a shelf does not re-replay every object it passes.
+
+**The right-click menu is on objects only.** The right button already means two things in the viewport -- pan the camera, and resize or turn from the gizmo -- so the menu opens on a right *click*, judged against a few pixels of slop, and only where that click landed on a solid. Paste is dimmed rather than hidden when the clipboard is empty, so the menu keeps its height between openings and still says that pasting is something it does.
+
+**The clipboard is not the document.** Neither the copied object nor the saved shelf lives in `Doc`, because neither is part of the scene: copying something and then pressing undo has to rewind the last edit, not the copy. Ids are reminted on the way OUT rather than on the way in, so what is stored stays a faithful record of what was taken and two drops of one tile are two objects.
 
 **Position & Rotation is one panel, not one per target.** Both things that carry a placement -- a solid, and the cut plane -- are placed the same way, with the same gizmo, against the same scene. Giving each its own copy of two XYZ fields would have meant two sets of rows that behave identically and drift apart the first time one gained a control. An armed cut plane takes the panel, exactly as it takes the gizmo, and the rotation is named "Tilt" while it does.
 
@@ -179,12 +188,13 @@ server render its *initial* state, so `ui-check` collapses the two snapshots bef
 ```
 src/geometry/    types - dimensions - surfaces - solids - outline - prism
                  brush - cut - snap - volume - transform - evaluate - exporters
-src/store/       docStore (scene + undo) - toolStore - evalStore
+src/store/       docStore (scene + undo) - toolStore - evalStore - libraryStore
 src/viewport/    Viewport - SceneObjects - SketchLayer - FaceHandle
                  TransformGizmo - SketchGizmo - RotationDial - gizmoDrag
-                 rotationIndicator - axisColors - CutPlaneGizmo
-                 PlacingSolidPreview - picking - snapping
+                 rotationIndicator - axisColors - CutPlaneGizmo - ObjectMenu
+                 PlacingSolidPreview - dropCache - picking - snapping
 src/console/     NavBar - NavTool - NavTools - ExportTools - Tip
+                 ClipboardPanel - ObjectThumbnail - thumbnailGeometry
                  SolidPalette - ShapePalette - PlacementPanel - ObjectPanel
                  Inspector - SceneTree - Field - solidIcons - navIcons - ngon
 scripts/         headless check suites and preview generators
@@ -197,4 +207,8 @@ scripts/         headless check suites and preview generators
 - Box offsets ignore corner rounding, which is exact across the faces where sketches live.
 - Pocket depth on a sphere is capped short of the centre, where radial rays would converge and fold the tool through itself.
 - Changing a prism's or pyramid's side count discards that object's sketches: a face index means something different on a hexagon than on an octagon. The panel asks first.
+- A clipboard thumbnail is framed on the object's GIZMO point, not on the middle of its bounding box, so it turns about the same point it turns about in the scene. An object hanging well off to one side of its gizmo -- a small bead merged onto the end of a long arm -- therefore sits off-centre in its tile, which is the honest picture of where its pivot is.
+- A clipboard thumbnail's loading bar is indeterminate. Building one is a single synchronous replay of the object's features and cuts, so there is no fraction to report -- it has either not started or finished, and a bar that pretended otherwise would be inventing progress.
+- The Clipboard is session-scoped: saved objects survive every edit, undo and reset, but not a reload. Persisting them would mean deciding what happens to a shelf saved by an older version of the document format, which is a separate question from having a shelf at all.
+- A merged object sizes as one uniform Size rather than per axis. Its parts sit at their own angles and a `BaseSolid` carries no scale, so "this assembly, but wider" cannot be written down -- and once merged, an individual part's own width is no longer reachable, since there is no unmerge yet.
 - A cut through a strongly non-convex solid can leave two closed halves that are not physically disjoint, and we still report a separation. Both halves remain valid solids that reconstruct the original, so the parametric result stays sound even where the physical reading is arguable.

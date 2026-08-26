@@ -102,6 +102,9 @@ export type TurnGrab = {
   axis: Vector3
   /** Euler XYZ the target carried when the ring was grabbed. */
   rotation: Vec3
+  /** World position the target's ORIGIN sat at then, for a turn about a pivot
+   *  that is not that origin. */
+  position: Vec3
   /** Last frame's raw pointer angle, for unwrapping. */
   lastAngle: number
   /** Signed total swept since the grab, unwrapped, in radians. */
@@ -175,6 +178,32 @@ export function advanceTurn(grab: TurnGrab, angle: number): number {
   grab.total += wrap(angle - grab.lastAngle)
   grab.lastAngle = angle
   return grab.total
+}
+
+/**
+ * Where the target's ORIGIN lands, given that the turn runs about `pivot`
+ * rather than about the origin itself.
+ *
+ * A merged object's gizmo sits at the centre of the solids welded into it,
+ * which is not where the host's origin is. Turning about the origin would swing
+ * the whole assembly around a point off to one side of the ring being dragged;
+ * turning about the ring keeps it spinning under the pointer.
+ *
+ * Derived from the grab's own position every frame, never from where the target
+ * has since ended up -- the same rule the axis drags follow, and for the same
+ * reason: feeding a rotated position back in would walk the object round the
+ * pivot one turn per frame.
+ *
+ * For a bare solid the pivot IS the origin and this hands the position straight
+ * back, so callers need not ask which case they are in.
+ */
+export function turnedPosition(grab: TurnGrab, total: number, pivot: Vec3): Vec3 {
+  const at = new Vector3(pivot[0], pivot[1], pivot[2])
+  const moved = new Vector3(grab.position[0], grab.position[1], grab.position[2])
+    .sub(at)
+    .applyQuaternion(new Quaternion().setFromAxisAngle(grab.axis, total))
+    .add(at)
+  return [moved.x, moved.y, moved.z]
 }
 
 /**
