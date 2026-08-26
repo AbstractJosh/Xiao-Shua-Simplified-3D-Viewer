@@ -201,7 +201,10 @@ export function HelpTool() {
         <li><b>Delete</b> removes the selected sketch, or the object</li>
         <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>
         <li><b>Ctrl+C</b> / <b>Ctrl+V</b> copy the selected object and paste it beside itself</li>
-        <li>The console has two tabs: <b>View</b> holds Clipboard, Solids, Shapes and Scene; <b>Edit</b> holds the controls for whatever is selected</li>
+        <li>The console has two tabs: <b>View</b> holds Clipboard, Solids, Shapes, Colour and Scene; <b>Edit</b> holds the controls for whatever is selected</li>
+        <li><b>Colour</b> paints the selected objects: turn the ring for the hue, the slider for brightness, then <b>Apply</b></li>
+        <li>Or type the colour straight into the <b>hex field</b> under Apply -- that is also the way to reach a muted one, since the ring carries hue alone</li>
+        <li>Applied colours land on the <b>shelf</b> below; click one to load it back into the picker</li>
         <li>A dot on <b>Edit</b> means something is selected and its controls are waiting there</li>
         <li>Saved objects live in <b>Clipboard</b>, on the View tab; drag one back in</li>
         <li>Each tile turns on its own; <b>sweep across one</b> to spin it and look it over</li>

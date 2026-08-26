@@ -180,6 +180,18 @@ type State = {
   removeObject: (id: string) => void
   setObjectTransform: (id: string, transform: ObjectTransform) => void
   patchObject: (id: string, patch: Partial<SceneObject>) => void
+  /**
+   * Paint every named object one colour.
+   *
+   * Takes the whole list rather than being called once per id because an Apply
+   * aimed at five selected solids is ONE thing the user did, and five
+   * `patchObject` calls would be five undo steps to walk back out of -- the
+   * same reason `mergeObjects` takes a list. It is also why this does not go
+   * through `commitCoalesced`: colouring is a button press, not a slider being
+   * dragged, so there is no run of near-identical edits to fold and no window
+   * in which a second, deliberate Apply should disappear into the first.
+   */
+  setObjectColor: (ids: string[], color: string) => void
 
   /**
    * Begin dragging a solid in. The template's own position is ignored -- the
@@ -598,6 +610,19 @@ export const useDoc = create<State>((set, get) => {
           return { ...next, features: kept.map((f) => conform(next.base, f)) }
         })
       ),
+
+    setObjectColor: (ids, color) => {
+      const targets = new Set(ids)
+      if (targets.size === 0) return
+      // An Apply that repaints objects the colour they already wear changed
+      // nothing, and must not cost an undo step -- the button is easy to press
+      // twice, and the second press would otherwise bury the edit before it.
+      const painted = (o: SceneObject) => !targets.has(o.id) || o.color === color
+      if (get().doc.objects.every(painted)) return
+      commit((d) => ({
+        objects: d.objects.map((o) => (targets.has(o.id) ? { ...o, color } : o)),
+      }))
+    },
 
     startPlacing: (shape) =>
       set({ drag: { kind: 'placing', shape, objectId: null, anchor: null } }),

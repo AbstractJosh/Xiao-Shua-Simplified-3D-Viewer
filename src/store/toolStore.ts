@@ -72,6 +72,18 @@ const DEFAULT_CUT_PLANE: CutPlaneState = {
   size: 4,
 }
 
+/**
+ * How many colours the picker remembers, and so how many slots its grid holds.
+ *
+ * Eight, in two rows of four: enough that a scene built from a handful of
+ * colours keeps all of them within reach, and few enough that the grid stays a
+ * thing you recognise at a glance rather than a list you read. The slots are
+ * drawn whether or not there is a colour in them, so the panel does not change
+ * height as the shelf fills -- a control that grows under the pointer is a
+ * control you miss.
+ */
+export const RECENT_COLOR_SLOTS = 8
+
 export type ToolState = {
   snap: boolean
   snapDistance: number
@@ -79,6 +91,17 @@ export type ToolState = {
   cutPlane: CutPlaneState
   openPanel: NavPanel
   consoleTab: ConsoleTab
+  /**
+   * Colours the picker has applied, MOST RECENT FIRST, capped at
+   * `RECENT_COLOR_SLOTS`.
+   *
+   * Here rather than in the document for the reason the whole store exists:
+   * this is how you have been working, not what you have built. It must not
+   * land in undo history -- walking back an edit should not also forget the
+   * colour you were using -- and it must outlive the panel, which unmounts
+   * every time the console switches to the Edit tab.
+   */
+  recentColors: string[]
 
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
@@ -87,6 +110,9 @@ export type ToolState = {
   resetCutPlane: () => void
   setOpenPanel: (panel: NavPanel) => void
   setConsoleTab: (tab: ConsoleTab) => void
+  /** Record a colour as just used, moving it to the front if it is already
+   *  there rather than letting the shelf fill with one repeated swatch. */
+  noteRecentColor: (color: string) => void
 }
 
 export const useTools = create<ToolState>((set) => ({
@@ -98,6 +124,9 @@ export const useTools = create<ToolState>((set) => ({
   // Opens on the half that works with nothing selected, which is also the half
   // the first gesture of a session needs: drag a solid in from Solids.
   consoleTab: 'view',
+  // Empty, not seeded with a starter palette: every slot on screen is a colour
+  // this user actually chose, so the grid is a history rather than a suggestion.
+  recentColors: [],
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
@@ -116,4 +145,14 @@ export const useTools = create<ToolState>((set) => ({
   setOpenPanel: (panel) => set({ openPanel: panel }),
 
   setConsoleTab: (tab) => set({ consoleTab: tab }),
+
+  noteRecentColor: (color) =>
+    set((s) => ({
+      // Filtered first, then unshifted: re-using a colour should move it back
+      // to the front, not push a second copy of it in and cost a slot.
+      recentColors: [color, ...s.recentColors.filter((c) => c !== color)].slice(
+        0,
+        RECENT_COLOR_SLOTS
+      ),
+    })),
 }))

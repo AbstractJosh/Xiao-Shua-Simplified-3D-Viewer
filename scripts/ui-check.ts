@@ -64,6 +64,10 @@ import { PlacementPanel } from '../src/console/PlacementPanel'
 import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { Console } from '../src/console/Console'
+import { ColorPanel } from '../src/console/ColorPanel'
+import type { Hsv } from '../src/color'
+import { hexToHsv, hsvToHex, hueAt, lighten, parseHex, wheelHue } from '../src/color'
+import { bodyPaint } from '../src/viewport/SceneObjects'
 import { MarqueeRect } from '../src/viewport/SelectionMarquee'
 import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
 import { SolidList, SolidPalette } from '../src/console/SolidPalette'
@@ -87,7 +91,13 @@ import {
 import { turnedRotation } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { hostSurfaceFor, slideAnchor, surfaceFor } from '../src/geometry/surfaces'
-import { cloneObject, defaultBaseFor, defaultShape, makeObject } from '../src/geometry/types'
+import {
+  DEFAULT_OBJECT_COLOR,
+  cloneObject,
+  defaultBaseFor,
+  defaultShape,
+  makeObject,
+} from '../src/geometry/types'
 import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../src/geometry/types'
 import {
   releaseThumbnail,
@@ -103,7 +113,12 @@ import {
 import { useEvalStatus } from '../src/store/evalStore'
 import { useLibrary } from '../src/store/libraryStore'
 import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
-import { CUT_SIZE_MAX, cutPlaneNormal, useTools } from '../src/store/toolStore'
+import {
+  CUT_SIZE_MAX,
+  RECENT_COLOR_SLOTS,
+  cutPlaneNormal,
+  useTools,
+} from '../src/store/toolStore'
 
 let failures = 0
 function check(label: string, ok: boolean, detail = '') {
@@ -1989,7 +2004,7 @@ console.log('\nThe console splits into View and Edit')
   // The split is by what a panel is FOR: View works with nothing selected, Edit
   // only means anything once something is. Both lists are checked whole, so a
   // panel that quietly lands in both tabs -- or in neither -- fails here.
-  const VIEW = ['>Clipboard<', '>Solids<', '>Shapes<', '>Scene<']
+  const VIEW = ['>Clipboard<', '>Solids<', '>Shapes<', '>Colour<', '>Scene<']
   const EDIT = ['>Position &amp; Rotation<', '>Dimensions<', '>Sketch<']
 
   tools().setConsoleTab('view')
@@ -2096,6 +2111,223 @@ console.log('\nExtrude is one control that crosses zero')
     near('the same arrow cuts inward past zero', depth(), -0.4, 1e-12)
   }
   doc().removeObject(id)
+}
+
+// --- the colour picker ------------------------------------------------------
+console.log('\nThe colour picker, and the selection it paints')
+{
+  // 1. The arithmetic. The wheel is a picture of these functions, so a bug here
+  //    is a marker sitting somewhere other than the colour it claims.
+  const SAMPLES: [string, Hsv][] = [
+    ['#ff0000', { h: 0, s: 1, v: 1 }],
+    ['#00ff00', { h: 120, s: 1, v: 1 }],
+    ['#0000ff', { h: 240, s: 1, v: 1 }],
+    ['#000000', { h: 0, s: 0, v: 0 }],
+    ['#ffffff', { h: 0, s: 0, v: 1 }],
+    ['#804000', { h: 30, s: 1, v: 0.502 }],
+  ]
+  for (const [hex, hsv] of SAMPLES) {
+    check(`${hex} is the colour ${hsv.h}deg says it is`, hsvToHex(hsv) === hex, hsvToHex(hsv))
+  }
+
+  // Round-tripping every hue at a few strengths, rather than the six primaries
+  // alone: the sextant walk in `hsvToHex` is one expression covering six cases,
+  // and only a sweep exercises the boundaries between them.
+  let worst = 0
+  for (let h = 0; h < 360; h += 7) {
+    for (const s of [0.35, 0.7, 1]) {
+      for (const v of [0.4, 0.8, 1]) {
+        const back = hexToHsv(hsvToHex({ h, s, v }))
+        if (!back) {
+          check(`hue ${h} round-trips`, false, 'unparsable')
+          continue
+        }
+        // 8 bits per channel is the floor on precision here, so the tolerance
+        // is what a single step of quantisation can move each axis by.
+        const dh = Math.min(Math.abs(back.h - h), 360 - Math.abs(back.h - h))
+        worst = Math.max(worst, dh / 360, Math.abs(back.s - s), Math.abs(back.v - v))
+      }
+    }
+  }
+  check(
+    'every hue survives the trip through 8-bit hex',
+    worst < 0.01,
+    `worst drift ${worst.toFixed(4)}`
+  )
+
+  // The hex field is only usable if it is LOSSLESS: a colour typed in, held as
+  // HSV, and written back out has to be the same colour, or the field would
+  // rewrite what the user typed the moment they left it.
+  let drifted = 0
+  for (let r = 0; r < 256; r += 9) {
+    for (let g = 0; g < 256; g += 11) {
+      for (let b = 0; b < 256; b += 13) {
+        const typed = `#${[r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('')}`
+        const parsed = hexToHsv(typed)
+        if (!parsed || hsvToHex(parsed) !== typed) drifted += 1
+      }
+    }
+  }
+  check('a typed hex comes back out exactly as typed', drifted === 0, `${drifted} drifted`)
+
+  check('a short hex is read the same as a long one', hexToHsv('#f00')?.h === 0)
+  check('and a value that is not a colour is refused', hexToHsv('lilac') === null)
+  check('rather than quietly becoming black', parseHex('#12345') === null)
+
+  // 2. The ring's geometry. Twelve o'clock is hue 0 and it runs clockwise,
+  //    which is what `conic-gradient(from 0deg, ...)` paints -- get this
+  //    backwards and the knob walks the wrong way round its own picture.
+  near('the top of the ring is red', wheelHue(0.5, 0) ?? NaN, 0, 1e-9)
+  near('a quarter clockwise is the right edge', wheelHue(1, 0.5) ?? NaN, 90, 1e-9)
+  near('half way round is the bottom', wheelHue(0.5, 1) ?? NaN, 180, 1e-9)
+  near('three quarters is the left edge', wheelHue(0, 0.5) ?? NaN, 270, 1e-9)
+  // Only the direction is read, never the distance -- which is what makes the
+  // ring hollow rather than a disc. A drag that wanders into the hole or off
+  // past the rim keeps reporting the hue it points at.
+  near('a point inside the hole still reads its hue', wheelHue(0.5, 0.45) ?? NaN, 0, 1e-9)
+  near('and so does one past the rim', wheelHue(1, 1) ?? NaN, 135, 1e-9)
+  check('only the dead centre has no hue at all', wheelHue(0.5, 0.5) === null)
+
+  // The knob is placed by the inverse, so the two have to agree exactly or it
+  // sits somewhere other than the hue it is showing.
+  let placement = 0
+  for (let h = 0; h < 360; h += 11) {
+    const at = hueAt(h, 0.82)
+    const back = wheelHue(at.x, at.y)
+    if (back === null) {
+      check(`hue ${h} places somewhere`, false, 'landed dead centre')
+      continue
+    }
+    placement = Math.max(placement, Math.min(Math.abs(back - h), 360 - Math.abs(back - h)) / 360)
+  }
+  check('the knob sits exactly where the hue says', placement < 1e-9, `${placement}`)
+  // Radius is the caller's, not the function's: the panel derives it from the
+  // band's thickness, and a knob at a different radius is still the same hue.
+  for (const r of [0.5, 0.82, 1]) {
+    near(`radius ${r} does not move the hue`, wheelHue(hueAt(210, r).x, hueAt(210, r).y) ?? NaN, 210, 1e-9)
+  }
+
+  // 3. The paint the viewport puts on a solid.
+  const grey = bodyPaint(undefined, false)
+  check('an uncoloured solid keeps the scene grey', grey.color === DEFAULT_OBJECT_COLOR, grey.color)
+  check('and glows not at all until it is selected', grey.emissiveIntensity === 0)
+  check(
+    'selected, it takes the hand-picked shade',
+    bodyPaint(undefined, true).color !== DEFAULT_OBJECT_COLOR
+  )
+
+  const red = bodyPaint('#cc2222', false)
+  check('a coloured solid wears its own colour', red.color === '#cc2222')
+  const redLit = bodyPaint('#cc2222', true)
+  const litHsv = hexToHsv(redLit.color)
+  const restHsv = hexToHsv('#cc2222')
+  check('and selecting it does not repaint it grey', (litHsv?.s ?? 0) > 0.5, redLit.color)
+  check('it is lifted, not hue-shifted', Math.abs(litHsv?.h ?? 99) < 6, `${litHsv?.h.toFixed(1)}deg`)
+  check('and it is genuinely brighter than at rest', (litHsv?.v ?? 0) > (restHsv?.v ?? 1))
+  check('its glow is its own colour, not the blue that lifts grey', redLit.emissive === '#cc2222')
+  // The lift is the sRGB one on purpose. Three's linear-space `lerp` at the
+  // same fraction lands on #d77f7f, which is a pink, and this is the check that
+  // would go red if the viewport ever went back to it.
+  check('the lift is done in sRGB', lighten('#cc2222', 0.24) === '#d85757', lighten('#cc2222', 0.24))
+  check('and a colour it cannot read is handed back, not blackened', lighten('teal', 0.5) === 'teal')
+
+  // 4. What Apply does to the document.
+  const a = dragIn(defaultBaseFor('box'), -3, 0)
+  const b = dragIn(defaultBaseFor('sphere'), 0, 0)
+  const c = dragIn(defaultBaseFor('cone'), 3, 0)
+  const colorOf = (id: string) => doc().doc.objects.find((o) => o.id === id)?.color
+
+  doc().selectObjects([a, b])
+  // Read as the TOP of the history rather than its length: the stack is capped
+  // and long since full by this point in the suite, so a count would sit at the
+  // cap however many entries an Apply pushed. One entry, and it describes the
+  // document as it stood before the Apply.
+  const priorDoc = doc().doc
+  doc().setObjectColor(doc().selectedObjectIds, '#3366cc')
+  check('Apply paints the first selected object', colorOf(a) === '#3366cc', String(colorOf(a)))
+  check('and the second', colorOf(b) === '#3366cc', String(colorOf(b)))
+  check('and nothing that was not selected', colorOf(c) === undefined, String(colorOf(c)))
+  check(
+    'painting two objects is ONE undo step',
+    doc().past[doc().past.length - 1] === priorDoc
+  )
+
+  doc().undo()
+  check('which puts both back the way they were', colorOf(a) === undefined && colorOf(b) === undefined)
+  doc().redo()
+  check('and redo brings the colour back', colorOf(a) === '#3366cc')
+
+  // The button is easy to press twice, and the second press must not bury the
+  // edit before it under a history entry that changed nothing.
+  const settled = doc().past.length
+  doc().setObjectColor([a, b], '#3366cc')
+  check('re-applying the same colour costs no undo step', doc().past.length === settled)
+  doc().setObjectColor([], '#ff0000')
+  check('and an empty selection paints nothing at all', doc().past.length === settled)
+
+  // 5. The shelf of colours already used. It lives in the tool store, not the
+  //    document: it must survive the panel unmounting on a tab switch, and it
+  //    must stay out of undo -- walking back an edit should not also forget the
+  //    colour you were working in.
+  tools().noteRecentColor('#111111')
+  tools().noteRecentColor('#222222')
+  check('the shelf remembers, most recent first', tools().recentColors[0] === '#222222')
+  check('and keeps what came before it', tools().recentColors[1] === '#111111')
+  tools().noteRecentColor('#111111')
+  check('re-using a colour moves it to the front', tools().recentColors[0] === '#111111')
+  check('rather than keeping two of it', tools().recentColors.length === 2)
+  for (let i = 0; i < RECENT_COLOR_SLOTS + 4; i += 1) {
+    tools().noteRecentColor(hsvToHex({ h: i * 21, s: 1, v: 1 }))
+  }
+  check(
+    'and the shelf never outgrows its slots',
+    tools().recentColors.length === RECENT_COLOR_SLOTS,
+    `${tools().recentColors.length}`
+  )
+
+  // 6. The panel itself.
+  tools().setConsoleTab('view')
+  doc().selectObject(null)
+  const idle = markupOf('ColorPanel (nothing selected)', ColorPanel)
+  shows('with nothing selected Apply stands down', idle, 'disabled=""')
+  shows('and says why', idle, 'Nothing selected.')
+
+  doc().selectObject(a)
+  const one = markupOf('ColorPanel (one selected)', ColorPanel)
+  hides('one object selected drops the empty note', one, 'Nothing selected.')
+  shows('the hex field reads back that colour', one, 'value="#3366cc"')
+  shows('and it is a field, not a label', one, 'class="picker-hex-input"')
+  shows('the ring is there to turn', one, 'aria-label="Hue, 220 degrees"')
+  shows('and the slider to brighten', one, 'aria-orientation="vertical"')
+  // Hollow: the hole is what makes it a ring rather than a disc, and the knob
+  // rides the band at the radius ColorPanel derives from the band's thickness.
+  shows('the ring is hollow', one, 'class="picker-ring-hole"')
+  shows('with a knob on the band', one, 'class="picker-knob"')
+
+  // The shelf is drawn full whether or not there are colours in it, so the
+  // panel does not change height as it fills.
+  check(
+    'the shelf draws every slot',
+    occurrences(one, 'class="picker-slot') === RECENT_COLOR_SLOTS,
+    `${occurrences(one, 'class="picker-slot')}`
+  )
+
+  doc().selectObjects([a, b, c])
+  const many = markupOf('ColorPanel (three selected)', ColorPanel)
+  shows('three selected and the button says how many', many, 'Apply to 3')
+  shows('as does the heading', many, '3 selected')
+
+  // An empty shelf still draws its slots, and every one of them is inert.
+  useTools.setState({ recentColors: [] })
+  const bare = markupOf('ColorPanel (empty shelf)', ColorPanel)
+  check(
+    'an empty shelf is all empty slots',
+    occurrences(bare, 'picker-slot picker-slot-empty') === RECENT_COLOR_SLOTS,
+    `${occurrences(bare, 'picker-slot picker-slot-empty')}`
+  )
+  shows('and they say what they are for', bare, 'colours land here as you apply them')
+
+  for (const id of [a, b, c]) doc().removeObject(id)
 }
 
 console.log(

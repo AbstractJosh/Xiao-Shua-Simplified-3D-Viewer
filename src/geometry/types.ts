@@ -150,9 +150,31 @@ export const IDENTITY_TRANSFORM: ObjectTransform = {
  */
 export type CutPlane = { id: string; origin: Vec3; normal: Vec3; side: 1 | -1 }
 
+/**
+ * The colour a solid wears until one is chosen for it: the warm grey the whole
+ * scene used to share.
+ *
+ * Lives here rather than in the viewport because it is now the DEFAULT OF A
+ * DOCUMENT FIELD -- "no colour" and "this colour" have to mean the same thing
+ * to the renderer, the clipboard tiles and anything else that draws an object,
+ * and a second copy of the literal is the way those quietly drift apart.
+ */
+export const DEFAULT_OBJECT_COLOR = '#9aa3b4'
+
 export type SceneObject = {
   id: string
   name: string
+  /**
+   * The solid's own colour as `#rrggbb`, or absent for DEFAULT_OBJECT_COLOR.
+   *
+   * Optional rather than defaulted at creation so an untouched scene stays
+   * exactly the document it was before colour existed: nothing to serialise,
+   * nothing to diff, and one place -- the default above -- that decides what
+   * grey means. Colour belongs to the OBJECT, not to its parts: a merged
+   * assembly evaluates to a single mesh, so a part carrying a colour of its own
+   * would be describing a surface nothing draws.
+   */
+  color?: string
   base: BaseSolid
   transform: ObjectTransform
   features: Feature[]

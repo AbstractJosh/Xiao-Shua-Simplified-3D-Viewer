@@ -21,6 +21,7 @@ Existing 3D editors demand a lot of tool-specific knowledge before you can make 
 - **Stack** features - sketch on a face an earlier feature created
 - **Select** several at once with a box: left-drag from empty space and everything whose gizmo falls inside is picked up as the box grows. Hold Shift to add its catch to what is already selected.
 - **Merge** any number of objects into one. Shift-click or box-select to gather them, then Merge in the Scene section: they become a single object with a single gizmo.
+- **Colour** what you have selected, from the Colour panel on the View tab: turn the hollow hue ring, raise or lower the brightness slider beside it, or type an exact `#rrggbb` into the hex field under Apply. Applying paints the selection and nothing else, in a single undo step however many objects it covers, and drops the colour onto a shelf of the last eight you used -- click one to load it back into the picker.
 - **Copy** an object with Ctrl+C and **paste** it with Ctrl+V, or right-click it for the same two, plus **Save as custom object**.
 - **Keep** what you build: saved objects land in the Clipboard panel as `Custom 1`, `Custom 2`... Rename them there, and drag a tile back into the scene to place a full copy -- sketches, cuts, merged parts and the rotation it was saved at.
 - **Inspect** a saved object on its tile: each one is a live turntable seen from 30 degrees above, turning about the same point its gizmo sits on. Sweep the pointer across it to spin it a full revolution per tile width; vertical movement is ignored.
@@ -96,9 +97,11 @@ The app is split by what a control is *about*, and nothing appears in both halve
 
 **The bar across the top** holds the tools: Snap, Cut, and Export. None of them describe the scene -- they are modes and actions that apply to whatever is selected. Engaging one is a single click on its button; its parameters sit behind the caret beside it, in a panel that opens under the tool. Arming the cut plane opens its panel with it, because a plane you cannot position is not a tool.
 
-**The console on the right** holds the document, in two tabs. **View** is everything that is true of the scene whatever is selected -- Clipboard, Solids, Shapes, Scene -- and every one of those is usable with nothing selected at all, which is the state the app opens in. **Edit** is the three panels that only mean anything once something *is* selected: where it sits, how big it is, and what its sketches do. Seven panels in one column was more than a screen of them, so the Inspector and the scene tree lived below the fold and the panels that were open were rarely the ones in use. The tab strip is sticky rather than scrolling away with the panels, because a switch you have to scroll back up to find is a switch that gets used once. Selecting an object fills the Edit tab and changes nothing on View, so the Edit tab carries a dot to say so -- a dot rather than an automatic switch, since a user placing five solids in a row would otherwise have the palette pulled out from under them four times.
+**The console on the right** holds the document, in two tabs. **View** is everything that is true of the scene whatever is selected -- Clipboard, Solids, Shapes, Colour, Scene -- and every one of those is usable with nothing selected at all, which is the state the app opens in. **Edit** is the three panels that only mean anything once something *is* selected: where it sits, how big it is, and what its sketches do. Seven panels in one column was more than a screen of them, so the Inspector and the scene tree lived below the fold and the panels that were open were rarely the ones in use. The tab strip is sticky rather than scrolling away with the panels, because a switch you have to scroll back up to find is a switch that gets used once. Selecting an object fills the Edit tab and changes nothing on View, so the Edit tab carries a dot to say so -- a dot rather than an automatic switch, since a user placing five solids in a row would otherwise have the palette pulled out from under them four times.
 
-Within View, the Clipboard sits above the fixed catalogue of primitives: what you saved is yours and specific to this scene, so it should not be ten rows of scrolling away. The Solids list below it is open but four rows tall -- all ten at once pushed the scene tree off the bottom.
+Within View, the Clipboard sits above the fixed catalogue of primitives: what you saved is yours and specific to this scene, so it should not be ten rows of scrolling away. The Solids list below it is open but four rows tall -- all ten at once pushed the scene tree off the bottom. Colour sits under the two palettes because it is the panel you reach for *after* something is in the scene, and above the tree because it is still a thing you pick up and aim rather than a readout of what the document holds.
+
+The Colour picker is a hollow hue ring, an upright brightness slider beside it, and a column carrying Apply, the hex field, and the last eight colours applied. The ring is hollow because it carries **one** axis: hue is the angle, nothing is the distance, and a filled disc would be promising a saturation control it does not have. Saturation is reachable by typing a colour into the hex field -- and once it is set, the ring steers that colour's hue without blowing it back to full strength. The exception is a colour with no saturation at all, a grey or a black or a white: those have no hue to steer either, so the ring gives them full strength rather than appearing to do nothing. The shelf of recent colours lives in the tool store rather than the document, for the reason everything else there does -- it is how you have been working, not what you have built, so it stays out of undo and survives the panel unmounting on a tab switch.
 
 **The console does not scroll sideways, and the width is what guarantees it.** `overflow-y: auto` alone makes the other axis compute to `auto` as well, so the console used to be a horizontally scrolling element too -- and every hover tip is a 240px absolutely positioned bubble that is `visibility: hidden` rather than `display: none`, which keeps its box and therefore keeps its overflow. A dot beside a long heading put a quarter of that bubble past the right edge, permanently, and the console grew a scrollbar for something nobody could see. The width now leaves room for the widest bubble beside the longest heading in the console, and `overflow-x: clip` makes it structural: `clip` is not a scrolling value, so unlike `hidden` it does not turn the box into a scroll container on that axis and does not disturb the vertical scroll.
 
@@ -202,6 +205,7 @@ server render its *initial* state, so `ui-check` collapses the two snapshots bef
 ## Layout
 
 ```
+src/             appInfo - color (sRGB / HSV, shared by the picker and viewport)
 src/geometry/    types - dimensions - surfaces - solids - outline - prism
                  brush - cut - snap - volume - transform - evaluate - exporters
 src/store/       docStore (scene + undo) - toolStore - evalStore - libraryStore
@@ -213,8 +217,9 @@ src/viewport/    Viewport - SceneObjects - SketchLayer - FaceHandle
 src/console/     NavBar - NavTool - NavTools - ExportTools - Tip
                  Console (the View / Edit tabs)
                  ClipboardPanel - ObjectThumbnail - thumbnailGeometry
-                 SolidPalette - ShapePalette - PlacementPanel - ObjectPanel
-                 Inspector - SceneTree - Field - solidIcons - navIcons - ngon
+                 SolidPalette - ShapePalette - ColorPanel - PlacementPanel
+                 ObjectPanel - Inspector - SceneTree - Field
+                 solidIcons - navIcons - ngon
 scripts/         headless check suites and preview generators
 ```
 
@@ -228,5 +233,6 @@ scripts/         headless check suites and preview generators
 - A clipboard thumbnail is framed on the object's GIZMO point, not on the middle of its bounding box, so it turns about the same point it turns about in the scene. An object hanging well off to one side of its gizmo -- a small bead merged onto the end of a long arm -- therefore sits off-centre in its tile, which is the honest picture of where its pivot is.
 - A clipboard thumbnail's loading bar is indeterminate. Building one is a single synchronous replay of the object's features and cuts, so there is no fraction to report -- it has either not started or finished, and a bar that pretended otherwise would be inventing progress.
 - The Clipboard is session-scoped: saved objects survive every edit, undo and reset, but not a reload. Persisting them would mean deciding what happens to a shelf saved by an older version of the document format, which is a separate question from having a shelf at all.
+- Export bakes the whole scene into one mesh with one material, so a scene of differently coloured objects exports as a single grey model. Carrying the colours out would mean exporting a mesh per object and giving up the single welded solid that makes the file straightforward to open, which is a separate decision from having colour in the viewport.
 - A merged object sizes as one uniform Size rather than per axis. Its parts sit at their own angles and a `BaseSolid` carries no scale, so "this assembly, but wider" cannot be written down -- and once merged, an individual part's own width is no longer reachable, since there is no unmerge yet.
 - A cut through a strongly non-convex solid can leave two closed halves that are not physically disjoint, and we still report a separation. Both halves remain valid solids that reconstruct the original, so the parametric result stays sound even where the physical reading is arguable.
