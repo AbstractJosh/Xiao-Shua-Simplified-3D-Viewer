@@ -1952,3 +1952,204 @@ body {
   width: 14px;
   height: 14px;
 }
+
+/* --- colour picker --- */
+
+/* Three columns: the ring, the brightness slider beside it, and everything that
+   is not a dial -- Apply, the hex field, the shelf of colours already used.
+   `1fr` on the last so the side column takes whatever the two dials leave, and
+   the empty note below spans all three. */
+.picker {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+/* The two lengths the ring is made of. The knob's radius is derived from them
+   in ColorPanel.tsx, which cannot read a custom property -- RING_MID there is
+   1 minus the hole's inset over this width. Change one, change both. */
+.picker-ring {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+  /* Deliberately NOT `overflow: hidden`. The conic gradient is painted square
+     and already clipped round by the radius -- a background is clipped to its
+     own border box -- so hiding the overflow would only cut the knob in half
+     as it rides the band. */
+}
+
+.picker-ring:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* 24px of inset is 24px of band. The border reads as the ring's inner edge, so
+   the band looks drawn rather than merely left over. */
+.picker-ring-hole {
+  position: absolute;
+  inset: 24px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  pointer-events: none;
+}
+
+/* Narrower than the 24px band it rides, so a sliver of the hue it is sitting on
+   still shows either side of it -- a knob that covered the band would hide the
+   one thing you are aiming at. */
+.picker-knob {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* Upright and the ring's own height, so the two dials read as one instrument
+   rather than a circle with a stray control next to it. */
+.picker-bar {
+  position: relative;
+  width: 26px;
+  height: 132px;
+  flex: 0 0 auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.picker-bar:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Spans the track and overhangs it slightly, like a fader's: on a 26px column
+   a dot would have to be tiny to fit, and a marker you have to look for is a
+   marker in the wrong shape. */
+.picker-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 3px;
+  background: var(--text);
+  border: 1px solid #0c0f14;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.picker-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Full width of its column: it is the one control here that changes the
+   document, and it should not have to be aimed at. */
+.picker-apply {
+  width: 100%;
+  padding: 6px 9px;
+  text-align: center;
+}
+
+/* Swatch and field share one box, so the colour reads as the value OF the field
+   rather than as a separate thing sitting near it. */
+.picker-hex {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 7px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.picker-hex:focus-within {
+  border-color: var(--accent);
+}
+
+.picker-swatch {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+  /* An inset border rather than an outset one: a light colour needs an edge
+     against the panel, and a dark one needs the swatch not to grow. */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+/* Monospaced and tabular, like every other number in the console: a hex that
+   reflowed as its digits changed would jitter under a drag on the ring. */
+.picker-hex-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.picker-hex-input:focus {
+  outline: none;
+}
+
+/* Two rows of four, at a fixed size rather than stretched across the column:
+   these are swatches to recognise, not buttons to aim at, and four of them
+   sharing 226px would each be half the height of the ring beside them. */
+.picker-recent {
+  display: grid;
+  grid-template-columns: repeat(4, 34px);
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.picker-slot {
+  aspect-ratio: 1;
+  padding: 0;
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.12s, transform 0.08s;
+}
+
+.picker-slot:hover:not(:disabled) {
+  border-color: #6e7a8c;
+}
+
+.picker-slot:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.picker-slot:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* An empty slot is a place, not a colour: dashed and inert, so the grid keeps
+   its shape without eight identical buttons inviting a click. */
+.picker-slot-empty {
+  background: transparent;
+  border-style: dashed;
+  cursor: default;
+}
+
+/* Spans all three columns rather than crowding in beside the shelf. */
+.picker-empty {
+  grid-column: 1 / -1;
+}

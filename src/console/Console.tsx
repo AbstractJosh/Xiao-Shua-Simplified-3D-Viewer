@@ -2,6 +2,7 @@ import { useDoc } from '../store/docStore'
 import { useTools } from '../store/toolStore'
 import type { ConsoleTab } from '../store/toolStore'
 import { ClipboardPanel } from './ClipboardPanel'
+import { ColorPanel } from './ColorPanel'
 import { Inspector } from './Inspector'
 import { ObjectPanel } from './ObjectPanel'
 import { PlacementPanel } from './PlacementPanel'
@@ -21,6 +22,11 @@ import { SolidPalette } from './SolidPalette'
  * you saved, what you can drop in, and what the scene now contains. Every one
  * of those is usable with nothing selected at all, which is also the state the
  * app opens in.
+ *
+ * Colour is the one panel here that ends in an act on the selection, and it
+ * still belongs on this side: it is a thing you pick up and aim, like the two
+ * palettes above it, rather than a field describing whatever is selected. Only
+ * its Apply button needs a selection, and it says so when it has none.
  *
  * **Edit** is the controls that only mean anything once something IS selected:
  * where it sits, how big it is, and what its sketches do. All three already
@@ -78,6 +84,11 @@ export function Console() {
           <ClipboardPanel />
           <SolidPalette />
           <ShapePalette />
+          {/* Below the two palettes because it is the panel you reach for
+              AFTER something is in the scene, and above the tree because it is
+              still a thing you pick up and use rather than a readout of what
+              the document holds. */}
+          <ColorPanel />
           <SceneTree />
         </>
       ) : (

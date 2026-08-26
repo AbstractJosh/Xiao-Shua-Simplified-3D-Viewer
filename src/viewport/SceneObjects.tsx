@@ -3,9 +3,11 @@ import type { RefObject } from 'react'
 import { Edges } from '@react-three/drei'
 import type { ThreeEvent } from '@react-three/fiber'
 import type { Mesh } from 'three'
+import { lighten } from '../color'
 import { assemblyAnchor } from '../geometry/assembly'
 import { evaluateDoc } from '../geometry/evaluate'
 import type { SnapEntry } from '../geometry/snap'
+import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
@@ -22,8 +24,13 @@ import { TransformGizmo } from './TransformGizmo'
 const EDGE_IDLE = '#2b3442'
 const EDGE_SELECTED = '#7cc0ff'
 
-/** The unselected solid: warm grey, the colour the whole scene shares. */
-const SOLID_COLOR = '#9aa3b4'
+/**
+ * The unselected solid: warm grey, and the colour every solid wears until the
+ * Colour panel gives it one of its own. The literal lives with the document
+ * model, because an absent `color` and this string have to mean the same thing
+ * to everything that draws an object.
+ */
+const SOLID_COLOR = DEFAULT_OBJECT_COLOR
 
 /**
  * A selected solid is lit from within rather than merely outlined.
@@ -43,8 +50,66 @@ const SELECTED_COLOR = '#b9c9e6'
 const SELECTED_EMISSIVE = '#2a5c96'
 const SELECTED_EMISSIVE_INTENSITY = 0.55
 
+/** The same glow for a solid emitting its OWN colour, which is a far stronger
+ *  signal than a wash of blue over grey and wants a good deal less of it. */
+const SELECTED_OWN_INTENSITY = 0.28
+
 const EDGE_WIDTH_IDLE = 1
 const EDGE_WIDTH_SELECTED = 2.5
+
+/**
+ * How far a COLOURED solid is lifted toward white while it is selected.
+ *
+ * `SELECTED_COLOR` above cannot serve here: it is one hand-picked shade, warmer
+ * grey lifted and cooled, and painting it over a red solid would say "selected"
+ * by throwing away the very thing the user just chose. A lift toward white
+ * carries the same "this one is lit" reading while leaving the hue intact --
+ * the same trick the gizmo plays on a hovered arrow, but done in sRGB rather
+ * than through three's linear-space `lerp`, which at a visible lift turns a
+ * saturated solid pastel. See `lighten`.
+ */
+const SELECT_LIFT = 0.24
+
+// One parse per distinct colour rather than one per render: this runs for every
+// selected object in the scene, and a scene's palette is a handful of strings.
+const liftCache = new Map<string, string>()
+function lifted(color: string): string {
+  const cached = liftCache.get(color)
+  if (cached) return cached
+  const value = lighten(color, SELECT_LIFT)
+  liftCache.set(color, value)
+  return value
+}
+
+/**
+ * A solid's material, given its own colour and whether it is selected.
+ *
+ * One function returning all three numbers rather than three conditionals at
+ * the call site, because they only make sense together: an uncoloured solid
+ * takes the hand-tuned grey pair the scene has always used, and a coloured one
+ * takes a lift of its OWN hue in both channels. The blue emissive is what says
+ * "selected" on grey; on a red solid it would say "purple" instead, and a
+ * selection highlight that repaints the colour the user just chose is a
+ * highlight that argues with the panel that set it.
+ *
+ * Exported for the check suite, which pins the part that is easy to lose in a
+ * later tweak: that a solid the user coloured is still recognisably that colour
+ * while it is selected.
+ */
+export function bodyPaint(
+  color: string | undefined,
+  selected: boolean
+): { color: string; emissive: string; emissiveIntensity: number } {
+  if (!selected) return { color: color ?? SOLID_COLOR, emissive: '#000000', emissiveIntensity: 0 }
+  if (color === undefined) {
+    return {
+      color: SELECTED_COLOR,
+      emissive: SELECTED_EMISSIVE,
+      emissiveIntensity: SELECTED_EMISSIVE_INTENSITY,
+    }
+  }
+  return { color: lifted(color), emissive: color, emissiveIntensity: SELECTED_OWN_INTENSITY }
+}
 
 type Props = {
   meshes: RefObject<Map<string, Mesh>>
@@ -251,9 +316,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
               }}
             >
               <meshStandardMaterial
-                color={isSelected ? SELECTED_COLOR : SOLID_COLOR}
-                emissive={isSelected ? SELECTED_EMISSIVE : '#000000'}
-                emissiveIntensity={isSelected ? SELECTED_EMISSIVE_INTENSITY : 0}
+                {...bodyPaint(object.color, isSelected)}
                 metalness={0.15}
                 roughness={0.55}
               />

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import type { Group } from 'three'
 import type { SceneObject } from '../geometry/types'
+import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
 import type { Thumbnail } from './thumbnailGeometry'
 import { thumbnailCached, thumbnailFor } from './thumbnailGeometry'
 
@@ -63,7 +64,15 @@ export function framingDistance(radius: number): number {
  */
 export type Turn = { angle: number; grabbed: boolean }
 
-function Model({ thumbnail, turn }: { thumbnail: Thumbnail; turn: { current: Turn } }) {
+function Model({
+  thumbnail,
+  turn,
+  color,
+}: {
+  thumbnail: Thumbnail
+  turn: { current: Turn }
+  color: string
+}) {
   const spin = useRef<Group>(null)
 
   useFrame((_, delta) => {
@@ -85,9 +94,10 @@ function Model({ thumbnail, turn }: { thumbnail: Thumbnail; turn: { current: Tur
             origin, which is what both of these rotations run about and what the
             camera is looking at. */}
         <mesh geometry={thumbnail.geometry}>
-          {/* The scene's own solid colour, so a tile reads as the thing it will
-              drop rather than as a differently-lit cousin of it. */}
-          <meshStandardMaterial color="#9aa3b4" metalness={0.15} roughness={0.55} />
+          {/* The object's own colour -- the scene's grey until it was given one
+              -- so a tile reads as the thing it will drop rather than as a
+              differently-painted cousin of it. */}
+          <meshStandardMaterial color={color} metalness={0.15} roughness={0.55} />
         </mesh>
       </group>
     </group>
@@ -213,7 +223,7 @@ export function ObjectThumbnail({
           <ambientLight intensity={0.55} />
           <directionalLight position={[6, 9, 5]} intensity={2.1} />
           <directionalLight position={[-6, 3, -5]} intensity={0.7} color="#8fb4ff" />
-          <Model thumbnail={thumbnail} turn={turn} />
+          <Model thumbnail={thumbnail} turn={turn} color={object.color ?? DEFAULT_OBJECT_COLOR} />
         </Canvas>
       ) : (
         <LoadingRing />
