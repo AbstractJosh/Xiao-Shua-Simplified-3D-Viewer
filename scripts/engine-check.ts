@@ -14,7 +14,7 @@
  *
  * Run: npx tsx scripts/engine-check.ts
  */
-import { BufferGeometry, Vector3 } from 'three'
+import { BufferGeometry, Euler, Ray, Vector3 } from 'three'
 
 // three-bvh-csg calls three-mesh-bvh with a deprecated option on every build.
 // It is internal to the libraries and drowns the report, so filter just that.
@@ -23,10 +23,36 @@ console.warn = (...args: unknown[]) => {
   if (typeof args[0] === 'string' && args[0].includes('maxLeafSize')) return
   realWarn(...args)
 }
-import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
+import {
+  MAX_RADIUS,
+  MAX_SIZE,
+  MIN_DIMENSION,
+  MIN_SHAPE,
+  axisDimension,
+  maxShapeSize,
+  resizeAlongAxis,
+  scaleShape,
+  scaleUniform,
+} from '../src/geometry/dimensions'
+import type { Axis } from '../src/geometry/dimensions'
+import {
+  advanceTurn,
+  axisParam,
+  axisTarget,
+  axisTravel,
+  beginAxisDrag,
+  nearestViewAxis,
+  turnedRotation,
+} from '../src/viewport/gizmoDrag'
+import type { TurnGrab } from '../src/viewport/gizmoDrag'
+import { snapAlongAxis } from '../src/geometry/snap'
+import type { SnapTarget } from '../src/geometry/snap'
+import { hostSurfaceFor, samePatch, slideAnchor } from '../src/geometry/surfaces'
+import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
+import { objectMatrix, relativeTransform } from '../src/geometry/transform'
 import { planeSeparates, splitPlanes } from '../src/geometry/cut'
 import { signedVolume } from '../src/geometry/volume'
-import { IDENTITY_TRANSFORM } from '../src/geometry/types'
+import { IDENTITY_TRANSFORM, defaultFeature } from '../src/geometry/types'
 import type {
   BaseSolid,
   CutPlane,
@@ -95,7 +121,7 @@ function object(
   cuts: CutPlane[] = [],
   id = 'obj'
 ): SceneObject {
-  return { id, name: id, base, transform: IDENTITY_TRANSFORM, features, cuts }
+  return { id, name: id, base, transform: IDENTITY_TRANSFORM, features, cuts, parts: [] }
 }
 
 const scene = (...objects: SceneObject[]): Doc => ({ objects })
@@ -115,6 +141,24 @@ const TOP_FACE: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
 function hexPrism(r: number, sides: number, h: number): number {
   const area = 0.5 * sides * r * r * Math.sin((2 * Math.PI) / sides)
   return area * h
+}
+
+
+/** Dimension readers for the assertions below. A `BaseSolid` is a union, and
+ *  narrowing it inline at every call would bury the claim being made. */
+function dimOf(base: BaseSolid, axis: 'x' | 'y' | 'z'): number {
+  if (base.kind !== 'box') throw new Error('not a box')
+  return base.size[axis === 'x' ? 0 : axis === 'y' ? 1 : 2]
+}
+function radiusOf(base: BaseSolid): number {
+  if (base.kind === 'box') throw new Error('a box has no radius')
+  return base.radius
+}
+function heightOf(base: BaseSolid): number {
+  if (base.kind === 'box' || base.kind === 'sphere' || base.kind === 'platonic') {
+    throw new Error('no height')
+  }
+  return base.height
 }
 
 // --- 1. Base solids --------------------------------------------------------
@@ -609,6 +653,676 @@ console.log('\n10. A cut splits a cube into halves that sum back to the whole')
     near(`and cuts at y = 0.4 from ${away} away`, top, 2.4, 0.01)
     near(`and the halves still reconstruct the whole from ${away} away`, top + bottom, whole, 0.01)
   }
+}
+
+
+// --- 11. Gizmo dimensions: what one axis means on each primitive ------------
+console.log('\n11. Resizing along an axis moves that surface, on every primitive')
+
+{
+  // The contract the arrows are built on: `travel` is how far the SOLID'S SKIN
+  // moves along the axis, not how far the underlying field changes. A box side
+  // is a full extent about a centred origin, so it takes twice the travel; a
+  // radius already IS the half-extent. Get this backwards and a right-drag
+  // slips at half or double speed depending on which primitive is selected.
+  const box: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const grown = resizeAlongAxis(box, 0, 0.5)
+  near('a box side takes twice the surface travel', dimOf(grown, 'x'), 3, 1e-9)
+  check(
+    'and the other two sides are untouched',
+    dimOf(grown, 'y') === 2 && dimOf(grown, 'z') === 2,
+    `${dimOf(grown, 'y')} and ${dimOf(grown, 'z')}`
+  )
+
+  const cyl: BaseSolid = { kind: 'cylinder', radius: 0.8, height: 2 }
+  near('a radius takes the travel one for one', radiusOf(resizeAlongAxis(cyl, 0, 0.5)), 1.3, 1e-9)
+  near('and Z drives the same radius', radiusOf(resizeAlongAxis(cyl, 2, 0.5)), 1.3, 1e-9)
+  near('while Y is the height, at twice again', heightOf(resizeAlongAxis(cyl, 1, 0.5)), 3, 1e-9)
+
+  // A sphere answers on all three arrows rather than leaving two of them inert:
+  // every direction out of a sphere IS the radius.
+  const ball: BaseSolid = { kind: 'sphere', radius: 1 }
+  for (const axis of [0, 1, 2] as Axis[]) {
+    near(`a sphere resizes on axis ${axis}`, radiusOf(resizeAlongAxis(ball, axis, 0.25)), 1.25, 1e-9)
+  }
+
+  // Every kind must answer on every axis, or an arrow silently does nothing.
+  const all: BaseSolid[] = [
+    box,
+    ball,
+    cyl,
+    { kind: 'cone', radius: 0.9, height: 2 },
+    { kind: 'capsule', radius: 0.6, height: 1.2 },
+    { kind: 'pyramid', radius: 1, height: 2, sides: 4 },
+    { kind: 'prism', radius: 1, height: 1.8, sides: 6 },
+    { kind: 'platonic', solid: 'dodecahedron', radius: 1 },
+  ]
+  let answered = 0
+  for (const base of all) {
+    for (const axis of [0, 1, 2] as Axis[]) {
+      if (axisDimension(base, axis) !== null) answered++
+    }
+  }
+  check('all eight kinds answer on all three axes', answered === 24, `${answered}/24`)
+}
+
+{
+  // Clamping. A drag runs past the limit constantly -- the pointer keeps going
+  // after the solid stops -- so the limit has to hold rather than merely being
+  // where the slider ends.
+  const box: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  near('growth stops at the ceiling', dimOf(resizeAlongAxis(box, 0, 40), 'x'), MAX_SIZE, 1e-9)
+  near('and shrinking stops at the floor', dimOf(resizeAlongAxis(box, 0, -40), 'x'), MIN_DIMENSION, 1e-9)
+  const ball: BaseSolid = { kind: 'sphere', radius: 1 }
+  near('a radius has its own, tighter ceiling', radiusOf(resizeAlongAxis(ball, 0, 40)), MAX_RADIUS, 1e-9)
+}
+
+{
+  // The uniform ring must never change a shape's proportions. The trap is
+  // clamping each dimension on its own: a box already near the length ceiling
+  // would stop growing there and keep fattening on the other two, so scaling up
+  // and back down would not return the shape you started with.
+  const slab: BaseSolid = { kind: 'box', size: [6, 1, 1] }
+  const big = scaleUniform(slab, 4)
+  near('the ring stops at the tightest bound', dimOf(big, 'x'), MAX_SIZE, 1e-9)
+  near('and the other sides stop with it', dimOf(big, 'y'), MAX_SIZE / 6, 1e-9)
+  check(
+    'so the proportions survive the clamp',
+    Math.abs(dimOf(big, 'x') / dimOf(big, 'y') - 6) < 1e-9,
+    `${(dimOf(big, 'x') / dimOf(big, 'y')).toFixed(4)} vs 6`
+  )
+
+  const cyl: BaseSolid = { kind: 'cylinder', radius: 0.8, height: 2 }
+  const scaled = scaleUniform(cyl, 1.5)
+  near('a cylinder scales its radius', radiusOf(scaled), 1.2, 1e-9)
+  near('and its height together', heightOf(scaled), 3, 1e-9)
+
+  // Round trip: scaling up then by the reciprocal returns the original, which
+  // is only true because the factor is clamped once rather than per dimension.
+  const back = scaleUniform(scaleUniform(cyl, 1.5), 1 / 1.5)
+  near('scaling up then back is the identity', radiusOf(back), 0.8, 1e-9)
+  near('on both dimensions', heightOf(back), 2, 1e-9)
+}
+
+// --- 12. Axis-constrained snapping ------------------------------------------
+console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
+
+{
+  // A lone corner to seek, and a mover whose corner is a quarter-unit short of
+  // it along X and dead level in Y and Z.
+  const target: SnapTarget[] = [
+    { kind: 'vertex', objectId: 'other', point: new Vector3(1, 0, 0) },
+  ]
+  const axisX = new Vector3(1, 0, 0)
+
+  const hit = snapAlongAxis([new Vector3(0.9, 0, 0)], target, axisX, 0.18)
+  check('a corner in line with the axis is caught', hit !== null, hit ? 'caught' : 'missed')
+  if (hit) {
+    near('by exactly the gap', hit.delta.x, 0.1, 1e-9)
+    // The whole point of the separate solve: the arrow promised that nothing
+    // but this coordinate changes, and the delta has to keep that promise.
+    check(
+      'and the correction is purely axial',
+      Math.abs(hit.delta.y) < 1e-12 && Math.abs(hit.delta.z) < 1e-12,
+      `y ${hit.delta.y}, z ${hit.delta.z}`
+    )
+    {
+      const vertex = target[0]
+      if (vertex.kind !== 'vertex') throw new Error('target is not a vertex')
+      near('landing the corner on the target', hit.point.distanceTo(vertex.point), 0, 1e-9)
+    }
+  }
+
+  // Off-axis is the case a filtered three-axis snap would get wrong: it would
+  // find this corner, hand back a delta with a Y in it, and the caller would
+  // drop the Y and land the solid somewhere that touches nothing.
+  const off = snapAlongAxis([new Vector3(0.9, 0.05, 0)], target, axisX, 0.18)
+  check('a corner off the axis is NOT caught', off === null, off ? 'wrongly caught' : 'ignored')
+
+  // Out of range along the axis, in line but too far to reach.
+  const far = snapAlongAxis([new Vector3(0.5, 0, 0)], target, axisX, 0.18)
+  check('and one beyond the tolerance is left alone', far === null, far ? 'wrongly caught' : 'ignored')
+}
+
+{
+  // A face target is a whole unbounded plane, which is what lets two solids go
+  // flush at any offset along it. Sliding along X toward a plane whose normal
+  // is X must land the corner exactly on it however far off it sits laterally.
+  const plane: SnapTarget[] = [
+    {
+      kind: 'face',
+      objectId: 'other',
+      origin: new Vector3(1, 0, 0),
+      normal: new Vector3(1, 0, 0),
+    },
+  ]
+  const hit = snapAlongAxis([new Vector3(0.88, 3, -4)], plane, new Vector3(1, 0, 0), 0.18)
+  check('a face is caught from anywhere along it', hit !== null, hit ? 'caught' : 'missed')
+  if (hit) near('at the plane exactly', hit.point.x, 1, 1e-9)
+
+  // Running parallel to a plane, there is no offset that reaches it. An
+  // implementation that divided anyway would return an infinity here.
+  const parallel = snapAlongAxis([new Vector3(0.88, 0, 0)], plane, new Vector3(0, 1, 0), 0.18)
+  check('a plane the axis runs along is not a target', parallel === null, `${parallel}`)
+}
+
+{
+  // Snapping off leaves a drag alone -- checked here rather than only in the
+  // panel, because this is the layer that would silently ignore the setting.
+  const edge: SnapTarget[] = [
+    {
+      kind: 'edge',
+      objectId: 'other',
+      a: new Vector3(1, -1, 0),
+      b: new Vector3(1, 1, 0),
+    },
+  ]
+  const hit = snapAlongAxis([new Vector3(0.9, 0.3, 0)], edge, new Vector3(1, 0, 0), 0.18)
+  check('an edge crossing the axis is caught', hit !== null, hit ? 'caught' : 'missed')
+  if (hit) {
+    near('at the edge', hit.point.x, 1, 1e-9)
+    near('without sliding along the edge', hit.point.y, 0.3, 1e-9)
+  }
+
+  // Past the end of the segment: an edge attracts along its own length only,
+  // or every edge in the scene would behave like an infinite line.
+  const past = snapAlongAxis([new Vector3(0.9, 4, 0)], edge, new Vector3(1, 0, 0), 0.18)
+  check('but not past its end', past === null, past ? 'wrongly caught' : 'ignored')
+}
+
+
+// --- 13. An arrow drag is pinned, so a still pointer holds still ------------
+console.log('\n13. A held arrow drag does not walk the target back and forth')
+
+{
+  // The frame loop, reduced to its arithmetic. A camera looking down the -Z
+  // axis from above and to one side, dragging the X arrow of a solid that
+  // starts at the origin.
+  const dirX = new Vector3(1, 0, 0)
+  const rayAt = (x: number) => new Ray(new Vector3(x, 4, 6), new Vector3(0, -4, -6).normalize())
+
+  // The parameter is a plain distance along the axis, so a ray aimed at x = 2
+  // reads 2 whatever angle it arrives from.
+  const straight = axisParam(rayAt(2), new Vector3(0, 0, 0), dirX)
+  near('the axis parameter is a distance along the axis', straight ?? NaN, 2, 1e-9)
+
+  const skew = axisParam(
+    new Ray(new Vector3(2, 3, -5), new Vector3(0.2, -1, 0.4).normalize()),
+    new Vector3(0, 0, 0),
+    dirX
+  )
+  check('and a skew ray still answers', skew !== null, `${skew}`)
+
+  // A ray running ALONG the axis has no nearest point, and must say so rather
+  // than dividing by a denominator that has gone to zero.
+  const along = axisParam(new Ray(new Vector3(-9, 0, 0), dirX), new Vector3(0, 0, 0), dirX)
+  check('a ray down the axis has no answer', along === null, `${along}`)
+}
+
+{
+  // The regression itself. Grab at x = 1, then move the pointer to x = 2 and
+  // HOLD it there while the target follows -- which is what the frame loop does
+  // sixty times a second.
+  const dirX = new Vector3(1, 0, 0)
+  const rayAt = (x: number) => new Ray(new Vector3(x, 4, 6), new Vector3(0, -4, -6).normalize())
+
+  const grab = beginAxisDrag(rayAt(1), [0, 0, 0], dirX)
+  check('the grab is taken', grab !== null, `${grab}`)
+  if (!grab) throw new Error('no grab')
+
+  near('and it starts with no travel', axisTravel(grab, rayAt(1), dirX) ?? NaN, 0, 1e-9)
+
+  // Every frame from here uses the SAME pointer position. The target moves in
+  // response, and the reading must not move with it: measuring against the
+  // target's live centre is what made the solid flip between two positions
+  // every other frame, which is what a user sees as the gizmo shaking.
+  let position: Vec3 = [0, 0, 0]
+  const visited: number[] = []
+  for (let frame = 0; frame < 6; frame++) {
+    const travel = axisTravel(grab, rayAt(2), dirX)
+    if (travel === null) throw new Error('lost the axis')
+    position = axisTarget(grab, dirX, travel)
+    visited.push(position[0])
+  }
+
+  near('a held pointer lands the target where it asked', visited[0], 1, 1e-9)
+  check(
+    'and every later frame agrees with the first',
+    visited.every((x) => Math.abs(x - visited[0]) < 1e-12),
+    visited.map((x) => x.toFixed(3)).join(' ')
+  )
+  // The specific failure: two positions alternating. Naming it separately means
+  // a regression reports the shape of the bug rather than just a mismatch.
+  check(
+    'so it never oscillates between two places',
+    new Set(visited.map((x) => x.toFixed(9))).size === 1,
+    `${new Set(visited.map((x) => x.toFixed(9))).size} distinct positions`
+  )
+  check(
+    'and the drag stays on its own axis',
+    position[1] === 0 && position[2] === 0,
+    `${position[1]}, ${position[2]}`
+  )
+}
+
+{
+  // Travel is measured from the grab, so it tracks the pointer's own movement
+  // rather than accumulating -- including backwards, past where it started.
+  const dirY = new Vector3(0, 1, 0)
+  const rayAt = (y: number) =>
+    new Ray(new Vector3(7, y, 0), new Vector3(-1, 0, 0).normalize())
+
+  const grab = beginAxisDrag(rayAt(2), [0, 2, 0], dirY)
+  if (!grab) throw new Error('no grab')
+
+  near('forward travel reads the pointer offset', axisTravel(grab, rayAt(3.5), dirY) ?? NaN, 1.5, 1e-9)
+  near('and backward travel is negative', axisTravel(grab, rayAt(0.5), dirY) ?? NaN, -1.5, 1e-9)
+  near('returning to the grab reads zero again', axisTravel(grab, rayAt(2), dirY) ?? NaN, 0, 1e-9)
+
+  const back = axisTarget(grab, dirY, axisTravel(grab, rayAt(2), dirY) ?? NaN)
+  near('so the target returns exactly where it began', back[1], 2, 1e-9)
+}
+
+
+// --- 14. Sliding a sketch along the surface it sits on ----------------------
+console.log('\n14. slideAnchor moves a sketch across its own patch, and no further')
+
+{
+  // A flat face: the tangent offset is the answer directly, and the anchor's
+  // own normalised u must move in step with it.
+  const box: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const host = hostSurfaceFor(box, { on: 'box-face', face: 2, u: 0, v: 0 })
+  const start: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
+
+  const slid = slideAnchor(host, start, 0.4, 0)
+  check('a slide across a flat face lands', slid !== null, `${slid && slid.on}`)
+  if (slid && slid.on === 'box-face') {
+    check('and stays on the same face', slid.face === 2, `${slid.face}`)
+    // The face is 2 units across, so u is normalised over a half-extent of 1:
+    // 0.4 of an object unit is 0.4 of the way to the edge.
+    near('with u following the offset', slid.u, 0.4, 1e-9)
+    near('and v untouched', slid.v, 0, 1e-9)
+  }
+
+  // The point of the null: past the edge of the face, the classifier finds the
+  // NEXT face round the corner, or nothing. Either way the sketch must not
+  // follow it there -- the gesture promised a slide ALONG this face.
+  check('a slide past the edge refuses', slideAnchor(host, start, 4, 0) === null, 'off the +U end')
+  check('and so does one off the other side', slideAnchor(host, start, 0, -4) === null, 'off the -V end')
+
+  // Both tangents work, independently.
+  const sideways = slideAnchor(host, start, 0, 0.3)
+  check('the V tangent moves the other way', sideways !== null && sideways.on === 'box-face', `${sideways && sideways.on}`)
+  if (sideways && sideways.on === 'box-face') {
+    near('with v following', sideways.v, 0.3, 1e-9)
+    near('and u untouched', sideways.u, 0, 1e-9)
+  }
+}
+
+{
+  // A sphere is the case a straight tangent step would get wrong: offset along
+  // the tangent and you leave the solid immediately. `project` re-seats the
+  // point radially, so the slide follows the curvature.
+  const ball: BaseSolid = { kind: 'sphere', radius: 1 }
+  const start: SurfaceAnchor = { on: 'sphere', theta: 0, phi: Math.PI / 2 }
+  const host = hostSurfaceFor(ball, start)
+
+  const slid = slideAnchor(host, start, 0.5, 0)
+  check('a slide across a sphere lands', slid !== null && slid.on === 'sphere', `${slid && slid.on}`)
+
+  if (slid) {
+    // The landing point must be ON the sphere, not out on the tangent plane
+    // where a naive offset would have left it (that point sits at radius
+    // sqrt(1 + 0.25) = 1.118).
+    const point = host.frame(slid).origin
+    near('and the sketch stays on the surface', point.length(), 1, 1e-9)
+    // A tangent step of 0.5 subtends atan(0.5) at the centre, which is the
+    // angle the re-seated point has actually travelled.
+    const moved = point.angleTo(host.frame(start).origin)
+    near('having travelled the angle the tangent subtends', moved, Math.atan(0.5), 1e-9)
+  }
+
+  // A sphere has no edge, so no offset can ever run off it.
+  check('a sphere never refuses', slideAnchor(host, start, 40, 0) !== null, 'no edge to fall off')
+}
+
+{
+  // A cylinder wall: sliding along its own +Y tangent is a straight move up the
+  // barrel, and running past the rim leaves the patch.
+  const cyl: BaseSolid = { kind: 'cylinder', radius: 0.8, height: 2 }
+  const start: SurfaceAnchor = { on: 'cylinder', theta: 0, y: 0 }
+  const host = hostSurfaceFor(cyl, start)
+
+  const slid = slideAnchor(host, start, 0, 0.5) ?? slideAnchor(host, start, 0.5, 0)
+  check('a slide along a barrel lands', slid !== null && slid.on === 'cylinder', `${slid && slid.on}`)
+  if (slid) {
+    near('and stays at the barrel radius', Math.hypot(host.frame(slid).origin.x, host.frame(slid).origin.z), 0.8, 1e-9)
+  }
+  check(
+    'but running off the end refuses',
+    slideAnchor(host, start, 0, 40) === null || slideAnchor(host, start, 40, 0) === null,
+    'past the rim'
+  )
+}
+
+{
+  // A derived patch has no parameterisation at all -- its anchor IS a point and
+  // a normal -- so it is the one kind that cannot go through `anchorFromHit`,
+  // which always answers null there. Without its own branch every slide on a
+  // face an earlier feature created would silently do nothing.
+  const box: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const start: SurfaceAnchor = { on: 'derived', point: [0, 1, 0], normal: [0, 1, 0] }
+  const host = hostSurfaceFor(box, start)
+
+  const slid = slideAnchor(host, start, 0.35, 0)
+  check('a derived patch slides too', slid !== null && slid.on === 'derived', `${slid && slid.on}`)
+  if (slid && slid.on === 'derived') {
+    near('by the offset it was given', Math.hypot(slid.point[0] - 0, slid.point[2] - 0), 0.35, 1e-9)
+    near('staying in its own plane', slid.point[1], 1, 1e-9)
+    check(
+      'and keeping the normal it was created with',
+      slid.normal[0] === 0 && slid.normal[1] === 1 && slid.normal[2] === 0,
+      slid.normal.join(',')
+    )
+  }
+}
+
+{
+  // Every anchor kind must slide, or the gizmo is dead on that host and nothing
+  // says so. Built the way the app builds them: from each solid's own frame.
+  const hosts: { label: string; base: BaseSolid; anchor: SurfaceAnchor }[] = [
+    { label: 'box', base: { kind: 'box', size: [2, 2, 2] }, anchor: { on: 'box-face', face: 2, u: 0, v: 0 } },
+    { label: 'sphere', base: { kind: 'sphere', radius: 1 }, anchor: { on: 'sphere', theta: 0, phi: Math.PI / 2 } },
+    { label: 'cylinder', base: { kind: 'cylinder', radius: 0.8, height: 2 }, anchor: { on: 'cylinder', theta: 0, y: 0 } },
+    { label: 'cone', base: { kind: 'cone', radius: 0.9, height: 2 }, anchor: { on: 'cone', theta: 0, t: 0.5 } },
+    { label: 'capsule', base: { kind: 'capsule', radius: 0.6, height: 1.2 }, anchor: { on: 'capsule', theta: 0, phi: Math.PI / 2 } },
+    { label: 'prism', base: { kind: 'prism', radius: 1, height: 1.8, sides: 6 }, anchor: { on: 'planar-face', face: 0, u: 0, v: 0 } },
+    { label: 'derived', base: { kind: 'box', size: [2, 2, 2] }, anchor: { on: 'derived', point: [0, 1, 0], normal: [0, 1, 0] } },
+  ]
+
+  for (const { label, base, anchor } of hosts) {
+    const host = hostSurfaceFor(base, anchor)
+    const u = slideAnchor(host, anchor, 0.08, 0)
+    const v = slideAnchor(host, anchor, 0, 0.08)
+    check(`${label} slides on U`, u !== null && samePatch(u, anchor), `${u && u.on}`)
+    check(`${label} slides on V`, v !== null && samePatch(v, anchor), `${v && v.on}`)
+  }
+}
+
+
+// --- 15. Scaling a sketch outline with the ring -----------------------------
+console.log('\n15. The sketch ring scales an outline without reshaping it')
+
+{
+  const box: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  // A 2-unit box: the shared bound puts a sketch radius at half the smallest
+  // side, so 1.0, and a rectangle's full sides at twice that.
+  const max = maxShapeSize(box)
+  near('the shared bound is half the smallest side', max, 1, 1e-9)
+
+  const circle = scaleShape({ type: 'circle', r: 0.3 }, 1.5, max)
+  check('a circle scales its radius', circle.type === 'circle' && Math.abs(circle.r - 0.45) < 1e-9, JSON.stringify(circle))
+
+  const ngon = scaleShape({ type: 'ngon', r: 0.3, sides: 6 }, 2, max)
+  check('a polygon scales its radius', ngon.type === 'ngon' && Math.abs(ngon.r - 0.6) < 1e-9, JSON.stringify(ngon))
+  check('and keeps its side count', ngon.type === 'ngon' && ngon.sides === 6, JSON.stringify(ngon))
+
+  const rect = scaleShape({ type: 'rect', w: 0.6, h: 0.4 }, 1.5, max)
+  check(
+    'a rectangle scales both sides',
+    rect.type === 'rect' && Math.abs(rect.w - 0.9) < 1e-9 && Math.abs(rect.h - 0.6) < 1e-9,
+    JSON.stringify(rect)
+  )
+}
+
+{
+  // Same trap the solid ring has: clamping each side on its own would let a
+  // long thin rectangle stop growing on one axis and keep fattening on the
+  // other, quietly changing an aspect ratio nobody asked to change.
+  const max = maxShapeSize({ kind: 'box', size: [2, 2, 2] })
+  const slab = scaleShape({ type: 'rect', w: 1.8, h: 0.3 }, 10, max)
+  check('a runaway rectangle stops at the ceiling', slab.type === 'rect' && Math.abs(slab.w - max * 2) < 1e-9, JSON.stringify(slab))
+  if (slab.type === 'rect') {
+    near('with the aspect ratio intact', slab.w / slab.h, 6, 1e-9)
+  }
+
+  const tiny = scaleShape({ type: 'circle', r: 0.3 }, 1e-6, max)
+  check('and shrinking stops at the floor', tiny.type === 'circle' && Math.abs(tiny.r - MIN_SHAPE) < 1e-12, JSON.stringify(tiny))
+
+  // Scaling up and back down returns the original, which is only true because
+  // the factor is clamped once rather than per dimension.
+  const there = scaleShape({ type: 'rect', w: 0.6, h: 0.4 }, 1.5, max)
+  const back = scaleShape(there, 1 / 1.5, max)
+  check(
+    'scaling up then back is the identity',
+    back.type === 'rect' && Math.abs(back.w - 0.6) < 1e-9 && Math.abs(back.h - 0.4) < 1e-9,
+    JSON.stringify(back)
+  )
+}
+
+
+// --- 16. Turning with the ring ----------------------------------------------
+console.log('\n16. A ring turn runs about one axis and unwraps past half a circle')
+
+{
+  // The axis is whichever of the target's OWN three best faces the viewer, so
+  // the turn reads as a twist of the screen. Looking straight down -Z picks Z.
+  const down = new Vector3(0, 0, -1)
+  const picked = nearestViewAxis([0, 0, 0], down)
+  check('looking down Z turns about Z', picked.index === 2, `axis ${picked.index}`)
+  // Signed toward the viewer, so a drag turns the target the way it went.
+  near('with the axis facing the camera', picked.axis.z, 1, 1e-9)
+
+  const side = nearestViewAxis([0, 0, 0], new Vector3(-1, 0, 0))
+  check('looking down X turns about X', side.index === 0, `axis ${side.index}`)
+  near('and that one faces the camera too', side.axis.x, 1, 1e-9)
+
+  // The axes are the TARGET's, not the world's: turn the object a quarter turn
+  // about Y and its local X now points down world -Z, so a camera looking down
+  // -Z must pick that axis rather than world Z.
+  const turned = nearestViewAxis([0, Math.PI / 2, 0], down)
+  check('a rotated target offers its OWN axes', turned.index === 0, `axis ${turned.index}`)
+}
+
+{
+  // Unwrapping. A pointer dragged steadily round must keep counting past the
+  // +/-pi seam instead of flipping sign, or a turn would snap back at 180.
+  const grab: TurnGrab = {
+    axis: new Vector3(0, 0, 1),
+    rotation: [0, 0, 0],
+    lastAngle: 0,
+    total: 0,
+  }
+
+  const steps = 24
+  let last = 0
+  // One and a half full turns, in even steps, every one of which crosses the
+  // seam eventually.
+  for (let i = 1; i <= steps; i++) {
+    const raw = (i * 3 * Math.PI) / steps
+    // What atan2 would actually report: wrapped into (-pi, pi].
+    const wrapped = Math.atan2(Math.sin(raw), Math.cos(raw))
+    last = advanceTurn(grab, wrapped)
+  }
+  near('a turn and a half counts as a turn and a half', last, 3 * Math.PI, 1e-9)
+  check('and the total never went backwards', grab.total > 0, `${grab.total.toFixed(4)}`)
+
+  // And back the other way, to exactly where it started.
+  for (let i = steps - 1; i >= 0; i--) {
+    const raw = (i * 3 * Math.PI) / steps
+    advanceTurn(grab, Math.atan2(Math.sin(raw), Math.cos(raw)))
+  }
+  near('reversing all the way returns to zero', grab.total, 0, 1e-9)
+}
+
+{
+  // The rotation written back is the grab's, turned -- never the live value,
+  // which is what would let the result feed back into the measurement.
+  const grab: TurnGrab = {
+    axis: new Vector3(0, 1, 0),
+    rotation: [0, 0, 0],
+    lastAngle: 0,
+    total: 0,
+  }
+  const quarter = turnedRotation(grab, Math.PI / 2)
+  near('a quarter turn about Y lands on Y', quarter[1], Math.PI / 2, 1e-9)
+  check('leaving the other two alone', Math.abs(quarter[0]) < 1e-9 && Math.abs(quarter[2]) < 1e-9, quarter.join(','))
+
+  // Same grab, same call, twice: the answer cannot drift, because nothing about
+  // it depends on what the target currently carries.
+  const again = turnedRotation(grab, Math.PI / 2)
+  check('and asking twice gives the same answer', again.every((v, i) => v === quarter[i]), again.join(','))
+
+  near('zero travel is the identity', turnedRotation(grab, 0)[1], 0, 1e-9)
+
+  // Turning about an axis the target already carries rotation on composes
+  // rather than replacing: a quarter added to a quarter is a half.
+  //
+  // Asserted on where the rotation SENDS a vector, not on the Euler components,
+  // because a half turn about Y is stored by XYZ decomposition as (pi, 0, pi) --
+  // the same rotation, wearing a different triple. A component check here would
+  // be testing three.js's choice of decomposition rather than this function.
+  const already: TurnGrab = { ...grab, rotation: [0, Math.PI / 2, 0] }
+  const half = turnedRotation(already, Math.PI / 2)
+  const sent = new Vector3(1, 0, 0).applyEuler(new Euler(half[0], half[1], half[2], 'XYZ'))
+  near('a turn composes with what was there', sent.x, -1, 1e-9)
+  check('sending +X to -X, which is a half turn', Math.abs(sent.y) < 1e-9 && Math.abs(sent.z) < 1e-9, `${sent.x.toFixed(3)}, ${sent.y.toFixed(3)}, ${sent.z.toFixed(3)}`)
+}
+
+
+// --- 17. Merging ------------------------------------------------------------
+console.log('\n17. A merged object is one solid, welded where the parts stood')
+
+{
+  // `relativeTransform` is the whole of a merge: an object that has been
+  // sitting somewhere keeps sitting exactly there, and the only thing that
+  // changes is which frame its numbers are written in.
+  const host = { position: [2, 1, 0] as Vec3, rotation: [0, Math.PI / 2, 0] as Vec3 }
+  const guest = { position: [5, 1, 0] as Vec3, rotation: [0, 0, 0] as Vec3 }
+
+  const local = relativeTransform(host, guest)
+  // Composing the host back on has to return the guest to where it was, or the
+  // merge moved something.
+  const back = new Vector3(0, 0, 0)
+    .applyMatrix4(objectMatrix(local))
+    .applyMatrix4(objectMatrix(host))
+  near('a merged part keeps its world X', back.x, 5, 1e-9)
+  near('and its world Y', back.y, 1, 1e-9)
+  near('and its world Z', back.z, 0, 1e-9)
+
+  // Into an unrotated host the local placement is just the difference.
+  const plain = relativeTransform(
+    { position: [1, 0, 0], rotation: [0, 0, 0] },
+    { position: [4, 2, -1], rotation: [0, 0, 0] }
+  )
+  near('into an upright host it is a plain offset', plain.position[0], 3, 1e-9)
+  near('on every axis', plain.position[1], 2, 1e-9)
+  near('including the third', plain.position[2], -1, 1e-9)
+}
+
+{
+  // Two cubes far enough apart to share no volume: the union is exactly the two
+  // of them, so the merged object must measure the sum. Anything less would
+  // mean the weld swallowed geometry; anything more, that it double-counted.
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const apart: SceneObject = {
+    ...object(cube, [], [], 'host'),
+    transform: { position: [0, 0, 0], rotation: [0, 0, 0] },
+    parts: [
+      {
+        ...object(cube, [], [], 'guest'),
+        transform: { position: [4, 0, 0], rotation: [0, 0, 0] },
+      },
+    ],
+  }
+
+  resetEvaluator()
+  const merged = evaluateObject(apart)
+  near('two disjoint cubes merge to twice the volume', signedVolume(merged.geometry), 16, 0.01)
+  check('and nothing failed to weld', merged.failed.length === 0, merged.failed.join(','))
+  merged.geometry.dispose()
+}
+
+{
+  // Overlapping is the case a naive concatenation would get wrong: the shared
+  // volume must be counted ONCE. Two 2-cubes offset by 1 on X share a 1x2x2
+  // slab, so the union is 8 + 8 - 4 = 12.
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const overlapping: SceneObject = {
+    ...object(cube, [], [], 'host2'),
+    transform: { position: [0, 0, 0], rotation: [0, 0, 0] },
+    parts: [
+      {
+        ...object(cube, [], [], 'guest2'),
+        transform: { position: [1, 0, 0], rotation: [0, 0, 0] },
+      },
+    ],
+  }
+
+  resetEvaluator()
+  const merged = evaluateObject(overlapping)
+  near('an overlap is counted once, not twice', signedVolume(merged.geometry), 12, 0.02)
+  merged.geometry.dispose()
+}
+
+{
+  // A part is a whole SceneObject, so it brings its own features -- and they
+  // have to survive the weld. A cube with a through-hole merged into another
+  // cube must still have its hole.
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const pocket: Feature = {
+    ...defaultFeature({ on: 'box-face', face: 2, u: 0, v: 0 }, { type: 'circle', r: 0.4 }),
+    op: 'intrude',
+    depth: 3,
+  }
+
+  resetEvaluator()
+  const drilled = evaluateObject(object(cube, [pocket], [], 'drilled'))
+  const drilledVolume = signedVolume(drilled.geometry)
+  drilled.geometry.dispose()
+  check('the guest alone has a hole in it', drilledVolume < 8 - 0.5, `${drilledVolume.toFixed(4)}`)
+
+  const merged: SceneObject = {
+    ...object(cube, [], [], 'host3'),
+    transform: { position: [0, 0, 0], rotation: [0, 0, 0] },
+    parts: [
+      {
+        ...object(cube, [pocket], [], 'guest3'),
+        transform: { position: [4, 0, 0], rotation: [0, 0, 0] },
+      },
+    ],
+  }
+  resetEvaluator()
+  const welded = evaluateObject(merged)
+  near(
+    "a part's own features survive the merge",
+    signedVolume(welded.geometry),
+    8 + drilledVolume,
+    0.02
+  )
+  welded.geometry.dispose()
+}
+
+{
+  // Nesting. Merging something that was itself a merge must not flatten or
+  // lose the inner parts -- three disjoint cubes, three cubes' worth.
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const at = (x: number, id: string): SceneObject => ({
+    ...object(cube, [], [], id),
+    transform: { position: [x, 0, 0], rotation: [0, 0, 0] },
+  })
+
+  const nested: SceneObject = {
+    ...at(0, 'outer'),
+    parts: [{ ...at(4, 'middle'), parts: [at(4, 'inner')] }],
+  }
+
+  resetEvaluator()
+  const merged = evaluateObject(nested)
+  // The inner part is 4 from the middle, which is itself 4 from the host: the
+  // three land at 0, 4 and 8, so none of them touch.
+  near('a merge of a merge keeps every solid', signedVolume(merged.geometry), 24, 0.02)
+  merged.geometry.dispose()
 }
 
 console.log(

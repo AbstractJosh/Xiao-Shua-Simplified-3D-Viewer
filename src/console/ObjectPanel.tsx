@@ -1,12 +1,14 @@
+import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION } from '../geometry/dimensions'
 import type { BaseSolid, PlatonicKind } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import { selectedObject, useDoc } from '../store/docStore'
-import { NumberField, Section, Vec3Field } from './Field'
+import { NumberField, Section } from './Field'
 
-/** Slider bounds. Generous enough to compose a scene, tight enough to aim with. */
-const POS_LIMIT = 8
-const SIZE_MAX = 8
-const RADIUS_MAX = 4
+/** The gizmo's arrows resize the same fields these do, so both read one set of
+ *  bounds -- a limit only one of them honoured would let a drag build a solid
+ *  the panel then refused to show. */
+const SIZE_MAX = MAX_SIZE
+const RADIUS_MAX = MAX_RADIUS
 
 /** The side counts the solid palette offers, so both places agree. */
 const SIDE_CHOICES = [3, 4, 5, 6, 8]
@@ -28,13 +30,12 @@ function sideChoices(current: number): number[] {
 
 export function ObjectPanel() {
   const object = useDoc(selectedObject)
-  const setObjectTransform = useDoc((s) => s.setObjectTransform)
   const patchObject = useDoc((s) => s.patchObject)
   const removeObject = useDoc((s) => s.removeObject)
 
   if (!object) {
     return (
-      <Section title="Object">
+      <Section title="Dimensions">
         <p className="empty">
           Nothing selected. Click an object to edit it, or drag a solid in from
           the palette above.
@@ -43,7 +44,7 @@ export function ObjectPanel() {
     )
   }
 
-  const { base, transform } = object
+  const { base } = object
   const setBase = (next: BaseSolid) => patchObject(object.id, { base: next })
 
   /**
@@ -71,21 +72,21 @@ export function ObjectPanel() {
             <NumberField
               label="Width"
               value={x}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={SIZE_MAX}
               onChange={(w) => setBase({ kind: 'box', size: [w, y, z] })}
             />
             <NumberField
               label="Height"
               value={y}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={SIZE_MAX}
               onChange={(h) => setBase({ kind: 'box', size: [x, h, z] })}
             />
             <NumberField
               label="Depth"
               value={z}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={SIZE_MAX}
               onChange={(d) => setBase({ kind: 'box', size: [x, y, d] })}
             />
@@ -98,7 +99,7 @@ export function ObjectPanel() {
           <NumberField
             label="Radius"
             value={base.radius}
-            min={0.1}
+            min={MIN_DIMENSION}
             max={RADIUS_MAX}
             onChange={(radius) => setBase({ kind: 'sphere', radius })}
           />
@@ -110,7 +111,7 @@ export function ObjectPanel() {
             <NumberField
               label="Radius"
               value={base.radius}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={RADIUS_MAX}
               onChange={(radius) => setBase({ ...base, radius })}
             />
@@ -142,23 +143,22 @@ export function ObjectPanel() {
             <NumberField
               label="Radius"
               value={base.radius}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={RADIUS_MAX}
               onChange={(radius) => setBase({ ...base, radius })}
             />
             <NumberField
               label="Height"
               value={base.height}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={SIZE_MAX}
+              tip={
+                base.kind === 'capsule'
+                  ? 'Height is the straight mid-section only. The domed caps add a radius at each end.'
+                  : undefined
+              }
               onChange={(height) => setBase({ ...base, height })}
             />
-            {base.kind === 'capsule' && (
-              <p className="hint">
-                Height is the straight mid-section only. The domed caps add a
-                radius at each end.
-              </p>
-            )}
           </>
         )
 
@@ -169,14 +169,14 @@ export function ObjectPanel() {
             <NumberField
               label="Radius"
               value={base.radius}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={RADIUS_MAX}
               onChange={(radius) => setBase({ ...base, radius })}
             />
             <NumberField
               label="Height"
               value={base.height}
-              min={0.1}
+              min={MIN_DIMENSION}
               max={SIZE_MAX}
               onChange={(height) => setBase({ ...base, height })}
             />
@@ -204,28 +204,19 @@ export function ObjectPanel() {
   }
 
   return (
-    <Section title="Object" hint={solidLabel(base)}>
-      <Vec3Field
-        label="Position"
-        value={transform.position}
-        min={-POS_LIMIT}
-        max={POS_LIMIT}
-        step={0.05}
-        onChange={(position) => setObjectTransform(object.id, { ...transform, position })}
-      />
-      <Vec3Field
-        label="Rotation"
-        value={transform.rotation}
-        min={-180}
-        max={180}
-        step={1}
-        decimals={0}
-        degrees
-        onChange={(rotation) => setObjectTransform(object.id, { ...transform, rotation })}
-      />
-
-      {/* A weight above .subhead, which Vec3Field already uses for its own label. */}
-      <h3 className="section-title">Dimensions</h3>
+    <Section
+      title="Dimensions"
+      hint={object.parts.length > 0 ? `${object.parts.length + 1} merged` : solidLabel(base)}
+      tip={
+        object.parts.length > 0
+          ? `These rows size this object's own ${solidLabel(base).toLowerCase()}. The ${object.parts.length} solid${object.parts.length === 1 ? '' : 's'} merged into it keep the dimensions they were merged with.`
+          : undefined
+      }
+    >
+      {/* Position and rotation are NOT here. They are a placement, which the
+          cut plane has too, so both read the one Position & Rotation panel
+          above rather than each keeping a copy of two XYZ fields. What is left
+          is what only a solid has: how big it is, and how many sides. */}
       {dimensions()}
 
       <button

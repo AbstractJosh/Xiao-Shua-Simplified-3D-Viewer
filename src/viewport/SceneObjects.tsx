@@ -5,16 +5,43 @@ import type { ThreeEvent } from '@react-three/fiber'
 import type { Mesh } from 'three'
 import { evaluateDoc } from '../geometry/evaluate'
 import type { SnapEntry } from '../geometry/snap'
-import { useDoc } from '../store/docStore'
+import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
+import { useTools } from '../store/toolStore'
 import { FaceHandle } from './FaceHandle'
+import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
 import { publishScene } from './snapping'
+import { TransformGizmo } from './TransformGizmo'
 
-/** Selection is carried by the outline colour, which is why there is no
- *  separate outline pass to keep in sync with the scene. */
+/** Selection is carried by the object's own material and outline, which is why
+ *  there is no separate highlight pass to keep in sync with the scene. */
 const EDGE_IDLE = '#2b3442'
-const EDGE_SELECTED = '#59a5ff'
+const EDGE_SELECTED = '#7cc0ff'
+
+/** The unselected solid: warm grey, the colour the whole scene shares. */
+const SOLID_COLOR = '#9aa3b4'
+
+/**
+ * A selected solid is lit from within rather than merely outlined.
+ *
+ * The outline alone was a one-pixel line in a colour close to the grid's, and
+ * on a busy scene it was genuinely hard to tell which solid was selected --
+ * which matters far more now that shift-click gathers several at once and the
+ * answer decides what a merge is about to take. Three things move together: the
+ * body warms toward the accent, the material picks up a low emissive so the
+ * shift survives a face turned away from the lights, and the outline thickens.
+ *
+ * Emissive rather than a brighter `color`, because `color` is multiplied by the
+ * lighting: a face in shadow would barely change, which is exactly the face a
+ * user is squinting at when they cannot tell what is selected.
+ */
+const SELECTED_COLOR = '#b9c9e6'
+const SELECTED_EMISSIVE = '#2a5c96'
+const SELECTED_EMISSIVE_INTENSITY = 0.55
+
+const EDGE_WIDTH_IDLE = 1
+const EDGE_WIDTH_SELECTED = 2.5
 
 type Props = {
   meshes: RefObject<Map<string, Mesh>>
@@ -27,9 +54,20 @@ type Props = {
  */
 export function SceneObjects({ meshes, controlsRef }: Props) {
   const doc = useDoc((s) => s.doc)
-  const selectedObjectId = useDoc((s) => s.selectedObjectId)
+  const selectedObjectId = useDoc(primarySelection)
+  const selectedObjectIds = useDoc((s) => s.selectedObjectIds)
+  const startGizmo = useDoc((s) => s.startGizmo)
+  // An armed cut plane carries a gizmo of its own, a few units away and often
+  // overlapping this one. Two sets of arrows on screen is two sets of arrows to
+  // tell apart mid-drag, so the plane -- the thing being actively aimed -- takes
+  // the gizmo for as long as the tool is armed, and the selection gives it up.
+  const cutActive = useTools((s) => s.cutActive)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
+  // The finer selection wins the gizmo. Selecting a sketch is a statement about
+  // wanting to work on the sketch, and the same precedence already governs the
+  // Delete key -- a feature goes before the object that hosts it.
+  const sketchSelected = selectedFeatureId !== null
   const publish = useEvalStatus((s) => s.publish)
 
   // The viewport is a pure function of the document: every edit replays the
@@ -91,12 +129,27 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     // here would abandon the drop half-finished and grab something else.
     if (s.drag.kind !== 'idle') return
 
-    if (s.selectedObjectId !== id) {
+    // Shift adds to the selection instead of replacing it, which is how a merge
+    // is chosen. It never starts a drag: the press is about picking, and moving
+    // the object under it would be a surprise on a gesture meant to gather.
+    if (e.nativeEvent.shiftKey) {
+      s.toggleObjectSelection(id)
+      return
+    }
+
+    if (primarySelection(s) !== id) {
       // The first press only selects. Dragging an unselected object still
       // orbits the camera, which is what keeps orbit-anywhere intact.
       s.selectObject(id)
       return
     }
+
+    // Pressing the bare solid steps the selection back up from any sketch on
+    // it. Without this the sketch gizmo, which outranks the object's, could
+    // never be dismissed: sketches are deselected by selecting something else,
+    // and the obvious something else is the solid they sit on. Done in the same
+    // gesture rather than costing a click, since the press is a move anyway.
+    if (s.selectedFeatureId !== null) s.selectFeature(id, null)
 
     // OrbitControls listens on the canvas directly, so a React-level
     // stopPropagation never reaches it. Disable it synchronously or the camera
@@ -105,16 +158,46 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     s.startMovingObject(id)
   }
 
+  const selected = doc.objects.find((o) => o.id === selectedObjectId) ?? null
+  // Selection is a set now. The outline says what a merge would take, and the
+  // primary -- the one everything else merges INTO -- is the one that keeps the
+  // gizmo, so the two together read as "this one, plus these".
+  const chosen = new Set(selectedObjectIds)
+
   return (
     <>
+      {/* Drawn outside the per-object groups on purpose. Those carry the
+          object's transform, and the gizmo sets its own scale from camera
+          distance -- nested, the two would multiply and the arrows would grow
+          with whatever they were parented to.
+
+          It stays up through every gesture, including the ones it is not part
+          of: its position comes from the same store update the mesh does, so
+          there is no lag to hide, and a gizmo that blinked out whenever the
+          object was touched would read as the selection being lost.
+
+          Exactly one gizmo is ever on screen. This is the selected object's,
+          and it stands down for the two things that outrank it: an armed cut
+          plane, whose own arrows would otherwise be one of two sets to tell
+          apart, and a selected sketch, which gets the finer gizmo of the two. */}
+      {selected && !cutActive && !sketchSelected && (
+        <TransformGizmo
+          position={selected.transform.position}
+          rotation={selected.transform.rotation}
+          controlsRef={controlsRef}
+          onGrab={(handle) => startGizmo(selected.id, handle)}
+        />
+      )}
+
       {doc.objects.map((object) => {
         const geometry = geometries.get(object.id)
         if (!geometry) return null
 
-        const isSelected = object.id === selectedObjectId
-        const feature = isSelected
-          ? object.features.find((f) => f.id === selectedFeatureId) ?? null
-          : null
+        const isSelected = chosen.has(object.id)
+        const feature =
+          object.id === selectedObjectId
+            ? object.features.find((f) => f.id === selectedFeatureId) ?? null
+            : null
 
         return (
           <group
@@ -132,18 +215,42 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
               receiveShadow
               onPointerDown={(e) => onObjectPointerDown(e, object.id)}
             >
-              <meshStandardMaterial color="#9aa3b4" metalness={0.15} roughness={0.55} />
+              <meshStandardMaterial
+                color={isSelected ? SELECTED_COLOR : SOLID_COLOR}
+                emissive={isSelected ? SELECTED_EMISSIVE : '#000000'}
+                emissiveIntensity={isSelected ? SELECTED_EMISSIVE_INTENSITY : 0}
+                metalness={0.15}
+                roughness={0.55}
+              />
               {/* Edge outlines read as CAD, but rebuilding them every frame
                   competes with the boolean solve, so they are dropped for the
                   duration of a drag. */}
               {!dragging && (
-                <Edges threshold={18} color={isSelected ? EDGE_SELECTED : EDGE_IDLE} />
+                <Edges
+                  threshold={18}
+                  color={isSelected ? EDGE_SELECTED : EDGE_IDLE}
+                  lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
+                />
               )}
             </mesh>
 
             <ObjectSketches object={object} controlsRef={controlsRef} />
             {feature && (
-              <FaceHandle object={object} feature={feature} controlsRef={controlsRef} />
+              <>
+                {/* Inside the object's group, so both are in object-local
+                    space -- which is the space a sketch anchor and a surface
+                    frame are stored in. Safe to nest, unlike the object gizmo:
+                    an ObjectTransform is rigid, so there is no parent scale
+                    here to multiply with the gizmo's own. */}
+                {!cutActive && (
+                  <SketchGizmo
+                    object={object}
+                    feature={feature}
+                    controlsRef={controlsRef}
+                  />
+                )}
+                <FaceHandle object={object} feature={feature} controlsRef={controlsRef} />
+              </>
             )}
           </group>
         )

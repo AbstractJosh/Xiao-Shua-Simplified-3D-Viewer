@@ -10,6 +10,17 @@ import type { Vec3 } from '../geometry/types'
  * edit they want to reverse has to walk back through their own tool fiddling.
  */
 
+/**
+ * Which nav-bar panel is open, if any.
+ *
+ * Chrome rather than geometry, but it lives here so the whole bar is a pure
+ * function of store state and a headless render can drive it exactly the way a
+ * click does. The cut plane used to have a panel of its own; its controls are
+ * in the console now, because a popover hanging off the toolbar covered the
+ * only thing a plane can be aimed against.
+ */
+export type NavPanel = 'snap' | 'help' | null
+
 /** Position + Euler XYZ rotation of the cut gizmo, and its visual extent. */
 export type CutPlaneState = { position: Vec3; rotation: Vec3; size: number }
 
@@ -27,6 +38,17 @@ export function cutPlaneNormal([rx, ry, rz]: Vec3): Vector3 {
   return new Vector3(0, 1, 0).applyEuler(new Euler(rx, ry, rz, 'XYZ'))
 }
 
+/**
+ * Bounds on the plane, shared by the panel that types them and the gizmo that
+ * drags them. The position limit used to be the Position slider's range and
+ * nothing else; now that the slider is gone and the gizmo is the only way to
+ * place the plane, it is the one thing keeping a blade from being dragged out
+ * past the scene and lost off screen.
+ */
+export const CUT_POSITION_LIMIT = 6
+export const CUT_SIZE_MIN = 1
+export const CUT_SIZE_MAX = 12
+
 const DEFAULT_CUT_PLANE: CutPlaneState = {
   position: [0, 0, 0],
   rotation: [0, 0, 0],
@@ -38,12 +60,14 @@ export type ToolState = {
   snapDistance: number
   cutActive: boolean
   cutPlane: CutPlaneState
+  openPanel: NavPanel
 
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
   setCutActive: (on: boolean) => void
   setCutPlane: (patch: Partial<CutPlaneState>) => void
   resetCutPlane: () => void
+  setOpenPanel: (panel: NavPanel) => void
 }
 
 export const useTools = create<ToolState>((set) => ({
@@ -51,15 +75,21 @@ export const useTools = create<ToolState>((set) => ({
   snapDistance: DEFAULT_SNAP_DISTANCE,
   cutActive: false,
   cutPlane: DEFAULT_CUT_PLANE,
+  openPanel: null,
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
 
+  // Leaving the tool rearms it, so the next cut starts from a predictable plane
+  // rather than wherever the previous one happened to be dragged to. Arming it
+  // opens nothing: the console panels it drives are already on screen, and they
+  // reveal themselves from `cutActive` alone.
   setCutActive: (on) =>
-    // Leaving the tool rearms it: the next cut starts from a predictable plane
-    // rather than wherever the previous one happened to be dragged to.
     set(on ? { cutActive: true } : { cutActive: false, cutPlane: DEFAULT_CUT_PLANE }),
 
   setCutPlane: (patch) => set((s) => ({ cutPlane: { ...s.cutPlane, ...patch } })),
   resetCutPlane: () => set({ cutPlane: DEFAULT_CUT_PLANE }),
+
+  // One panel at a time: they all hang off the same bar and would overlap.
+  setOpenPanel: (panel) => set({ openPanel: panel }),
 }))

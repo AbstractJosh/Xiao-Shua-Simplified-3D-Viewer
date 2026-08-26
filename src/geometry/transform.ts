@@ -60,3 +60,36 @@ export function toLocalRay(t: ObjectTransform, ray: Ray): Ray {
     toLocalDir(t, ray.direction).normalize()
   )
 }
+
+/**
+ * Read a rigid matrix back as a transform.
+ *
+ * Safe here precisely because everything above refuses to introduce scale: a
+ * matrix built only from these functions is rotation-then-translation, so the
+ * scale that `decompose` hands back is always unit and can be discarded rather
+ * than being quietly lost.
+ */
+export function transformFromMatrix(m: Matrix4): ObjectTransform {
+  const position = new Vector3()
+  const quaternion = new Quaternion()
+  m.decompose(position, quaternion, new Vector3())
+  const euler = new Euler().setFromQuaternion(quaternion, 'XYZ')
+  return {
+    position: [position.x, position.y, position.z],
+    rotation: [euler.x, euler.y, euler.z],
+  }
+}
+
+/**
+ * `child` expressed in `parent`'s local space.
+ *
+ * What merging needs: an object that has been sitting somewhere in the world
+ * has to keep sitting exactly there once it belongs to another object, and the
+ * only thing that may change is which frame its numbers are written in.
+ */
+export function relativeTransform(
+  parent: ObjectTransform,
+  child: ObjectTransform
+): ObjectTransform {
+  return transformFromMatrix(objectMatrixInverse(parent).multiply(objectMatrix(child)))
+}

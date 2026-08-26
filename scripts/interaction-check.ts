@@ -65,6 +65,7 @@ function object(
     transform: { ...IDENTITY_TRANSFORM, position },
     features,
     cuts: [],
+    parts: [],
   }
 }
 

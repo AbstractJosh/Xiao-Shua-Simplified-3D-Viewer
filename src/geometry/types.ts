@@ -129,6 +129,22 @@ export type SceneObject = {
   transform: ObjectTransform
   features: Feature[]
   cuts: CutPlane[]
+  /**
+   * Solids merged into this one, each a whole SceneObject in THIS object's
+   * local space.
+   *
+   * A merged object is one object: one transform, one gizmo, one row in the
+   * tree, and features and cuts that apply to the union. But nothing is thrown
+   * away to get there -- a part keeps its own base, its own features and its
+   * own cuts, exactly as it had them, and its transform is simply re-expressed
+   * relative to its host. That is the same bargain a cut strikes, and it is
+   * what would let an unmerge hand back what went in rather than a boolean
+   * result nobody can take apart again.
+   *
+   * Recursive on purpose: merging something that was itself merged nests rather
+   * than flattening, so the parts of the parts survive too.
+   */
+  parts: SceneObject[]
 }
 
 export type Doc = { objects: SceneObject[] }
@@ -203,6 +219,7 @@ export function makeObject(base: BaseSolid, position: Vec3): SceneObject {
     transform: { ...IDENTITY_TRANSFORM, position },
     features: [],
     cuts: [],
+    parts: [],
   }
 }
 

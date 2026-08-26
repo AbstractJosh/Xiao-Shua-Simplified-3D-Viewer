@@ -1,7 +1,10 @@
 import { useMemo } from 'react'
+import type { RefObject } from 'react'
 import { Line } from '@react-three/drei'
 import { DoubleSide, Vector3, type Object3D } from 'three'
+import { useDoc } from '../store/docStore'
 import { useTools } from '../store/toolStore'
+import { TransformGizmo } from './TransformGizmo'
 
 /**
  * The quad below is a three.js plane -- which faces +Z -- turned -PI/2 about X,
@@ -30,9 +33,14 @@ const noRaycast: Object3D['raycast'] = () => {}
  * the normal points, which matters because the two halves are not
  * interchangeable -- each keeps its own side of this plane.
  */
-export function CutPlaneGizmo() {
+export function CutPlaneGizmo({
+  controlsRef,
+}: {
+  controlsRef: RefObject<{ enabled: boolean } | null>
+}) {
   const cutActive = useTools((s) => s.cutActive)
   const plane = useTools((s) => s.cutPlane)
+  const startCutGizmo = useDoc((s) => s.startCutGizmo)
 
   // Rebuilt only when the extent changes: nudging position or tilt moves the
   // group, and drei's Line rebuilds its GPU buffers whenever `points` changes
@@ -60,6 +68,23 @@ export function CutPlaneGizmo() {
   if (!cutActive) return null
 
   return (
+    <>
+      {/* The plane is aimed with the same arrows as an object, which is why the
+          Position fields are gone from the panel: two ways to set one number,
+          one of them a slider you cannot see the effect of without looking
+          away. Tilt stays typed -- an angle is far easier to dial in than to
+          drag, and the tilt is what decides which way the halves fall. The
+          arrows follow the plane's own frame, so the green one is its normal.
+          Right-drag does nothing here: a plane has no per-axis extent, and its
+          one dimension -- the guide square -- is what the ring scales. */}
+      <TransformGizmo
+        position={plane.position}
+        rotation={plane.rotation}
+        sizable={false}
+        controlsRef={controlsRef}
+        onGrab={startCutGizmo}
+      />
+
     <group position={plane.position} rotation={plane.rotation}>
       <mesh rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
         <planeGeometry args={[plane.size, plane.size]} />
@@ -84,5 +109,6 @@ export function CutPlaneGizmo() {
         <meshBasicMaterial color={CUT_COLOR} transparent opacity={0.85} depthWrite={false} />
       </mesh>
     </group>
+    </>
   )
 }

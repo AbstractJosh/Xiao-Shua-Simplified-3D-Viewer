@@ -10,6 +10,15 @@
   --in: #ff7a66;
   --danger: #e0574a;
 
+  /* Axis identity, shared by the console's X/Y/Z letters and the viewport's
+     gizmo arrows. Fully saturated on purpose: the arrows are small and drawn
+     over solids in the same warm grey as everything else, so they have to win
+     on colour. The literal values are mirrored in TransformGizmo.tsx, which
+     cannot read a CSS custom property -- change one, change both. */
+  --axis-x: #ff1744;
+  --axis-y: #00e676;
+  --axis-z: #2979ff;
+
   --radius: 7px;
   --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
@@ -49,12 +58,16 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 0 14px;
+  gap: 14px;
+  padding: 0 12px;
   height: 46px;
   flex: 0 0 auto;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  /* Panels hang out of the bar and have to paint over the canvas, which is a
+     WebGL surface and will otherwise win every stacking contest going. */
+  position: relative;
+  z-index: 20;
 }
 
 .brand {
@@ -62,10 +75,16 @@ body {
   align-items: baseline;
   gap: 10px;
   min-width: 0;
+  /* The name is the only thing here that may shrink, and only after the tools
+     have taken the room they need. */
+  flex: 0 1 auto;
+  overflow: hidden;
 }
 
 .brand-mark {
   font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
   /* Near-zero tracking: the wide spacing here suited a short uppercase
      acronym, but it reads as stretched on a mixed-case name. */
   letter-spacing: 0.005em;
@@ -73,11 +92,35 @@ body {
   white-space: nowrap;
 }
 
-/* The tagline is the first thing to go when the window gets tight; the name
-   itself must never be the part that truncates. */
-@media (max-width: 900px) {
+/* What goes as the window narrows, in the order it goes. The tools are last:
+   the tagline is decoration, the stats are a readout, and the tool labels have
+   icons standing behind them -- but a missing button is a missing feature. The
+   name itself must never be the part that truncates. */
+@media (max-width: 1320px) {
   .brand-sub {
     display: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .stats {
+    display: none;
+  }
+}
+
+@media (max-width: 1040px) {
+  .nav-label {
+    display: none;
+  }
+
+  .nav-btn {
+    padding: 5px 8px;
+  }
+
+  /* The cut actions are words, not icons, so they tighten rather than vanish:
+     a nameless button that severs the scene is not an improvement. */
+  .nav-action {
+    padding: 4px 7px;
   }
 }
 
@@ -92,7 +135,8 @@ body {
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  flex: 0 0 auto;
 }
 
 .stats {
@@ -101,6 +145,331 @@ body {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* --- tool bar --- */
+
+/* Centre group. `flex: 0 0 auto` because these are the controls the window is
+   FOR: the brand truncates and the stats disappear before a tool button does. */
+.navbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.nav-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+/* Anchor for both the panel and the hover bubble. */
+.nav-tool {
+  position: relative;
+  display: flex;
+}
+
+/* Button and caret share one outline so they read as a single control. */
+.nav-group {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  overflow: hidden;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.nav-group:hover {
+  border-color: #3a444f;
+}
+
+/* Engaged, not merely open: this is the tool acting on every drag you make, so
+   it carries the accent whether or not its panel happens to be showing. */
+.nav-group-active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.nav-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.nav-group-active .nav-btn {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-icon {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.nav-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.nav-caret {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: #5d6675;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.nav-caret svg {
+  width: 10px;
+  height: 10px;
+  transition: transform 0.14s;
+}
+
+.nav-caret:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.nav-caret[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.nav-group-active .nav-caret {
+  border-left-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: color-mix(in srgb, var(--accent) 75%, var(--muted));
+}
+
+/* --- tool panels --- */
+
+.nav-panel {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 30;
+  width: 268px;
+  padding: 11px 12px 12px;
+  background: var(--panel);
+  border: 1px solid #313a47;
+  border-radius: 9px;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.5);
+  animation: nav-panel-in 0.13s ease-out;
+}
+
+/* Tools near the right edge open the other way, or the panel hangs off the
+   window. */
+.nav-panel-right {
+  left: auto;
+  right: 0;
+}
+
+@keyframes nav-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.nav-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.nav-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.nav-panel-close {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 3px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #5d6675;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.nav-panel-close svg {
+  width: 10px;
+  height: 10px;
+}
+
+.nav-panel-close:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+/* A claim about the current document, not an explanation -- so it stays on
+   screen instead of going behind a hover the way the prose did. */
+.nav-note {
+  margin: 2px 0 9px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* --- export in the bar --- */
+
+.nav-export {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.nav-export-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The receipt. Hangs below the buttons and clears itself; see RECEIPT_MS. */
+.nav-flyout {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 30;
+  max-width: 340px;
+  padding: 7px 10px;
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--out) 45%, transparent);
+  border-radius: 7px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5);
+  color: var(--out);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-all;
+  animation: nav-panel-in 0.13s ease-out;
+}
+
+.nav-flyout-bad {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
+}
+
+/* --- hover explanations --- */
+
+/* The dot is nearly invisible until it is wanted: these sit in headings and
+   beside labels, and a row of bright markers would compete with the controls
+   they annotate. */
+.tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  color: #4d5665;
+  cursor: help;
+  outline: none;
+}
+
+.tip:hover,
+.tip:focus-visible {
+  color: var(--accent);
+}
+
+.tip-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.tip-bubble {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: -5px;
+  z-index: 40;
+  width: max-content;
+  max-width: 240px;
+  padding: 8px 10px;
+  background: #1b202a;
+  border: 1px solid #333d4b;
+  border-radius: 7px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  /* Inherited uppercase tracking from a section heading would make the prose
+     unreadable, so every text property is stated rather than inherited. */
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: 0;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  pointer-events: none;
+}
+
+/* For a dot near a right-hand edge, where opening rightwards would run off it. */
+.tip-right .tip-bubble {
+  left: auto;
+  right: -5px;
+}
+
+.tip:hover .tip-bubble,
+.tip:focus-visible .tip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+/* A tool button's own explanation. Same bubble, triggered by the button beside
+   it rather than by a dot, so the bar itself stays free of markers. */
+.nav-tip {
+  top: calc(100% + 8px);
+  left: 0;
+}
+
+.nav-group:hover ~ .nav-tip,
+.nav-group:focus-within ~ .nav-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+/* An open panel occupies exactly where the bubble would land. */
+.nav-tool-open .nav-tip {
+  display: none;
 }
 
 /* --- segmented buttons --- */
@@ -209,6 +578,12 @@ body {
   text-transform: none;
   color: #5d6675;
   font-weight: 400;
+}
+
+.section-title .tip,
+.field-head .tip {
+  margin-right: auto;
+  align-self: center;
 }
 
 .section-right {
@@ -564,15 +939,15 @@ body {
 /* Tinted from the existing palette on the usual X/Y/Z = red/green/blue reading,
    so an axis is identified by colour before the letter is read. */
 .vec3-axis-x {
-  color: var(--in);
+  color: var(--axis-x);
 }
 
 .vec3-axis-y {
-  color: var(--out);
+  color: var(--axis-y);
 }
 
 .vec3-axis-z {
-  color: var(--accent);
+  color: var(--axis-z);
 }
 
 .vec3-input {
@@ -591,74 +966,6 @@ body {
 .vec3-input:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-/* --- switch --- */
-
-.toggle {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: center;
-  column-gap: 9px;
-  row-gap: 3px;
-  width: 100%;
-  margin-bottom: 11px;
-  padding: 0;
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.toggle-track {
-  position: relative;
-  width: 30px;
-  height: 17px;
-  border-radius: 9px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  transition: background 0.14s, border-color 0.14s;
-}
-
-.toggle:hover .toggle-track {
-  border-color: #3a444f;
-}
-
-.toggle-on {
-  background: color-mix(in srgb, var(--accent) 45%, transparent);
-  border-color: var(--accent);
-}
-
-.toggle-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: #79828f;
-  transition: transform 0.14s, background 0.14s;
-}
-
-.toggle-on .toggle-knob {
-  background: var(--accent);
-  transform: translateX(13px);
-}
-
-.toggle-label {
-  font-size: 12px;
-}
-
-/* Second row under the label, never under the switch: the knob column stays a
-   clean vertical rule when several toggles stack. */
-.toggle-hint {
-  grid-column: 2;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
 }
 
 /* --- buttons --- */
@@ -1006,6 +1313,7 @@ body {
 .keys {
   margin: 0;
   padding: 0;
+  width: 300px;
   list-style: none;
   display: flex;
   flex-direction: column;
@@ -1044,24 +1352,21 @@ body {
 
 /* --- export --- */
 
-.export-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
+/* Small enough to sit in a 46px bar beside two tool buttons, and monospaced so
+   ".glb" and ".obj" are the same width and the pair reads as one control. */
 .export-btn {
-  padding: 8px;
+  padding: 4px 9px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   font-family: var(--mono);
+  line-height: 1.45;
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
 
 .export-btn:hover:not(:disabled) {
@@ -1075,24 +1380,187 @@ body {
   cursor: default;
 }
 
-.export-status,
-.export-error,
-.export-note {
-  margin: 9px 0 0;
-  font-size: 11px;
-  line-height: 1.45;
-}
+/* --- rotation readout --- */
 
-.export-status {
-  color: var(--out);
+/* The degree figure that rides beside the turn dial. Translated into place from
+   a projected 3D point every frame, so the offset is baked into the transform
+   rather than into `left`/`top` -- one composited property instead of a layout
+   pass sixty times a second. */
+.rotation-chip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 14px 0 0 14px;
+  padding: 3px 8px;
+  background: rgba(20, 23, 29, 0.92);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 5px;
+  color: var(--accent);
   font-family: var(--mono);
-  word-break: break-all;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  white-space: nowrap;
+  /* It sits over the thing being turned, and must never eat the drag. */
+  pointer-events: none;
 }
 
-.export-error {
-  color: var(--danger);
+/* --- reset controls --- */
+
+/* Nearly invisible until wanted, like the tip dots: a rotation field carries
+   four of these, and four bright glyphs in a row would out-shout the numbers
+   they sit beside. */
+.reset-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #4d5665;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
 }
 
-.export-note {
-  color: #5d6675;
+.reset-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+.reset-btn:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+/* An axis already at rest has nothing to reset. Left live it would invite a
+   click that costs an undo entry and changes nothing. */
+.reset-btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* The fourth column only exists on rows that carry a reset, so every other
+   Vec3 field keeps the layout it had. */
+.vec3-row-resettable {
+  grid-template-columns: 12px 1fr 52px 16px;
+}
+
+/* The group heading gains its reset the same way, without disturbing the plain
+   .subhead that every other field group uses. */
+.subhead-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- cut actions --- */
+
+/* Anchors the outcome flyout, which hangs below these buttons the way the
+   export receipt hangs below its own. */
+.nav-cut {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+}
+
+/* Sized like the export buttons, so the bar has one button scale rather than
+   one per feature. Not monospaced though: these are words, not extensions. */
+.nav-action {
+  padding: 4px 9px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.nav-action:hover:not(:disabled) {
+  background: #1e232c;
+  border-color: #3a444f;
+}
+
+.nav-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The one destructive button in the bar, so it carries the accent rather than
+   sitting at the same weight as Reset. */
+.nav-action-primary {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+.nav-action-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The cut's outcome reads as ordinary text, not as the monospaced filename the
+   export receipt reports. */
+.nav-cut .nav-flyout {
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 11.5px;
+  word-break: normal;
+}
+
+/* The merge button carries its icon inline, where the tool buttons keep theirs
+   in a fixed column. */
+.nav-action-icon {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-right: 5px;
+}
+
+.nav-action-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* A merged row carries one more chip than a plain one. Tinted like the cut
+   chip's sibling: both say "this row is more than one solid's worth". */
+.tree-merged {
+  color: var(--accent);
+}
+
+/* Everything selected gets the outline; the PRIMARY -- the one a merge folds
+   the rest into, and the one holding the gizmo -- gets the marker. */
+.tree-primary .tree-object-name {
+  font-weight: 600;
+}
+
+/* --- merge --- */
+
+.merge-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.merge-btn-icon {
+  display: flex;
+}
+
+.merge-btn-icon svg {
+  width: 14px;
+  height: 14px;
 }

@@ -126,7 +126,12 @@ export function SolidPalette() {
   })
 
   return (
-    <Section title="Solids" hint="drag into the scene" collapsible defaultOpen>
+    <Section
+      title="Solids"
+      tip="Drag a row out of this list and onto the grid. The ghost follows the ground plane and the solid lands resting on it; hold Shift while moving one to lift it instead."
+      collapsible
+      defaultOpen
+    >
       <div className="solid-list">
         {SOLID_TEMPLATES.map((t) => (
           <SolidRow

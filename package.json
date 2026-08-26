@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.scripts.json --noEmit",
     "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/ui-check.ts && tsx scripts/export-check.ts"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@types/node": "^26.3.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/three": "^0.185.0",

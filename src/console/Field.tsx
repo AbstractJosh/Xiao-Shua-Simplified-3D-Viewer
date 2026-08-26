@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import type { Vec2, Vec3 } from '../geometry/types'
+import { Tip } from './Tip'
 
 type NumberFieldProps = {
   label: string
@@ -8,6 +10,10 @@ type NumberFieldProps = {
   max: number
   step?: number
   decimals?: number
+  /** A caveat about this control, shown on hover rather than under it. */
+  tip?: ReactNode
+  /** Shows a reset control beside the label. Omitted leaves the field as it was. */
+  resetTo?: number
   onChange: (v: number) => void
 }
 
@@ -19,6 +25,8 @@ export function NumberField({
   max,
   step = 0.01,
   decimals = 2,
+  tip,
+  resetTo,
   onChange,
 }: NumberFieldProps) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
@@ -26,6 +34,14 @@ export function NumberField({
     <div className="field">
       <div className="field-head">
         <span className="field-label">{label}</span>
+        {tip && <Tip>{tip}</Tip>}
+        {resetTo !== undefined && (
+          <ResetButton
+            label={`Reset ${label.toLowerCase()}`}
+            disabled={Math.abs(value - resetTo) <= RESET_EPS}
+            onClick={() => onChange(resetTo)}
+          />
+        )}
         <input
           className="field-num"
           type="number"
@@ -56,12 +72,18 @@ export function Section({
   title,
   children,
   hint,
+  tip,
   collapsible = false,
   defaultOpen = true,
   right,
 }: {
   title: string
+  /**
+   * A short VALUE beside the title -- a count, the solid's name, which face a
+   * sketch sits on. Prose belongs in `tip`, where it costs no vertical space.
+   */
   hint?: string
+  tip?: React.ReactNode
   children: React.ReactNode
   collapsible?: boolean
   defaultOpen?: boolean
@@ -99,6 +121,7 @@ export function Section({
         ) : (
           title
         )}
+        {tip && <Tip>{tip}</Tip>}
         {hint && <span className="section-hint">{hint}</span>}
         {right && <span className="section-right">{right}</span>}
       </h2>
@@ -110,6 +133,62 @@ export function Section({
 const clampTo = (v: number, min: number, max: number) =>
   Math.min(max, Math.max(min, v))
 
+/**
+ * Below this an axis counts as already reset, and its button stands down.
+ *
+ * A live button that does nothing is worse than no button: it invites a click
+ * that costs an undo entry and changes nothing. Loose enough to catch a value
+ * a drag left at 1e-17 rather than exactly zero.
+ */
+const RESET_EPS = 1e-9
+
+/**
+ * Send one value, or a whole rotation, back to where it started.
+ *
+ * Its own control rather than a number to type because zero is the value people
+ * want most often and the hardest to hit by dragging -- and because a rotation
+ * built by the gizmo's ring lands on Euler triples like (pi, 0, pi) that are a
+ * chore to undo a row at a time.
+ */
+function ResetButton({
+  label,
+  disabled,
+  onClick,
+}: {
+  label: string
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className="reset-btn"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <svg viewBox="0 0 12 12" aria-hidden>
+        <path
+          d="M8.31 3.24 A3.6 3.6 0 1 1 3.69 3.24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+        />
+        <path
+          d="M1.9 3.4 L3.69 3.24 L3.23 4.98"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  )
+}
+
 /** One dense axis row: tinted letter, slider, number box. */
 function AxisRow({
   axis,
@@ -119,6 +198,7 @@ function AxisRow({
   max,
   step,
   decimals,
+  resetTo,
   onChange,
 }: {
   axis: string
@@ -128,10 +208,12 @@ function AxisRow({
   max: number
   step: number
   decimals: number
+  /** Shows a reset control for this axis alone. Omitted leaves the row as it was. */
+  resetTo?: number
   onChange: (v: number) => void
 }) {
   return (
-    <div className="vec3-row">
+    <div className={`vec3-row${resetTo === undefined ? '' : ' vec3-row-resettable'}`}>
       <span className={`vec3-axis vec3-axis-${tint}`}>{axis}</span>
       <input
         className="field-range"
@@ -154,6 +236,13 @@ function AxisRow({
           if (Number.isFinite(v)) onChange(clampTo(v, min, max))
         }}
       />
+      {resetTo !== undefined && (
+        <ResetButton
+          label={`Reset ${axis}`}
+          disabled={Math.abs(value - resetTo) <= RESET_EPS}
+          onClick={() => onChange(resetTo)}
+        />
+      )}
     </div>
   )
 }
@@ -174,6 +263,7 @@ export function Vec3Field({
   step,
   decimals,
   degrees = false,
+  resetTo,
   onChange,
 }: {
   label: string
@@ -183,6 +273,12 @@ export function Vec3Field({
   step?: number
   decimals?: number
   degrees?: boolean
+  /**
+   * Adds a reset control to every axis, and one on the heading that takes all
+   * three at once. In the UNIT SHOWN, like min and max -- so a rotation field
+   * asks for degrees here even though it stores radians.
+   */
+  resetTo?: number
   onChange: (v: Vec3) => void
 }) {
   // Whole degrees are the useful granularity for a tilt; lengths need hundredths.
@@ -197,9 +293,24 @@ export function Vec3Field({
     onChange(next)
   }
 
+  const atRest =
+    resetTo !== undefined &&
+    value.every((v) => Math.abs(toUi(v) - resetTo) <= RESET_EPS)
+
   return (
     <div className="vec3">
-      <div className="subhead">{label}</div>
+      <div className="subhead subhead-row">
+        {label}
+        {resetTo !== undefined && (
+          <ResetButton
+            label={`Reset ${label.toLowerCase()}`}
+            disabled={atRest}
+            onClick={() =>
+              onChange([fromUi(resetTo), fromUi(resetTo), fromUi(resetTo)])
+            }
+          />
+        )}
+      </div>
       {TINTS.map((tint, i) => (
         <AxisRow
           key={tint}
@@ -210,6 +321,7 @@ export function Vec3Field({
           max={max}
           step={stepped}
           decimals={places}
+          resetTo={resetTo}
           onChange={(v) => setAxis(i, v)}
         />
       ))}
@@ -258,37 +370,5 @@ export function Vec2Field({
         />
       ))}
     </div>
-  )
-}
-
-/**
- * A switch, not a checkbox: these flip a live tool mode, and a sliding knob
- * reads as "on now" where a tick box reads as "will apply later".
- */
-export function Toggle({
-  label,
-  checked,
-  onChange,
-  hint,
-}: {
-  label: string
-  checked: boolean
-  onChange: (b: boolean) => void
-  hint?: string
-}) {
-  return (
-    <button
-      type="button"
-      className="toggle"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-    >
-      <span className={`toggle-track${checked ? ' toggle-on' : ''}`}>
-        <span className="toggle-knob" />
-      </span>
-      <span className="toggle-label">{label}</span>
-      {hint && <span className="toggle-hint">{hint}</span>}
-    </button>
   )
 }

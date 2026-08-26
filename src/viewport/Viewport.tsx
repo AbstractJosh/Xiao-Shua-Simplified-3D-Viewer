@@ -4,16 +4,27 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Grid, OrbitControls } from '@react-three/drei'
 import { Mesh, Raycaster, Vector3 } from 'three'
 import type { BufferGeometry, Camera, MeshBasicMaterial } from 'three'
+import {
+  maxShapeSize,
+  resizeAlongAxis,
+  scaleShape,
+  scaleUniform,
+} from '../geometry/dimensions'
 import type { SnapTarget } from '../geometry/snap'
 import { snapSinglePoint } from '../geometry/snap'
-import { hostSurfaceFor, surfaceFor } from '../geometry/surfaces'
+import { hostSurfaceFor, samePatch, slideAnchor, surfaceFor } from '../geometry/surfaces'
 import { endFaceFrame } from '../geometry/prism'
 import { toLocalPoint, toLocalRay, toWorldDir, toWorldPoint } from '../geometry/transform'
-import type { BaseSolid, SceneObject, SurfaceAnchor, Vec3 } from '../geometry/types'
+import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
-import type { Drag } from '../store/docStore'
-import { useDoc } from '../store/docStore'
-import { useTools } from '../store/toolStore'
+import type { Drag, GizmoAxis, GizmoHandle } from '../store/docStore'
+import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
+import {
+  CUT_POSITION_LIMIT,
+  CUT_SIZE_MAX,
+  CUT_SIZE_MIN,
+  useTools,
+} from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
 import {
   pickAnchorAcrossObjects,
@@ -23,9 +34,22 @@ import {
   pointerNdc,
 } from './picking'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
+import { RotationDial } from './RotationDial'
 import { SceneObjects } from './SceneObjects'
 import { PlacingPreview } from './SketchLayer'
 import {
+  advanceTurn,
+  axisTarget,
+  axisTravel,
+  beginAxisDrag,
+  nearestViewAxis,
+  pointerAngle,
+  turnedRotation,
+} from './gizmoDrag'
+import type { AxisGrab, TurnGrab } from './gizmoDrag'
+import { clearRotationIndicator, rotationIndicator } from './rotationIndicator'
+import {
+  resolveAxisMove,
   resolveObjectMove,
   resolvePoint,
   resolveSolidDrop,
@@ -72,13 +96,73 @@ const modifiers = { shift: false }
 type ObjectGrab = { objectId: string; vertical: boolean; offset: Vec3 }
 type FaceGrab = { objectId: string; featureId: string; u: number; v: number }
 
+/**
+ * Where a gizmo drag started, and what its target looked like then.
+ *
+ * The starting BASE is kept, not just the starting number, so every frame
+ * computes the answer from the grab rather than adding to the last frame's.
+ * Accumulating would drift, and worse: once a dimension clamps at its limit,
+ * an accumulating drag keeps adding travel that the clamp swallows, so the
+ * pointer has to come all the way back before the solid moves again.
+ */
+/**
+ * A sketch slide's pinned start: the anchor it began on, and the axis line in
+ * WORLD space that the pointer is read against.
+ *
+ * Held for the same reason the object gizmo's grab is -- an origin that moved
+ * with the thing it was moving would oscillate -- and pinned to the ANCHOR too,
+ * so every frame re-derives the slide from where the sketch started rather than
+ * accumulating tangent offsets whose frame has since rotated out from under
+ * them on a curved host.
+ */
+type SketchGrab = {
+  key: string
+  anchor: SurfaceAnchor
+  /** Null for the ring, which has no axis to read. */
+  axis: AxisGrab | null
+  /** Distance from the sketch's centre at grab time, for the ring. */
+  radius: number
+  shape: Shape2D
+}
+
+let sketchGrab: SketchGrab | null = null
+
+/** The turn in progress, pinned like every other gesture's start. */
+let turnGrab: TurnGrab | null = null
+let turnKey = ''
+
+type GizmoGrab = {
+  key: string
+  /**
+   * The arrow gesture's pinned origin and parameter. Null for a ring drag,
+   * which has no axis. See gizmoDrag.ts for why this is ONE value rather than
+   * an origin read fresh each frame plus a separately remembered position.
+   */
+  axis: AxisGrab | null
+  /** Distance from the gizmo centre at grab time, for the ring. */
+  radius: number
+  base: BaseSolid | null
+  size: number
+}
+
 let objectGrab: ObjectGrab | null = null
 let faceGrab: FaceGrab | null = null
+let gizmoGrab: GizmoGrab | null = null
 
-/** Drop both, except the one belonging to the gesture currently running. */
+/** Drop them all, except the one belonging to the gesture currently running. */
 function clearGrabs(kind: Drag['kind'] = 'idle'): void {
   if (kind !== 'moving-object') objectGrab = null
   if (kind !== 'moving-face') faceGrab = null
+  if (kind !== 'gizmo' && kind !== 'cut-gizmo') gizmoGrab = null
+  if (kind !== 'sketch-gizmo') {
+    sketchGrab = null
+    sketchTurnKey = ''
+  }
+  if (kind !== 'gizmo' && kind !== 'cut-gizmo' && kind !== 'sketch-gizmo') {
+    turnGrab = null
+    turnKey = ''
+    clearRotationIndicator()
+  }
 }
 
 /**
@@ -197,19 +281,6 @@ function snappedSketchAnchor(object: SceneObject, raycaster: Raycaster): Surface
   return null
 }
 
-/**
- * Whether two anchors name the same patch of the same surface.
- *
- * Only the multi-patch kinds carry a face index; for every other kind the patch
- * IS the surface, so matching `on` is the whole question.
- */
-function samePatch(a: SurfaceAnchor, b: SurfaceAnchor): boolean {
-  if (a.on !== b.on) return false
-  if (a.on === 'box-face' && b.on === 'box-face') return a.face === b.face
-  if (a.on === 'planar-face' && b.on === 'planar-face') return a.face === b.face
-  return true
-}
-
 /** Slide an existing sketch across the surface it is anchored to. */
 function dragSketch(
   s: Store,
@@ -318,6 +389,346 @@ function dragFace(s: Store, drag: DragOf<'moving-face'>, raycaster: Raycaster): 
   ])
 }
 
+/** The gizmo's axis directions in world space, in the target's own frame. */
+function axisWorld(rotation: Vec3, axis: GizmoAxis): Vector3 {
+  const dir = new Vector3(axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0)
+  return toWorldDir({ position: [0, 0, 0], rotation }, dir).normalize()
+}
+
+/**
+ * Start or reuse the grab for this gesture.
+ *
+ * `key` names the gesture down to the handle, so switching from the X arrow to
+ * the Y arrow -- which a user cannot do without releasing, but a redrawn scene
+ * can -- re-measures rather than reading last handle's number as this one's.
+ *
+ * `measure` is a thunk because starting a drag can fail -- an axis seen
+ * end-on has no readable parameter -- and because on every frame after the
+ * first it must not run at all: re-measuring is precisely the drift this
+ * pinned grab exists to prevent.
+ */
+function gizmoGrabFor(
+  key: string,
+  measure: () => Omit<GizmoGrab, 'key'> | null
+): GizmoGrab | null {
+  if (gizmoGrab === null || gizmoGrab.key !== key) {
+    const measured = measure()
+    if (!measured) return null
+    gizmoGrab = { key, ...measured }
+  }
+  return gizmoGrab
+}
+
+/**
+ * Read this frame's turn, starting the gesture if it has not begun.
+ *
+ * Shared by all three ring turns, which differ only in what they write the
+ * angle to. The pointer is met on the camera-facing plane through the gizmo --
+ * the plane the ring itself is drawn in -- and its angle round that plane is
+ * what the turn measures. Null while the ray cannot reach that plane.
+ */
+function readTurn(
+  key: string,
+  raycaster: Raycaster,
+  camera: Camera,
+  centre: Vector3,
+  rotation: Vec3
+): { grab: TurnGrab; total: number } | null {
+  const facing = camera.quaternion.clone()
+  const right = new Vector3(1, 0, 0).applyQuaternion(facing)
+  const up = new Vector3(0, 1, 0).applyQuaternion(facing)
+  const normal = camera.getWorldDirection(new Vector3())
+
+  const hit = pickPlanePoint(raycaster, centre, normal)
+  if (!hit) return null
+  const angle = pointerAngle(hit, centre, right, up)
+
+  if (turnGrab === null || turnKey !== key) {
+    turnKey = key
+    turnGrab = {
+      // Chosen once, at the grab: an axis re-picked each frame would swap
+      // mid-turn as the object rotated past 45 degrees, and the target would
+      // visibly jump onto a different axis part-way through one gesture.
+      axis: nearestViewAxis(rotation, normal).axis,
+      rotation,
+      lastAngle: angle,
+      total: 0,
+    }
+    rotationIndicator.centre.copy(centre)
+    rotationIndicator.facing.copy(facing)
+    rotationIndicator.startAngle = angle
+  }
+
+  const total = advanceTurn(turnGrab, angle)
+  rotationIndicator.active = true
+  rotationIndicator.angle = total
+  return { grab: turnGrab, total }
+}
+
+/** The plane a ring drag measures its radius in: through the gizmo, facing the
+ *  camera, which is the plane the ring is drawn in. */
+function ringRadius(
+  raycaster: Raycaster,
+  camera: Camera,
+  centre: Vector3
+): number | null {
+  const normal = camera.getWorldDirection(new Vector3())
+  const hit = pickPlanePoint(raycaster, centre, normal)
+  return hit ? hit.distanceTo(centre) : null
+}
+
+/** Slide or resize an object with its gizmo. */
+function dragGizmo(
+  s: Store,
+  drag: DragOf<'gizmo'>,
+  raycaster: Raycaster,
+  camera: Camera
+): void {
+  const object = s.doc.objects.find((o) => o.id === drag.objectId)
+  if (!object) return
+
+  const { rotation, position } = object.transform
+  const centre = new Vector3(position[0], position[1], position[2])
+  const key = `${drag.objectId}|${drag.handle.mode}|${drag.handle.axis}`
+
+  if (drag.handle.mode === 'rotate') {
+    const turn = readTurn(key, raycaster, camera, centre, rotation)
+    if (!turn) return
+    s.setObjectTransform(object.id, {
+      position,
+      rotation: turnedRotation(turn.grab, turn.total),
+    })
+    return
+  }
+
+  if (drag.handle.axis === 'all') {
+    const radius = ringRadius(raycaster, camera, centre)
+    if (radius === null) return
+    const grab = gizmoGrabFor(key, () => ({
+      axis: null,
+      radius,
+      base: object.base,
+      size: 0,
+    }))
+    // A grab that landed on the exact centre has no radius to scale from, and
+    // dividing by it would send the solid to infinity on the first frame.
+    if (!grab || grab.radius < 1e-4 || !grab.base) return
+    s.resizeObjectTo(scaleUniform(grab.base, radius / grab.radius))
+    return
+  }
+
+  const dir = axisWorld(rotation, drag.handle.axis)
+  // `centre` is read ONLY here, on the frame that starts the gesture. From then
+  // on the grab's own origin is the axis, which is what keeps a still pointer
+  // from walking the object back and forth -- see gizmoDrag.ts.
+  const grab = gizmoGrabFor(key, () => {
+    const axis = beginAxisDrag(raycaster.ray, position, dir)
+    return axis && { axis, radius: 0, base: object.base, size: 0 }
+  })
+  if (!grab?.axis) return
+
+  const travel = axisTravel(grab.axis, raycaster.ray, dir)
+  if (travel === null) return
+
+  if (drag.handle.mode === 'size') {
+    if (!grab.base) return
+    s.resizeObjectTo(resizeAlongAxis(grab.base, drag.handle.axis, travel))
+    return
+  }
+
+  // Snapped ALONG the axis only, so the arrow's whole promise -- that nothing
+  // but this one coordinate changes -- survives the snap. The snapped result is
+  // never fed back in: the next frame recomputes from the grab, so a catch
+  // cannot drag the origin along with it.
+  s.moveObjectTo(resolveAxisMove(object.id, axisTarget(grab.axis, dir, travel), dir))
+}
+
+/**
+ * Slide a sketch along one of its host surface's tangents.
+ *
+ * The gesture is the object gizmo's, read in a different space: the pointer is
+ * measured against a straight world-space line, and the travel it yields is
+ * then handed to the SURFACE, which decides where that lands on itself. On a
+ * flat face those two are the same thing; on a sphere the tangent line leaves
+ * the solid immediately and `slideAnchor` re-seats it, so the sketch follows
+ * the curvature instead of flying off along the tangent.
+ */
+function dragSketchGizmo(
+  s: Store,
+  drag: DragOf<'sketch-gizmo'>,
+  raycaster: Raycaster,
+  camera: Camera
+): void {
+  const object = s.doc.objects.find((o) => o.id === drag.objectId)
+  const feature = object?.features.find((f) => f.id === drag.id)
+  if (!object || !feature) return
+
+  const host = hostSurfaceFor(object.base, feature.anchor)
+  const handle = drag.handle
+  const key = `${drag.objectId}|${drag.id}|${handle.mode}|${handle.axis}`
+  const centre = toWorldPoint(object.transform, host.frame(feature.anchor).origin)
+
+  // A sketch turns about ONE axis -- the surface normal it lies against -- so
+  // there is no axis to choose here, and `feature.rotation` is a single number
+  // rather than an Euler triple. `readTurn` still measures it, because the
+  // gesture and its dial are the same; only the axis it is told about differs,
+  // and a sketch's is the one direction it has.
+  if (handle.mode === 'rotate') {
+    const normal = toWorldDir(object.transform, host.frame(feature.anchor).normal).normalize()
+    const turn = readTurn(key, raycaster, camera, centre, [0, 0, 0])
+    if (!turn) return
+    // The measured sweep is in the CAMERA's plane; the sketch spins in its own.
+    // Facing the normal away from the viewer flips which way round that is, so
+    // the sign follows the normal rather than the outline turning backwards
+    // whenever the face is seen from behind.
+    const facing = camera.getWorldDirection(new Vector3()).dot(normal) > 0 ? -1 : 1
+    s.rotateShapeTo(sketchGrabRotation(key, feature.rotation) + facing * turn.total)
+    return
+  }
+
+  // Pinned on the first frame and never re-read: see SketchGrab.
+  if (sketchGrab === null || sketchGrab.key !== key) {
+    if (handle.axis === 'all') {
+      const radius = ringRadius(raycaster, camera, centre)
+      if (radius === null) return
+      sketchGrab = {
+        key,
+        anchor: feature.anchor,
+        axis: null,
+        radius,
+        shape: feature.shape,
+      }
+    } else {
+      const frame = host.frame(feature.anchor)
+      const dir = toWorldDir(
+        object.transform,
+        handle.axis === 0 ? frame.uDir : frame.vDir
+      ).normalize()
+      const axis = beginAxisDrag(raycaster.ray, [centre.x, centre.y, centre.z], dir)
+      if (!axis) return
+      sketchGrab = { key, anchor: feature.anchor, axis, radius: 0, shape: feature.shape }
+    }
+  }
+
+  const grab = sketchGrab
+
+  // The ring scales the outline in place -- it is the sketch's own size, not
+  // its position, so nothing here touches the anchor.
+  if (handle.axis === 'all' || !grab.axis) {
+    const radius = ringRadius(raycaster, camera, centre)
+    if (radius === null) return
+    // A grab that landed on the exact centre has no radius to scale from, and
+    // dividing by it would send the outline to infinity on the first frame.
+    if (grab.radius < 1e-4) return
+    s.resizeShapeTo(
+      scaleShape(grab.shape, radius / grab.radius, maxShapeSize(object.base))
+    )
+    return
+  }
+
+  const frame = host.frame(grab.anchor)
+  const dir = toWorldDir(
+    object.transform,
+    handle.axis === 0 ? frame.uDir : frame.vDir
+  ).normalize()
+
+  const travel = axisTravel(grab.axis, raycaster.ray, dir)
+  if (travel === null) return
+
+  // Null means the slide has walked off the edge of its own patch. The sketch
+  // holds its last position rather than wrapping onto the next face round the
+  // corner -- which `clampAnchor`, inside `moveTo`, has usually pinned it short
+  // of long before the raw point ever gets there.
+  const next = slideAnchor(
+    host,
+    grab.anchor,
+    handle.axis === 0 ? travel : 0,
+    handle.axis === 1 ? travel : 0
+  )
+  if (next) s.moveTo(next)
+}
+
+/**
+ * The sketch spin the current turn started from.
+ *
+ * A one-number equivalent of the pinned grabs above, and pinned for the same
+ * reason: `rotateShapeTo` writes the value this is added to, so reading it live
+ * would feed the result straight back into the measurement.
+ */
+let sketchTurnKey = ''
+let sketchTurnStart = 0
+function sketchGrabRotation(key: string, current: number): number {
+  if (sketchTurnKey !== key) {
+    sketchTurnKey = key
+    sketchTurnStart = current
+  }
+  return sketchTurnStart
+}
+
+/** The same two gestures on the cut plane, which lives in the tool store. */
+function dragCutGizmo(
+  drag: DragOf<'cut-gizmo'>,
+  raycaster: Raycaster,
+  camera: Camera
+): void {
+  const tools = useTools.getState()
+  const plane = tools.cutPlane
+  const centre = new Vector3(plane.position[0], plane.position[1], plane.position[2])
+  const key = `cut|${drag.handle.mode}|${drag.handle.axis}`
+
+  if (drag.handle.mode === 'rotate') {
+    // The plane's rotation IS its tilt, so the ring drives the same three
+    // numbers the Tilt rows do -- one axis at a time, which is exactly the
+    // move a blade wants and the hardest one to dial in by typing.
+    const turn = readTurn(key, raycaster, camera, centre, plane.rotation)
+    if (!turn) return
+    tools.setCutPlane({ rotation: turnedRotation(turn.grab, turn.total) })
+    return
+  }
+
+  if (drag.handle.axis === 'all') {
+    const radius = ringRadius(raycaster, camera, centre)
+    if (radius === null) return
+    const grab = gizmoGrabFor(key, () => ({
+      axis: null,
+      radius,
+      base: null,
+      size: plane.size,
+    }))
+    if (!grab || grab.radius < 1e-4) return
+    // The ring scales the guide square, which is the plane's only dimension.
+    tools.setCutPlane({
+      size: clamp((grab.size * radius) / grab.radius, CUT_SIZE_MIN, CUT_SIZE_MAX),
+    })
+    return
+  }
+
+  const dir = axisWorld(plane.rotation, drag.handle.axis)
+  // The plane drifts exactly the way an object does, and for the same reason:
+  // it is the thing being moved, so its live position cannot also be the origin
+  // the pointer is measured against.
+  const grab = gizmoGrabFor(key, () => {
+    const axis = beginAxisDrag(raycaster.ray, plane.position, dir)
+    return axis && { axis, radius: 0, base: null, size: plane.size }
+  })
+  if (!grab?.axis) return
+
+  const travel = axisTravel(grab.axis, raycaster.ray, dir)
+  if (travel === null) return
+
+  // The plane is not a solid and has no corners to seek, so this one is not
+  // snapped -- but it is still clamped to the range the Position field used to
+  // offer, so the blade cannot be dragged out of the scene and lost.
+  const [x, y, z] = axisTarget(grab.axis, dir, travel)
+  tools.setCutPlane({
+    position: [
+      clamp(x, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+      clamp(y, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+      clamp(z, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+    ],
+  })
+}
+
 /**
  * Drives all five drag gestures from a single per-frame raycast.
  *
@@ -393,6 +804,15 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
         return
       case 'moving-face':
         dragFace(s, drag, raycaster)
+        return
+      case 'gizmo':
+        dragGizmo(s, drag, raycaster, camera)
+        return
+      case 'sketch-gizmo':
+        dragSketchGizmo(s, drag, raycaster, camera)
+        return
+      case 'cut-gizmo':
+        dragCutGizmo(drag, raycaster, camera)
         return
     }
   })
@@ -478,7 +898,8 @@ function Scene({
       <SceneObjects meshes={meshes} controlsRef={controlsRef} />
       <PlacingPreview />
       <PlacingSolidPreview />
-      <CutPlaneGizmo />
+      <CutPlaneGizmo controlsRef={controlsRef} />
+      <RotationDial />
       <SnapMarker />
       <Interaction meshes={meshes} />
 
@@ -495,7 +916,12 @@ function Scene({
   )
 }
 
-function hintFor(kind: Drag['kind'], valid: boolean, solid: string): string {
+function hintFor(
+  kind: Drag['kind'],
+  valid: boolean,
+  solid: string,
+  handle: GizmoHandle | null
+): string {
   switch (kind) {
     case 'idle':
       return ''
@@ -509,7 +935,71 @@ function hintFor(kind: Drag['kind'], valid: boolean, solid: string): string {
       return 'Moving the object -- hold Shift to move it vertically'
     case 'moving-face':
       return 'Sliding the created face'
+    case 'gizmo':
+    case 'cut-gizmo':
+      return gizmoHint(handle)
+    case 'sketch-gizmo':
+      if (handle?.mode === 'rotate') return 'Turning the sketch'
+      return handle?.axis === 'all'
+        ? 'Resizing the sketch'
+        : 'Sliding the sketch along its surface'
   }
+}
+
+function gizmoHint(handle: GizmoHandle | null): string {
+  if (!handle) return ''
+  if (handle.mode === 'rotate') return 'Turning about the axis nearest the camera'
+  if (handle.axis === 'all') return 'Scaling every dimension at once'
+  const name = AXIS_NAMES[handle.axis]
+  return handle.mode === 'move'
+    ? `Moving along ${name}`
+    : `Resizing along ${name} -- right-drag`
+}
+
+const AXIS_NAMES = ['X', 'Y', 'Z'] as const
+
+/**
+ * The angle, in degrees, pinned beside the dial it belongs to.
+ *
+ * A plain DOM node rather than text in the scene: it is a number that wants to
+ * stay upright, legible and the same size however the camera is turned, which
+ * is exactly what 3D text is bad at. The dial hands it a screen position every
+ * frame; this only has to move it.
+ *
+ * Driven by rAF and written straight into the DOM, for the same reason the snap
+ * readout is -- it changes as fast as the pointer moves, and React state at
+ * that rate is the cost this whole imperative seam exists to avoid.
+ */
+function RotationReadout() {
+  const chip = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let frame = 0
+    let shown = ''
+    const tick = () => {
+      const node = chip.current
+      if (node) {
+        const on = rotationIndicator.active
+        // Toggled through style rather than by unmounting: this runs sixty
+        // times a second and must not churn the React tree to show a number.
+        node.style.display = on ? 'block' : 'none'
+        if (on) {
+          const text = `${((rotationIndicator.angle * 180) / Math.PI).toFixed(1)}°`
+          if (text !== shown) {
+            node.textContent = text
+            shown = text
+          }
+          node.style.transform =
+            `translate(${rotationIndicator.screen.x}px, ${rotationIndicator.screen.y}px)`
+        }
+      }
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [])
+
+  return <div className="rotation-chip" ref={chip} style={{ display: 'none' }} />
 }
 
 /** Tells the user what the current gesture will do when released. */
@@ -528,6 +1018,13 @@ function DragHint() {
   const solid = useDoc((s) =>
     s.drag.kind === 'placing-solid' ? solidLabel(s.drag.base).toLowerCase() : ''
   )
+  const handle = useDoc((s) => {
+    if (s.drag.kind === 'gizmo' || s.drag.kind === 'cut-gizmo') return s.drag.handle
+    // A sketch drag carries a bare axis rather than a handle; the hint only
+    // needs to tell the ring from the arrows.
+    if (s.drag.kind === 'sketch-gizmo') return s.drag.handle
+    return null
+  })
   const readout = useRef<HTMLSpanElement>(null)
 
   // The snap readout is written straight into the DOM for the same reason the
@@ -538,8 +1035,14 @@ function DragHint() {
     let frame = 0
     let shown = ''
     const tick = () => {
+      // A turn reports its angle rather than what it caught -- it catches
+      // nothing, and the number is the one thing the pie cannot give exactly.
       const hit = snapIndicator.hit
-      const text = hit ? `Snapped to ${hit.target.kind}` : ''
+      const text = rotationIndicator.active
+        ? `${((rotationIndicator.angle * 180) / Math.PI).toFixed(1)}°`
+        : hit
+          ? `Snapped to ${hit.target.kind}`
+          : ''
       if (text !== shown && readout.current) {
         readout.current.textContent = text
         shown = text
@@ -554,7 +1057,7 @@ function DragHint() {
 
   return (
     <div className={`viewport-hint${valid ? '' : ' viewport-hint-bad'}`}>
-      {hintFor(kind, valid, solid)}
+      {hintFor(kind, valid, solid, handle)}
       <span className="snap-readout" ref={readout} />
     </div>
   )
@@ -610,10 +1113,11 @@ export function Viewport() {
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         // A feature is the finer selection, so it goes first: deleting the
         // whole object out from under a selected sketch would be a surprise.
-        if (s.selectedObjectId && s.selectedFeatureId) {
-          s.removeFeature(s.selectedObjectId, s.selectedFeatureId)
-        } else if (s.selectedObjectId) {
-          s.removeObject(s.selectedObjectId)
+        const selected = primarySelection(s)
+        if (selected && s.selectedFeatureId) {
+          s.removeFeature(selected, s.selectedFeatureId)
+        } else if (selected) {
+          s.removeObject(selected)
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
@@ -639,7 +1143,11 @@ export function Viewport() {
   }, [])
 
   return (
-    <div className="viewport">
+    // Right-drag is a gizmo gesture here, and a native context menu popping up
+    // mid-drag would take the pointer away from it. Suppressed on the whole
+    // viewport rather than on the handles alone, because the menu opens on
+    // pointer-UP -- by which time the pointer has usually left the arrow.
+    <div className="viewport" onContextMenu={(e) => e.preventDefault()}>
       <Canvas
         camera={{ position: [6.2, 4.6, 6.2], fov: 45, near: 0.1, far: 200 }}
         dpr={[1, 2]}
@@ -647,6 +1155,7 @@ export function Viewport() {
       >
         <Scene controlsRef={controlsRef} meshes={meshes} />
       </Canvas>
+      <RotationReadout />
       <DragHint />
     </div>
   )

@@ -638,3 +638,145 @@ function closestOnSegment(p: Vector3, a: Vector3, b: Vector3, out: Vector3): voi
   const t = raw < 0 ? 0 : raw > 1 ? 1 : raw
   out.set(a.x + abx * t, a.y + aby * t, a.z + abz * t)
 }
+
+// --- Axis-constrained snapping ----------------------------------------------
+
+/**
+ * How far along `axis` the dragged solid must slide for one of its corners to
+ * meet something in the scene.
+ *
+ * A separate solve rather than `snapTranslation` filtered afterwards, because
+ * the two ask genuinely different questions. `snapTranslation` finds the
+ * nearest target in any direction and hands back a three-axis correction; an
+ * arrow drag may only slide along its own axis, so taking that correction and
+ * throwing away the components it is not allowed to use would leave the solid
+ * NOT touching what the indicator claims it caught. Here the constraint is
+ * inside the search: every candidate is an offset along the axis, and it only
+ * counts if the corner genuinely lands on the target once it has slid there.
+ *
+ * `axis` must be a unit vector. `sources` are the corners as they sit now.
+ */
+export function snapAlongAxis(
+  sources: Vector3[],
+  targets: SnapTarget[],
+  axis: Vector3,
+  tol: number
+): SnapHit | null {
+  if (sources.length === 0 || targets.length === 0 || !(tol > 0)) return null
+
+  const margin = tol * PRIORITY_MARGIN
+  const reach = sourceBounds(sources, tol)
+  // The sources sweep along the axis, so the cheap bounds prepass has to admit
+  // anything within reach of the swept line, not just of where they sit now.
+  reach.min.addScaledVector(axis, -tol)
+  reach.max.addScaledVector(axis, tol)
+  const box = {
+    min: new Vector3(
+      Math.min(reach.min.x, reach.max.x),
+      Math.min(reach.min.y, reach.max.y),
+      Math.min(reach.min.z, reach.max.z)
+    ),
+    max: new Vector3(
+      Math.max(reach.min.x, reach.max.x),
+      Math.max(reach.min.y, reach.max.y),
+      Math.max(reach.min.z, reach.max.z)
+    ),
+  }
+  const nearby = targets.filter((t) => withinBounds(t, box))
+
+  let best: SnapHit | null = null
+  let bestScore = Infinity
+
+  for (const source of sources) {
+    for (const target of nearby) {
+      const offset = axialOffsetTo(source, target, axis)
+      if (offset === null) continue
+      const slid = source.clone().addScaledVector(axis, offset)
+      // The corner has to actually ARRIVE. An offset exists for almost every
+      // target -- it is the point of closest approach -- and without this the
+      // arrow would catch on anything roughly in front of it.
+      if (distanceToTarget(slid, target) > RESIDUE_TOL) continue
+      const distance = Math.abs(offset)
+      // Same reasoning as `snapTranslation`: a candidate the corner already
+      // sits on wins for free and moves nothing.
+      if (distance > tol || distance < 1e-6) continue
+      const score = distance + PRIORITY[target.kind] * margin
+      if (score >= bestScore) continue
+      bestScore = score
+      best = {
+        delta: axis.clone().multiplyScalar(offset),
+        point: slid,
+        target,
+        distance,
+      }
+    }
+  }
+  return best
+}
+
+/**
+ * How close a slid corner has to land to count as having met its target.
+ *
+ * Not zero: the offsets below are exact for a plane and a point, but an edge is
+ * solved as a clamped line-line approach, where a corner passing a hair to one
+ * side of the segment end is still the catch the user meant.
+ */
+const RESIDUE_TOL = 1e-6
+
+/** Distance from an arrived point to the target it was aimed at. */
+function distanceToTarget(p: Vector3, target: SnapTarget): number {
+  switch (target.kind) {
+    case 'vertex':
+      return p.distanceTo(target.point)
+    case 'edge': {
+      const foot = new Vector3()
+      closestOnSegment(p, target.a, target.b, foot)
+      return p.distanceTo(foot)
+    }
+    case 'face':
+      return Math.abs(p.clone().sub(target.origin).dot(target.normal))
+  }
+}
+
+/**
+ * The slide along `axis` that brings `source` closest to `target`, or null
+ * where the geometry makes the question meaningless -- a plane the axis runs
+ * parallel to has either no solution or every solution, and neither is a snap.
+ */
+function axialOffsetTo(source: Vector3, target: SnapTarget, axis: Vector3): number | null {
+  switch (target.kind) {
+    case 'vertex':
+      // Closest approach of the swept line to a point is its projection.
+      return target.point.clone().sub(source).dot(axis)
+
+    case 'face': {
+      const denom = axis.dot(target.normal)
+      if (Math.abs(denom) < 1e-9) return null
+      return target.origin.clone().sub(source).dot(target.normal) / denom
+    }
+
+    case 'edge': {
+      // Closest approach between the swept line and the edge's line, with the
+      // edge parameter clamped to the segment -- then the offset re-read off
+      // that clamped point, so an approach that fell beyond the edge's end
+      // resolves against the end itself rather than off in space.
+      const ab = target.b.clone().sub(target.a)
+      const lengthSq = ab.lengthSq()
+      if (lengthSq < 1e-12) return target.a.clone().sub(source).dot(axis)
+
+      const w0 = source.clone().sub(target.a)
+      const b = axis.dot(ab)
+      const d = axis.dot(w0)
+      const e = ab.dot(w0)
+      const denom = lengthSq - b * b
+      // Parallel: every point of the swept line is equidistant, so the nearest
+      // edge point is simply the foot of the source.
+      const u =
+        Math.abs(denom) < 1e-12
+          ? Math.min(1, Math.max(0, -e / lengthSq))
+          : Math.min(1, Math.max(0, (b * d - e) / -denom))
+      const point = target.a.clone().addScaledVector(ab, u)
+      return point.sub(source).dot(axis)
+    }
+  }
+}

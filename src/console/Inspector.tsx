@@ -1,9 +1,11 @@
+import { MIN_SHAPE, maxShapeSize } from '../geometry/dimensions'
 import { hostSurfaceFor } from '../geometry/surfaces'
 import { isCurvedAnchor, shapeRadius } from '../geometry/types'
-import type { BaseSolid, Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
+import type { Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
 import { selectedFeature, selectedObject, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { NumberField, Section, Vec2Field, Vec3Field } from './Field'
+import { Tip } from './Tip'
 
 const FACE_NAMES = ['+X', '-X', '+Y', '-Y', '+Z', '-Z']
 
@@ -74,22 +76,6 @@ function maxTiltDeg(anchor: SurfaceAnchor, shape: Shape2D, depth: number): numbe
   return Math.max(MIN_TILT_DEG, Math.min(MAX_TILT_DEG, Math.floor(limit) - 1))
 }
 
-/** Sensible upper bound for a sketch, so sliders stay usable. */
-function maxShapeSize(base: BaseSolid): number {
-  switch (base.kind) {
-    case 'box':
-      return Math.min(...base.size) / 2
-    case 'sphere':
-    case 'platonic':
-    case 'cylinder':
-    case 'cone':
-    case 'capsule':
-    case 'pyramid':
-    case 'prism':
-      return base.radius * 0.9
-  }
-}
-
 export function Inspector() {
   const object = useDoc(selectedObject)
   const feature = useDoc(selectedFeature)
@@ -124,7 +110,7 @@ export function Inspector() {
         <NumberField
           label="Radius"
           value={feature.shape.r}
-          min={0.02}
+          min={MIN_SHAPE}
           max={sizeLimit}
           onChange={(r) => patch({ shape: { type: 'circle', r } })}
         />
@@ -135,7 +121,7 @@ export function Inspector() {
           <NumberField
             label="Width"
             value={feature.shape.w}
-            min={0.02}
+            min={MIN_SHAPE}
             max={sizeLimit * 2}
             onChange={(w) =>
               patch({ shape: { ...feature.shape, type: 'rect', w } as Feature['shape'] })
@@ -144,7 +130,7 @@ export function Inspector() {
           <NumberField
             label="Height"
             value={feature.shape.h}
-            min={0.02}
+            min={MIN_SHAPE}
             max={sizeLimit * 2}
             onChange={(h) =>
               patch({ shape: { ...feature.shape, type: 'rect', h } as Feature['shape'] })
@@ -158,7 +144,7 @@ export function Inspector() {
           <NumberField
             label="Radius"
             value={feature.shape.r}
-            min={0.02}
+            min={MIN_SHAPE}
             max={sizeLimit}
             onChange={(r) =>
               patch({ shape: { ...feature.shape, type: 'ngon', r } as Feature['shape'] })
@@ -187,6 +173,7 @@ export function Inspector() {
         max={360}
         step={1}
         decimals={0}
+        resetTo={0}
         onChange={(deg) => patch({ rotation: (deg * Math.PI) / 180 })}
       />
 
@@ -225,7 +212,13 @@ export function Inspector() {
         <>
           {/* Vec3Field spends .subhead on its own label, so a group heading has
               to sit a weight above it or "End face" reads as an empty field. */}
-          <h3 className="section-title">End face</h3>
+          <h3 className="section-title">
+            End face
+            <Tip>
+              Or drag the end face itself in the viewport: the base of the
+              extrusion stays put and the pillar leans to follow.
+            </Tip>
+          </h3>
 
           {/* The slider's own bound reads one axis at a time, so tilting two or
               three of them can still walk past what the sweep will accept. This
@@ -240,6 +233,7 @@ export function Inspector() {
 
           <Vec3Field
             label="Tilt"
+            resetTo={0}
             value={feature.tilt}
             min={-tiltLimit}
             max={tiltLimit}
@@ -268,10 +262,6 @@ export function Inspector() {
             </button>
           </div>
 
-          <p className="hint">
-            Or drag the end face itself in the viewport: the base of the
-            extrusion stays put and the pillar leans to follow.
-          </p>
         </>
       )}
 

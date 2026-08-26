@@ -8,7 +8,7 @@
  *
  * Run: npx tsx scripts/export-check.ts
  */
-import { BufferGeometry, Vector3 } from 'three'
+import { BufferGeometry } from 'three'
 
 // GLTFExporter marshals its binary chunk through FileReader, which browsers
 // provide natively but Node does not expose. Polyfilling it here is purely so
@@ -80,6 +80,7 @@ function object(
     transform: { ...IDENTITY_TRANSFORM, position },
     features,
     cuts: [],
+    parts: [],
   }
 }
 
@@ -321,6 +322,7 @@ console.log('\n5. Every object, baked through its own transform')
       transform: { position: [0, 4, 0], rotation: [0.3, 0.7, -0.2] },
       features: [CIRCLE_BOSS],
       cuts: [],
+      parts: [],
     })
   )
   resetEvaluator()

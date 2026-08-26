@@ -1,8 +1,9 @@
 import type { Feature, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
-import { useDoc } from '../store/docStore'
+import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { Section } from './Field'
+import { MergeIcon } from './navIcons'
 
 function describe(f: Feature): string {
   const shape =
@@ -26,9 +27,47 @@ function objectLabel(o: SceneObject): string {
  * not a log of past actions -- toggling or deleting any row re-derives the
  * geometry.
  */
+/**
+ * Weld the selected objects into one.
+ *
+ * It lives in the Scene section because that is where the selection is legible:
+ * the rows it is about to fold together are the rows directly beneath it, and a
+ * button in the toolbar was a long way from the list that says what it will
+ * take. It appears only when it would do something -- two or more objects
+ * picked out -- and names the count, because a merge is one undo step and the
+ * user should know how big a step it is before taking it.
+ *
+ * The FIRST object picked is the one the rest merge into. It keeps its id, its
+ * transform, its features and its cuts; the others become parts inside it, with
+ * their placements rewritten into its local space so nothing moves.
+ */
+export function MergeButton() {
+  const selected = useDoc((s) => s.selectedObjectIds)
+  const mergeObjects = useDoc((s) => s.mergeObjects)
+
+  if (selected.length < 2) return null
+
+  return (
+    <button
+      type="button"
+      className="btn btn-primary merge-btn"
+      title="Weld the selected objects into the first one picked. They keep their own bases, features and cuts as parts inside it."
+      onClick={() => mergeObjects(selected)}
+    >
+      <span className="merge-btn-icon" aria-hidden>
+        <MergeIcon />
+      </span>
+      Merge {selected.length} objects
+    </button>
+  )
+}
+
 export function SceneTree() {
   const objects = useDoc((s) => s.doc.objects)
-  const selectedObjectId = useDoc((s) => s.selectedObjectId)
+  const selectedObjectId = useDoc(primarySelection)
+  const selectedObjectIds = useDoc((s) => s.selectedObjectIds)
+  const toggleObjectSelection = useDoc((s) => s.toggleObjectSelection)
+  const chosen = new Set(selectedObjectIds)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const selectObject = useDoc((s) => s.selectObject)
   const selectFeature = useDoc((s) => s.selectFeature)
@@ -50,6 +89,7 @@ export function SceneTree() {
 
   return (
     <Section title="Scene" hint={`${objects.length}`}>
+      <MergeButton />
       <ul className="tree">
         {objects.map((o, i) => {
           const cutFailed = o.cuts.some((c) => failed.includes(c.id))
@@ -57,9 +97,11 @@ export function SceneTree() {
             <li key={o.id} className="tree-object">
               <div
                 className={`tree-object-head${
-                  o.id === selectedObjectId ? ' tree-selected' : ''
-                }`}
-                onClick={() => selectObject(o.id)}
+                  chosen.has(o.id) ? ' tree-selected' : ''
+                }${o.id === selectedObjectId ? ' tree-primary' : ''}`}
+                onClick={(e) =>
+                  e.shiftKey ? toggleObjectSelection(o.id) : selectObject(o.id)
+                }
               >
                 <span className="feature-index">{i + 1}</span>
                 <span className="tree-object-name">{objectLabel(o)}</span>
@@ -69,6 +111,18 @@ export function SceneTree() {
                     title={`${o.features.length} feature${o.features.length === 1 ? '' : 's'}`}
                   >
                     {o.features.length}f
+                  </span>
+                )}
+                {/* A merged object is ONE row, because it is one object. The
+                    chip is the only thing saying that more than one solid went
+                    into it -- without it a scene that merged two cubes looks
+                    like a scene that lost one. */}
+                {o.parts.length > 0 && (
+                  <span
+                    className="section-hint tree-merged"
+                    title={`${o.parts.length + 1} solids merged into one object`}
+                  >
+                    {o.parts.length + 1} merged
                   </span>
                 )}
                 {/* Two halves of a cut solid look like two unrelated objects

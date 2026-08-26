@@ -70,6 +70,7 @@ function object(
       rotation: opts.turn ?? IDENTITY_TRANSFORM.rotation,
     },
     features: opts.features ?? [],
+    parts: [],
     cuts,
   }
 }

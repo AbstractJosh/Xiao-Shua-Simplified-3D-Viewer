@@ -13,7 +13,7 @@ import {
 } from '../geometry/prism'
 import type { BaseSolid, Feature, SceneObject } from '../geometry/types'
 import { shapeRadius } from '../geometry/types'
-import { useDoc } from '../store/docStore'
+import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { COLORS } from './SketchLayer'
 
 /** Lift off the created face; enough to clear z-fighting with the solid's cap. */
@@ -91,7 +91,7 @@ export function FaceHandle({
   const startMovingFace = useDoc((s) => s.startMovingFace)
   const active = useDoc(
     (s) =>
-      s.selectedObjectId === object.id &&
+      primarySelection(s) === object.id &&
       s.selectedFeatureId === feature.id &&
       feature.depth > 0
   )

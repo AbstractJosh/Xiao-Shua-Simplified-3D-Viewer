@@ -1265,3 +1265,55 @@ export function hostSurfaceFor(base: BaseSolid, anchor: SurfaceAnchor): SurfaceD
 export function anchorIsCurved(anchor: SurfaceAnchor): boolean {
   return isCurvedAnchor(anchor)
 }
+
+/**
+ * Whether two anchors name the same patch of the same surface.
+ *
+ * Only the multi-patch kinds carry a face index; for every other kind the patch
+ * IS the surface, so matching `on` is the whole question.
+ */
+export function samePatch(a: SurfaceAnchor, b: SurfaceAnchor): boolean {
+  if (a.on !== b.on) return false
+  if (a.on === 'box-face' && b.on === 'box-face') return a.face === b.face
+  if (a.on === 'planar-face' && b.on === 'planar-face') return a.face === b.face
+  return true
+}
+
+/**
+ * Slide a sketch across the surface it already sits on, by an offset measured
+ * in that surface's own tangent frame.
+ *
+ * This is the parametric half of the sketch gizmo. `project` maps a tangent
+ * offset back onto the surface -- straight along the tangent on a flat face,
+ * radially re-seated on a sphere -- and `anchorFromHit` turns the point that
+ * lands there back into an anchor, so a slide across a curved host follows the
+ * curvature instead of leaving it.
+ *
+ * Null when the offset walks off the edge of the patch. Returning the
+ * neighbouring face instead would be worse than doing nothing: the gesture
+ * promised to move the sketch ALONG the face it is on, and a sketch that
+ * suddenly wrapped around a corner is not that. The caller holds its last good
+ * anchor, and `clampAnchor` has usually pinned the sketch at its limit well
+ * before the raw point ever leaves the face.
+ */
+export function slideAnchor(
+  host: SurfaceDef,
+  anchor: SurfaceAnchor,
+  u: number,
+  v: number
+): SurfaceAnchor | null {
+  const { position } = host.project(anchor, u, v)
+
+  // A derived patch has no parameterisation to classify against -- the anchor
+  // IS a point and a normal -- so the slid point is the answer directly.
+  if (anchor.on === 'derived') {
+    return {
+      on: 'derived',
+      point: [position.x, position.y, position.z],
+      normal: anchor.normal,
+    }
+  }
+
+  const next = host.anchorFromHit(position)
+  return next && samePatch(next, anchor) ? next : null
+}

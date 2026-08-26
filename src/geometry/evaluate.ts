@@ -135,7 +135,10 @@ function featureKey(f: Feature): string {
 
 /** One key per slot: base, one per feature, then the cuts. */
 function slotKeys(obj: SceneObject): string[] {
-  const keys: string[] = [JSON.stringify(obj.base)]
+  // Slot zero is the welded union, so it has to name the parts as well as the
+  // base -- otherwise merging something would reuse a cached brush that predates
+  // it and the new part would simply never appear.
+  const keys: string[] = [JSON.stringify(obj.base) + `|parts:${JSON.stringify(obj.parts)}`]
   for (const f of obj.features) keys.push(`${keys[keys.length - 1]}|${featureKey(f)}`)
   // Cuts hang off the end of the same chain, so retweaking a cut replays only
   // the boolean cut, and retweaking a feature never replays more than it must.
@@ -174,6 +177,52 @@ function baseBrush(base: BaseSolid): Brush | null {
     console.warn(`[${LOG_TAG}] base solid ${base.kind} failed to build`, err)
     return null
   }
+}
+
+/**
+ * The object's own primitive with every merged part welded onto it.
+ *
+ * A part is a whole SceneObject in this object's local space, so it is
+ * evaluated exactly the way a top-level object is -- base, then its features,
+ * then its cuts -- and only then baked through its local transform and unioned
+ * in. Recursion falls out of that: a part that was itself a merge brings its
+ * own parts with it, and nothing had to be flattened at merge time.
+ *
+ * This is slot ZERO of the prefix cache, which is what makes the cost sane: a
+ * merged object rebuilds its union only when the merge itself changes, not when
+ * a feature on top of it is dragged.
+ */
+function mergedBase(obj: SceneObject): { brush: Brush | null; failed: string[] } {
+  const base = baseBrush(obj.base)
+  if (!base || obj.parts.length === 0) return { brush: base, failed: base ? [] : [obj.id] }
+
+  const failed: string[] = []
+  let current = base
+
+  for (const part of obj.parts) {
+    let welded: BufferGeometry | null = null
+    let tool: Brush | null = null
+    try {
+      // `evaluateObject` hands back a geometry the caller owns, which is what
+      // lets this dispose it once the brush has copied it.
+      const evaluated = evaluateObject(part)
+      failed.push(...evaluated.failed)
+      welded = bakeWorld(evaluated.geometry, objectMatrix(part.transform))
+      evaluated.geometry.dispose()
+      tool = makeBrush(welded)
+      const next = csg(current, tool, ADDITION)
+      disposeBrush(current)
+      current = next
+    } catch (err) {
+      console.warn(`[${LOG_TAG}] merged part ${part.id} failed to weld`, err)
+      failed.push(part.id)
+    } finally {
+      if (tool) disposeBrush(tool)
+      else welded?.dispose()
+    }
+  }
+
+  return { brush: current, failed }
 }
 
 function applyFeature(base: BaseSolid, feature: Feature, prev: Brush): Step {
@@ -230,12 +279,12 @@ function evaluateCached(obj: SceneObject): ObjectEval {
   caches.set(obj.id, slots)
 
   if (slots.length === 0) {
-    const base = baseBrush(obj.base)
-    if (!base) {
+    const welded = mergedBase(obj)
+    if (!welded.brush) {
       caches.delete(obj.id)
       return { id: obj.id, geometry: emptyGeometry(), failed: [obj.id] }
     }
-    slots.push({ key: keys[0], brush: base, owned: true, failed: [] })
+    slots.push({ key: keys[0], brush: welded.brush, owned: true, failed: welded.failed })
   }
 
   for (let i = slots.length - 1; i < obj.features.length; i++) {
@@ -293,11 +342,11 @@ export function evaluateObject(obj: SceneObject): {
   geometry: BufferGeometry
   failed: string[]
 } {
-  const base = baseBrush(obj.base)
-  if (!base) return { geometry: emptyGeometry(), failed: [obj.id] }
+  const welded = mergedBase(obj)
+  if (!welded.brush) return { geometry: emptyGeometry(), failed: [obj.id] }
 
-  const failed: string[] = []
-  let current = base
+  const failed: string[] = [...welded.failed]
+  let current = welded.brush
 
   for (const feature of obj.features) {
     const step = applyFeature(obj.base, feature, current)

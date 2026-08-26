@@ -105,7 +105,10 @@ function SimpleChip({
  */
 export function ShapePalette() {
   return (
-    <Section title="Shapes" hint="drag onto the object">
+    <Section
+      title="Shapes"
+      tip="Drag a shape onto any object in the scene. It lands on the surface under the pointer, flat faces and curved ones alike, and becomes a boss or a pocket once it has a depth."
+    >
       <div className="palette">
         <SimpleChip label="Circle" shape={{ type: 'circle', r: 0.3 }}>
           <circle cx="16" cy="16" r="12" />

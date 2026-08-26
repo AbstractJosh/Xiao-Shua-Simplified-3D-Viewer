@@ -3,6 +3,7 @@ import type { BufferGeometry } from 'three'
 import {
   collectSnapTargets,
   objectSnapTargets,
+  snapAlongAxis,
   snapSinglePoint,
   snapTranslation,
 } from '../geometry/snap'
@@ -291,4 +292,33 @@ export function resolvePoint(p: Vector3, excludeObjectId?: string): Vector3 {
 
   snapIndicator.hit = hit
   return hit.point.clone()
+}
+
+/**
+ * The axis-constrained case, for a gizmo arrow.
+ *
+ * Separate from `resolveObjectMove` rather than a flag on it, because the
+ * question is genuinely different: that one asks "where is the nearest thing in
+ * any direction", this one asks "how far along THIS line until a corner meets
+ * something". Answering the first and then discarding the components the arrow
+ * is not allowed to use would land the solid short of the target while the
+ * indicator claimed contact.
+ */
+export function resolveAxisMove(objectId: string, desired: Vec3, axis: Vector3): Vec3 {
+  snapIndicator.hit = null
+
+  const { snap, snapDistance } = useTools.getState()
+  if (!snap) return desired
+
+  const entry = entryFor(objectId)
+  if (!entry) return desired
+
+  const matrix = objectMatrix({ position: desired, rotation: entry.transform.rotation })
+  const sources = localCornersFor(entry.geometry).map((p) => p.clone().applyMatrix4(matrix))
+
+  const hit = snapAlongAxis(sources, snapTargets(objectId), axis, snapDistance)
+  if (!hit) return desired
+
+  snapIndicator.hit = hit
+  return [desired[0] + hit.delta.x, desired[1] + hit.delta.y, desired[2] + hit.delta.z]
 }

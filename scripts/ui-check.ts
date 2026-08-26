@@ -15,6 +15,8 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
+import { Vector3 } from 'three'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createElement } from 'react'
 import type { ComponentType } from 'react'
@@ -50,22 +52,35 @@ console.warn = (...args: unknown[]) => {
   realWarn(...args)
 }
 
-import { ExportPanel } from '../src/console/ExportPanel'
+import { ExportTools } from '../src/console/ExportTools'
 import { Inspector } from '../src/console/Inspector'
+import { NavBar } from '../src/console/NavBar'
+import { CutActions, CutTool, SnapTool } from '../src/console/NavTools'
 import { ObjectPanel } from '../src/console/ObjectPanel'
-import { SceneTree } from '../src/console/SceneTree'
+import { PlacementPanel } from '../src/console/PlacementPanel'
+import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { SolidPalette } from '../src/console/SolidPalette'
 import { SOLID_TEMPLATES } from '../src/console/solidIcons'
-import { ToolsPanel } from '../src/console/ToolsPanel'
+import {
+  MAX_SIZE,
+  maxShapeSize,
+  resizeAlongAxis,
+  scaleShape,
+  scaleUniform,
+} from '../src/geometry/dimensions'
 import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
-import { surfaceFor } from '../src/geometry/surfaces'
+import { AXIS_COLORS, AXIS_CSS_VARS } from '../src/viewport/axisColors'
+import { objectMatrix } from '../src/geometry/transform'
+import { turnedRotation } from '../src/viewport/gizmoDrag'
+import type { TurnGrab } from '../src/viewport/gizmoDrag'
+import { hostSurfaceFor, slideAnchor, surfaceFor } from '../src/geometry/surfaces'
 import { defaultBaseFor, defaultShape } from '../src/geometry/types'
-import type { BaseSolid, Shape2D, SurfaceAnchor } from '../src/geometry/types'
+import type { BaseSolid, Shape2D, SurfaceAnchor, Vec3 } from '../src/geometry/types'
 import { signedVolume } from '../src/geometry/volume'
-import { useDoc } from '../src/store/docStore'
+import { selectedObjectId as primarySelection, useDoc } from '../src/store/docStore'
 import { useEvalStatus } from '../src/store/evalStore'
-import { cutPlaneNormal, useTools } from '../src/store/toolStore'
+import { CUT_SIZE_MAX, cutPlaneNormal, useTools } from '../src/store/toolStore'
 
 let failures = 0
 function check(label: string, ok: boolean, detail = '') {
@@ -99,6 +114,18 @@ function hides(label: string, markup: string, needle: string) {
   const ok = !markup.includes(needle)
   check(label, ok, ok ? '' : `unexpectedly present: ${JSON.stringify(needle)}`)
 }
+/**
+ * Whether a named reset control is standing down.
+ *
+ * Reads the rendered attribute order rather than guessing at it: React emits
+ * `class`, then `title`, then `aria-label`, then the boolean -- and an earlier
+ * version of this check looked for `class="reset-btn" disabled=""`, matched
+ * nothing, and reported every button as live while the markup said otherwise.
+ */
+function resetIsDown(markup: string, name: string): boolean {
+  return markup.includes(`aria-label="Reset ${name}" disabled=""`)
+}
+
 function occurrences(markup: string, needle: string): number {
   return markup.split(needle).length - 1
 }
@@ -146,7 +173,7 @@ function dragIn(base: BaseSolid, x: number, z: number): string {
   doc().updatePlacingSolid(null)
   doc().updatePlacingSolid(grounded(base, x, z))
   doc().commitPlacingSolid()
-  return doc().selectedObjectId ?? ''
+  return primarySelection(useDoc.getState()) ?? ''
 }
 
 type Measured = { volume: number; min: number[]; max: number[]; failed: string[] }
@@ -164,6 +191,38 @@ function measure(id: string): Measured {
     max: box ? box.max.toArray() : [],
     failed: result.failed,
   }
+}
+
+/** Readers for the gizmo section: a `BaseSolid` is a union, and narrowing it
+ *  inline at every call would bury the claim each assertion is making. */
+function baseOf(objectId: string) {
+  const object = doc().doc.objects.find((o) => o.id === objectId)
+  if (!object) throw new Error(`no object ${objectId}`)
+  return object.base
+}
+function sizeOf(objectId: string, axis: 0 | 1 | 2): number {
+  const base = baseOf(objectId)
+  return base.kind === 'box' ? base.size[axis] : NaN
+}
+function positionOf(objectId: string): Vec3 {
+  const object = doc().doc.objects.find((o) => o.id === objectId)
+  if (!object) throw new Error(`no object ${objectId}`)
+  return object.transform.position
+}
+function shapeOf(objectId: string, featureId: string) {
+  const feature = doc()
+    .doc.objects.find((o) => o.id === objectId)
+    ?.features.find((f) => f.id === featureId)
+  if (!feature) throw new Error(`no feature ${featureId}`)
+  return feature.shape
+}
+function rotationOf(objectId: string): Vec3 {
+  const object = doc().doc.objects.find((o) => o.id === objectId)
+  if (!object) throw new Error(`no object ${objectId}`)
+  return object.transform.rotation
+}
+function depthOf(objectId: string): number {
+  return doc().doc.objects.find((o) => o.id === objectId)?.features[0]?.depth ?? -1
 }
 
 // --- 1. Building a scene off the solid palette -----------------------------
@@ -200,7 +259,7 @@ const docAfterPlacing = doc().doc
       objects[2].base.kind === 'prism' &&
       objects[2].base.sides === 8
   )
-  check('the last one placed is the one selected', doc().selectedObjectId === sphereId)
+  check('the last one placed is the one selected', primarySelection(useDoc.getState()) === sphereId)
 
   // Every primitive is modelled centred on its own origin, so "rests on the
   // grid" is a claim about the drop position, not about the geometry.
@@ -239,10 +298,14 @@ doc().selectObject(pyramidId)
   hides('it is past the "nothing selected" branch', panel, 'Nothing selected')
   shows('it names the selected solid', panel, 'Triangular pyramid')
   // The drop position, read back through the number boxes: 2.5 / 0.9 / -1.25.
-  shows('Position is shown', panel, '>Position<')
-  shows('the X box carries the drop position', panel, 'min="-8" max="8" step="0.05" value="2.5"')
-  shows('and the Z box the other axis', panel, 'min="-8" max="8" step="0.05" value="-1.25"')
-  shows('Rotation is shown', panel, '>Rotation<')
+  const placed = markupOf('PlacementPanel', PlacementPanel)
+  shows('Position is shown', placed, '>Position<')
+  shows('the X box carries the drop position', placed, 'min="-8" max="8" step="0.05" value="2.5"')
+  shows('and the Z box the other axis', placed, 'min="-8" max="8" step="0.05" value="-1.25"')
+  shows('Rotation is shown', placed, '>Rotation<')
+  // Placement is ONE panel for both things that have one. With nothing armed it
+  // is describing the object.
+  shows('and it says what it is describing', placed, '>object<')
   shows('dimensions are shown', panel, '>Dimensions<')
   shows('a pyramid offers a side count', panel, '>Sides<')
   shows('and the current count is the active chip', panel, 'class="seg-btn seg-active">3<')
@@ -273,13 +336,41 @@ doc().selectObject(pyramidId)
 }
 
 {
-  const panel = markupOf('ToolsPanel', ToolsPanel)
-  shows('it has a Snapping group', panel, '>Snapping<')
-  shows('snap is on by default', panel, 'aria-checked="true"')
-  shows('with a distance field', panel, '>Distance<')
-  shows('it has a Cut group', panel, '>Cut<')
-  shows('with the plane toggle', panel, '>Cut plane<')
-  hides('and no plane controls until it is armed', panel, '>Guide size<')
+  // The tools live in the bar across the top, not in the console: they are how
+  // you work rather than what you have built, and the two are kept apart.
+  const bar = markupOf('NavBar', NavBar)
+  shows('the bar carries the snap tool', bar, '>Snap<')
+  shows('and the cut tool', bar, '>Cut<')
+  shows('and the export buttons', bar, '>.glb<')
+  shows('and the help button', bar, '>Help<')
+
+  const snap = markupOf('SnapTool', SnapTool)
+  shows('snapping is on by default', snap, 'aria-pressed="true"')
+  // One click engages the tool; the parameter is the rare act and sits behind
+  // the caret, so it must NOT be occupying the bar at rest.
+  hides('its distance stays behind the caret', snap, '>Distance<')
+  tools().setOpenPanel('snap')
+  shows('which opens on demand', markupOf('SnapTool (open)', SnapTool), '>Distance<')
+  tools().setOpenPanel(null)
+
+  const cut = markupOf('CutTool', CutTool)
+  shows('the cut tool rests disarmed', cut, 'aria-pressed="false"')
+  // Snap and Cut carry no hover bubble. They are the two the user reaches for
+  // constantly, and a tooltip that appears every time the pointer crosses them
+  // is noise rather than help.
+  hides('and no hover bubble', cut, 'nav-tip')
+  hides('nor does snap', markupOf('SnapTool (no tip)', SnapTool), 'nav-tip')
+  // The toolbar button is now nothing but a switch: no caret, no panel, and
+  // therefore nothing of its own hanging over the viewport.
+  hides('and carries no panel at all', cut, 'nav-caret')
+  // Not `markupOf`, which counts an empty render as a failure: rendering
+  // nothing at all is exactly the claim here, and it is a stronger one than
+  // "the markup happens not to contain a button".
+  check(
+    'and the bar carries no cut actions until it is armed',
+    renderToStaticMarkup(createElement(CutActions)) === '',
+    'disarmed CutActions renders nothing'
+  )
 }
 
 {
@@ -304,9 +395,13 @@ doc().selectObject(pyramidId)
 }
 
 {
-  const panel = markupOf('ExportPanel', ExportPanel)
+  const panel = markupOf('ExportTools', ExportTools)
   shows('GLB is offered', panel, '>.glb<')
   shows('OBJ is offered', panel, '>.obj<')
+  // The caveat that used to be a permanent line under the buttons is now a
+  // hover bubble, but it is still in the markup -- which is the point: hiding
+  // it visually must not mean deleting it.
+  shows('and it still says what an export leaves out', panel, 'Sketch overlays are not included')
 }
 
 // --- 3. A sketch, then an extrusion ---------------------------------------
@@ -320,7 +415,7 @@ doc().commitPlacing()
 
 const featureId = doc().selectedFeatureId ?? ''
 const docAfterSketch = doc().doc
-check('the sketch landed on the cube', doc().selectedObjectId === cubeId)
+check('the sketch landed on the cube', primarySelection(useDoc.getState()) === cubeId)
 check('and it is selected', featureId !== '', featureId)
 
 {
@@ -514,16 +609,36 @@ tools().setCutActive(true)
 // The prism is 1.8 tall and rests on the grid, so this plane is halfway up it.
 tools().setCutPlane({ position: [-3, 0.9, 0], rotation: [0, 0, 0] })
 {
-  const panel = markupOf('ToolsPanel (armed)', ToolsPanel)
-  shows('arming the tool reveals the plane controls', panel, '>Guide size<')
-  // The size control sizes the drawn square, not the cut. `applyCut` uses an
-  // unbounded plane, so a panel that let this read as an aiming control would
-  // be promising a limit the geometry never honours.
-  shows('and says the square does not limit the cut', panel, 'cut plane itself is unbounded')
-  shows('with a position', panel, 'min="-6" max="6" step="0.05" value="-3"')
-  shows('and a tilt', panel, '>Tilt<')
+  // Arming puts the two ACTIONS in the bar, a short travel from the gizmo that
+  // just aimed the plane. The plane's numbers stay in the console.
+  const panel = markupOf('CutActions (armed)', CutActions)
+  hides('the actions carry no placement of their own', panel, '>Position<')
+  // The guide square is sized by the gizmo's ring alone now; it was the last
+  // reason the tool had a settings panel.
+  hides('and no guide size slider', panel, '>Guide size<')
+
+  // Placement follows the armed plane rather than the selection, the same way
+  // the gizmo does -- the panel driving the arrows has to describe what they
+  // are moving.
+  const placed = markupOf('PlacementPanel (cut armed)', PlacementPanel)
+  shows('the placement panel switches to the plane', placed, '>cut plane<')
+  shows('offering its position', placed, '>Position<')
+  shows('and its tilt, named as a tilt', placed, '>Tilt<')
+  hides('rather than as a rotation', placed, '>Rotation<')
+  // The plane's own range, not the object's: one panel, two sets of bounds.
+  shows('with the plane range, not the object one', placed, 'min="-6" max="6" step="0.05" value="-3"')
   shows('it says what it will cut', panel, 'Cuts the selected object')
-  shows('and offers the button', panel, '>Cut</button>')
+  shows('and offers the button', panel, '>Apply cut</button>')
+  shows('and the one that re-aims the plane', panel, '>Reset plane</button>')
+
+  // Deselect and the button says out loud that it is about to cut everything.
+  // On a 46px bar the target sentence lives in a title; the COUNT does not,
+  // because "this will cut all of them" is the half that must not be missed.
+  doc().selectObject(null)
+  const wide = markupOf('CutActions (nothing selected)', CutActions)
+  shows('with nothing selected it warns it will cut the lot', wide, 'Apply cut · all ')
+  shows('and says how many that is', wide, 'Cuts every object in the scene')
+  doc().selectObject(prismId)
 }
 
 {
@@ -573,9 +688,11 @@ console.log('\n6. Undo, redo, and what stays out of history')
   check('toggling snap adds no undo entry', doc().past.length === before, `${doc().past.length} vs ${before}`)
   check('and does not touch the document', doc().doc === docAfterCut)
 
-  const panel = markupOf('ToolsPanel (snap off)', ToolsPanel)
-  shows('the panel shows snap off', panel, 'aria-checked="false"')
+  tools().setOpenPanel('snap')
+  const panel = markupOf('SnapTool (snap off)', SnapTool)
+  shows('the button shows snap off', panel, 'aria-pressed="false"')
   shows('and greys out its distance field', panel, 'class="tool-group" disabled=""')
+  tools().setOpenPanel(null)
   tools().setSnap(true)
 }
 
@@ -655,8 +772,542 @@ console.log('\n6. Undo, redo, and what stays out of history')
   check('leaving history the depth it was', doc().past.length === before, `${doc().past.length} vs ${before}`)
 }
 
-// --- 7. Every solid, every anchor -----------------------------------------
-console.log('\n7. The two data-driven panels across every solid and anchor')
+// --- 7. The gizmo, through the store it drives -----------------------------
+console.log('\n7. The gizmo edits the document the same way the panel does')
+
+/**
+ * Its own scene rather than the one section 6 leaves behind: these assertions
+ * are about exact dimensions and exact history depths, and inheriting a
+ * document that earlier sections have cut, undone and replayed would make them
+ * read as claims about that history instead of about the gizmo.
+ */
+resetEvaluator()
+doc().reset()
+
+const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
+
+{
+  const entries = doc().past.length
+
+  doc().selectObject(gizmoCube)
+  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0 })
+  check('grabbing an arrow starts a gizmo drag', doc().drag.kind === 'gizmo', doc().drag.kind)
+  check('and pressing alone touches no history', doc().past.length === entries, `${doc().past.length}`)
+
+  // Every frame recomputes from the GRAB, so the store is handed a fresh
+  // ABSOLUTE base each time rather than an increment. Three frames of one
+  // gesture must still cost exactly one undo step.
+  const grabbed = baseOf(gizmoCube)
+  for (const travel of [0.1, 0.25, 0.4]) {
+    doc().resizeObjectTo(resizeAlongAxis(grabbed, 0, travel))
+  }
+  // travel 0.4 on a box side: the surface moves 0.4, the side grows by 0.8.
+  near('the drag resized the solid', sizeOf(gizmoCube, 0), 2.8, 1e-9)
+  check('and the other sides are untouched', sizeOf(gizmoCube, 1) === 2 && sizeOf(gizmoCube, 2) === 2, `${sizeOf(gizmoCube, 1)}, ${sizeOf(gizmoCube, 2)}`)
+  check(
+    'three frames cost one undo entry, not three',
+    doc().past.length === entries + 1,
+    `${doc().past.length - entries}`
+  )
+
+  doc().endDrag()
+  doc().undo()
+  near('so one undo puts the whole gesture back', sizeOf(gizmoCube, 0), 2, 1e-9)
+}
+
+{
+  // The left-drag half of an arrow, which is a genuinely different code path
+  // from the right-drag half: sizing goes through `resizeObjectTo`, moving goes
+  // through `moveObjectTo` -- the same action the body drag uses. That action
+  // guarded on the body-drag kind alone, so every arrow silently did nothing
+  // while the ring and the right-drag worked, which is exactly the shape of bug
+  // a suite that only exercised sizing could not see.
+  const entries = doc().past.length
+  const start = positionOf(gizmoCube)
+
+  doc().startGizmo(gizmoCube, { mode: 'move', axis: 0 })
+  doc().moveObjectTo([start[0] + 0.75, start[1], start[2]])
+  near('dragging an arrow moves the object', positionOf(gizmoCube)[0], start[0] + 0.75, 1e-9)
+  check(
+    'along that axis and no other',
+    positionOf(gizmoCube)[1] === start[1] && positionOf(gizmoCube)[2] === start[2],
+    `${positionOf(gizmoCube)[1]}, ${positionOf(gizmoCube)[2]}`
+  )
+  check('costing one undo entry', doc().past.length === entries + 1, `${doc().past.length - entries}`)
+
+  // A frame that resolves back to where the object already sits is not an edit.
+  const held = doc().doc
+  doc().moveObjectTo([start[0] + 0.75, start[1], start[2]])
+  check('a frame that moves nothing writes nothing', doc().doc === held)
+
+  doc().endDrag()
+  doc().undo()
+  near('and undo returns it', positionOf(gizmoCube)[0], start[0], 1e-9)
+
+  // Outside a gizmo or body drag the action must still refuse: it is the live
+  // half of a gesture, and the panel's typed values go through setObjectTransform.
+  const idle = doc().doc
+  doc().moveObjectTo([99, 99, 99])
+  check('but it does nothing with no drag running', doc().doc === idle)
+}
+
+{
+  // A resize pinned at the limit keeps arriving with the same numbers for as
+  // long as the pointer keeps going. Those frames are not edits, and each one
+  // that slipped through would be an undo step that reverts nothing.
+  const grabbed = baseOf(gizmoCube)
+  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0 })
+  doc().resizeObjectTo(resizeAlongAxis(grabbed, 0, 40))
+  near('a runaway drag stops at the ceiling', sizeOf(gizmoCube, 0), MAX_SIZE, 1e-9)
+
+  const pinned = doc().doc
+  const entries = doc().past.length
+  doc().resizeObjectTo(resizeAlongAxis(grabbed, 0, 60))
+  doc().resizeObjectTo(resizeAlongAxis(grabbed, 0, 80))
+  check('and then stops writing entirely', doc().doc === pinned)
+  check('adding no further history', doc().past.length === entries, `${doc().past.length}`)
+
+  doc().endDrag()
+  doc().undo()
+
+  // The ceiling the gizmo clamps to is the one the panel draws, because both
+  // read it from geometry/dimensions rather than each keeping its own copy.
+  doc().selectObject(gizmoCube)
+  shows('the panel offers that same ceiling', markupOf('ObjectPanel (bounds)', ObjectPanel), `max="${MAX_SIZE}"`)
+}
+
+{
+  // Resizing runs the same conform pass `patchObject` does, so a sketch on a
+  // face that just shrank is pulled back onto it and a pocket deeper than the
+  // solid now is stands down -- rather than the drag quietly leaving the
+  // feature list describing geometry that is no longer there.
+  doc().startPlacing({ type: 'circle', r: 0.3 })
+  doc().updatePlacing(gizmoCube, { on: 'box-face', face: 2, u: 0, v: 0 })
+  doc().commitPlacing()
+  const feature = doc().doc.objects[0].features[0]
+  doc().patchFeature(gizmoCube, feature.id, { op: 'intrude', depth: 0.9 })
+  const deep = depthOf(gizmoCube)
+  near('the pocket starts at the depth it was given', deep, 0.9, 1e-9)
+
+  const grabbed = baseOf(gizmoCube)
+  doc().startGizmo(gizmoCube, { mode: 'size', axis: 'all' })
+  doc().resizeObjectTo(scaleUniform(grabbed, 0.25))
+  check('scaling keeps the sketch', doc().doc.objects[0].features.length === 1, `${doc().doc.objects[0].features.length}`)
+  check(
+    'and stands its depth down to fit the smaller solid',
+    depthOf(gizmoCube) < deep,
+    `${depthOf(gizmoCube).toFixed(4)} from ${deep.toFixed(4)}`
+  )
+  doc().endDrag()
+  doc().undo()
+  near('undo restores the depth along with the size', depthOf(gizmoCube), deep, 1e-9)
+}
+
+{
+  // The gizmo's arrow colours live in TypeScript, because a three material
+  // cannot read a CSS custom property -- and the same three values tint the
+  // X/Y/Z letters of the console's Vec3 rows, which can only come from the
+  // stylesheet. That duplication is unavoidable; leaving it unguarded is not.
+  // A user connects an arrow to the row that types its number by colour alone,
+  // so the day these drift apart the gizmo stops being self-explanatory and
+  // nothing else fails.
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+  AXIS_CSS_VARS.forEach((name, axis) => {
+    // Split rather than match: the declaration is `--axis-x: #ff1744;` and
+    // the only other mention is `var(--axis-x)`, which carries no colon.
+    const declared = css.split(`${name}:`)[1]?.split(';')[0]?.trim()
+    check(
+      `${name} matches the gizmo's own ${'XYZ'[axis]} colour`,
+      declared?.toLowerCase() === AXIS_COLORS[axis].toLowerCase(),
+      `${declared} vs ${AXIS_COLORS[axis]}`
+    )
+  })
+}
+
+{
+  // The sketch gizmo's arrows go through `moveTo` -- the same action the free
+  // sketch drag uses -- and that action guarded on the free-drag kind alone.
+  // The object gizmo shipped with exactly this bug: every arrow silently did
+  // nothing while the other handles worked. Pinned here so it cannot recur on
+  // the sketch half too.
+  doc().startPlacing({ type: 'circle', r: 0.3 })
+  doc().updatePlacing(gizmoCube, { on: 'box-face', face: 2, u: 0, v: 0 })
+  doc().commitPlacing()
+  const sketch = doc().doc.objects[0].features.at(-1)
+  check('a sketch is on the cube to drag', sketch !== undefined, `${doc().doc.objects[0].features.length}`)
+
+  if (sketch) {
+    const entries = doc().past.length
+    doc().startSketchGizmo(gizmoCube, sketch.id, { mode: 'move', axis: 0 })
+    check('grabbing a tangent arrow starts its own drag kind', doc().drag.kind === 'sketch-gizmo', doc().drag.kind)
+    check('and pressing alone touches no history', doc().past.length === entries, `${doc().past.length}`)
+
+    const host = hostSurfaceFor(baseOf(gizmoCube), sketch.anchor)
+    const slid = slideAnchor(host, sketch.anchor, 0.3, 0)
+    check('the surface offers a slid anchor', slid !== null, `${slid}`)
+    if (slid) doc().moveTo(slid)
+
+    const moved = doc().doc.objects[0].features.at(-1)?.anchor
+    check(
+      'dragging the arrow moves the sketch',
+      moved?.on === 'box-face' && Math.abs(moved.u - 0.3) < 1e-9,
+      moved?.on === 'box-face' ? `u ${moved.u}` : `${moved?.on}`
+    )
+    check(
+      'along one tangent only',
+      moved?.on === 'box-face' && moved.v === 0,
+      moved?.on === 'box-face' ? `v ${moved.v}` : `${moved?.on}`
+    )
+    check('costing one undo entry', doc().past.length === entries + 1, `${doc().past.length - entries}`)
+
+    // A frame that resolves to the anchor it already has is not an edit.
+    const held = doc().doc
+    if (slid) doc().moveTo(slid)
+    check('and a frame that moves nothing writes nothing', doc().doc === held)
+
+    doc().endDrag()
+    doc().undo()
+    const back = doc().doc.objects[0].features.at(-1)?.anchor
+    check(
+      'undo returns the sketch',
+      back?.on === 'box-face' && back.u === 0,
+      back?.on === 'box-face' ? `u ${back.u}` : `${back?.on}`
+    )
+
+    // Outside a drag the action must still refuse: it is the live half of a
+    // gesture, and the panel's typed values go through patchFeature.
+    const idle = doc().doc
+    if (slid) doc().moveTo(slid)
+    check('but it does nothing with no drag running', doc().doc === idle)
+
+    // The ring is the third handle on a sketch, and it goes through a THIRD
+    // action -- `resizeShapeTo`, not `moveTo` -- so it needs its own guard
+    // check. Two handles on this gizmo have now shipped dead behind a guard
+    // that named only one drag kind.
+    const entries2 = doc().past.length
+    doc().startSketchGizmo(gizmoCube, sketch.id, { mode: 'size', axis: 'all' })
+    check('grabbing the ring starts the same drag kind', doc().drag.kind === 'sketch-gizmo', doc().drag.kind)
+
+    const grown = scaleShape(shapeOf(gizmoCube, sketch.id), 1.5, maxShapeSize(baseOf(gizmoCube)))
+    doc().resizeShapeTo(grown)
+    const after = shapeOf(gizmoCube, sketch.id)
+    check(
+      'dragging the ring resizes the sketch',
+      after.type === 'circle' && Math.abs(after.r - 0.45) < 1e-9,
+      after.type === 'circle' ? `r ${after.r}` : after.type
+    )
+    check('costing one undo entry', doc().past.length === entries2 + 1, `${doc().past.length - entries2}`)
+
+    const held2 = doc().doc
+    doc().resizeShapeTo(grown)
+    check('and a frame that resizes nothing writes nothing', doc().doc === held2)
+
+    doc().endDrag()
+    doc().undo()
+    const restored = shapeOf(gizmoCube, sketch.id)
+    check(
+      'undo returns the original size',
+      restored.type === 'circle' && Math.abs(restored.r - 0.3) < 1e-9,
+      restored.type === 'circle' ? `r ${restored.r}` : restored.type
+    )
+
+    const idle2 = doc().doc
+    doc().resizeShapeTo(grown)
+    check('and it does nothing with no drag running', doc().doc === idle2)
+
+    doc().removeFeature(gizmoCube, sketch.id)
+    doc().undo()
+  }
+}
+
+{
+  // The ring's right-drag, on all three things that carry one. Each writes
+  // somewhere different -- the object's transform, the plane's tilt, the
+  // sketch's own spin -- and each goes through a guard that has to name the
+  // right drag kind. Three handles on this gizmo have now shipped dead behind
+  // one that named only some of them.
+  const entries = doc().past.length
+  doc().selectObject(gizmoCube)
+  doc().startGizmo(gizmoCube, { mode: 'rotate', axis: 'all' })
+  check('the ring turn starts a gizmo drag', doc().drag.kind === 'gizmo', doc().drag.kind)
+
+  const grab: TurnGrab = {
+    axis: new Vector3(0, 1, 0),
+    rotation: rotationOf(gizmoCube),
+    lastAngle: 0,
+    total: 0,
+  }
+  doc().setObjectTransform(gizmoCube, {
+    position: positionOf(gizmoCube),
+    rotation: turnedRotation(grab, Math.PI / 2),
+  })
+  near('turning the ring rotates the object', rotationOf(gizmoCube)[1], Math.PI / 2, 1e-9)
+  check('costing one undo entry', doc().past.length === entries + 1, `${doc().past.length - entries}`)
+
+  // Frames keep arriving while the pointer is held still; none of them is an
+  // edit, and each one that slipped through would be an undo step reverting
+  // nothing.
+  const held = doc().doc
+  doc().setObjectTransform(gizmoCube, {
+    position: positionOf(gizmoCube),
+    rotation: turnedRotation(grab, Math.PI / 2),
+  })
+  check('and a frame that turns nothing writes nothing', doc().doc === held)
+
+  doc().endDrag()
+  doc().undo()
+  near('undo returns the object upright', rotationOf(gizmoCube)[1], 0, 1e-9)
+}
+
+{
+  // The sketch's spin is a single number -- its own tangent frame has one axis
+  // -- and the ring drives the same value the Inspector's Rotation row does.
+  doc().startPlacing({ type: 'rect', w: 0.5, h: 0.3 })
+  doc().updatePlacing(gizmoCube, { on: 'box-face', face: 2, u: 0, v: 0 })
+  doc().commitPlacing()
+  const spun = doc().doc.objects[0].features.at(-1)
+  check('a sketch is on the cube to turn', spun !== undefined, `${doc().doc.objects[0].features.length}`)
+
+  if (spun) {
+    const entries = doc().past.length
+    doc().startSketchGizmo(gizmoCube, spun.id, { mode: 'rotate', axis: 'all' })
+    doc().rotateShapeTo(Math.PI / 4)
+    const feature = doc().doc.objects[0].features.at(-1)
+    near('turning the ring spins the outline', feature?.rotation ?? -1, Math.PI / 4, 1e-9)
+    check('costing one undo entry', doc().past.length === entries + 1, `${doc().past.length - entries}`)
+
+    const held = doc().doc
+    doc().rotateShapeTo(Math.PI / 4)
+    check('and a frame that spins nothing writes nothing', doc().doc === held)
+
+    doc().endDrag()
+    doc().undo()
+    near('undo returns the outline', doc().doc.objects[0].features.at(-1)?.rotation ?? -1, 0, 1e-9)
+
+    const idle = doc().doc
+    doc().rotateShapeTo(Math.PI / 3)
+    check('and it does nothing with no drag running', doc().doc === idle)
+
+    doc().removeFeature(gizmoCube, spun.id)
+    doc().undo()
+  }
+}
+
+{
+  // The cut plane's turn IS its tilt, and like every other cut-plane edit it
+  // must stay out of the document's history.
+  const entries = doc().past.length
+  const document = doc().doc
+  tools().setCutActive(true)
+  doc().startCutGizmo({ mode: 'rotate', axis: 'all' })
+
+  const grab: TurnGrab = {
+    axis: new Vector3(1, 0, 0),
+    rotation: tools().cutPlane.rotation,
+    lastAngle: 0,
+    total: 0,
+  }
+  tools().setCutPlane({ rotation: turnedRotation(grab, Math.PI / 6) })
+  near('turning the ring tilts the plane', tools().cutPlane.rotation[0], Math.PI / 6, 1e-9)
+  check('adding no undo entry', doc().past.length === entries, `${doc().past.length}`)
+  check('and not touching the document', doc().doc === document)
+
+  doc().endDrag()
+  tools().setCutActive(false)
+  near('leaving the tool rearms the tilt', tools().cutPlane.rotation[0], 0, 1e-9)
+}
+
+{
+  // The reset controls. Four per rotation field -- one an axis, one the lot --
+  // and each has to be LIVE only when there is something to undo: a button that
+  // is always clickable costs an undo entry and changes nothing, which is worse
+  // than no button at all.
+  doc().selectObject(gizmoCube)
+  doc().setObjectTransform(gizmoCube, { position: positionOf(gizmoCube), rotation: [0, 0, 0] })
+
+  const upright = markupOf('PlacementPanel (upright)', PlacementPanel)
+  shows('the rotation field offers a reset per axis', upright, 'aria-label="Reset X"')
+  shows('and one for the whole rotation', upright, 'aria-label="Reset rotation"')
+  check(
+    'with one per axis plus the group',
+    occurrences(upright, 'class="reset-btn"') === 4,
+    `${occurrences(upright, 'class="reset-btn"')} buttons`
+  )
+  check(
+    'all standing down while the object is upright',
+    ['X', 'Y', 'Z', 'rotation'].every((name) => resetIsDown(upright, name)),
+    ['X', 'Y', 'Z', 'rotation'].filter((n) => !resetIsDown(upright, n)).join(',') || 'all down'
+  )
+
+  // Turn one axis: that axis's button and the group's wake up, the other two
+  // stay down.
+  doc().setObjectTransform(gizmoCube, {
+    position: positionOf(gizmoCube),
+    rotation: [0, Math.PI / 4, 0],
+  })
+  const turned = markupOf('PlacementPanel (turned)', PlacementPanel)
+  check('the turned axis wakes its own reset', !resetIsDown(turned, 'Y'))
+  check('and the group reset with it', !resetIsDown(turned, 'rotation'))
+  check(
+    'while the two untouched axes stay down',
+    resetIsDown(turned, 'X') && resetIsDown(turned, 'Z'),
+    `X ${resetIsDown(turned, 'X')}, Z ${resetIsDown(turned, 'Z')}`
+  )
+
+  // Position has no reset: it is not a rotation, and the row keeps the layout
+  // every other Vec3 field uses.
+  const positionRows = occurrences(turned, 'class="vec3-row"')
+  check('position rows keep the plain layout', positionRows >= 3, `${positionRows} plain rows`)
+
+  doc().setObjectTransform(gizmoCube, { position: positionOf(gizmoCube), rotation: [0, 0, 0] })
+}
+
+{
+  // The cut plane's tilt is the same value under another name, and the sketch's
+  // spin is the single-number version. Both carry the control.
+  tools().setCutActive(true)
+  tools().setCutPlane({ rotation: [Math.PI / 6, 0, 0] })
+  const cut = markupOf('PlacementPanel (tilted plane)', PlacementPanel)
+  shows('the cut tilt offers a reset too', cut, 'aria-label="Reset tilt"')
+  check(
+    'live on the tilted axis, down on the other two',
+    !resetIsDown(cut, 'X') && resetIsDown(cut, 'Y') && resetIsDown(cut, 'Z'),
+    `X ${resetIsDown(cut, 'X')}, Y ${resetIsDown(cut, 'Y')}, Z ${resetIsDown(cut, 'Z')}`
+  )
+  tools().setCutActive(false)
+}
+
+{
+  // The cut plane's gizmo writes TOOL state. Aiming a blade is not an edit to
+  // the document, and a plane nudge that landed in undo history would make a
+  // user walk back through their own aiming to reach the edit they wanted.
+  const entries = doc().past.length
+  const document = doc().doc
+
+  tools().setCutActive(true)
+  doc().startCutGizmo({ mode: 'move', axis: 1 })
+  check('the cut gizmo starts its own drag kind', doc().drag.kind === 'cut-gizmo', doc().drag.kind)
+  check(
+    'which carries no snapshot flag at all',
+    !('snapshot' in doc().drag),
+    Object.keys(doc().drag).join(',')
+  )
+
+  tools().setCutPlane({ position: [0, 1.25, 0] })
+  check('moving the plane adds no undo entry', doc().past.length === entries, `${doc().past.length}`)
+  check('and does not touch the document', doc().doc === document)
+  check('while the plane really moved', tools().cutPlane.position[1] === 1.25, `${tools().cutPlane.position[1]}`)
+
+  // The ring sizes the guide square -- the plane's only dimension, which is why
+  // its arrows are built with sizing switched off.
+  doc().startCutGizmo({ mode: 'size', axis: 'all' })
+  tools().setCutPlane({ size: CUT_SIZE_MAX })
+  check('the ring can drive the guide to its limit', tools().cutPlane.size === CUT_SIZE_MAX, `${tools().cutPlane.size}`)
+  // The ring is the only thing that sizes the guide now, so the limit is only
+  // enforceable from the store side -- there is no slider left to read it off.
+  check('which is the limit the store holds it to', tools().cutPlane.size <= CUT_SIZE_MAX, `${tools().cutPlane.size}`)
+
+  doc().endDrag()
+  tools().setCutActive(false)
+  check('leaving the tool rearms the plane', tools().cutPlane.position[1] === 0, `${tools().cutPlane.position[1]}`)
+}
+
+// --- 8. Merging, and the selection that chooses it -------------------------
+console.log('\n8. Merge welds the selection into one object')
+
+resetEvaluator()
+doc().reset()
+
+{
+  const a = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
+  const b = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [4, 1, 0])
+  const c = doc().addObject({ kind: 'sphere', radius: 1 }, [8, 1, 0])
+
+  // Selection is a set, and a plain click means "just this one".
+  doc().selectObject(a)
+  check('a click selects one object', doc().selectedObjectIds.length === 1, `${doc().selectedObjectIds.length}`)
+  check('and the selector agrees with the head of it', primarySelection(doc()) === a, `${primarySelection(doc())}`)
+
+  doc().toggleObjectSelection(b)
+  check('shift adds to it', doc().selectedObjectIds.join() === `${a},${b}`, doc().selectedObjectIds.join())
+  check('with the FIRST picked still leading', primarySelection(doc()) === a, `${primarySelection(doc())}`)
+  doc().toggleObjectSelection(b)
+  check('and shift takes it away again', doc().selectedObjectIds.join() === a, doc().selectedObjectIds.join())
+
+  // Nothing to merge with one object picked.
+  check('one object is not a merge', doc().mergeObjects([a]) === 0)
+  check('nor is a selection of nothing', doc().mergeObjects([]) === 0)
+
+  const before = doc().past.length
+  doc().toggleObjectSelection(b)
+  doc().toggleObjectSelection(c)
+  const absorbed = doc().mergeObjects(doc().selectedObjectIds)
+
+  check('merging takes everything after the first', absorbed === 2, `${absorbed}`)
+  check('and the scene is one object', doc().doc.objects.length === 1, `${doc().doc.objects.length}`)
+  check('costing one undo entry', doc().past.length === before + 1, `${doc().past.length - before}`)
+
+  const host = doc().doc.objects[0]
+  check('the host keeps its own id', host.id === a, `${host.id} vs ${a}`)
+  check('and carries the other two as parts', host.parts.length === 2, `${host.parts.length}`)
+  check(
+    'each keeping the base it was merged with',
+    host.parts[0].base.kind === 'box' && host.parts[1].base.kind === 'sphere',
+    host.parts.map((p) => p.base.kind).join(',')
+  )
+
+  // Nothing moved. The parts' placements were rewritten into the host's space,
+  // so composing the host back on has to land them where they stood.
+  const world = (i: number) =>
+    new Vector3(0, 0, 0)
+      .applyMatrix4(objectMatrix(host.parts[i].transform))
+      .applyMatrix4(objectMatrix(host.transform))
+  near('the first part did not move', world(0).x, 4, 1e-9)
+  near('nor the second', world(1).x, 8, 1e-9)
+
+  // One object means one selection and one gizmo.
+  check('the merged object is the whole selection', doc().selectedObjectIds.join() === a, doc().selectedObjectIds.join())
+
+  const tree = markupOf('SceneTree (merged)', SceneTree)
+  shows('the tree shows one row', tree, '>1<')
+  shows('marked as a merge of three', tree, '3 merged')
+  // Merged, there is nothing left to merge, so the button stands down.
+  hides('and offers no further merge', tree, 'merge-btn')
+
+  doc().undo()
+  check('undo puts all three back', doc().doc.objects.length === 3, `${doc().doc.objects.length}`)
+  check('with none of them carrying parts', doc().doc.objects.every((o) => o.parts.length === 0))
+}
+
+{
+  // The button appears only when it would do something, and says how many.
+  doc().selectObject(doc().doc.objects[0].id)
+  check(
+    'one object selected offers no merge',
+    renderToStaticMarkup(createElement(MergeButton)) === '',
+    'MergeButton renders nothing'
+  )
+
+  doc().toggleObjectSelection(doc().doc.objects[1].id)
+  const bar = markupOf('MergeButton (two selected)', MergeButton)
+  shows('two selected offers it', bar, 'Merge 2')
+  // It belongs to the Scene section now, beside the rows it would fold
+  // together -- not in the toolbar, a long way from the list saying what it
+  // will take.
+  shows('and it sits in the Scene section', markupOf('SceneTree (mergeable)', SceneTree), 'merge-btn')
+  doc().toggleObjectSelection(doc().doc.objects[2].id)
+  shows('and it counts them', markupOf('MergeButton (three)', MergeButton), 'Merge 3')
+
+  doc().selectObject(null)
+  check(
+    'deselecting takes it away again',
+    renderToStaticMarkup(createElement(MergeButton)) === '',
+    'MergeButton renders nothing'
+  )
+}
+
+// --- 9. Every solid, every anchor -----------------------------------------
+console.log('\n9. The two data-driven panels across every solid and anchor')
 
 /**
  * Both panels switch on a union: ObjectPanel on `BaseSolid['kind']`, Inspector

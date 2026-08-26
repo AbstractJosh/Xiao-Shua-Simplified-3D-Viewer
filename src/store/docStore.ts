@@ -16,7 +16,7 @@ import { defaultFeature, makeObject, nextFeatureId, nextObjectId } from '../geom
 import { hostSurfaceFor, surfaceFor } from '../geometry/surfaces'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject } from '../geometry/evaluate'
-import { toLocalDir, toLocalPoint } from '../geometry/transform'
+import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
 
 /** Depth applied the moment a user picks extrude or intrude on a flat sketch. */
 export const DEFAULT_FEATURE_DEPTH = 0.3
@@ -39,6 +39,60 @@ export type Drag =
   | { kind: 'moving-object'; objectId: string; snapshot: boolean }
   /** Dragging the created end face of a feature sideways. Same snapshot rule. */
   | { kind: 'moving-face'; objectId: string; id: string; snapshot: boolean }
+  /**
+   * Dragging one handle of an object's gizmo: an arrow to slide it along that
+   * axis, the same arrow with the right button to resize along it, or the ring
+   * to scale the whole solid. Same snapshot rule.
+   */
+  | { kind: 'gizmo'; objectId: string; handle: GizmoHandle; snapshot: boolean }
+  /**
+   * Sliding a sketch along ONE of its host surface's tangents, from that
+   * sketch's own gizmo. `axis` is 0 for the surface's U direction and 1 for V;
+   * there is no third, because leaving the face is not a slide across it.
+   */
+  | {
+      kind: 'sketch-gizmo'
+      objectId: string
+      id: string
+      /**
+       * The same handle type as the object gizmo, because it is the same gizmo.
+       * Only axes 0 and 1 are ever drawn -- a sketch has two directions, the
+       * surface's U and V -- and the ring both sizes and turns it.
+       */
+      handle: GizmoHandle
+      snapshot: boolean
+    }
+  /**
+   * The same handles on the cut plane's gizmo.
+   *
+   * A separate kind, and one carrying NO snapshot flag, because the plane lives
+   * in the tool store: aiming it is not an edit to the document and must not
+   * land in undo history. What it shares with the object gizmo is the gesture,
+   * which is why the handle type is the same one.
+   */
+  | { kind: 'cut-gizmo'; handle: GizmoHandle }
+
+/** Which arrow of a gizmo, in the gizmo's own frame. */
+export type GizmoAxis = 0 | 1 | 2
+
+/**
+ * One grabbable part of a gizmo.
+ *
+ * `move` slides along the axis and `size` resizes along it -- the left and
+ * right buttons on the same arrow. The ring is a `size` with no axis, because
+ * scaling everything at once is the one operation that has no direction.
+ */
+export type GizmoHandle =
+  | { mode: 'move'; axis: GizmoAxis }
+  | { mode: 'size'; axis: GizmoAxis }
+  | { mode: 'size'; axis: 'all' }
+  /**
+   * The ring's right-drag. No axis of its own: the axis is chosen at grab time
+   * as whichever of the target's three best faces the viewer, so the turn reads
+   * as a twist of the screen rather than a tumble in some direction the gesture
+   * never suggested.
+   */
+  | { mode: 'rotate'; axis: 'all' }
 
 /** The drag kinds that carry a history snapshot flag. */
 type MovingDrag = Extract<Drag, { snapshot: boolean }>
@@ -53,14 +107,34 @@ const DEFAULT_DOC: Doc = { objects: [] }
 
 type State = {
   doc: Doc
-  selectedObjectId: string | null
+  /**
+   * Everything selected, PRIMARY FIRST.
+   *
+   * A list rather than a single id because merging needs to name more than one
+   * object, and a second selection concept alongside the first would be two
+   * things to keep in step. Every consumer that only cares about one object
+   * reads the `selectedObjectId` selector, which is the head of this -- so
+   * there is exactly one place the two ideas can ever disagree, and it is a
+   * derivation rather than a second copy.
+   *
+   * Primary first, not last, so "merge into the first thing you picked" is a
+   * rule the user can hold.
+   */
+  selectedObjectIds: string[]
   selectedFeatureId: string | null
   drag: Drag
   past: Doc[]
   future: Doc[]
 
   selectObject: (id: string | null) => void
+  /** Add or remove one object without disturbing the rest of the selection. */
+  toggleObjectSelection: (id: string) => void
   selectFeature: (objectId: string | null, featureId: string | null) => void
+  /**
+   * Weld every object after the first into the first, as merged parts.
+   * Returns how many were absorbed.
+   */
+  mergeObjects: (ids: string[]) => number
 
   startPlacingSolid: (base: BaseSolid) => void
   updatePlacingSolid: (position: Vec3 | null) => void
@@ -85,6 +159,16 @@ type State = {
 
   startMovingFace: (objectId: string, featureId: string) => void
   moveFaceTo: (faceOffset: Vec2) => void
+
+  startGizmo: (objectId: string, handle: GizmoHandle) => void
+  startSketchGizmo: (objectId: string, featureId: string, handle: GizmoHandle) => void
+  /** The continuous part of a sketch ring drag: one history entry per gesture. */
+  resizeShapeTo: (shape: Shape2D) => void
+  /** The sketch's spin within its own tangent frame, in radians. */
+  rotateShapeTo: (rotation: number) => void
+  startCutGizmo: (handle: GizmoHandle) => void
+  /** The continuous part of a gizmo resize: one history entry per gesture. */
+  resizeObjectTo: (base: BaseSolid) => void
 
   patchFeature: (objectId: string, featureId: string, patch: Partial<Feature>) => void
   setOp: (objectId: string, featureId: string, op: FeatureOp) => void
@@ -130,6 +214,19 @@ const conform = (base: BaseSolid, f: Feature): Feature => {
   return { ...next, depth: Math.min(next.depth, limit) }
 }
 
+/** A base's numbers in a fixed order, so two can be compared for "no change". */
+const baseParams = (b: BaseSolid): number[] => {
+  switch (b.kind) {
+    case 'box':
+      return b.size
+    case 'sphere':
+    case 'platonic':
+      return [b.radius]
+    default:
+      return [b.radius, b.height]
+  }
+}
+
 /**
  * Below this, a "move" is pointer jitter rather than an edit. Real drags move
  * by pixels, which is orders of magnitude more, so the only thing this rejects
@@ -163,16 +260,29 @@ const anchorParams = (a: SurfaceAnchor): number[] => {
 const sameAnchor = (a: SurfaceAnchor, b: SurfaceAnchor): boolean =>
   a.on === b.on && sameNumbers(anchorParams(a), anchorParams(b))
 
+/** Same kind and same numbers. A resize that clamped to where it already was is
+ *  not an edit, and must not cost an undo step. */
+const sameBase = (a: BaseSolid, b: BaseSolid): boolean =>
+  a.kind === b.kind && sameNumbers(baseParams(a), baseParams(b))
+
+/** A shape's numbers in a fixed order, so two can be compared. */
+const shapeParams = (s: Shape2D): number[] =>
+  s.type === 'rect' ? [s.w, s.h] : s.type === 'ngon' ? [s.r, s.sides] : [s.r]
+
+const sameShape = (a: Shape2D, b: Shape2D): boolean =>
+  a.type === b.type && sameNumbers(shapeParams(a), shapeParams(b))
+
 /** Selection survives an edit only while the thing it names still exists. */
 const prune = (
   doc: Doc,
-  objectId: string | null,
+  objectIds: string[],
   featureId: string | null
-): { selectedObjectId: string | null; selectedFeatureId: string | null } => {
-  const obj = objectId === null ? undefined : doc.objects.find((o) => o.id === objectId)
-  if (!obj) return { selectedObjectId: null, selectedFeatureId: null }
-  const keepFeature = featureId !== null && obj.features.some((f) => f.id === featureId)
-  return { selectedObjectId: obj.id, selectedFeatureId: keepFeature ? featureId : null }
+): { selectedObjectIds: string[]; selectedFeatureId: string | null } => {
+  const live = objectIds.filter((id) => doc.objects.some((o) => o.id === id))
+  const primary = live.length === 0 ? undefined : doc.objects.find((o) => o.id === live[0])
+  if (!primary) return { selectedObjectIds: [], selectedFeatureId: null }
+  const keepFeature = featureId !== null && primary.features.some((f) => f.id === featureId)
+  return { selectedObjectIds: live, selectedFeatureId: keepFeature ? featureId : null }
 }
 
 export const useDoc = create<State>((set, get) => {
@@ -240,7 +350,7 @@ export const useDoc = create<State>((set, get) => {
 
   return {
     doc: DEFAULT_DOC,
-    selectedObjectId: null,
+    selectedObjectIds: [],
     selectedFeatureId: null,
     drag: { kind: 'idle' },
     past: [],
@@ -248,13 +358,62 @@ export const useDoc = create<State>((set, get) => {
 
     selectObject: (id) =>
       set((s) => ({
-        selectedObjectId: id,
+        // Replaces the whole selection: a plain click is how you say "just this
+        // one", and it has to be able to undo a multi-select.
+        selectedObjectIds: id === null ? [] : [id],
         // A feature id only means something alongside its object.
-        selectedFeatureId: id === s.selectedObjectId ? s.selectedFeatureId : null,
+        selectedFeatureId: id === s.selectedObjectIds[0] ? s.selectedFeatureId : null,
       })),
 
+    toggleObjectSelection: (id) =>
+      set((s) => {
+        const has = s.selectedObjectIds.includes(id)
+        const next = has
+          ? s.selectedObjectIds.filter((other) => other !== id)
+          : [...s.selectedObjectIds, id]
+        return {
+          selectedObjectIds: next,
+          // The feature belonged to the primary. Anything that changes which
+          // object leads takes the sketch selection with it.
+          selectedFeatureId: next[0] === s.selectedObjectIds[0] ? s.selectedFeatureId : null,
+        }
+      }),
+
     selectFeature: (objectId, featureId) =>
-      set({ selectedObjectId: objectId, selectedFeatureId: featureId }),
+      set({
+        selectedObjectIds: objectId === null ? [] : [objectId],
+        selectedFeatureId: featureId,
+      }),
+
+    mergeObjects: (ids) => {
+      const { doc } = get()
+      const chosen = ids
+        .map((id) => doc.objects.find((o) => o.id === id))
+        .filter((o): o is SceneObject => o !== undefined)
+      if (chosen.length < 2) return 0
+
+      const [host, ...rest] = chosen
+      // Each absorbed object keeps everything it had -- base, features, cuts,
+      // its own parts -- and only its transform is rewritten, from world space
+      // into the host's. So it does not move a millimetre, and an unmerge would
+      // have everything it needs to put it back.
+      const parts = rest.map((other) => ({
+        ...other,
+        transform: relativeTransform(host.transform, other.transform),
+      }))
+      const absorbed = new Set(rest.map((o) => o.id))
+
+      commit((d) => ({
+        objects: d.objects
+          .filter((o) => !absorbed.has(o.id))
+          .map((o) => (o.id === host.id ? { ...o, parts: [...o.parts, ...parts] } : o)),
+      }))
+      // The merged object is one object, so it is one selection. The feature
+      // goes with it: a sketch on an absorbed object is inside a part now, and
+      // nothing in the console is pointed at those yet.
+      set({ selectedObjectIds: [host.id], selectedFeatureId: null })
+      return rest.length
+    },
 
     startPlacingSolid: (base) => set({ drag: { kind: 'placing-solid', base, position: null } }),
 
@@ -271,28 +430,43 @@ export const useDoc = create<State>((set, get) => {
       }
       const object = makeObject(drag.base, drag.position)
       commit((d) => ({ objects: [...d.objects, object] }))
-      set({ drag: { kind: 'idle' }, selectedObjectId: object.id, selectedFeatureId: null })
+      set({ drag: { kind: 'idle' }, selectedObjectIds: [object.id], selectedFeatureId: null })
     },
 
     addObject: (base, position) => {
       const object = makeObject(base, position)
       commit((d) => ({ objects: [...d.objects, object] }))
-      set({ selectedObjectId: object.id, selectedFeatureId: null })
+      set({ selectedObjectIds: [object.id], selectedFeatureId: null })
       return object.id
     },
 
     removeObject: (id) => {
       commit((d) => ({ objects: d.objects.filter((o) => o.id !== id) }))
       set((s) => ({
-        ...prune(s.doc, s.selectedObjectId, s.selectedFeatureId),
+        ...prune(s.doc, s.selectedObjectIds, s.selectedFeatureId),
         // A drag pointing at a deleted object has nothing left to move.
         drag: 'objectId' in s.drag && s.drag.objectId === id ? { kind: 'idle' } : s.drag,
       }))
     },
 
     setObjectTransform: (id, transform) => {
-      const { drag } = get()
-      if (drag.kind === 'moving-object' && drag.objectId === id) {
+      const { drag, doc } = get()
+      // Two live gestures write here: the body drag, and the gizmo ring's turn.
+      // Both are the continuous part of one gesture, so both take a single
+      // snapshot and then write silently.
+      const live =
+        (drag.kind === 'moving-object' || drag.kind === 'gizmo') && drag.objectId === id
+      if (live) {
+        const object = doc.objects.find((o) => o.id === id)
+        // A frame that resolved to the transform the object already has is not
+        // an edit, and must not cost an undo step.
+        if (
+          object &&
+          sameNumbers(object.transform.position, transform.position) &&
+          sameNumbers(object.transform.rotation, transform.rotation)
+        ) {
+          return
+        }
         snapshotOnce()
         silent(mapObject(id, (o) => ({ ...o, transform })))
         return
@@ -339,7 +513,7 @@ export const useDoc = create<State>((set, get) => {
       commit(mapObject(object.id, (o) => ({ ...o, features: [...o.features, feature] })))
       set({
         drag: { kind: 'idle' },
-        selectedObjectId: object.id,
+        selectedObjectIds: [object.id],
         selectedFeatureId: feature.id,
       })
     },
@@ -347,13 +521,18 @@ export const useDoc = create<State>((set, get) => {
     startMoving: (objectId, featureId) =>
       set({
         drag: { kind: 'moving', objectId, id: featureId, snapshot: false },
-        selectedObjectId: objectId,
+        selectedObjectIds: [objectId],
         selectedFeatureId: featureId,
       }),
 
     moveTo: (anchor) => {
       const { drag, doc } = get()
-      if (drag.kind !== 'moving') return
+      // TWO gestures move a sketch: dragging it freely across its host, and
+      // dragging one arrow of its gizmo along a single tangent. They differ
+      // only in how the anchor was arrived at -- the edit, the clamp and the
+      // history semantics are identical -- so both land here rather than the
+      // second growing a parallel action to keep in step with this one.
+      if (drag.kind !== 'moving' && drag.kind !== 'sketch-gizmo') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
       const feature = object?.features.find((f) => f.id === drag.id)
       if (!object || !feature) return
@@ -372,13 +551,18 @@ export const useDoc = create<State>((set, get) => {
     startMovingObject: (objectId) =>
       set((s) => ({
         drag: { kind: 'moving-object', objectId, snapshot: false },
-        selectedObjectId: objectId,
-        selectedFeatureId: s.selectedObjectId === objectId ? s.selectedFeatureId : null,
+        selectedObjectIds: [objectId],
+        selectedFeatureId: s.selectedObjectIds[0] === objectId ? s.selectedFeatureId : null,
       })),
 
     moveObjectTo: (position) => {
       const { drag, doc } = get()
-      if (drag.kind !== 'moving-object') return
+      // TWO gestures move an object: dragging its body across the ground, and
+      // dragging one arrow of its gizmo along an axis. They differ only in how
+      // the position was arrived at -- the edit, and its history semantics, are
+      // the same -- so both land here rather than the second one growing a
+      // parallel action that would have to be kept in step with this one.
+      if (drag.kind !== 'moving-object' && drag.kind !== 'gizmo') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
       if (!object) return
       // A click that snapped straight back to where the object already was is
@@ -391,10 +575,83 @@ export const useDoc = create<State>((set, get) => {
       )
     },
 
+    startGizmo: (objectId, handle) =>
+      set((s) => ({
+        drag: { kind: 'gizmo', objectId, handle, snapshot: false },
+        selectedObjectIds: [objectId],
+        selectedFeatureId: s.selectedObjectIds[0] === objectId ? s.selectedFeatureId : null,
+      })),
+
+    startSketchGizmo: (objectId, featureId, handle) =>
+      set({
+        drag: { kind: 'sketch-gizmo', objectId, id: featureId, handle, snapshot: false },
+        selectedObjectIds: [objectId],
+        selectedFeatureId: featureId,
+      }),
+
+    resizeShapeTo: (shape) => {
+      const { drag, doc } = get()
+      if (drag.kind !== 'sketch-gizmo') return
+      const object = doc.objects.find((o) => o.id === drag.objectId)
+      const feature = object?.features.find((f) => f.id === drag.id)
+      if (!object || !feature) return
+      // A frame that clamped back to the size it already had is not an edit,
+      // and must not cost an undo step.
+      if (sameShape(feature.shape, shape)) return
+
+      snapshotOnce()
+      // `reseat` for the same reason `patchFeature` uses it: a sketch that just
+      // grew can overhang the face it sits on, and the clamp pulls it back on
+      // rather than leaving an outline hanging off the edge.
+      silent(
+        mapObject(drag.objectId, (o) => ({
+          ...o,
+          features: o.features.map((f) =>
+            f.id === drag.id ? reseat(o.base, { ...f, shape }) : f
+          ),
+        }))
+      )
+    },
+
+    rotateShapeTo: (rotation) => {
+      const { drag, doc } = get()
+      if (drag.kind !== 'sketch-gizmo') return
+      const feature = doc.objects
+        .find((o) => o.id === drag.objectId)
+        ?.features.find((f) => f.id === drag.id)
+      if (!feature) return
+      if (Math.abs(feature.rotation - rotation) <= MOVE_EPS) return
+
+      snapshotOnce()
+      // No reseat: spinning an outline about its own centre cannot push it off
+      // a face its bounding circle already fits inside.
+      silent(mapFeature(drag.objectId, drag.id, (f) => ({ ...f, rotation })))
+    },
+
+    startCutGizmo: (handle) => set({ drag: { kind: 'cut-gizmo', handle } }),
+
+    resizeObjectTo: (base) => {
+      const { drag, doc } = get()
+      if (drag.kind !== 'gizmo') return
+      const object = doc.objects.find((o) => o.id === drag.objectId)
+      if (!object) return
+
+      // Resizing runs through the same conform pass `patchObject` uses, so a
+      // sketch on a shrinking face is pulled back onto it and a pocket deeper
+      // than the solid now is stands down -- rather than the drag quietly
+      // leaving the feature list describing geometry that is no longer there.
+      // The base KIND never changes here, so the features always survive.
+      const next = { ...object, base, features: object.features.map((f) => conform(base, f)) }
+      if (sameBase(object.base, base)) return
+
+      snapshotOnce()
+      silent(mapObject(drag.objectId, () => next))
+    },
+
     startMovingFace: (objectId, featureId) =>
       set({
         drag: { kind: 'moving-face', objectId, id: featureId, snapshot: false },
-        selectedObjectId: objectId,
+        selectedObjectIds: [objectId],
         selectedFeatureId: featureId,
       }),
 
@@ -544,10 +801,9 @@ export const useDoc = create<State>((set, get) => {
       commit(() => ({ objects }))
       // A selected object that was severed lives on as its first half, so the
       // inspector keeps showing something the user recognises.
-      set((s) => {
-        const heir = s.selectedObjectId === null ? undefined : renamed.get(s.selectedObjectId)
-        return heir === undefined ? {} : { selectedObjectId: heir }
-      })
+      set((s) => ({
+        selectedObjectIds: s.selectedObjectIds.map((id) => renamed.get(id) ?? id),
+      }))
       return split
     },
 
@@ -560,7 +816,7 @@ export const useDoc = create<State>((set, get) => {
           past: s.past.slice(0, -1),
           future: [s.doc, ...s.future].slice(0, HISTORY_LIMIT),
           drag: { kind: 'idle' },
-          ...prune(doc, s.selectedObjectId, s.selectedFeatureId),
+          ...prune(doc, s.selectedObjectIds, s.selectedFeatureId),
         }
       }),
 
@@ -573,14 +829,14 @@ export const useDoc = create<State>((set, get) => {
           past: [...s.past, s.doc].slice(-HISTORY_LIMIT),
           future: s.future.slice(1),
           drag: { kind: 'idle' },
-          ...prune(doc, s.selectedObjectId, s.selectedFeatureId),
+          ...prune(doc, s.selectedObjectIds, s.selectedFeatureId),
         }
       }),
 
     reset: () =>
       set({
         doc: DEFAULT_DOC,
-        selectedObjectId: null,
+        selectedObjectIds: [],
         selectedFeatureId: null,
         past: [],
         future: [],
@@ -589,8 +845,16 @@ export const useDoc = create<State>((set, get) => {
   }
 })
 
+/**
+ * The one object every single-selection consumer means.
+ *
+ * A selector rather than a stored field, so the list is the only place a
+ * selection lives and the two can never drift apart.
+ */
+export const selectedObjectId = (s: State): string | null => s.selectedObjectIds[0] ?? null
+
 export const selectedObject = (s: State): SceneObject | null =>
-  s.doc.objects.find((o) => o.id === s.selectedObjectId) ?? null
+  s.doc.objects.find((o) => o.id === selectedObjectId(s)) ?? null
 
 export const selectedFeature = (s: State): Feature | null =>
   selectedObject(s)?.features.find((f) => f.id === s.selectedFeatureId) ?? null

@@ -5,7 +5,7 @@ import type { ThreeEvent } from '@react-three/fiber'
 import { hostSurfaceFor } from '../geometry/surfaces'
 import { buildCapGeometry, outlineOnSurface, outlinePolyline } from '../geometry/prism'
 import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor } from '../geometry/types'
-import { useDoc } from '../store/docStore'
+import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 
 /** Lift of the projection above the solid; enough to clear z-fighting. */
 const DECAL_LIFT = 0.005
@@ -101,7 +101,7 @@ export function ObjectSketches({
   object: SceneObject
   controlsRef: RefObject<{ enabled: boolean } | null>
 }) {
-  const selectedObjectId = useDoc((s) => s.selectedObjectId)
+  const selectedObjectId = useDoc(primarySelection)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const startMoving = useDoc((s) => s.startMoving)
 
