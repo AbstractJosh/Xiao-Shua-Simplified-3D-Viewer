@@ -652,15 +652,32 @@ body {
 
 /* Rows, not the 3-up square grid the 2D shapes use: there are ten solids and
    several carry a side-count strip, which needs the full panel width. The
-   different silhouette also keeps the two palettes from being confused. */
+   different silhouette also keeps the two palettes from being confused.
+
+   A row must keep its exact height for the four-row cap below to hold, hence
+   the flex-shrink guard on .solid-item. */
 .solid-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--solid-gap);
+
+  /* Four rows, then scroll. Ten rows open at once made the console's tallest
+     panel the one you look at least: the scene tree and the selected object
+     both sat below the fold. Derived from the row's own metrics rather than a
+     measured pixel count, so restyling a row keeps the count honest. */
+  --solid-row: 42px; /* 30px icon + 2 x 5px padding + 2 x 1px border */
+  --solid-gap: 2px;
+  max-height: calc(4 * var(--solid-row) + 3 * var(--solid-gap));
+  overflow-y: auto;
+  /* Room for the scrollbar, so it never sits on top of a side-count chip. */
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: #3a444f transparent;
 }
 
 .solid-item {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 10px;
   padding: 5px 7px;
@@ -749,6 +766,261 @@ body {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   color: var(--accent);
+}
+
+/* --- clipboard: saved custom objects --- */
+
+/* ONE ROW, scrolled sideways -- not a wrapping grid. Three models are live at a
+   time because each is a WebGL context, and a row that wraps has no "next three"
+   to scroll to: the fourth tile would sit below the first, permanently in view
+   and permanently unable to have a model. Three columns exactly, so the cap and
+   the layout are the same number. */
+.custom-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: calc((100% - 2 * 8px) / 3);
+  gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* Room for the scrollbar, so it never lands on a tile's name. */
+  padding-bottom: 4px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  scrollbar-color: #3a444f transparent;
+}
+
+.custom-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  /* Lands the row on tile boundaries, so a scroll leaves three whole models
+     rather than two and two halves -- which would be four contexts to keep. */
+  scroll-snap-align: start;
+}
+
+/* The drag surface. Square, and separate from the name field below it, so a
+   press meant to rename can never start a placement instead. */
+.custom-grab {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: #8d97a7;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.custom-grab:hover {
+  border-color: var(--accent);
+  background: #1e232c;
+}
+
+.custom-grab:active {
+  cursor: grabbing;
+}
+
+/* The model's frame, and the surface the scrub is measured against: the turn is
+   one revolution per FRAME width, so this element has to be the thing the
+   pointer's x is read relative to. */
+.thumb-frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.thumb-frame canvas {
+  display: block;
+  /* The model is decoration and a drag source; every pointer event on it
+     belongs to the tile underneath, which is what starts the placement. */
+  pointer-events: none;
+}
+
+/* --- the loading ring --- */
+
+/* Indeterminate: the work behind a thumbnail is one synchronous replay of the
+   object, which has either not started or finished, so there is no honest
+   fraction to draw. The arc sweeps instead of filling. */
+.thumb-ring {
+  width: 26px;
+  height: 26px;
+  animation: thumb-ring-spin 1.1s linear infinite;
+}
+
+.thumb-ring-track {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 3;
+}
+
+.thumb-ring-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  /* A quarter of the circumference, drawn from the top. */
+  stroke-dasharray: 20.4 61.3;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+}
+
+@keyframes thumb-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A ring that pulses under a user who asked for less motion is worse than a
+   still one that simply says "not yet". */
+@media (prefers-reduced-motion: reduce) {
+  .thumb-ring {
+    animation: none;
+  }
+}
+
+/* Editable at rest rather than behind a click: a shelf of "Custom 1, Custom 2"
+   is one a user renames immediately, and a field that looks like a label until
+   clicked hides the one thing this panel exists to let them change. */
+.custom-name {
+  width: 100%;
+  min-width: 0;
+  padding: 2px 4px;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  text-overflow: ellipsis;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.custom-name:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.custom-name:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+}
+
+/* Hidden until the tile is under the pointer: a grid of close buttons reads as
+   a grid about deleting things, which is not what the panel is for. */
+.custom-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: #6d7686;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.custom-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+.custom-tile:hover .custom-remove,
+.custom-remove:focus-visible {
+  opacity: 1;
+}
+
+.custom-remove:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* --- the object menu --- */
+
+/* Fixed, not absolute: the coordinates come from a pointer event, which speaks
+   client space, and the viewport is not a positioned ancestor anyway. */
+.object-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 178px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.menu-head {
+  padding: 4px 8px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 8px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+
+/* Dimmed rather than removed. A Paste that vanishes when the clipboard is empty
+   makes the menu change height between openings, and leaves no clue that
+   pasting is a thing this menu does at all. */
+.menu-item:disabled {
+  color: #5d6675;
+  cursor: default;
+}
+
+.menu-label {
+  flex: 1 1 auto;
+}
+
+.menu-hint {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: #5d6675;
 }
 
 /* --- shape palette --- */

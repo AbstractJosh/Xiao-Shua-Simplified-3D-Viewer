@@ -211,6 +211,28 @@ export function defaultFeature(anchor: SurfaceAnchor, shape: Shape2D): Feature {
   }
 }
 
+/**
+ * A deep copy of an object with fresh ids throughout, ready to stand beside the
+ * original.
+ *
+ * Every id is reminted, down through parts and their parts: two objects sharing
+ * a feature id would collide in the evaluator's per-object cache and in every
+ * map keyed by one, and the copy would edit the original's sketches. The rest is
+ * cloned rather than shared because a `SceneObject` is a tree of plain arrays --
+ * a shared `size` or `origin` would alias between the copy and its source the
+ * first time anything reached past a spread.
+ */
+export function cloneObject(obj: SceneObject): SceneObject {
+  const remint = (o: SceneObject): SceneObject => ({
+    ...o,
+    id: nextObjectId(),
+    features: o.features.map((f) => ({ ...f, id: nextFeatureId() })),
+    cuts: o.cuts.map((c) => ({ ...c, id: nextCutId() })),
+    parts: o.parts.map(remint),
+  })
+  return remint(structuredClone(obj))
+}
+
 export function makeObject(base: BaseSolid, position: Vec3): SceneObject {
   return {
     id: nextObjectId(),

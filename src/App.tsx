@@ -1,3 +1,4 @@
+import { ClipboardPanel } from './console/ClipboardPanel'
 import { Inspector } from './console/Inspector'
 import { NavBar } from './console/NavBar'
 import { ObjectPanel } from './console/ObjectPanel'
@@ -21,6 +22,11 @@ export default function App() {
       <main className="main">
         <Viewport />
         <aside className="console">
+          {/* Top of the console, above the fixed catalogue below it: what you
+              saved is yours and specific to this scene, so it is the first
+              thing to reach for rather than something to scroll past ten
+              primitives to find. */}
+          <ClipboardPanel />
           <SolidPalette />
           <ShapePalette />
           <PlacementPanel />

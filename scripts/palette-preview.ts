@@ -12,7 +12,18 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { NGON_NAMES, NGON_SIDES, NGON_SIDES_TOP_DOWN, ngonPoints } from '../src/console/ngon'
+import {
+  DEFAULT_SIDES,
+  MORPH_ANGLES,
+  NGON_HOLD_MS,
+  NGON_LABEL,
+  NGON_MORPH_MS,
+  NGON_NAMES,
+  NGON_SIDES,
+  NGON_SIDES_TOP_DOWN,
+  ngonPoints,
+  ngonRadii,
+} from '../src/console/ngon'
 import { SOLID_TEMPLATES } from '../src/console/solidIcons'
 import { defaultBaseFor, solidLabel } from '../src/geometry/types'
 import { APP_NAME } from '../src/appInfo'
@@ -30,12 +41,13 @@ const simpleChip = (label: string, inner: string) => `
     <div class="chip-face">${icon(inner)}<span>${label}</span></div>
   </button>`
 
-/** Mirrors NgonChip's DOM exactly. */
+/** Mirrors NgonChip's DOM exactly, resting state included: idle, the chip is
+ *  cycling through the whole family and is named for it. */
 const ngonChip = (id: string, initial: number) => `
   <div class="chip chip-ngon" id="${id}">
     <div class="chip-face">
       ${icon(`<polygon points="${ngonPoints(initial)}" />`)}
-      <span>${NGON_NAMES[initial]}</span>
+      <span>${NGON_LABEL}</span>
     </div>
     <div class="ngon-bands">
       ${NGON_SIDES_TOP_DOWN.map(
@@ -81,7 +93,7 @@ const palette = `
   <div class="palette">
     ${simpleChip('Circle', '<circle cx="16" cy="16" r="12" />')}
     ${simpleChip('Rectangle', '<rect x="4" y="6" width="24" height="20" rx="1.5" />')}
-    ${ngonChip('live', 6)}
+    ${ngonChip('live', DEFAULT_SIDES)}
   </div>`
 
 // One chip per band, frozen in that state, annotated by position.
@@ -112,10 +124,50 @@ document.querySelectorAll('.chip-ngon:not(.state-chip)').forEach(function (chip)
   var pts = ${JSON.stringify(
     Object.fromEntries(NGON_SIDES.map((n) => [n, ngonPoints(n)]))
   )};
-  var resting = 6;
+  var order = ${JSON.stringify(NGON_SIDES)};
+  var resting = ${DEFAULT_SIDES};
+  var timer = null;
+  var frame = 0;
+
+  // The morph runs on the app's own ring: every polygon resampled onto one
+  // shared set of angles, so a frame is just a lerp of radii along fixed rays.
+  var ring = ${JSON.stringify(MORPH_ANGLES.map((a) => [Math.cos(a), Math.sin(a)]))};
+  var radii = ${JSON.stringify(Object.fromEntries(NGON_SIDES.map((n) => [n, ngonRadii(n)])))};
+
+  function morphPoints(from, to, t) {
+    var a = radii[from], b = radii[to], eased = t * (2 - t), out = [];
+    for (var i = 0; i < ring.length; i++) {
+      var r = a[i] + (b[i] - a[i]) * eased;
+      out.push((16 + ring[i][0] * r).toFixed(2) + ',' + (16 + ring[i][1] * r).toFixed(2));
+    }
+    return out.join(' ');
+  }
+
+  function cycle() {
+    stop();
+    timer = setTimeout(function () {
+      var to = order[(order.indexOf(resting) + 1) % order.length];
+      var begun = performance.now();
+      var draw = function (now) {
+        var t = Math.min(1, Math.max(0, (now - begun) / ${NGON_MORPH_MS}));
+        poly.setAttribute('points', morphPoints(resting, to, t));
+        if (t < 1) frame = requestAnimationFrame(draw);
+        else { resting = to; cycle(); }
+      };
+      draw(begun);
+    }, ${NGON_HOLD_MS});
+  }
+  function stop() {
+    if (timer) clearTimeout(timer);
+    cancelAnimationFrame(frame);
+    timer = null;
+  }
+
+  cycle();
   chip.querySelectorAll('.ngon-band').forEach(function (band) {
-    var n = band.getAttribute('data-sides');
+    var n = Number(band.getAttribute('data-sides'));
     band.addEventListener('mouseenter', function () {
+      stop();
       poly.setAttribute('points', pts[n]);
       label.textContent = names[n];
     });
@@ -127,8 +179,9 @@ document.querySelectorAll('.chip-ngon:not(.state-chip)').forEach(function (chip)
     });
   });
   chip.addEventListener('mouseleave', function () {
+    label.textContent = ${JSON.stringify(NGON_LABEL)};
     poly.setAttribute('points', pts[resting]);
-    label.textContent = names[resting];
+    cycle();
   });
 });`
 
@@ -199,6 +252,14 @@ body { overflow: auto; padding: 26px; }
     <b>Bands are invisible in the app.</b> The blue strip above only marks where each
     one sits. In use, the band under the pointer is felt through the icon and label
     changing &mdash; hover the live chip at the top to see it.
+  </p>
+  <p class="legend">
+    <b>Left alone, the chip morphs.</b> It walks its own list under the name
+    &ldquo;${NGON_LABEL}&rdquo;, so the button says what it picks from rather than
+    resting under the name of one polygon and reading as a button for that one.
+    Each polygon is held ${NGON_HOLD_MS}ms and the morph between them runs
+    ${NGON_MORPH_MS}ms, with corners sliding along fixed rays so nothing spins.
+    Hovering stops it dead; leaving resumes from whatever was last picked.
   </p>
 
   <script>${script}</script>

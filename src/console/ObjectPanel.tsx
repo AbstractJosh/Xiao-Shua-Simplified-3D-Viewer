@@ -1,5 +1,6 @@
+import { assemblyExtent, assemblyScaleLimits } from '../geometry/assembly'
 import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION } from '../geometry/dimensions'
-import type { BaseSolid, PlatonicKind } from '../geometry/types'
+import type { BaseSolid, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import { selectedObject, useDoc } from '../store/docStore'
 import { NumberField, Section } from './Field'
@@ -13,12 +14,6 @@ const RADIUS_MAX = MAX_RADIUS
 /** The side counts the solid palette offers, so both places agree. */
 const SIDE_CHOICES = [3, 4, 5, 6, 8]
 
-const PLATONIC_CHOICES: { solid: PlatonicKind; label: string; title: string }[] = [
-  { solid: 'tetrahedron', label: 'Tetra', title: 'Tetrahedron' },
-  { solid: 'octahedron', label: 'Octa', title: 'Octahedron' },
-  { solid: 'dodecahedron', label: 'Dodeca', title: 'Dodecahedron' },
-]
-
 /**
  * A solid built elsewhere can carry a count the palette never offers, and a row
  * that cannot show the current value would read as though nothing is selected.
@@ -26,6 +21,47 @@ const PLATONIC_CHOICES: { solid: PlatonicKind; label: string; title: string }[] 
 function sideChoices(current: number): number[] {
   if (SIDE_CHOICES.includes(current)) return SIDE_CHOICES
   return [...SIDE_CHOICES, current].sort((a, b) => a - b)
+}
+
+/**
+ * The one dimension a merged object has.
+ *
+ * Its parts sit at their own angles and a `BaseSolid` carries no scale, so
+ * there is no way to write down "this assembly, but wider" -- a per-axis field
+ * could only ever have resized ONE of the welded solids, which is what made a
+ * merged object stop behaving as one the moment it was sized. A single uniform
+ * size is the whole of what is representable, and it is also the honest control:
+ * the assembly keeps the shape the merge gave it.
+ *
+ * Shown as the longest side of the object's bounding box rather than as a bare
+ * factor, so the row reads as a measurement like every other row in this panel
+ * and a slider has somewhere absolute to sit. The two are interchangeable: a
+ * uniform scale multiplies that extent by exactly the factor applied.
+ */
+function MergedSize({ object }: { object: SceneObject }) {
+  const scaleObject = useDoc((s) => s.scaleObject)
+  const extent = assemblyExtent(object)
+  const { lo, hi } = assemblyScaleLimits(object)
+
+  // An assembly with no extent has no factor to scale by either, and the field
+  // would divide by zero to find one. Not reachable from a real merge, since
+  // every primitive has size, but the row must not be the thing that throws.
+  if (!(extent > 0) || !(hi > lo)) return null
+
+  return (
+    <NumberField
+      label="Size"
+      value={extent}
+      // The range the object can actually take: the factor limits of the
+      // tightest solid in it, read back as a size. Outside it some part would
+      // clamp while the rest kept going, which is the one thing a uniform scale
+      // must not do.
+      min={extent * lo}
+      max={extent * hi}
+      tip="A merged object sizes as one. Every solid in it scales together and the gaps between them scale too, so the assembly keeps the shape the merge gave it."
+      onChange={(next) => scaleObject(object.id, next / extent)}
+    />
+  )
 }
 
 export function ObjectPanel() {
@@ -105,34 +141,20 @@ export function ObjectPanel() {
           />
         )
 
+      // No kind switcher here, unlike the side counts below. A tetrahedron is
+      // not a coarser dodecahedron the way a hexagonal prism is a coarser
+      // octagonal one -- swapping one for another is placing a different solid,
+      // which the palette already does, and doing it from the Dimensions panel
+      // only bought a way to silently spend the object's sketches.
       case 'platonic':
         return (
-          <>
-            <NumberField
-              label="Radius"
-              value={base.radius}
-              min={MIN_DIMENSION}
-              max={RADIUS_MAX}
-              onChange={(radius) => setBase({ ...base, radius })}
-            />
-            <p className="subhead">Solid</p>
-            <div className="seg">
-              {PLATONIC_CHOICES.map((choice) => (
-                <button
-                  key={choice.solid}
-                  type="button"
-                  title={choice.title}
-                  className={`seg-btn${base.solid === choice.solid ? ' seg-active' : ''}`}
-                  onClick={() => {
-                    if (choice.solid === base.solid) return
-                    setTopology('solid', { ...base, solid: choice.solid })
-                  }}
-                >
-                  {choice.label}
-                </button>
-              ))}
-            </div>
-          </>
+          <NumberField
+            label="Radius"
+            value={base.radius}
+            min={MIN_DIMENSION}
+            max={RADIUS_MAX}
+            onChange={(radius) => setBase({ ...base, radius })}
+          />
         )
 
       case 'cylinder':
@@ -203,21 +225,23 @@ export function ObjectPanel() {
     }
   }
 
+  const merged = object.parts.length > 0
+
   return (
     <Section
       title="Dimensions"
-      hint={object.parts.length > 0 ? `${object.parts.length + 1} merged` : solidLabel(base)}
-      tip={
-        object.parts.length > 0
-          ? `These rows size this object's own ${solidLabel(base).toLowerCase()}. The ${object.parts.length} solid${object.parts.length === 1 ? '' : 's'} merged into it keep the dimensions they were merged with.`
-          : undefined
-      }
+      hint={merged ? `${object.parts.length + 1} merged` : solidLabel(base)}
     >
       {/* Position and rotation are NOT here. They are a placement, which the
           cut plane has too, so both read the one Position & Rotation panel
           above rather than each keeping a copy of two XYZ fields. What is left
-          is what only a solid has: how big it is, and how many sides. */}
-      {dimensions()}
+          is what only a solid has: how big it is, and how many sides.
+
+          A merged object gets one row instead of that set. Its own primitive's
+          width is not a dimension of the object any more -- the object is every
+          solid welded into it -- and offering the host's fields here is what
+          made sizing a merge move one of its parts and leave the rest. */}
+      {merged ? <MergedSize object={object} /> : dimensions()}
 
       <button
         type="button"

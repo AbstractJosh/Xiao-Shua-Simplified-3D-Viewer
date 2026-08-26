@@ -3,6 +3,7 @@ import type { RefObject } from 'react'
 import { Edges } from '@react-three/drei'
 import type { ThreeEvent } from '@react-three/fiber'
 import type { Mesh } from 'three'
+import { assemblyAnchor } from '../geometry/assembly'
 import { evaluateDoc } from '../geometry/evaluate'
 import type { SnapEntry } from '../geometry/snap'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
@@ -12,6 +13,7 @@ import { FaceHandle } from './FaceHandle'
 import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
 import { publishScene } from './snapping'
+import { isRightClick, noteRightPress, useObjectMenu } from './ObjectMenu'
 import { TransformGizmo } from './TransformGizmo'
 
 /** Selection is carried by the object's own material and outline, which is why
@@ -62,6 +64,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
   // tell apart mid-drag, so the plane -- the thing being actively aimed -- takes
   // the gizmo for as long as the tool is armed, and the selection gives it up.
   const cutActive = useTools((s) => s.cutActive)
+  const openMenu = useObjectMenu((s) => s.openMenu)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
   // The finer selection wins the gizmo. Selecting a sketch is a statement about
@@ -129,6 +132,17 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     // here would abandon the drop half-finished and grab something else.
     if (s.drag.kind !== 'idle') return
 
+    // The right button is not a drag on the body. It selects, notes where it
+    // landed, and leaves the rest to the release: a small movement opens the
+    // menu, a large one was the camera being panned. Starting a move here --
+    // which is what used to happen, since nothing checked the button -- meant a
+    // right-click walked the solid to the pointer before the menu appeared.
+    if (e.nativeEvent.button === 2) {
+      noteRightPress(e.nativeEvent.clientX, e.nativeEvent.clientY)
+      if (primarySelection(s) !== id) s.selectObject(id)
+      return
+    }
+
     // Shift adds to the selection instead of replacing it, which is how a merge
     // is chosen. It never starts a drag: the press is about picking, and moving
     // the object under it would be a surprise on a gesture meant to gather.
@@ -179,10 +193,15 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           Exactly one gizmo is ever on screen. This is the selected object's,
           and it stands down for the two things that outrank it: an armed cut
           plane, whose own arrows would otherwise be one of two sets to tell
-          apart, and a selected sketch, which gets the finer gizmo of the two. */}
+          apart, and a selected sketch, which gets the finer gizmo of the two.
+
+          It sits at the object's ASSEMBLY ANCHOR, not at its transform: merging
+          two solids leaves one gizmo, and it belongs midway between the two that
+          went in rather than parked on whichever happened to be the host. For an
+          unmerged object the two are the same point. */}
       {selected && !cutActive && !sketchSelected && (
         <TransformGizmo
-          position={selected.transform.position}
+          position={assemblyAnchor(selected)}
           rotation={selected.transform.rotation}
           controlsRef={controlsRef}
           onGrab={(handle) => startGizmo(selected.id, handle)}
@@ -214,6 +233,13 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
               castShadow
               receiveShadow
               onPointerDown={(e) => onObjectPointerDown(e, object.id)}
+              onContextMenu={(e) => {
+                e.stopPropagation()
+                const { clientX, clientY } = e.nativeEvent
+                // Only a click, never the tail of a pan. See ObjectMenu.
+                if (!isRightClick(clientX, clientY)) return
+                openMenu(clientX, clientY, object.id)
+              }}
             >
               <meshStandardMaterial
                 color={isSelected ? SELECTED_COLOR : SOLID_COLOR}

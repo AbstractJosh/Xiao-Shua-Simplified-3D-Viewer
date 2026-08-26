@@ -38,6 +38,17 @@ export type FacetedSolid = { geometry: BufferGeometry; faces: FacePatch[] }
 const EPS = 1e-9
 const X_AXIS = new Vector3(1, 0, 0)
 
+/**
+ * How close two face normals must be in height before the azimuth decides which
+ * comes first.
+ *
+ * Wide enough to swallow the rounding in a cross product of vertices scaled by
+ * an arbitrary radius, and far narrower than the gap between two genuinely
+ * different bands of faces -- the closest on any solid here are a
+ * dodecahedron's, about 0.45 apart.
+ */
+const ORDER_EPS = 1e-9
+
 /** Point on a face at (u,v) in that face's frame. */
 export function facePoint(face: FacePatch, u: number, v: number): Vector3 {
   return face.origin.clone().addScaledVector(face.uDir, u).addScaledVector(face.vDir, v)
@@ -281,11 +292,19 @@ function convexFaces(verts: Vector3[]): FacePatch[] {
 
   // Face indices live in saved anchors, so the order has to be reproducible
   // rather than an accident of the walk above.
-  planes.sort(
-    (a, b) =>
-      b.normal.y - a.normal.y ||
-      Math.atan2(a.normal.x, a.normal.z) - Math.atan2(b.normal.x, b.normal.z)
-  )
+  //
+  // Height first, then azimuth -- but height is compared with a TOLERANCE,
+  // because on a platonic solid whole bands of faces share one exactly. A
+  // dodecahedron resting on a face has two rings of five, and `a.normal.y -
+  // b.normal.y` puts those five in whatever order the last bit of the cross
+  // products happened to land in. That order then moves with the circumradius,
+  // which is how a saved `planar-face` anchor ends up naming a different face
+  // after nothing more than a resize.
+  planes.sort((a, b) => {
+    const height = b.normal.y - a.normal.y
+    if (Math.abs(height) > ORDER_EPS) return height
+    return Math.atan2(a.normal.x, a.normal.z) - Math.atan2(b.normal.x, b.normal.z)
+  })
 
   return planes.map(({ normal, d }) => {
     const on = verts.filter((v) => Math.abs(normal.dot(v) - d) <= tol)
@@ -304,26 +323,45 @@ function convexFaces(verts: Vector3[]): FacePatch[] {
 }
 
 /**
- * Face patches for a platonic solid, standing the way a person would set it
- * down.
+ * How far a platonic solid is turned to stand the way a person would set it
+ * down, worked out ONCE per kind at unit size.
  *
- * A tetrahedron and a dodecahedron both rest on a face, so the hull is walked
- * once in the textbook orientation purely to learn where a face points, and the
- * vertices are then rotated to drop that face onto -Y. Every face of a platonic
- * solid is equivalent, so any of them will do -- and for the dodecahedron this
- * also lands the opposite face on top, giving it a real axis along +Y.
+ * A tetrahedron and a dodecahedron both rest on a face, so the hull is walked in
+ * the textbook orientation purely to learn where a face points, and the vertices
+ * are then rotated to drop that face onto -Y. Every face of a platonic solid is
+ * equivalent, so any of them will do -- and for the dodecahedron this also lands
+ * the opposite face on top, giving it a real axis along +Y.
  *
- * The octahedron is left alone: its canonical pose already has a symmetry axis
+ * The octahedron gets no turn: its canonical pose already has a symmetry axis
  * along +Y, and tipping it onto a face would only make it look broken.
+ *
+ * Cached, and measured at radius 1, because HOW A SHAPE STANDS IS NOT A
+ * FUNCTION OF ITS SIZE. Derived per call from vertices already scaled by the
+ * radius, it very nearly is: the walk picks whichever face sorts first, the
+ * faces tie, and the tie is settled by rounding that moves with the radius. A
+ * dodecahedron dragged bigger would snap round its own axis by 36 degrees
+ * whenever the tie fell the other way, and a tetrahedron would tip onto a
+ * different face outright.
  */
+const restingTurns = new Map<PlatonicKind, Quaternion>()
+
+function restingTurn(kind: PlatonicKind): Quaternion {
+  const cached = restingTurns.get(kind)
+  if (cached) return cached
+  const turn = new Quaternion().setFromUnitVectors(
+    convexFaces(platonicVertices(kind, 1))[0].normal,
+    new Vector3(0, -1, 0)
+  )
+  restingTurns.set(kind, turn)
+  return turn
+}
+
+/** Face patches for a platonic solid, standing the way a person would set it down. */
 export function platonicFaces(kind: PlatonicKind, radius: number): FacePatch[] {
   const verts = platonicVertices(kind, radius)
   if (kind === 'octahedron') return convexFaces(verts)
-  const q = new Quaternion().setFromUnitVectors(
-    convexFaces(verts)[0].normal,
-    new Vector3(0, -1, 0)
-  )
-  return convexFaces(verts.map((v) => v.applyQuaternion(q)))
+  const turn = restingTurn(kind)
+  return convexFaces(verts.map((v) => v.applyQuaternion(turn)))
 }
 
 export function platonic(kind: PlatonicKind, radius: number): FacetedSolid {

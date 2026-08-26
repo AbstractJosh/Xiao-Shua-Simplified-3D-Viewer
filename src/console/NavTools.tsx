@@ -194,6 +194,11 @@ export function HelpTool() {
         <li><b>Snap</b> and <b>Cut</b> live in the bar above</li>
         <li><b>Orbit</b> with left-drag on empty space, zoom to scroll</li>
         <li><b>Delete</b> removes the selected sketch, or the object</li>
+        <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>
+        <li><b>Ctrl+C</b> / <b>Ctrl+V</b> copy the selected object and paste it beside itself</li>
+        <li>Saved objects live in <b>Clipboard</b>, at the top of the console; drag one back in</li>
+        <li>Each tile turns on its own; <b>sweep across one</b> to spin it and look it over</li>
+        <li>Three tiles show models at a time; <b>scroll the row sideways</b> for the rest</li>
       </ul>
     </NavTool>
   )

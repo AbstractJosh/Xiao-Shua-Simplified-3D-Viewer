@@ -28,10 +28,16 @@ import { pickAnchorAcrossObjects, pickAnchorOnObject } from '../src/viewport/pic
 import { publishScene, resolveSolidDrop } from '../src/viewport/snapping'
 import { useTools } from '../src/store/toolStore'
 import {
+  MORPH_ANGLES,
+  NGON_HOLD_MS,
+  NGON_MORPH_MS,
   NGON_SIDES,
   NGON_SIDES_TOP_DOWN,
   NGON_NAMES,
+  morphPoints,
   ngonPoints,
+  ngonRadii,
+  nextNgonSides,
 } from '../src/console/ngon'
 import { IDENTITY_TRANSFORM } from '../src/geometry/types'
 import type {
@@ -272,6 +278,100 @@ console.log('6. Polygon chip: band order and icon geometry')
     NGON_SIDES_TOP_DOWN.join() === [...NGON_SIDES].reverse().join(),
     NGON_SIDES_TOP_DOWN.join(',')
   )
+
+  // Left alone the chip advertises itself by walking its own list. The walk
+  // has to reach every band's polygon -- a cycle that skipped one would be
+  // claiming the chip offers less than it does -- and it has to come home.
+  {
+    const walk = [NGON_SIDES[0]]
+    while (walk.length < NGON_SIDES.length) walk.push(nextNgonSides(walk.at(-1)!))
+    check('the idle cycle visits every polygon', new Set(walk).size === NGON_SIDES.length, walk.join(' -> '))
+    check('in the order the bands sit in', walk.join() === NGON_SIDES.join(), walk.join(' -> '))
+    check('and wraps back to the start', nextNgonSides(walk.at(-1)!) === NGON_SIDES[0], `${nextNgonSides(walk.at(-1)!)}`)
+    // A count the chip does not offer (7, say, or a stale saved value) must
+    // not strand the cycle on a polygon with no band under it.
+    check('an off-list count rejoins the cycle', nextNgonSides(7) === NGON_SIDES[0], `${nextNgonSides(7)}`)
+  }
+
+  // --- the morph between them -------------------------------------------
+  //
+  // Six polygons with six different vertex counts cannot be interpolated
+  // point by point, so they are all resampled onto one shared ring of angles
+  // first. The whole design rests on that resampling being lossless: if it
+  // rounds a corner off, every held polygon is drawn wrong for a full second,
+  // which is far more visible than anything the 200ms in motion could do.
+  {
+    check('a polygon is held for a second', NGON_HOLD_MS === 1000, `${NGON_HOLD_MS}ms`)
+    check('and the morph itself is 200ms', NGON_MORPH_MS === 200, `${NGON_MORPH_MS}ms`)
+
+    const TOL = 1e-9
+    const TWO_PI = Math.PI * 2
+    const wrap = (a: number) => ((a % TWO_PI) + TWO_PI) % TWO_PI
+
+    // Sampling at the union of every polygon's corners is what makes the
+    // resampling exact -- so every corner has to actually be in there.
+    const missing = NGON_SIDES.flatMap((n) => {
+      const start = -Math.PI / 2 + (n % 2 === 0 ? Math.PI / n : 0)
+      return Array.from({ length: n }, (_, i) => wrap(start + (i / n) * TWO_PI)).filter(
+        (a) => !MORPH_ANGLES.some((m) => Math.abs(m - a) < TOL || Math.abs(m - a) > TWO_PI - TOL)
+      )
+    })
+    check('the ring samples every corner of every polygon', missing.length === 0, `${missing.length} missed`)
+    check(
+      'and carries no duplicate angles',
+      MORPH_ANGLES.every((a, i) => i === 0 || a - MORPH_ANGLES[i - 1] > TOL),
+      `${MORPH_ANGLES.length} angles`
+    )
+
+    // Area off the unrounded radii: a ring that clipped a corner would come
+    // out smaller than the polygon it is standing in for.
+    const ringArea = (radii: number[]) =>
+      radii.reduce((acc, r, i) => {
+        const j = (i + 1) % radii.length
+        const sweep = MORPH_ANGLES[j] - MORPH_ANGLES[i] + (j === 0 ? TWO_PI : 0)
+        return acc + 0.5 * r * radii[j] * Math.sin(sweep)
+      }, 0)
+
+    for (const n of NGON_SIDES) {
+      const exact = 0.5 * n * 12 * 12 * Math.sin(TWO_PI / n)
+      const got = ringArea(ngonRadii(n))
+      check(
+        `${NGON_NAMES[n]} survives resampling intact`,
+        Math.abs(got - exact) / exact < 1e-12,
+        `area ${got.toFixed(6)} vs ${exact.toFixed(6)}`
+      )
+    }
+
+    for (const from of NGON_SIDES) {
+      const to = nextNgonSides(from)
+      check(
+        `${NGON_NAMES[from]} to ${NGON_NAMES[to]} starts on the real ${NGON_NAMES[from].toLowerCase()}`,
+        morphPoints(from, to, 0) === morphPoints(from, from, 0),
+        `t=0`
+      )
+      check(
+        `and ends on the real ${NGON_NAMES[to].toLowerCase()}`,
+        morphPoints(from, to, 1) === morphPoints(to, to, 0),
+        `t=1`
+      )
+
+      // Halfway is a blend of the two, never a bulge past either -- and every
+      // radius stays positive, so the outline cannot fold through itself.
+      const a = ngonRadii(from)
+      const b = ngonRadii(to)
+      const mid = morphPoints(from, to, 0.5)
+        .split(' ')
+        .map((p) => p.split(',').map(Number))
+        .map(([x, y]) => Math.hypot(x - 16, y - 16))
+      check(
+        `and stays between the two on the way across`,
+        mid.every(
+          (m, i) => m > 0 && m >= Math.min(a[i], b[i]) - 0.01 && m <= Math.max(a[i], b[i]) + 0.01
+        ),
+        `${mid.length} sampled radii`
+      )
+    }
+  }
 
   for (const sides of NGON_SIDES) {
     const pts = ngonPoints(sides).split(' ').map((p) => p.split(',').map(Number))

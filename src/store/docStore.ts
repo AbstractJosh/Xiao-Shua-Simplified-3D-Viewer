@@ -12,8 +12,16 @@ import type {
   Vec2,
   Vec3,
 } from '../geometry/types'
-import { defaultFeature, makeObject, nextFeatureId, nextObjectId } from '../geometry/types'
-import { hostSurfaceFor, surfaceFor } from '../geometry/surfaces'
+import {
+  cloneObject,
+  defaultFeature,
+  makeObject,
+  nextFeatureId,
+  nextObjectId,
+} from '../geometry/types'
+import { conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
+import { assemblyBounds, assemblyParams, scaleAssembly } from '../geometry/assembly'
+import { baseParams } from '../geometry/dimensions'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject } from '../geometry/evaluate'
 import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
@@ -21,11 +29,26 @@ import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transfo
 /** Depth applied the moment a user picks extrude or intrude on a flat sketch. */
 export const DEFAULT_FEATURE_DEPTH = 0.3
 
+/** A template's position before the drop decides one. */
+const ZERO: Vec3 = [0, 0, 0]
+
+/** Daylight between a pasted copy and the object it came from. */
+const PASTE_GAP = 0.4
+
 export type Drag =
   | { kind: 'idle' }
-  /** Dragging a fresh primitive off the palette; position is null while it has
-   *  nowhere valid to land. */
-  | { kind: 'placing-solid'; base: BaseSolid; position: Vec3 | null }
+  /**
+   * Dragging a solid in from the console; position is null while it has nowhere
+   * valid to land.
+   *
+   * Carries a whole `SceneObject` rather than a `BaseSolid` because the two
+   * sources of this gesture are the palette, whose templates are bare
+   * primitives, and the clipboard, whose templates are things the user built --
+   * features, cuts, merged parts and a rotation of their own. Reducing the
+   * second to its host primitive on the way in would drop everything that made
+   * it worth saving.
+   */
+  | { kind: 'placing-solid'; template: SceneObject; position: Vec3 | null }
   /** Dragging a fresh sketch from the console; objectId/anchor are null while
    *  the pointer is off every object. */
   | { kind: 'placing'; shape: Shape2D; objectId: string | null; anchor: SurfaceAnchor | null }
@@ -141,9 +164,21 @@ type State = {
   commitPlacingSolid: () => void
 
   addObject: (base: BaseSolid, position: Vec3) => string
+  /**
+   * Drop a copy of an object into the scene, clear of whatever it was copied
+   * from. Returns the new object's id.
+   */
+  pasteObject: (object: SceneObject) => string
   removeObject: (id: string) => void
   setObjectTransform: (id: string, transform: ObjectTransform) => void
   patchObject: (id: string, patch: Partial<SceneObject>) => void
+
+  /**
+   * Begin dragging a solid in. The template's own position is ignored -- the
+   * drop decides that -- but its rotation and everything hanging off it come
+   * along.
+   */
+  startPlacingSolidTemplate: (template: SceneObject) => void
 
   /** Takes a full shape, so the palette can vary polygon side counts. */
   startPlacing: (shape: Shape2D) => void
@@ -167,8 +202,33 @@ type State = {
   /** The sketch's spin within its own tangent frame, in radians. */
   rotateShapeTo: (rotation: number) => void
   startCutGizmo: (handle: GizmoHandle) => void
-  /** The continuous part of a gizmo resize: one history entry per gesture. */
+  /**
+   * The continuous part of a gizmo resize: one history entry per gesture.
+   *
+   * Writes the object's OWN primitive, which is all a per-axis drag can mean --
+   * a merged object has no single width to write, so its arrows scale it
+   * through `scaleObjectTo` instead.
+   */
   resizeObjectTo: (base: BaseSolid) => void
+  /**
+   * Scale the whole object -- every solid merged into it -- about its centre.
+   *
+   * Its own action rather than a `patchObject` call because a scale touches the
+   * base, the parts, their offsets and the transform at once, and because it is
+   * relative: the panel reads the size back out of the object to work out what
+   * factor to ask for.
+   */
+  scaleObject: (id: string, factor: number) => void
+  /**
+   * The continuous part of a gizmo scale, measured from the object as it stood
+   * when the gesture began.
+   *
+   * Takes that snapshot rather than reading the live object for the reason
+   * `gizmoDrag.ts` gives at length: a factor applied to the result of the last
+   * factor accumulates, and once the scale clamps at a limit an accumulating
+   * drag keeps swallowing travel the pointer then has to give back.
+   */
+  scaleObjectTo: (snapshot: SceneObject, factor: number) => void
 
   patchFeature: (objectId: string, featureId: string, patch: Partial<Feature>) => void
   setOp: (objectId: string, featureId: string, op: FeatureOp) => void
@@ -200,32 +260,6 @@ const mapFeature = (
     ...o,
     features: o.features.map((f) => (f.id === featureId ? fn(f) : f)),
   }))
-
-/** Any edit that resizes a sketch can push it off its face; pull it back on. */
-const reseat = (base: BaseSolid, f: Feature): Feature => ({
-  ...f,
-  anchor: hostSurfaceFor(base, f.anchor).clampAnchor(f.anchor, f.shape),
-})
-
-/** Reseating plus a depth clamp, for edits that shrink the solid underneath. */
-const conform = (base: BaseSolid, f: Feature): Feature => {
-  const next = reseat(base, f)
-  const limit = hostSurfaceFor(base, next.anchor).maxDepth(next.op, next.anchor)
-  return { ...next, depth: Math.min(next.depth, limit) }
-}
-
-/** A base's numbers in a fixed order, so two can be compared for "no change". */
-const baseParams = (b: BaseSolid): number[] => {
-  switch (b.kind) {
-    case 'box':
-      return b.size
-    case 'sphere':
-    case 'platonic':
-      return [b.radius]
-    default:
-      return [b.radius, b.height]
-  }
-}
 
 /**
  * Below this, a "move" is pointer jitter rather than an edit. Real drags move
@@ -415,7 +449,22 @@ export const useDoc = create<State>((set, get) => {
       return rest.length
     },
 
-    startPlacingSolid: (base) => set({ drag: { kind: 'placing-solid', base, position: null } }),
+    startPlacingSolid: (base) =>
+      set({
+        drag: { kind: 'placing-solid', template: makeObject(base, ZERO), position: null },
+      }),
+
+    startPlacingSolidTemplate: (template) =>
+      set({
+        drag: {
+          kind: 'placing-solid',
+          // Reminted here rather than on release: the ghost, the drop snap and
+          // the object that lands are then all the same object, and a gesture
+          // abandoned off-canvas costs nothing but the ids it minted.
+          template: { ...cloneObject(template), transform: { ...template.transform, position: ZERO } },
+          position: null,
+        },
+      }),
 
     updatePlacingSolid: (position) =>
       set((s) => (s.drag.kind === 'placing-solid' ? { drag: { ...s.drag, position } } : {})),
@@ -428,7 +477,10 @@ export const useDoc = create<State>((set, get) => {
         set({ drag: { kind: 'idle' } })
         return
       }
-      const object = makeObject(drag.base, drag.position)
+      const object = {
+        ...drag.template,
+        transform: { ...drag.template.transform, position: drag.position },
+      }
       commit((d) => ({ objects: [...d.objects, object] }))
       set({ drag: { kind: 'idle' }, selectedObjectIds: [object.id], selectedFeatureId: null })
     },
@@ -438,6 +490,25 @@ export const useDoc = create<State>((set, get) => {
       commit((d) => ({ objects: [...d.objects, object] }))
       set({ selectedObjectIds: [object.id], selectedFeatureId: null })
       return object.id
+    },
+
+    pasteObject: (object) => {
+      const copy = cloneObject(object)
+      // Set down beside the original rather than exactly on top of it: pasted
+      // in place, a copy is invisible, and the user's next move is to drag one
+      // off the other without being able to tell which one they have hold of.
+      // Cleared by the object's OWN width, so the gap reads the same whether
+      // the thing copied is a bead or a wall.
+      const bounds = assemblyBounds(copy)
+      const width = Math.max(0, bounds.max.x - bounds.min.x)
+      const [x, y, z] = copy.transform.position
+      const placed: SceneObject = {
+        ...copy,
+        transform: { ...copy.transform, position: [x + width + PASTE_GAP, y, z] },
+      }
+      commit((d) => ({ objects: [...d.objects, placed] }))
+      set({ selectedObjectIds: [placed.id], selectedFeatureId: null })
+      return placed.id
     },
 
     removeObject: (id) => {
@@ -629,6 +700,34 @@ export const useDoc = create<State>((set, get) => {
     },
 
     startCutGizmo: (handle) => set({ drag: { kind: 'cut-gizmo', handle } }),
+
+    scaleObject: (id, factor) =>
+      commitCoalesced(
+        `scale:${id}`,
+        mapObject(id, (o) => scaleAssembly(o, factor))
+      ),
+
+    scaleObjectTo: (snapshot, factor) => {
+      const { drag, doc } = get()
+      if (drag.kind !== 'gizmo') return
+      const object = doc.objects.find((o) => o.id === drag.objectId)
+      if (!object) return
+
+      const next = scaleAssembly(snapshot, factor)
+      // A frame that resolved to the size the object already has is not an
+      // edit, and must not cost an undo step -- which is exactly what every
+      // frame is once a runaway drag has pinned the scale at its limit. The
+      // position is compared too, because scaling about the centre moves it.
+      if (
+        sameNumbers(assemblyParams(object), assemblyParams(next)) &&
+        sameNumbers(object.transform.position, next.transform.position)
+      ) {
+        return
+      }
+
+      snapshotOnce()
+      silent(mapObject(drag.objectId, () => next))
+    },
 
     resizeObjectTo: (base) => {
       const { drag, doc } = get()

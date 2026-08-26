@@ -15,7 +15,8 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
-import { Vector3 } from 'three'
+import { Box3, Matrix4, Vector3 } from 'three'
+import type { BufferGeometry } from 'three'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createElement } from 'react'
@@ -56,11 +57,14 @@ import { ExportTools } from '../src/console/ExportTools'
 import { Inspector } from '../src/console/Inspector'
 import { NavBar } from '../src/console/NavBar'
 import { CutActions, CutTool, SnapTool } from '../src/console/NavTools'
+import { ClipboardPanel, liveTiles } from '../src/console/ClipboardPanel'
+import { VIEW, framingDistance } from '../src/console/ObjectThumbnail'
 import { ObjectPanel } from '../src/console/ObjectPanel'
 import { PlacementPanel } from '../src/console/PlacementPanel'
 import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
-import { SolidPalette } from '../src/console/SolidPalette'
+import { SolidList, SolidPalette } from '../src/console/SolidPalette'
+import { NGON_LABEL } from '../src/console/ngon'
 import { SOLID_TEMPLATES } from '../src/console/solidIcons'
 import {
   MAX_SIZE,
@@ -72,14 +76,26 @@ import {
 import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
 import { AXIS_COLORS, AXIS_CSS_VARS } from '../src/viewport/axisColors'
 import { objectMatrix } from '../src/geometry/transform'
+import {
+  assemblyAnchor,
+  assemblyCentre,
+  assemblyExtent,
+} from '../src/geometry/assembly'
 import { turnedRotation } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { hostSurfaceFor, slideAnchor, surfaceFor } from '../src/geometry/surfaces'
-import { defaultBaseFor, defaultShape } from '../src/geometry/types'
-import type { BaseSolid, Shape2D, SurfaceAnchor, Vec3 } from '../src/geometry/types'
+import { cloneObject, defaultBaseFor, defaultShape, makeObject } from '../src/geometry/types'
+import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../src/geometry/types'
+import {
+  releaseThumbnail,
+  thumbnailCached,
+  thumbnailFor,
+} from '../src/console/thumbnailGeometry'
 import { signedVolume } from '../src/geometry/volume'
 import { selectedObjectId as primarySelection, useDoc } from '../src/store/docStore'
 import { useEvalStatus } from '../src/store/evalStore'
+import { useLibrary } from '../src/store/libraryStore'
+import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
 import { CUT_SIZE_MAX, cutPlaneNormal, useTools } from '../src/store/toolStore'
 
 let failures = 0
@@ -131,6 +147,7 @@ function occurrences(markup: string, needle: string): number {
 }
 
 const doc = () => useDoc.getState()
+const library = () => useLibrary.getState()
 const tools = () => useTools.getState()
 const rad = (deg: number) => (deg * Math.PI) / 180
 
@@ -374,7 +391,9 @@ doc().selectObject(pyramidId)
 }
 
 {
-  const panel = markupOf('SolidPalette', SolidPalette)
+  // The palette rests closed, so the rows are checked on the list itself. The
+  // header gets its own assertions below.
+  const panel = markupOf('SolidList', SolidList)
   check(
     'it offers one row per template',
     occurrences(panel, 'solid-item-label') === SOLID_TEMPLATES.length,
@@ -385,13 +404,28 @@ doc().selectObject(pyramidId)
   shows('the rarest solid is offered too', panel, '>Dodecahedron<')
   shows('a pyramid row carries side-count chips', panel, 'aria-label="Triangular pyramid"')
   shows('and a prism row carries its own', panel, 'aria-label="Octagonal prism"')
+
+  const whole = markupOf('SolidPalette', SolidPalette)
+  check(
+    'the palette rests open, with every row in reach',
+    occurrences(whole, 'solid-item-label') === SOLID_TEMPLATES.length,
+    `${occurrences(whole, 'solid-item-label')} rows`
+  )
+  shows('and says so on its caret', whole, 'aria-expanded="true"')
+  // Open, but four rows tall: the cap is what keeps ten rows from pushing the
+  // scene tree and the selected object off the bottom of the console.
+  shows('its header still says how many solids are in it', whole, `>${SOLID_TEMPLATES.length}<`)
 }
 
 {
   const panel = markupOf('ShapePalette', ShapePalette)
   shows('it offers a circle', panel, '>Circle<')
   shows('it offers a rectangle', panel, '>Rectangle<')
-  shows('and the polygon chip rests on its default', panel, '>Hexagon<')
+  // At rest the chip is cycling through every polygon it offers, so it is
+  // named for the family. Naming it for one member made it read as a button
+  // that places that one shape.
+  shows('and the polygon chip is named for what it picks from', panel, `>${NGON_LABEL}<`)
+  hides('rather than for whichever polygon it happens to be showing', panel, '>Hexagon<')
 }
 
 {
@@ -1034,6 +1068,7 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   const grab: TurnGrab = {
     axis: new Vector3(0, 1, 0),
     rotation: rotationOf(gizmoCube),
+    position: positionOf(gizmoCube),
     lastAngle: 0,
     total: 0,
   }
@@ -1104,6 +1139,7 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   const grab: TurnGrab = {
     axis: new Vector3(1, 0, 0),
     rotation: tools().cutPlane.rotation,
+    position: tools().cutPlane.position,
     lastAngle: 0,
     total: 0,
   }
@@ -1306,8 +1342,484 @@ doc().reset()
   )
 }
 
-// --- 9. Every solid, every anchor -----------------------------------------
-console.log('\n9. The two data-driven panels across every solid and anchor')
+{
+  // A merged object is ONE object, and the two things that read it as one are
+  // the gizmo and the Dimensions panel. Both used to read the host primitive
+  // alone: the arrows sat on whichever solid happened to lead the merge, and a
+  // Width field resized that solid and left the rest where they were.
+  resetEvaluator()
+  doc().reset()
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+
+  const a = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
+  const b = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [4, 1, 0])
+  doc().selectObject(a)
+  doc().toggleObjectSelection(b)
+  doc().mergeObjects(doc().selectedObjectIds)
+
+  const merged = () => doc().doc.objects[0]
+
+  // Midway between the two origins, which is where the two gizmos were.
+  const centre = assemblyCentre(merged())
+  near('the merged centre sits between the two solids', centre[0], 2, 1e-9)
+  check('and on the axes they share', centre[1] === 0 && centre[2] === 0, centre.join(','))
+
+  const anchor = assemblyAnchor(merged())
+  near('the gizmo carries that point into the world', anchor[0], 2, 1e-9)
+  near('lifted by the host transform like everything else', anchor[1], 1, 1e-9)
+
+  // A bare solid's anchor is its own origin, which is what lets the viewport
+  // and the drag maths use the assembly anchor unconditionally.
+  const lone = doc().addObject({ kind: 'sphere', radius: 1 }, [0, 3, 0])
+  const loneAnchor = assemblyAnchor(doc().doc.objects.find((o) => o.id === lone)!)
+  check('an unmerged object anchors on its own origin', loneAnchor.join() === '0,3,0', loneAnchor.join())
+  doc().removeObject(lone)
+
+  doc().selectObject(a)
+  const panel = markupOf('ObjectPanel (merged)', ObjectPanel)
+  shows('the panel offers one size for the whole thing', panel, '>Size<')
+  hides("and not the host primitive's own width", panel, '>Width<')
+  shows('saying how many solids it covers', panel, '2 merged')
+
+  // The bug in one line: sizing a merge has to move every solid in it.
+  const widthOf = (base: BaseSolid) => (base.kind === 'box' ? base.size[0] : NaN)
+  near('the assembly measures its full reach', assemblyExtent(merged()), 6, 1e-9)
+  doc().scaleObject(a, 2)
+  near('scaling doubles the host', widthOf(merged().base), 4, 1e-9)
+  near(
+    'and the part with it, which is what merging promised',
+    widthOf(merged().parts[0].base),
+    4,
+    1e-9
+  )
+  near('the gap between them scales too', merged().parts[0].transform.position[0], 8, 1e-9)
+  near('so the whole object measures twice what it did', assemblyExtent(merged()), 12, 1e-9)
+
+  // Scaled about its own centre, not about the host's origin -- so the gizmo
+  // the user is dragging stays under the pointer instead of sliding away.
+  const grown = assemblyAnchor(merged())
+  near('and it grew about the gizmo, which has not moved', grown[0], 2, 1e-9)
+  near('on every axis', grown[1], 1, 1e-9)
+
+  doc().undo()
+  near('undo puts the size back', assemblyExtent(merged()), 6, 1e-9)
+
+  // The ring drag: measured from the snapshot the gesture pinned, and silent
+  // once it clamps -- the same two rules `resizeObjectTo` follows.
+  const snapshot = merged()
+  doc().startGizmo(a, { mode: 'size', axis: 'all' })
+  doc().scaleObjectTo(snapshot, 40)
+  near('a runaway ring drag stops at the ceiling', assemblyExtent(merged()), 6 * (MAX_SIZE / 2), 1e-9)
+
+  const pinned = doc().doc
+  const entries = doc().past.length
+  doc().scaleObjectTo(snapshot, 60)
+  doc().scaleObjectTo(snapshot, 80)
+  check('and then stops writing entirely', doc().doc === pinned)
+  check('adding no further history', doc().past.length === entries, `${doc().past.length}`)
+
+  doc().endDrag()
+  doc().undo()
+  near('one undo puts the whole gesture back', assemblyExtent(merged()), 6, 1e-9)
+}
+
+
+// --- 9. Copy, paste, and the clipboard shelf -------------------------------
+console.log('\n9. What the user puts aside, and what comes back out')
+
+resetEvaluator()
+doc().reset()
+for (const c of [...library().customs]) library().removeCustom(c.id)
+useLibrary.setState({ clipboard: null })
+for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+publish([])
+
+{
+  // A copy has to stand beside its source and be edited apart from it, which
+  // means every id in it -- down through merged parts -- is new. Two objects
+  // sharing a feature id would collide in the evaluator's per-object cache and
+  // edit each other's sketches.
+  const source = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
+  doc().startPlacing({ type: 'circle', r: 0.3 })
+  doc().updatePlacing(source, { on: 'box-face', face: 2, u: 0, v: 0 })
+  doc().commitPlacing()
+  const inner = doc().addObject({ kind: 'sphere', radius: 0.6 }, [1, 1, 0])
+  doc().selectObject(source)
+  doc().toggleObjectSelection(inner)
+  doc().mergeObjects(doc().selectedObjectIds)
+
+  const original = doc().doc.objects[0]
+  const copy = cloneObject(original)
+  check('a copy is a different object', copy.id !== original.id, `${copy.id} vs ${original.id}`)
+  check(
+    'its sketches are its own',
+    copy.features[0].id !== original.features[0].id,
+    `${copy.features[0].id} vs ${original.features[0].id}`
+  )
+  check(
+    'and so are the parts merged into it',
+    copy.parts[0].id !== original.parts[0].id,
+    `${copy.parts[0].id} vs ${original.parts[0].id}`
+  )
+  check(
+    'while everything else came along',
+    copy.features.length === original.features.length &&
+      copy.parts.length === original.parts.length,
+    `${copy.features.length} sketches, ${copy.parts.length} parts`
+  )
+  // Deep, not shallow: the arrays are cloned too, so nothing done to the copy
+  // can reach back into the original.
+  check(
+    'down to the arrays inside it',
+    copy.transform.position !== original.transform.position
+  )
+
+  // Ctrl+C then Ctrl+V, as the viewport drives them.
+  const before = doc().doc.objects.length
+  library().copyObject(original)
+  check('copying puts the object on the clipboard', library().clipboard?.id === original.id)
+  check(
+    'and changes the scene not at all',
+    doc().doc.objects.length === before,
+    `${doc().doc.objects.length}`
+  )
+
+  const held = library().clipboard
+  const pasted = held ? doc().pasteObject(held) : ''
+  check('pasting adds one object', doc().doc.objects.length === before + 1, `${doc().doc.objects.length}`)
+  check('and selects it', primarySelection(doc()) === pasted, `${primarySelection(doc())}`)
+
+  const landed = doc().doc.objects.find((o) => o.id === pasted)
+  if (!landed) {
+    check('the pasted object is in the scene', false)
+  } else {
+    // Clear of the original rather than exactly on top of it, where a copy is
+    // invisible and the user cannot tell which of the two they have hold of.
+    check(
+      'set down clear of what it came from',
+      landed.transform.position[0] > original.transform.position[0],
+      `${landed.transform.position[0]} vs ${original.transform.position[0]}`
+    )
+    check(
+      'at the same height, so it rests where the original did',
+      landed.transform.position[1] === original.transform.position[1],
+      `${landed.transform.position[1]}`
+    )
+    check('carrying the sketches with it', landed.features.length === 1, `${landed.features.length}`)
+    check('and the merge', landed.parts.length === 1, `${landed.parts.length}`)
+  }
+
+  doc().undo()
+  check('one undo takes the paste back', doc().doc.objects.length === before, `${doc().doc.objects.length}`)
+  // The clipboard is not the document. Undo rewinds the last edit, never the
+  // copy -- which is why neither it nor the shelf lives in the doc.
+  check('and the clipboard still holds it', library().clipboard !== null)
+}
+
+{
+  // The shelf. Names default to the lowest Custom N nobody is using, so a panel
+  // holding two things never offers to call the next one "Custom 9".
+  const object = doc().doc.objects[0]
+  library().saveCustom(object)
+  library().saveCustom(object)
+  check(
+    'saved objects are named in order',
+    library().customs.map((c) => c.name).join() === 'Custom 1,Custom 2',
+    library().customs.map((c) => c.name).join()
+  )
+
+  const first = library().customs[0].id
+  library().renameCustom(first, 'Bracket')
+  check('renaming takes', library().customs[0].name === 'Bracket', library().customs[0].name)
+  // And frees the old name rather than leaving a hole in the numbering.
+  library().saveCustom(object)
+  check(
+    'which frees the name it gave up',
+    library().customs[2].name === 'Custom 1',
+    library().customs[2].name
+  )
+
+  const panel = markupOf('ClipboardPanel', ClipboardPanel)
+  shows('the panel lists them', panel, 'Bracket')
+  shows('in a grid', panel, 'custom-grid')
+  shows('each one renameable in place', panel, 'custom-name')
+  shows('and draggable into the scene', panel, 'custom-grab')
+
+  library().removeCustom(first)
+  check('removing takes one away', library().customs.length === 2, `${library().customs.length}`)
+}
+
+{
+  // Dragging a custom off the shelf is the palette's gesture carrying a whole
+  // object rather than a bare primitive. Everything the user built has to
+  // survive the round trip -- and arrive with ids that are not the shelf
+  // copy's, or two drops of one tile would be the same object twice.
+  const saved = library().customs[0].object
+  doc().startPlacingSolidTemplate(saved)
+  const drag = doc().drag
+  check('the drag carries a template', drag.kind === 'placing-solid', drag.kind)
+  if (drag.kind === 'placing-solid') {
+    check('with the sketches on it', drag.template.features.length === 1, `${drag.template.features.length}`)
+    check('and the solids merged into it', drag.template.parts.length === 1, `${drag.template.parts.length}`)
+    check('minted fresh, not the shelf copy', drag.template.id !== saved.id, drag.template.id)
+    check(
+      'and parked at the origin, since the drop chooses where it lands',
+      drag.template.transform.position.join() === '0,0,0',
+      drag.template.transform.position.join()
+    )
+  }
+
+  const count = doc().doc.objects.length
+  doc().updatePlacingSolid([3, 1, -2])
+  doc().commitPlacingSolid()
+  check('releasing places it', doc().doc.objects.length === count + 1, `${doc().doc.objects.length}`)
+  const placed = doc().doc.objects[doc().doc.objects.length - 1]
+  check('where the drag left it', placed.transform.position.join() === '3,1,-2', placed.transform.position.join())
+  check('with everything it was saved with', placed.features.length === 1 && placed.parts.length === 1)
+
+  // Two drops of one tile are two objects, not one shared twice.
+  doc().startPlacingSolidTemplate(saved)
+  doc().updatePlacingSolid([6, 1, -2])
+  doc().commitPlacingSolid()
+  const again = doc().doc.objects[doc().doc.objects.length - 1]
+  check('dropping the same tile twice makes two objects', again.id !== placed.id, `${again.id} vs ${placed.id}`)
+  check(
+    'with sketches of their own',
+    again.features[0].id !== placed.features[0].id,
+    `${again.features[0].id} vs ${placed.features[0].id}`
+  )
+
+  // A gesture released off the canvas cancels cleanly, leaving nothing behind.
+  const settled = doc().doc.objects.length
+  doc().startPlacingSolidTemplate(saved)
+  doc().commitPlacingSolid()
+  check('and releasing nowhere places nothing', doc().doc.objects.length === settled, `${doc().doc.objects.length}`)
+  check('leaving no drag running', doc().drag.kind === 'idle', doc().drag.kind)
+}
+
+{
+  // The menu hangs off one object and must not outlive it: the Delete key and
+  // an undo can both take that object away while it is open.
+  const id = doc().doc.objects[0].id
+  useObjectMenu.getState().openMenu(120, 80, id)
+  const menu = markupOf('ObjectMenu', ObjectMenu)
+  shows('the menu names the object it was opened on', menu, 'menu-head')
+  shows('offering copy', menu, '>Copy<')
+  shows('and paste', menu, '>Paste<')
+  shows('and the shelf', menu, 'Save as custom object')
+  shows('with the shortcuts that do the same', menu, 'Ctrl+C')
+
+  doc().removeObject(id)
+  check(
+    'and it renders nothing once that object is gone',
+    renderToStaticMarkup(createElement(ObjectMenu)) === ''
+  )
+  useObjectMenu.getState().closeMenu()
+  check(
+    'nor when it is simply closed',
+    renderToStaticMarkup(createElement(ObjectMenu)) === ''
+  )
+}
+
+{
+  // The three-live cap IS the optimization: every live model is a WebGL
+  // context, and a fourth slipping through is not something to find out about
+  // from a black viewport. Ranked by measured visibility, so a scroll caught
+  // mid-way lights the three the user is looking at.
+  const ids = ['a', 'b', 'c', 'd', 'e']
+  const seeded = liveTiles(ids, {}, 3)
+  check(
+    'before anything is measured, the leading three are live',
+    [...seeded].sort().join() === 'a,b,c',
+    [...seeded].join()
+  )
+
+  const scrolled = liveTiles(ids, { a: 0, b: 0.1, c: 1, d: 1, e: 0.9 }, 3)
+  check(
+    'once measured, the most visible three are',
+    [...scrolled].sort().join() === 'c,d,e',
+    [...scrolled].join()
+  )
+  check('never a fourth', liveTiles(ids, { a: 1, b: 1, c: 1, d: 1, e: 1 }, 3).size === 3)
+  check(
+    'and a tile fully out of view is never live',
+    !liveTiles(ids, { a: 0, b: 1, c: 1, d: 1, e: 0 }, 3).has('a')
+  )
+  check('an empty shelf lights nothing', liveTiles([], {}, 3).size === 0)
+}
+
+{
+  // The panel before any model is built: a ring per tile, in a row that scrolls
+  // sideways rather than a grid that wraps. A wrapping grid has no "next three"
+  // to scroll to -- the fourth tile would sit below the first, permanently in
+  // view and permanently unable to have a model.
+  const rings = markupOf('ClipboardPanel (loading)', ClipboardPanel)
+  // Counted on the role rather than the class, which appears three times per
+  // ring -- the element and its two circles.
+  check(
+    'every saved object starts as a loading ring',
+    occurrences(rings, 'role="progressbar"') === library().customs.length,
+    `${occurrences(rings, 'role="progressbar"')} rings for ${library().customs.length} saved`
+  )
+  shows('drawn as a circular bar, not a spinner glyph', rings, 'thumb-ring-arc')
+  shows('in the scrolling row', rings, 'custom-grid')
+  shows('with each tile findable by the observer', rings, 'data-custom')
+}
+
+{
+  // The model itself. Nothing here can be seen from a headless run, so what is
+  // checked is what would be WRONG on screen: a model framed off its pivot
+  // wobbles as it turns instead of spinning in place, and one too big for the
+  // frame is cropped by it.
+  // Read from the component, never copied: a second set of these would agree
+  // with it exactly until the day one was tuned, and then quietly stop checking
+  // the framing that actually ships.
+  const { fov: FOV, elevation: ELEVATION } = VIEW
+
+  /** The furthest any vertex reaches from the origin the model turns about. */
+  const reachOf = (thumb: { geometry: BufferGeometry }) => {
+    const position = thumb.geometry.getAttribute('position')
+    const at = new Vector3()
+    let reach = 0
+    for (let i = 0; i < position.count; i++) {
+      reach = Math.max(reach, at.fromBufferAttribute(position, i).length())
+    }
+    return reach
+  }
+
+  const framed = (object: SceneObject) => {
+    const thumb = thumbnailFor(object)
+    const distance = framingDistance(thumb.radius)
+    return {
+      thumb,
+      // The full angle the model subtends from the camera. Past the fov, the
+      // frame crops it.
+      subtends: (Math.asin(Math.min(1, thumb.radius / distance)) * 360) / Math.PI,
+      slack: thumb.radius - reachOf(thumb),
+    }
+  }
+
+  // A bead, a wall and a merge of two solids: the framing is derived from each
+  // object's own reach, so all three have to land the same way -- and so must a
+  // sphere and a cube that reach equally far, which is what the exact radius
+  // buys over a bounding box's diagonal.
+  const shapes: { label: string; object: SceneObject }[] = [
+    { label: 'a bead', object: makeObject({ kind: 'sphere', radius: 0.12 }, [0, 0, 0]) },
+    { label: 'a wall', object: makeObject({ kind: 'box', size: [8, 6, 0.4] }, [0, 0, 0]) },
+    {
+      label: 'a merge',
+      object: {
+        ...makeObject({ kind: 'box', size: [2, 2, 2] }, [0, 0, 0]),
+        parts: [
+          {
+            ...makeObject({ kind: 'sphere', radius: 0.3 }, [0, 0, 0]),
+            transform: { position: [4, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3 },
+          },
+        ],
+      },
+    },
+  ]
+
+  {
+    // A bounding box's diagonal over-states a round object by up to the square
+    // root of three, so a sphere used to be drawn a third the size of a cube
+    // that reached exactly as far. Measured to the furthest vertex, the two are
+    // framed identically.
+    const ball = framed(makeObject({ kind: 'sphere', radius: 1 }, [0, 0, 0]))
+    const block = framed(makeObject({ kind: 'box', size: [2, 2, 2] }, [0, 0, 0]))
+    check(
+      'a sphere and a cube of the same reach are drawn the same size',
+      Math.abs(ball.subtends - block.subtends) < 1e-6,
+      `${ball.subtends.toFixed(2)} vs ${block.subtends.toFixed(2)} degrees`
+    )
+  }
+
+  for (const { label, object } of shapes) {
+    const f = framed(object)
+    // Exact, not a bounding box's diagonal: the radius IS the furthest vertex,
+    // so nothing sticks out of the sphere the camera was framed on.
+    near(`${label} is measured to its furthest point`, f.slack, 0, 1e-6)
+    // Room to spare, not merely inside: a tile is an identifier at a glance,
+    // and the sphere being measured is the worst frame of the whole turn.
+    check(
+      `${label} sits well inside the frame`,
+      f.subtends < FOV * 0.55,
+      `subtends ${f.subtends.toFixed(1)} of ${FOV} degrees`
+    )
+  }
+
+  // Framed on the GIZMO, not on the middle of the bounding box. Here the two
+  // are 0.35 apart: a 2-cube at the origin with a small bead welded on at x=4
+  // has its gizmo midway between the two origins, at x=2, while its bounding
+  // box runs -1..4.3 and is centred at 1.65.
+  {
+    const box = new Box3().setFromBufferAttribute(
+      thumbnailFor(shapes[2].object).geometry.getAttribute('position') as never
+    )
+    near(
+      'a merge is framed on its gizmo, not on the middle of its box',
+      box.getCenter(new Vector3()).x,
+      -0.35,
+      0.02
+    )
+  }
+
+  // The view from above is a TILT ON THE MODEL, not a raised camera: nothing has
+  // to be aimed, so nothing can be left unaimed. What has to hold is that the
+  // two are the same picture -- the camera, seen from the model's own frame,
+  // stands ELEVATION degrees above its horizon.
+  {
+    const tilt = new Matrix4().makeRotationX((ELEVATION * Math.PI) / 180)
+    const seenFrom = new Vector3(0, 0, 1).applyMatrix4(tilt.invert()).normalize()
+    near(
+      'tilting the model is the same as looking down on it at 30 degrees',
+      (Math.asin(seenFrom.y) * 180) / Math.PI,
+      ELEVATION,
+      1e-9
+    )
+  }
+
+  // The rotation it was saved at comes along: a cylinder put aside lying down
+  // is that shape, and a thumbnail that stood it upright would advertise
+  // something other than what the tile drops.
+  const lying: SceneObject = {
+    ...makeObject({ kind: 'cylinder', radius: 0.8, height: 3 }, [0, 0, 0]),
+    transform: { position: [0, 0, 0], rotation: [Math.PI / 2, 0, 0] },
+  }
+  const laid = new Box3()
+    .setFromBufferAttribute(thumbnailFor(lying).geometry.getAttribute('position') as never)
+    .getSize(new Vector3())
+  check(
+    'a solid saved lying down is drawn lying down',
+    laid.z > laid.y + 1,
+    `y=${laid.y.toFixed(2)} z=${laid.z.toFixed(2)}`
+  )
+
+  // The cache in front of the solve, which is what stops a sweep back and forth
+  // across the shelf from re-replaying every object it passes.
+  const cube = makeObject({ kind: 'box', size: [2, 2, 2] }, [0, 0, 0])
+  check('a mesh is built once and kept', thumbnailFor(cube) === thumbnailFor(cube))
+  releaseThumbnail(cube)
+  check('and given up when the shelf gives up the object', !thumbnailCached(cube))
+
+  // Bounded, so a long session cannot accumulate GPU buffers without end.
+  const many = Array.from({ length: 20 }, (_, i) =>
+    makeObject({ kind: 'sphere', radius: 0.5 + i * 0.01 }, [0, 0, 0])
+  )
+  for (const o of many) thumbnailFor(o)
+  check(
+    'and it holds a bounded number of them',
+    many.filter(thumbnailCached).length <= 12,
+    `${many.filter(thumbnailCached).length} held`
+  )
+
+  for (const { object } of shapes) releaseThumbnail(object)
+  releaseThumbnail(lying)
+  for (const o of many) releaseThumbnail(o)
+}
+
+// --- 10. Every solid, every anchor ----------------------------------------
+console.log('\n10. The two data-driven panels across every solid and anchor')
 
 /**
  * Both panels switch on a union: ObjectPanel on `BaseSolid['kind']`, Inspector
@@ -1329,9 +1841,12 @@ const SOLIDS: { label: string; base: BaseSolid; expect: string }[] = [
   { label: 'bean', base: defaultBaseFor('capsule'), expect: 'domed caps' },
   { label: 'pentagonal pyramid', base: defaultBaseFor('pyramid', 5), expect: '>Sides<' },
   { label: 'heptagonal prism', base: defaultBaseFor('prism', 7), expect: '>Sides<' },
-  { label: 'tetrahedron', base: defaultBaseFor('platonic', undefined, 'tetrahedron'), expect: '>Solid<' },
-  { label: 'octahedron', base: defaultBaseFor('platonic', undefined, 'octahedron'), expect: '>Solid<' },
-  { label: 'dodecahedron', base: defaultBaseFor('platonic', undefined, 'dodecahedron'), expect: '>Solid<' },
+  // A radius and nothing else. The Tetra/Octa/Dodeca switcher that used to sit
+  // under these is gone: swapping one platonic for another is placing a
+  // different solid, not resizing this one, and the palette already does it.
+  { label: 'tetrahedron', base: defaultBaseFor('platonic', undefined, 'tetrahedron'), expect: '>Radius<' },
+  { label: 'octahedron', base: defaultBaseFor('platonic', undefined, 'octahedron'), expect: '>Radius<' },
+  { label: 'dodecahedron', base: defaultBaseFor('platonic', undefined, 'dodecahedron'), expect: '>Radius<' },
 ]
 
 for (const { label, base, expect } of SOLIDS) {
@@ -1340,6 +1855,12 @@ for (const { label, base, expect } of SOLIDS) {
   const panel = markupOf(`ObjectPanel (${label})`, ObjectPanel)
   hides(`${label} is not the empty branch`, panel, 'Nothing selected')
   shows(`${label} offers its own dimensions`, panel, expect)
+  if (base.kind === 'platonic') {
+    hides(`${label} offers no kind switcher`, panel, '>Solid<')
+    // Not the label text, which the section hint still carries: the chips
+    // themselves. A platonic panel has no other segmented control.
+    hides('nor the chips that drove it', panel, 'seg-btn')
+  }
   shows(`${label} can be deleted`, panel, 'Delete object')
   doc().removeObject(id)
 }

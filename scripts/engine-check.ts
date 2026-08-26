@@ -35,6 +35,7 @@ import {
   scaleUniform,
 } from '../src/geometry/dimensions'
 import type { Axis } from '../src/geometry/dimensions'
+import { platonicFaces } from '../src/geometry/solids'
 import {
   advanceTurn,
   axisParam,
@@ -42,6 +43,7 @@ import {
   axisTravel,
   beginAxisDrag,
   nearestViewAxis,
+  turnedPosition,
   turnedRotation,
 } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
@@ -440,6 +442,57 @@ const ngonArea = (r: number, n: number) => 0.5 * n * r * r * Math.sin((2 * Math.
     const g = solidOf(scene(object({ kind: 'platonic', solid, radius: R })))
     // The hull is exact, not tessellated, so this is a tight equality.
     near(`${solid} R1.1`, signedVolume(g), expected[solid], 1e-6)
+  }
+}
+
+{
+  // HOW A PLATONIC SOLID STANDS IS NOT A FUNCTION OF ITS SIZE.
+  //
+  // It was. The resting turn was derived per call from the convex hull of
+  // vertices already scaled by the radius, and the hull's first face was picked
+  // by a sort whose primary key -- normal height -- TIES across whole bands of a
+  // platonic solid's faces. Which face won that tie came down to the last bit of
+  // a cross product, which moves with the radius, so dragging a dodecahedron's
+  // size snapped it round its own axis by 36 degrees at unpredictable points and
+  // tipped a tetrahedron onto a different face outright.
+  //
+  // Two things have to hold, and this checks both at once, because the face
+  // ORDER is what a saved `planar-face` anchor names: same face list, same
+  // normals, whatever the radius.
+  for (const solid of ['tetrahedron', 'octahedron', 'dodecahedron'] as const) {
+    const canonical = platonicFaces(solid, 1).map((f) => f.normal.clone())
+    let worst = 0
+    let worstAt = 0
+    for (let i = 0; i <= 80; i++) {
+      // The whole range the panel and the gizmo can reach, and deliberately not
+      // round numbers: the tie fell differently at 0.55 than at 0.5.
+      const radius = MIN_DIMENSION + i * 0.05
+      const faces = platonicFaces(solid, radius)
+      if (faces.length !== canonical.length) {
+        worst = Infinity
+        worstAt = radius
+        break
+      }
+      for (let f = 0; f < faces.length; f++) {
+        const drift = faces[f].normal.distanceTo(canonical[f])
+        if (drift > worst) {
+          worst = drift
+          worstAt = radius
+        }
+      }
+    }
+    check(
+      `a ${solid} stands the same way at every size`,
+      worst < 1e-9,
+      `worst drift ${worst.toExponential(2)} at r=${worstAt.toFixed(2)}`
+    )
+  }
+
+  // And the two that rest on a face genuinely do, rather than merely doing so
+  // consistently -- the turn could be stable and still be the wrong one.
+  for (const solid of ['tetrahedron', 'dodecahedron'] as const) {
+    const down = Math.min(...platonicFaces(solid, 1.3).map((f) => f.normal.y))
+    near(`a ${solid} rests flat on a face`, down, -1, 1e-9)
   }
 }
 
@@ -1130,6 +1183,7 @@ console.log('\n16. A ring turn runs about one axis and unwraps past half a circl
   const grab: TurnGrab = {
     axis: new Vector3(0, 0, 1),
     rotation: [0, 0, 0],
+    position: [0, 0, 0],
     lastAngle: 0,
     total: 0,
   }
@@ -1161,6 +1215,7 @@ console.log('\n16. A ring turn runs about one axis and unwraps past half a circl
   const grab: TurnGrab = {
     axis: new Vector3(0, 1, 0),
     rotation: [0, 0, 0],
+    position: [0, 0, 0],
     lastAngle: 0,
     total: 0,
   }
@@ -1174,6 +1229,20 @@ console.log('\n16. A ring turn runs about one axis and unwraps past half a circl
   check('and asking twice gives the same answer', again.every((v, i) => v === quarter[i]), again.join(','))
 
   near('zero travel is the identity', turnedRotation(grab, 0)[1], 0, 1e-9)
+
+  // A merged object's ring sits at the centre of the solids in it, not at the
+  // host's origin, so the same turn has to carry that origin round the ring.
+  // Turning about the origin instead would swing the whole assembly off to one
+  // side of the gizmo the user is holding.
+  const swung = turnedPosition({ ...grab, position: [2, 0, 0] }, Math.PI / 2, [0, 0, 0])
+  near('a quarter turn about Y carries the origin round', swung[2], -2, 1e-9)
+  near('leaving the axis it turned about alone', swung[1], 0, 1e-9)
+
+  // The degenerate case every caller relies on: a bare solid's pivot IS its
+  // origin, so this hands the position straight back and no caller has to ask
+  // which kind of object it is holding.
+  const still = turnedPosition({ ...grab, position: [3, 1, -2] }, Math.PI / 3, [3, 1, -2])
+  check('turning about its own origin moves nothing', still.join() === '3,1,-2', still.join())
 
   // Turning about an axis the target already carries rotation on composes
   // rather than replacing: a quarter added to a quarter is a half.
