@@ -51,10 +51,12 @@ console.warn = (...args: unknown[]) => {
   realWarn(...args)
 }
 
-import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
+import { evaluateDoc, mergedGeometry, resetEvaluator } from '../src/geometry/evaluate'
 import { buildExportBlob, prepareForExport, triangleCount } from '../src/geometry/exporters'
+import { signedVolume } from '../src/geometry/volume'
 import { EXPORT_MODEL_NAME } from '../src/appInfo'
-import type { Doc } from '../src/geometry/types'
+import { IDENTITY_TRANSFORM } from '../src/geometry/types'
+import type { BaseSolid, Doc, Feature, SceneObject, Vec3 } from '../src/geometry/types'
 
 let failures = 0
 function check(label: string, ok: boolean, detail = '') {
@@ -65,48 +67,55 @@ function near(label: string, actual: number, expected: number, tol: number) {
   check(label, Math.abs(actual - expected) <= tol, `got ${actual.toFixed(4)}, expected ${expected.toFixed(4)}`)
 }
 
-function signedVolume(geom: BufferGeometry): number {
-  const pos = geom.getAttribute('position')
-  const index = geom.getIndex()
-  const triCount = index ? index.count / 3 : pos.count / 3
-  const a = new Vector3()
-  const b = new Vector3()
-  const c = new Vector3()
-  const cross = new Vector3()
-  let vol = 0
-  for (let t = 0; t < triCount; t++) {
-    const i0 = index ? index.getX(t * 3) : t * 3
-    const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1
-    const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2
-    a.fromBufferAttribute(pos, i0)
-    b.fromBufferAttribute(pos, i1)
-    c.fromBufferAttribute(pos, i2)
-    cross.crossVectors(b, c)
-    vol += a.dot(cross) / 6
+function object(
+  base: BaseSolid,
+  features: Feature[] = [],
+  position: Vec3 = [0, 0, 0],
+  id = 'obj'
+): SceneObject {
+  return {
+    id,
+    name: id,
+    base,
+    transform: { ...IDENTITY_TRANSFORM, position },
+    features,
+    cuts: [],
   }
-  return vol
 }
 
-const CUBE_WITH_BOSS: Doc = {
-  base: { kind: 'box', size: [2, 2, 2] },
-  features: [
-    {
-      id: 'boss',
-      anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
-      shape: { type: 'circle', r: 0.3 },
-      rotation: 0,
-      op: 'extrude',
-      depth: 0.3,
-      enabled: true,
-    },
-  ],
+const scene = (...objects: SceneObject[]): Doc => ({ objects })
+
+/**
+ * What the export panel actually hands to the exporter: every object baked
+ * through its own transform into one world-space geometry.
+ *
+ * THE CALLER OWNS IT. Every use below disposes it, which is also the check that
+ * disposal never reaches the evaluator's cached per-object geometry -- a later
+ * check would evaluate to an empty mesh if it did.
+ */
+function exportGeometry(doc: Doc): BufferGeometry {
+  return mergedGeometry(doc, evaluateDoc(doc))
 }
+
+const CIRCLE_BOSS: Feature = {
+  id: 'boss',
+  anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
+  shape: { type: 'circle', r: 0.3 },
+  rotation: 0,
+  op: 'extrude',
+  depth: 0.3,
+  enabled: true,
+  tilt: [0, 0, 0],
+  faceOffset: [0, 0],
+}
+
+const CUBE_WITH_BOSS: Doc = scene(object({ kind: 'box', size: [2, 2, 2] }, [CIRCLE_BOSS]))
 
 // --- 1. Welding preserves the solid ---------------------------------------
 console.log('\n1. Welding preserves the solid exactly')
 {
   resetEvaluator()
-  const { geometry } = evaluateDoc(CUBE_WITH_BOSS)
+  const geometry = exportGeometry(CUBE_WITH_BOSS)
   const before = signedVolume(geometry)
   const beforeVerts = geometry.getAttribute('position').count
 
@@ -140,15 +149,26 @@ console.log('\n1. Welding preserves the solid exactly')
   const { triangles, vertices } = await buildExportBlob(geometry, 'obj')
   check('reported triangles match', triangles === beforeTris, `${triangles}`)
   check('reported vertices are the welded count', vertices < beforeVerts, `${vertices}`)
-  // The source geometry must survive untouched: it is still on screen.
+  // Exporting must not consume what it was handed: the panel evaluates once
+  // and may write both formats from the same merged geometry.
   near('source geometry still intact', signedVolume(geometry), before, 1e-9)
+  geometry.dispose()
+
+  // And the merged copy shares no buffer with the evaluator's cache, so
+  // disposing it must leave the object on screen intact.
+  near(
+    'the cached per-object geometry is untouched',
+    signedVolume(evaluateDoc(CUBE_WITH_BOSS).objects[0].geometry),
+    before,
+    1e-9
+  )
 }
 
 // --- 2. Hard edges survive the weld ---------------------------------------
 console.log('\n2. Hard edges survive the weld')
 {
   resetEvaluator()
-  const { geometry } = evaluateDoc({ base: { kind: 'box', size: [2, 2, 2] }, features: [] })
+  const geometry = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] })))
   const { vertices } = await buildExportBlob(geometry, 'obj')
   // A cube welded by position ALONE would collapse to 8 corners and shade
   // round. Welding by position AND normal must leave 4 per face, i.e. 24.
@@ -163,7 +183,7 @@ console.log('\n2. Hard edges survive the weld')
 console.log('\n3. OBJ output')
 {
   resetEvaluator()
-  const { geometry } = evaluateDoc(CUBE_WITH_BOSS)
+  const geometry = exportGeometry(CUBE_WITH_BOSS)
   const { blob, triangles, vertices } = await buildExportBlob(geometry, 'obj')
   const text = await blob.text()
 
@@ -184,7 +204,7 @@ console.log('\n3. OBJ output')
 console.log('\n4. GLB output')
 {
   resetEvaluator()
-  const { geometry } = evaluateDoc(CUBE_WITH_BOSS)
+  const geometry = exportGeometry(CUBE_WITH_BOSS)
   try {
     const { blob } = await buildExportBlob(geometry, 'glb')
     const buf = await blob.arrayBuffer()
@@ -229,20 +249,20 @@ console.log('')
 console.log('4b. GLB round-trip')
 {
   resetEvaluator()
-  const { geometry } = evaluateDoc(CUBE_WITH_BOSS)
+  const geometry = exportGeometry(CUBE_WITH_BOSS)
   const expected = signedVolume(geometry)
   try {
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js')
     const { blob } = await buildExportBlob(geometry, 'glb')
     const buf = await blob.arrayBuffer()
 
-    const scene = await new Promise<import('three').Group>((resolve, reject) => {
+    const loaded = await new Promise<import('three').Group>((resolve, reject) => {
       new GLTFLoader().parse(buf, '', (gltf) => resolve(gltf.scene), reject)
     })
 
     let total = 0
     let meshes = 0
-    scene.traverse((o) => {
+    loaded.traverse((o) => {
       const m = o as import('three').Mesh
       if (m.isMesh && m.geometry) {
         meshes++
@@ -262,8 +282,67 @@ console.log('4b. GLB round-trip')
   }
 }
 
-// --- 5. Empty guard --------------------------------------------------------
-console.log('\n5. Refuses to export nothing')
+// --- 5. The scene, baked into world space ---------------------------------
+console.log('\n5. Every object, baked through its own transform')
+{
+  resetEvaluator()
+  const one = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] })))
+  const single = signedVolume(one)
+  one.dispose()
+
+  resetEvaluator()
+  const pair = exportGeometry(
+    scene(
+      object({ kind: 'box', size: [2, 2, 2] }, [], [-3, 0, 0], 'left'),
+      object({ kind: 'box', size: [2, 2, 2] }, [], [3, 0.5, 0], 'right')
+    )
+  )
+  near('two cubes export as two cubes', signedVolume(pair), 2 * single, 1e-6)
+
+  // Placement is the whole reason the transform exists, so it has to reach the
+  // file: a merge that dropped it would land both cubes on top of each other
+  // and still pass a volume check.
+  pair.computeBoundingBox()
+  const box = pair.boundingBox!
+  near('the scene spans both placements', box.min.x, -4, 1e-6)
+  near('and reaches the far one', box.max.x, 4, 1e-6)
+  near('carrying the second cube lift', box.max.y, 1.5, 1e-6)
+  pair.dispose()
+
+  // A rotation must go through the normal matrix, not the full one. Baking a
+  // translation into a normal is invisible in the vertex positions and shows up
+  // only as inverted shading -- or, here, as a negative signed volume.
+  resetEvaluator()
+  const turned = exportGeometry(
+    scene({
+      id: 'turned',
+      name: 'turned',
+      base: { kind: 'box', size: [2, 2, 2] },
+      transform: { position: [0, 4, 0], rotation: [0.3, 0.7, -0.2] },
+      features: [CIRCLE_BOSS],
+      cuts: [],
+    })
+  )
+  resetEvaluator()
+  const upright = exportGeometry(CUBE_WITH_BOSS)
+  near('a rotated object keeps its volume', signedVolume(turned), signedVolume(upright), 1e-6)
+  check(
+    'and its winding, so it is not inside out',
+    signedVolume(turned) > 0,
+    `${signedVolume(turned).toFixed(4)}`
+  )
+  const nrm = turned.getAttribute('normal')
+  let worst = 0
+  for (let i = 0; i < nrm.count; i++) {
+    worst = Math.max(worst, Math.abs(Math.hypot(nrm.getX(i), nrm.getY(i), nrm.getZ(i)) - 1))
+  }
+  check('normals survive the bake unit length', worst < 1e-5, `worst deviation ${worst.toExponential(2)}`)
+  turned.dispose()
+  upright.dispose()
+}
+
+// --- 6. Empty guard --------------------------------------------------------
+console.log('\n6. Refuses to export nothing')
 {
   const empty = new BufferGeometry()
   empty.setAttribute('position', new (await import('three')).BufferAttribute(new Float32Array(0), 3))

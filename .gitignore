@@ -14,3 +14,6 @@ palette-preview.html
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Knowledge-graph output (generated)
+graphify-out/

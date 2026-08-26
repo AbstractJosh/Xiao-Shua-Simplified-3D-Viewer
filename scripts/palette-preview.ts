@@ -1,16 +1,20 @@
 /**
- * Renders a standalone, interactive preview of the shape palette.
+ * Renders a standalone, interactive preview of the console's two palettes.
  *
- * It embeds the app's real stylesheet and calls the app's real `ngonPoints`,
- * so what it shows is what the console shows -- no hand-drawn mockup that can
- * drift from the component.
+ * It embeds the app's real stylesheet, calls the app's real `ngonPoints`, and
+ * server-renders the app's real solid icons, so what it shows is what the
+ * console shows -- no hand-drawn mockup that can drift from the components.
  *
  * Run: npx tsx scripts/palette-preview.ts [outputFile]
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { NGON_NAMES, NGON_SIDES, NGON_SIDES_TOP_DOWN, ngonPoints } from '../src/console/ngon'
+import { SOLID_TEMPLATES } from '../src/console/solidIcons'
+import { defaultBaseFor, solidLabel } from '../src/geometry/types'
 import { APP_NAME } from '../src/appInfo'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -40,6 +44,38 @@ const ngonChip = (id: string, initial: number) => `
       ).join('\n      ')}
     </div>
   </div>`
+
+/**
+ * One Solids row, matching SolidPalette's DOM. The icons come out of the real
+ * component through the server renderer rather than being redrawn here, and the
+ * row's name comes from `solidLabel` -- so a prism row says "Hexagonal prism"
+ * because that is what the geometry layer would name the object it drops.
+ */
+const solidRows = SOLID_TEMPLATES.map((t) => {
+  // The resting side count is read back out of the geometry layer, exactly as
+  // SolidPalette's own `defaultSidesFor` does, so the lit chip is the one a
+  // plain drag would actually produce.
+  const plain = defaultBaseFor(t.kind)
+  const sides = 'sides' in plain ? plain.sides : undefined
+  const name = solidLabel(defaultBaseFor(t.kind, sides, t.platonic))
+  const glyphs = renderToStaticMarkup(createElement('g', null, t.icon))
+  const chips = t.sides
+    ? `<span class="solid-item-sides">${t.sides
+        .map(
+          (n) =>
+            `<button type="button" class="solid-side${n === sides ? ' solid-side-active' : ''}">${n}</button>`
+        )
+        .join('')}</span>`
+    : ''
+  return `
+    <div class="solid-item" role="button" tabindex="0" title="Drag into the scene to place a ${name}">
+      <svg viewBox="0 0 32 32" class="solid-item-icon" aria-hidden><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">${glyphs}</g></svg>
+      <span class="solid-item-label">${name}</span>
+      ${chips}
+    </div>`
+}).join('')
+
+const solidPalette = `<div class="solid-list">${solidRows}</div>`
 
 const palette = `
   <div class="palette">
@@ -101,7 +137,7 @@ const html = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${APP_NAME} shape palette preview</title>
+<title>${APP_NAME} palette preview</title>
 <style>
 ${css}
 
@@ -138,16 +174,20 @@ body { overflow: auto; padding: 26px; }
 </style>
 </head>
 <body>
-  <p class="preview-h1">Shape palette</p>
+  <p class="preview-h1">Console palettes</p>
   <p class="preview-sub">
-    Live preview using the app's own stylesheet and polygon geometry.
-    Hover across the polygon chip to try the bands.
+    Live preview using the app's own stylesheet, solid icons and polygon
+    geometry. Hover across the polygon chip to try the bands.
   </p>
 
   <p class="preview-h2">As it appears in the console</p>
   <div class="console-mock">
     <section class="section">
-      <h2 class="section-title">Shapes<span class="section-hint">drag onto the object</span></h2>
+      <h2 class="section-title">Solids<span class="section-hint">drag into the scene</span></h2>
+      ${solidPalette}
+    </section>
+    <section class="section">
+      <h2 class="section-title">Shapes<span class="section-hint">drag onto any object</span></h2>
       ${palette}
     </section>
   </div>
@@ -167,4 +207,7 @@ body { overflow: auto; padding: 26px; }
 
 writeFileSync(outFile, html, 'utf8')
 console.log(`Wrote ${outFile}`)
-console.log(`  ${(Buffer.byteLength(html) / 1024).toFixed(1)} KB · bands top-down: ${NGON_SIDES_TOP_DOWN.join(', ')}`)
+console.log(
+  `  ${(Buffer.byteLength(html) / 1024).toFixed(1)} KB - ${SOLID_TEMPLATES.length} solids - ` +
+    `bands top-down: ${NGON_SIDES_TOP_DOWN.join(', ')}`
+)

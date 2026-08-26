@@ -1,9 +1,10 @@
 import { useEffect, useMemo } from 'react'
+import type { RefObject } from 'react'
 import { Line } from '@react-three/drei'
 import type { ThreeEvent } from '@react-three/fiber'
 import { hostSurfaceFor } from '../geometry/surfaces'
 import { buildCapGeometry, outlineOnSurface, outlinePolyline } from '../geometry/prism'
-import type { BaseSolid, Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
+import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor } from '../geometry/types'
 import { useDoc } from '../store/docStore'
 
 /** Lift of the projection above the solid; enough to clear z-fighting. */
@@ -86,20 +87,36 @@ export function SketchDecal({
   )
 }
 
-/** Every committed sketch, selectable and draggable. */
-export function SketchOverlays({ controlsRef }: { controlsRef: React.RefObject<{ enabled: boolean } | null> }) {
-  const doc = useDoc((s) => s.doc)
-  const selectedId = useDoc((s) => s.selectedId)
+/**
+ * Every committed sketch on ONE object, selectable and draggable.
+ *
+ * Mounted by SceneObjects inside that object's group, so these decals are drawn
+ * in object-local space -- which is the space anchors are already stored in.
+ * Nothing here transforms anything; the group does it all.
+ */
+export function ObjectSketches({
+  object,
+  controlsRef,
+}: {
+  object: SceneObject
+  controlsRef: RefObject<{ enabled: boolean } | null>
+}) {
+  const selectedObjectId = useDoc((s) => s.selectedObjectId)
+  const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const startMoving = useDoc((s) => s.startMoving)
 
   return (
     <>
-      {doc.features.map((f: Feature) => {
-        const isSelected = f.id === selectedId
+      {object.features.map((f) => {
+        // A feature id only identifies a sketch alongside its object: two
+        // objects can each hold a selection-shaped id, and matching on the
+        // feature alone would light up a sketch on the wrong solid.
+        const isSelected =
+          object.id === selectedObjectId && f.id === selectedFeatureId
         return (
           <SketchDecal
             key={f.id}
-            base={doc.base}
+            base={object.base}
             anchor={f.anchor}
             shape={f.shape}
             rotation={f.rotation}
@@ -114,7 +131,9 @@ export function SketchOverlays({ controlsRef }: { controlsRef: React.RefObject<{
               // stopPropagation will not reach it. Disable it synchronously or
               // the camera orbits while the sketch is being dragged.
               if (controlsRef.current) controlsRef.current.enabled = false
-              startMoving(f.id)
+              // startMoving selects as it begins the drag, so a plain click on
+              // a sketch still ends up selecting it.
+              startMoving(object.id, f.id)
             }}
           />
         )
@@ -123,20 +142,35 @@ export function SketchOverlays({ controlsRef }: { controlsRef: React.RefObject<{
   )
 }
 
-/** Ghost of the shape being dragged in from the console. */
+/**
+ * Ghost of the shape being dragged in from the console.
+ *
+ * This one is mounted outside every object group, so it lives in WORLD space
+ * and has to carry the target object's transform itself. The anchor under the
+ * pointer is local to whichever object was hit, and drawing it without that
+ * transform would strand the ghost at the origin.
+ */
 export function PlacingPreview() {
   const drag = useDoc((s) => s.drag)
-  const base = useDoc((s) => s.doc.base)
-  if (drag.kind !== 'placing' || !drag.anchor) return null
+  const objects = useDoc((s) => s.doc.objects)
+
+  if (drag.kind !== 'placing' || drag.anchor === null) return null
+  const object = objects.find((o) => o.id === drag.objectId)
+  // Off every object: nothing valid to preview, and releasing here cancels.
+  if (!object) return null
+
+  const { position, rotation } = object.transform
   return (
-    <SketchDecal
-      base={base}
-      anchor={drag.anchor}
-      shape={drag.shape}
-      rotation={0}
-      color={COLORS.placing}
-      filled
-      onTop
-    />
+    <group position={position} rotation={rotation}>
+      <SketchDecal
+        base={object.base}
+        anchor={drag.anchor}
+        shape={drag.shape}
+        rotation={0}
+        color={COLORS.placing}
+        filled
+        onTop
+      />
+    </group>
   )
 }

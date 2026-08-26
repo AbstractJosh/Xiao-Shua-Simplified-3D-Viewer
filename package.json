@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/export-check.ts"
+    "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/ui-check.ts && tsx scripts/export-check.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

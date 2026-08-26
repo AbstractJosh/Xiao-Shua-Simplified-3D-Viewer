@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { evaluateDoc } from '../geometry/evaluate'
+import { evaluateDoc, mergedGeometry } from '../geometry/evaluate'
 import { FORMAT_INFO, exportSolid } from '../geometry/exporters'
 import type { ExportFormat } from '../geometry/exporters'
 import { useDoc } from '../store/docStore'
@@ -25,13 +25,22 @@ export function ExportPanel() {
       const doc = useDoc.getState().doc
       // Re-evaluating is free: the prefix cache returns the geometry already on
       // screen, so the file always matches exactly what the user is looking at.
-      const { geometry } = evaluateDoc(doc)
-      const baseName = `${APP_SLUG}-${doc.base.kind}${doc.features.length ? `-${doc.features.length}f` : ''}`
-      const r = await exportSolid(geometry, format, baseName)
-      setStatus(
-        `${r.filename} · ${formatBytes(r.bytes)} · ${r.triangles.toLocaleString()} tris` +
-          (r.welded ? '' : ' · unwelded')
-      )
+      const result = evaluateDoc(doc)
+      // The per-object geometries inside `result` belong to that cache and the
+      // viewport is still drawing them; only this merged world-space copy is
+      // ours, and it has to be released whether the export succeeded or threw.
+      const geometry = mergedGeometry(doc, result)
+      const features = doc.objects.reduce((n, o) => n + o.features.length, 0)
+      const baseName = `${APP_SLUG}-${doc.objects.length}obj${features ? `-${features}f` : ''}`
+      try {
+        const r = await exportSolid(geometry, format, baseName)
+        setStatus(
+          `${r.filename} · ${formatBytes(r.bytes)} · ${r.triangles.toLocaleString()} tris` +
+            (r.welded ? '' : ' · unwelded')
+        )
+      } finally {
+        geometry.dispose()
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed.')
     } finally {
@@ -40,7 +49,7 @@ export function ExportPanel() {
   }
 
   return (
-    <Section title="Export" hint="downloads the solid">
+    <Section title="Export" hint="downloads the scene">
       <div className="export-row">
         {(Object.keys(FORMAT_INFO) as ExportFormat[]).map((format) => (
           <button
@@ -57,7 +66,8 @@ export function ExportPanel() {
       {status && <p className="export-status">{status}</p>}
       {error && <p className="export-error">{error}</p>}
       <p className="export-note">
-        Sketch overlays are not included — only the solid, welded and ready to open.
+        Sketch overlays are not included — every object in the scene, baked into world
+        space, welded and ready to open.
       </p>
     </Section>
   )

@@ -193,12 +193,68 @@ body {
   color: var(--muted);
 }
 
+/* A collapsed section is nothing but its header, so the gap that separates a
+   title from its body would read as dead space below it. */
+.section-title:last-child {
+  margin-bottom: 0;
+}
+
+/* The auto margin, not justify-content, is what pins the trailing items right:
+   with a `right` node present the hint must stay beside it rather than being
+   spread to the middle. */
 .section-hint {
+  margin-left: auto;
   font-size: 10px;
   letter-spacing: 0.03em;
   text-transform: none;
   color: #5d6675;
   font-weight: 400;
+}
+
+.section-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+/* Inherits the title's uppercase tracking so a collapsible header is
+   indistinguishable from a plain one until you hover it. */
+.collapse-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: -2px -4px;
+  padding: 2px 4px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.collapse-btn:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.collapse-caret {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  color: #5d6675;
+  transition: transform 0.14s;
+}
+
+.collapse-btn[aria-expanded='true'] .collapse-caret {
+  transform: rotate(90deg);
 }
 
 .empty,
@@ -215,6 +271,109 @@ body {
   background: var(--panel-2);
   border-left: 2px solid var(--accent);
   border-radius: 0 4px 4px 0;
+}
+
+/* --- solid palette --- */
+
+/* Rows, not the 3-up square grid the 2D shapes use: there are ten solids and
+   several carry a side-count strip, which needs the full panel width. The
+   different silhouette also keeps the two palettes from being confused. */
+.solid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.solid-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 7px;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  /* A row is a drag source: no text selection, no browser panning, and a hand
+     that says so before the pointer goes down. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.solid-item:hover {
+  background: var(--panel-2);
+  border-color: #3a444f;
+  color: var(--text);
+}
+
+.solid-item:active {
+  cursor: grabbing;
+}
+
+.solid-item:hover .solid-item-icon {
+  color: var(--accent);
+}
+
+.solid-item-icon {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  color: #8d97a7;
+  pointer-events: none;
+  transition: color 0.12s;
+}
+
+.solid-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* Side counts stay on the row rather than in a popup: picking 6 and dragging
+   has to be one gesture. */
+.solid-item-sides {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 3px;
+}
+
+.solid-side {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: #6d7686;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.solid-side:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.solid-side-active {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
 }
 
 /* --- shape palette --- */
@@ -259,10 +418,6 @@ body {
   justify-content: center;
   gap: 9px;
   pointer-events: none;
-}
-
-.chip-dragging {
-  cursor: grabbing;
 }
 
 .chip-icon {
@@ -367,6 +522,200 @@ body {
   cursor: grab;
 }
 
+/* --- vector fields --- */
+
+/* A shared caption for a group of rows. Quieter than .section-title so a panel
+   with three of these still has one obvious heading. */
+/* Margin is written out in full because this also lands on bare <p> group
+   headings, where the UA's own vertical margins would double the gap. */
+.subhead {
+  margin: 2px 0 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vec3,
+.vec2 {
+  margin-bottom: 11px;
+}
+
+/* Single-line rows: three stacked axes would swamp the panel if each one had
+   the label-above-slider layout that NumberField uses. */
+.vec3-row {
+  display: grid;
+  grid-template-columns: 12px 1fr 52px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.vec3-row:last-child {
+  margin-bottom: 0;
+}
+
+.vec3-axis {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  user-select: none;
+}
+
+/* Tinted from the existing palette on the usual X/Y/Z = red/green/blue reading,
+   so an axis is identified by colour before the letter is read. */
+.vec3-axis-x {
+  color: var(--in);
+}
+
+.vec3-axis-y {
+  color: var(--out);
+}
+
+.vec3-axis-z {
+  color: var(--accent);
+}
+
+.vec3-input {
+  width: 100%;
+  padding: 2px 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.vec3-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* --- switch --- */
+
+.toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 9px;
+  row-gap: 3px;
+  width: 100%;
+  margin-bottom: 11px;
+  padding: 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toggle-track {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  transition: background 0.14s, border-color 0.14s;
+}
+
+.toggle:hover .toggle-track {
+  border-color: #3a444f;
+}
+
+.toggle-on {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-color: var(--accent);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #79828f;
+  transition: transform 0.14s, background 0.14s;
+}
+
+.toggle-on .toggle-knob {
+  background: var(--accent);
+  transform: translateX(13px);
+}
+
+.toggle-label {
+  font-size: 12px;
+}
+
+/* Second row under the label, never under the switch: the knob column stays a
+   clean vertical rule when several toggles stack. */
+.toggle-hint {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* --- buttons --- */
+
+.btn {
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.btn:hover:not(:disabled) {
+  background: #1e232c;
+  border-color: #3a444f;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.btn-row .btn {
+  flex: 1 1 0;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.btn-primary {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: var(--accent);
+}
+
 /* --- operation toggle --- */
 
 .op-row {
@@ -406,41 +755,10 @@ body {
   color: var(--in);
 }
 
-/* --- feature list --- */
+/* --- feature row parts --- */
 
-.feature-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.feature-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.feature-row:hover {
-  background: var(--panel-2);
-}
-
-.feature-selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.feature-off .feature-text {
-  opacity: 0.45;
-  text-decoration: line-through;
-}
+/* The rows themselves live in the scene tree; these are the spans it puts
+   inside one, shared with the Inspector's inline "skipped" badge. */
 
 .feature-index {
   flex: 0 0 auto;
@@ -487,6 +805,182 @@ body {
 .icon-btn:hover {
   background: #262c37;
   color: var(--text);
+}
+
+/* --- scene tree --- */
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-object {
+  list-style: none;
+}
+
+/* Written to survive being a <button> as well as a <div>: which one the tree
+   uses depends on whether the row carries its own icon buttons. */
+.tree-object-head,
+.tree-feature {
+  width: 100%;
+  appearance: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.tree-object-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.tree-object-head:hover {
+  background: var(--panel-2);
+}
+
+.tree-object-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Shared by object heads and feature rows so selection reads the same at both
+   levels of the tree. */
+.tree-selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.tree-selected:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Tint the row itself as well as its name span, because the selected class may
+   land on either a head that owns a name or a bare feature row that is text. */
+.tree-feature.tree-selected,
+.tree-selected .tree-object-name {
+  color: var(--accent);
+}
+
+/* Suppressed, not gone: the row must stay readable enough to click again. */
+.tree-off {
+  opacity: 0.5;
+}
+
+.tree-off,
+.tree-off .tree-object-name {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* Line-through belongs on the words, not on the icon buttons that ride along
+   the row. */
+.tree-off .icon-btn,
+.tree-off .tree-features {
+  text-decoration: none;
+}
+
+/* Indent plus a rule: at 372px the rule carries the nesting more cheaply than
+   whitespace alone. */
+.tree-features {
+  list-style: none;
+  margin: 2px 0 4px 9px;
+  padding: 0 0 0 9px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-feature {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.tree-feature:hover {
+  background: var(--panel-2);
+}
+
+.tree-empty {
+  margin: 0;
+  padding: 3px 7px;
+  color: #5d6675;
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Counts on an object head. Both ride on .section-hint, so they already have
+   the muted 10px type; what they add is the pill, which is what stops "3f cut"
+   from reading as one run-on word next to the name. */
+.tree-count,
+.tree-cut {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A cut is structural, not a tally: tinting it apart is what lets a glance
+   distinguish "this object has sketches" from "this object is a severed half". */
+.tree-cut {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+  color: var(--accent);
+}
+
+/* --- tool readouts --- */
+
+/* A bare fieldset, used only to switch a whole group of controls off at once:
+   NumberField has no disabled prop, and a fieldset takes everything inside it
+   out of reach for pointer and keyboard alike. The UA draws a box and pads it,
+   so all four of those have to be cancelled. */
+.tool-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+  transition: opacity 0.12s;
+}
+
+.tool-group[disabled] {
+  opacity: 0.45;
+}
+
+.cut-status,
+.snap-readout {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.snap-readout {
+  color: var(--out);
 }
 
 /* --- misc --- */
