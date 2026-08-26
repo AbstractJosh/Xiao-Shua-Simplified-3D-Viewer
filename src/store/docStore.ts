@@ -4,7 +4,6 @@ import type {
   BaseSolid,
   Doc,
   Feature,
-  FeatureOp,
   ObjectTransform,
   SceneObject,
   Shape2D,
@@ -19,14 +18,15 @@ import {
   nextFeatureId,
   nextObjectId,
 } from '../geometry/types'
-import { conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
+import { clampDepth, conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
 import { assemblyBounds, assemblyParams, scaleAssembly } from '../geometry/assembly'
 import { baseParams } from '../geometry/dimensions'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject } from '../geometry/evaluate'
 import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
 
-/** Depth applied the moment a user picks extrude or intrude on a flat sketch. */
+/** Depth the Extrude button gives a flat sketch, so the slider has somewhere
+ *  to start from. Every other way in writes a depth of its own. */
 export const DEFAULT_FEATURE_DEPTH = 0.3
 
 /** A template's position before the drop decides one. */
@@ -150,6 +150,14 @@ type State = {
   future: Doc[]
 
   selectObject: (id: string | null) => void
+  /**
+   * Replace the whole selection at once, PRIMARY FIRST.
+   *
+   * What a marquee produces: a click can only ever name one object, and
+   * toggling ids one at a time would re-render the scene once per object the
+   * box happened to sweep over.
+   */
+  selectObjects: (ids: string[]) => void
   /** Add or remove one object without disturbing the rest of the selection. */
   toggleObjectSelection: (id: string) => void
   selectFeature: (objectId: string | null, featureId: string | null) => void
@@ -231,7 +239,17 @@ type State = {
   scaleObjectTo: (snapshot: SceneObject, factor: number) => void
 
   patchFeature: (objectId: string, featureId: string, patch: Partial<Feature>) => void
-  setOp: (objectId: string, featureId: string, op: FeatureOp) => void
+  /**
+   * Set a feature's SIGNED depth, held inside what its surface allows each way.
+   *
+   * Its own action rather than a `patchFeature` call because the clamp is not
+   * optional and there are now three ways to change a depth -- the slider, the
+   * Extrude button, and the gizmo's normal arrow. A limit only two of them
+   * honoured would let one build a feature the other two then refused to show.
+   */
+  setDepth: (objectId: string, featureId: string, depth: number) => void
+  /** The continuous part of a depth drag: one history entry per gesture. */
+  depthTo: (depth: number) => void
   removeFeature: (objectId: string, featureId: string) => void
   toggleFeature: (objectId: string, featureId: string) => void
 
@@ -305,6 +323,10 @@ const shapeParams = (s: Shape2D): number[] =>
 
 const sameShape = (a: Shape2D, b: Shape2D): boolean =>
   a.type === b.type && sameNumbers(shapeParams(a), shapeParams(b))
+
+/** Two selections that name the same objects in the same order. */
+const sameIds = (a: string[], b: string[]): boolean =>
+  a.length === b.length && a.every((id, i) => id === b[i])
 
 /** Selection survives an edit only while the thing it names still exists. */
 const prune = (
@@ -398,6 +420,20 @@ export const useDoc = create<State>((set, get) => {
         // A feature id only means something alongside its object.
         selectedFeatureId: id === s.selectedObjectIds[0] ? s.selectedFeatureId : null,
       })),
+
+    selectObjects: (ids) =>
+      set((s) => {
+        // A marquee re-decides this on every pointer move, and almost every one
+        // of those moves lands on the same set. Handing back a fresh array
+        // anyway would re-render every object in the scene at pointer rate,
+        // since the selection is compared by identity like all zustand state.
+        if (sameIds(ids, s.selectedObjectIds)) return {}
+        return {
+          selectedObjectIds: ids,
+          // The feature belonged to the primary, and this may have replaced it.
+          selectedFeatureId: ids[0] === s.selectedObjectIds[0] ? s.selectedFeatureId : null,
+        }
+      }),
 
     toggleObjectSelection: (id) =>
       set((s) => {
@@ -778,23 +814,39 @@ export const useDoc = create<State>((set, get) => {
         }))
       ),
 
-    setOp: (objectId, featureId, op) =>
-      commit(
+    setDepth: (objectId, featureId, depth) =>
+      commitCoalesced(
+        `depth:${objectId}:${featureId}`,
         mapObject(objectId, (o) => ({
           ...o,
-          features: o.features.map((f) => {
-            if (f.id !== featureId) return f
-            const limit = hostSurfaceFor(o.base, f.anchor).maxDepth(op, f.anchor)
-            // Choosing extrude or intrude on a flat projection is the moment it
-            // becomes solid, so give it a usable depth in the same click.
-            const depth =
-              f.depth > 0
-                ? Math.min(f.depth, limit)
-                : Math.min(DEFAULT_FEATURE_DEPTH, limit)
-            return { ...f, op, depth }
-          }),
+          features: o.features.map((f) =>
+            f.id === featureId
+              ? { ...f, depth: clampDepth(hostSurfaceFor(o.base, f.anchor), f.anchor, depth) }
+              : f
+          ),
         }))
       ),
+
+    depthTo: (depth) => {
+      const { drag, doc } = get()
+      if (drag.kind !== 'sketch-gizmo') return
+      const object = doc.objects.find((o) => o.id === drag.objectId)
+      const feature = object?.features.find((f) => f.id === drag.id)
+      if (!object || !feature) return
+
+      const next = clampDepth(
+        hostSurfaceFor(object.base, feature.anchor),
+        feature.anchor,
+        depth
+      )
+      // A frame that clamped back to the depth it already had is not an edit,
+      // and must not cost an undo step -- which is what a drag pinned against
+      // its limit produces, sixty times a second.
+      if (Math.abs(next - feature.depth) < MOVE_EPS) return
+
+      snapshotOnce()
+      silent(mapFeature(drag.objectId, drag.id, (f) => ({ ...f, depth: next })))
+    },
 
     removeFeature: (objectId, featureId) => {
       commit(

@@ -202,8 +202,9 @@ body { overflow: auto; padding: 26px; }
   font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
   color: var(--muted); margin: 30px 0 12px;
 }
+/* Matches .console's own flex basis, so a palette that fits here fits there. */
 .console-mock {
-  width: 372px; background: var(--panel);
+  width: 440px; background: var(--panel);
   border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
 }
 .console-mock .section { border-bottom: 0; }

@@ -21,6 +21,23 @@ import type { Vec3 } from '../geometry/types'
  */
 export type NavPanel = 'snap' | 'help' | null
 
+/**
+ * Which half of the console is on screen.
+ *
+ * The two halves are split by what they are FOR, not by what they contain:
+ * `view` is everything that is true of the scene whatever is selected -- what
+ * you can drop in, what you have saved, and what the scene now holds -- and
+ * `edit` is the controls that only mean anything once something IS selected.
+ * That is why the palettes sit with the scene tree rather than with the
+ * dimension fields: dragging a solid in and reading the tree are both things
+ * you do with no selection at all.
+ *
+ * Here beside `openPanel` for the same reason that one is: it is chrome rather
+ * than geometry, but keeping it in a store is what lets a headless render drive
+ * the console exactly the way a click does.
+ */
+export type ConsoleTab = 'view' | 'edit'
+
 /** Position + Euler XYZ rotation of the cut gizmo, and its visual extent. */
 export type CutPlaneState = { position: Vec3; rotation: Vec3; size: number }
 
@@ -61,6 +78,7 @@ export type ToolState = {
   cutActive: boolean
   cutPlane: CutPlaneState
   openPanel: NavPanel
+  consoleTab: ConsoleTab
 
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
@@ -68,6 +86,7 @@ export type ToolState = {
   setCutPlane: (patch: Partial<CutPlaneState>) => void
   resetCutPlane: () => void
   setOpenPanel: (panel: NavPanel) => void
+  setConsoleTab: (tab: ConsoleTab) => void
 }
 
 export const useTools = create<ToolState>((set) => ({
@@ -76,6 +95,9 @@ export const useTools = create<ToolState>((set) => ({
   cutActive: false,
   cutPlane: DEFAULT_CUT_PLANE,
   openPanel: null,
+  // Opens on the half that works with nothing selected, which is also the half
+  // the first gesture of a session needs: drag a solid in from Solids.
+  consoleTab: 'view',
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
@@ -92,4 +114,6 @@ export const useTools = create<ToolState>((set) => ({
 
   // One panel at a time: they all hang off the same bar and would overlap.
   setOpenPanel: (panel) => set({ openPanel: panel }),
+
+  setConsoleTab: (tab) => set({ consoleTab: tab }),
 }))

@@ -93,7 +93,9 @@ export function FaceHandle({
     (s) =>
       primarySelection(s) === object.id &&
       s.selectedFeatureId === feature.id &&
-      feature.depth > 0
+      // Either direction: a pocket has a floor to lean exactly as a boss has a
+      // top, and only a flat projection has no created face at all.
+      feature.depth !== 0
   )
 
   // Gated on `active` rather than filtered afterwards: this runs the same ring

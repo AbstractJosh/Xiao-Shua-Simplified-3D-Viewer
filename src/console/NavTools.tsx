@@ -179,6 +179,8 @@ export function HelpTool() {
         <li><b>Drag</b> a 2D shape from Shapes onto any object</li>
         <li><b>Click</b> an object to select it, then <b>drag</b> it to move it</li>
         <li><b>Shift-click</b> objects to gather them, then <b>Merge</b> under Scene</li>
+        <li><b>Drag from empty space</b> for a selection box; it takes every object whose gizmo falls inside it</li>
+        <li><b>Shift</b> while dragging the box adds its catch to what is already selected</li>
         <li>Merged solids become one object with one gizmo; undo takes them apart</li>
         <li><b>Shift</b> while moving an object lifts it instead</li>
         <li><b>Drag</b> a gizmo arrow to move along that axis, snapping as it goes</li>
@@ -188,15 +190,20 @@ export function HelpTool() {
         <li>The <b>cut plane</b> carries the same gizmo; its ring sizes the guide</li>
         <li><b>Apply cut</b> and <b>Reset plane</b> appear in the bar once it is armed</li>
         <li><b>Drag</b> a sketch to slide it across its own surface</li>
-        <li>A selected sketch gets two arrows for its surface's own directions</li>
+        <li>A selected sketch gets three arrows: two along the outline's own edges, one facing away from the face</li>
+        <li><b>Right-drag</b> either edge arrow to stretch the outline along it</li>
+        <li><b>Drag</b> the arrow facing away to set the depth -- push it back through the face to cut inward instead</li>
         <li>Its ring scales the outline, the same way an object's scales the solid</li>
         <li><b>Drag</b> the highlighted end face of an extrusion to lean it</li>
         <li><b>Snap</b> and <b>Cut</b> live in the bar above</li>
-        <li><b>Orbit</b> with left-drag on empty space, zoom to scroll</li>
+        <li><b>Orbit</b> with middle-drag, or <b>Alt</b> and left-drag; zoom to scroll</li>
+        <li><b>Pan</b> with right-drag on empty space</li>
         <li><b>Delete</b> removes the selected sketch, or the object</li>
         <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>
         <li><b>Ctrl+C</b> / <b>Ctrl+V</b> copy the selected object and paste it beside itself</li>
-        <li>Saved objects live in <b>Clipboard</b>, at the top of the console; drag one back in</li>
+        <li>The console has two tabs: <b>View</b> holds Clipboard, Solids, Shapes and Scene; <b>Edit</b> holds the controls for whatever is selected</li>
+        <li>A dot on <b>Edit</b> means something is selected and its controls are waiting there</li>
+        <li>Saved objects live in <b>Clipboard</b>, on the View tab; drag one back in</li>
         <li>Each tile turns on its own; <b>sweep across one</b> to spin it and look it over</li>
         <li>Three tiles show models at a time; <b>scroll the row sideways</b> for the rest</li>
       </ul>

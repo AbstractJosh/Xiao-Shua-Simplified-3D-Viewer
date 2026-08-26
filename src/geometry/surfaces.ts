@@ -1279,11 +1279,36 @@ export function reseat(base: BaseSolid, f: Feature): Feature {
   return { ...f, anchor: hostSurfaceFor(base, f.anchor).clampAnchor(f.anchor, f.shape) }
 }
 
+/**
+ * How far a feature on this patch may sweep each way, as a pair of POSITIVE
+ * magnitudes.
+ *
+ * The two are not the same number and never were: a boss may stand a couple of
+ * thicknesses proud of a face, where a pocket that reached as far would be a
+ * hole out the other side of a solid the user never meant to pierce. That
+ * asymmetry is why the depth slider does not simply run from -max to +max, and
+ * why it is derived here rather than at each of the three places that ask --
+ * the panel that draws the slider, the store that clamps what is typed into it,
+ * and the arrow that drags it.
+ */
+export function depthLimits(
+  host: SurfaceDef,
+  anchor: SurfaceAnchor
+): { in: number; out: number } {
+  return { in: host.maxDepth('intrude', anchor), out: host.maxDepth('extrude', anchor) }
+}
+
+/** A signed depth held inside those limits, keeping the direction it names. */
+export function clampDepth(host: SurfaceDef, anchor: SurfaceAnchor, depth: number): number {
+  const limit = depthLimits(host, anchor)
+  return Math.max(-limit.in, Math.min(limit.out, depth))
+}
+
 /** Reseating plus a depth clamp, for edits that shrink the solid underneath. */
 export function conform(base: BaseSolid, f: Feature): Feature {
   const next = reseat(base, f)
-  const limit = hostSurfaceFor(base, next.anchor).maxDepth(next.op, next.anchor)
-  return { ...next, depth: Math.min(next.depth, limit) }
+  const host = hostSurfaceFor(base, next.anchor)
+  return { ...next, depth: clampDepth(host, next.anchor, next.depth) }
 }
 
 /**

@@ -50,6 +50,7 @@ import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { snapAlongAxis } from '../src/geometry/snap'
 import type { SnapTarget } from '../src/geometry/snap'
 import { hostSurfaceFor, samePatch, slideAnchor } from '../src/geometry/surfaces'
+import { endFaceFrame } from '../src/geometry/prism'
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
 import { objectMatrix, relativeTransform } from '../src/geometry/transform'
 import { planeSeparates, splitPlanes } from '../src/geometry/cut'
@@ -107,7 +108,6 @@ const feature = (over: Partial<Feature> & { anchor: SurfaceAnchor }): Feature =>
   id: 'f1',
   shape: { type: 'circle', r: 0.3 },
   rotation: 0,
-  op: 'extrude',
   depth: 0.3,
   enabled: true,
   tilt: [0, 0, 0],
@@ -192,7 +192,7 @@ const discVolume = Math.PI * 0.3 * 0.3 * 0.3
 {
   resetEvaluator()
   const g = solidOf(
-    scene(object(CUBE, [feature({ anchor: TOP_FACE, op: 'extrude', depth: 0.3 })]))
+    scene(object(CUBE, [feature({ anchor: TOP_FACE, depth: 0.3 })]))
   )
   near('cube + circular boss', signedVolume(g), 8 + discVolume, 0.002)
   check('no NaN positions', !hasNaN(g), '')
@@ -200,7 +200,7 @@ const discVolume = Math.PI * 0.3 * 0.3 * 0.3
 {
   resetEvaluator()
   const g = solidOf(
-    scene(object(CUBE, [feature({ anchor: TOP_FACE, op: 'intrude', depth: 0.3 })]))
+    scene(object(CUBE, [feature({ anchor: TOP_FACE, depth: -0.3 })]))
   )
   near('cube - circular pocket', signedVolume(g), 8 - discVolume, 0.002)
 }
@@ -211,8 +211,7 @@ const discVolume = Math.PI * 0.3 * 0.3 * 0.3
       object(CUBE, [
         feature({
           anchor: TOP_FACE,
-          op: 'intrude',
-          depth: 0.3,
+          depth: -0.3,
           shape: { type: 'rect', w: 0.6, h: 0.4 },
         }),
       ])
@@ -226,7 +225,7 @@ console.log('\n3. Through-cut (depth exceeds thickness)')
 {
   resetEvaluator()
   const g = solidOf(
-    scene(object(CUBE, [feature({ anchor: TOP_FACE, op: 'intrude', depth: 2.5 })]))
+    scene(object(CUBE, [feature({ anchor: TOP_FACE, depth: -2.5 })]))
   )
   // A clean bore through a 2-thick cube removes a full-height cylinder.
   near('cube - through hole', signedVolume(g), 8 - Math.PI * 0.09 * 2, 0.01)
@@ -242,7 +241,6 @@ console.log('\n4. Sphere: boss follows the curvature')
       object(SPHERE, [
         feature({
           anchor: { on: 'sphere', theta: 0, phi: Math.PI / 2 },
-          op: 'extrude',
           depth,
           shape: { type: 'rect', w: 0.5, h: 0.5 },
         }),
@@ -287,8 +285,7 @@ console.log('\n4. Sphere: boss follows the curvature')
       object(SPHERE, [
         feature({
           anchor: { on: 'sphere', theta: Math.PI / 3, phi: Math.PI / 2.5 },
-          op: 'intrude',
-          depth: 0.25,
+          depth: -0.25,
         }),
       ])
     )
@@ -303,12 +300,11 @@ console.log('\n5. Stacked features and prefix cache')
 {
   resetEvaluator()
   const features: Feature[] = [
-    { ...feature({ anchor: TOP_FACE }), id: 'a', op: 'extrude', depth: 0.3 },
+    { ...feature({ anchor: TOP_FACE }), id: 'a', depth: 0.3 },
     {
       ...feature({ anchor: { on: 'box-face', face: 4, u: 0.3, v: -0.2 } }),
       id: 'b',
-      op: 'intrude',
-      depth: 0.4,
+      depth: -0.4,
       shape: { type: 'ngon', r: 0.25, sides: 6 },
     },
   ]
@@ -335,7 +331,9 @@ console.log('\n5. Stacked features and prefix cache')
   )
 
   // Edit only the LAST feature: the first must be reused, not recomputed.
-  const edited = scene(object(CUBE, [features[0], { ...features[1], depth: 0.5 }]))
+  // Still negative -- the sign is the direction now, so deepening a pocket
+  // means a MORE negative depth, not a larger number.
+  const edited = scene(object(CUBE, [features[0], { ...features[1], depth: -0.5 }]))
   const third = evaluateDoc(edited)
   check(
     'edited doc produces new geometry',
@@ -499,7 +497,7 @@ const ngonArea = (r: number, n: number) => 0.5 * n * r * r * Math.sin((2 * Math.
 // --- 8. A tilted end face reaches further than a square one ----------------
 console.log('\n8. Tilt leans the created face')
 {
-  const plain = feature({ anchor: TOP_FACE, op: 'extrude', depth: 0.5 })
+  const plain = feature({ anchor: TOP_FACE, depth: 0.5 })
   const tilted: Feature = { ...plain, tilt: [0, 0, Math.PI / 9] }
 
   function topOf(f: Feature): number {
@@ -530,7 +528,7 @@ console.log('\n8. Tilt leans the created face')
 console.log('\n9. faceOffset slides the created face and leans the pillar')
 {
   const slide: Vec2 = [0.5, 0]
-  const plain = feature({ anchor: TOP_FACE, op: 'extrude', depth: 0.6 })
+  const plain = feature({ anchor: TOP_FACE, depth: 0.6 })
   const slid: Feature = { ...plain, faceOffset: slide }
 
   /**
@@ -627,7 +625,7 @@ console.log('\n9. faceOffset slides the created face and leans the pillar')
     // Intrude sweeps the other way, and the ordered-ring wall has to keep the
     // base put on that path too or a slid pocket eats into the wrong spot.
     resetEvaluator()
-    const g = solidOf(scene(object(CUBE, [{ ...slid, op: 'intrude' }])))
+    const g = solidOf(scene(object(CUBE, [{ ...slid, depth: -slid.depth }])))
     const s = sectionAt(g, 1 - STANDOFF)
     near('a slid pocket opens where it was drawn too', Math.hypot(s.cx - shear, s.cz), 0, 5e-5)
     near('with the mouth at full width', s.halfW, 0.3, 1e-3)
@@ -1341,8 +1339,7 @@ console.log('\n17. A merged object is one solid, welded where the parts stood')
   const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
   const pocket: Feature = {
     ...defaultFeature({ on: 'box-face', face: 2, u: 0, v: 0 }, { type: 'circle', r: 0.4 }),
-    op: 'intrude',
-    depth: 3,
+    depth: -3,
   }
 
   resetEvaluator()
@@ -1392,6 +1389,39 @@ console.log('\n17. A merged object is one solid, welded where the parts stood')
   // three land at 0, 4 and 8, so none of them touch.
   near('a merge of a merge keeps every solid', signedVolume(merged.geometry), 24, 0.02)
   merged.geometry.dispose()
+}
+
+// --- 18. A pocket has a created face too -----------------------------------
+console.log('\n18. Tilt and slide reach a pocket, not just a boss')
+{
+  // The guard that says "this feature has a face to lean" used to read
+  // `depth > 0`, which was the whole truth while depth was a magnitude. Under a
+  // signed depth that quietly answers no for every pocket, and the symptom is a
+  // handle and a panel group that stop appearing rather than anything that
+  // throws -- so it is pinned here, against the geometry, rather than left to
+  // the eye.
+  const surface = hostSurfaceFor(CUBE, TOP_FACE)
+  const face = (depth: number, tilt: Vec3 = [0, 0, 0]) =>
+    endFaceFrame(surface, TOP_FACE, { depth, tilt, faceOffset: [0, 0] })
+
+  check('a boss has a created face', face(0.4) !== null, '')
+  check('and so does a pocket', face(-0.4) !== null, '')
+  check('a flat projection has none', face(0) === null, '')
+
+  // The cube's top face sits at y = 1, so the two straddle it by their depth.
+  const boss = face(0.4)
+  const pocket = face(-0.4)
+  if (boss) near('the boss face stands proud of the surface', boss.origin.y, 1.4, 1e-9)
+  if (pocket) near('and the pocket floor sits below it', pocket.origin.y, 0.6, 1e-9)
+
+  // A tilt has to reach the pocket as well, or the End face panel would offer
+  // controls that moved nothing.
+  const leaned = face(-0.4, [0, 0, Math.PI / 12])
+  check(
+    'a tilted pocket floor is not level',
+    leaned !== null && leaned.normal.y < 0.999,
+    ''
+  )
 }
 
 console.log(

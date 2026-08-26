@@ -2,18 +2,21 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Grid, OrbitControls } from '@react-three/drei'
-import { Mesh, Raycaster, Vector3 } from 'three'
+import { MOUSE, Mesh, Raycaster, Vector3 } from 'three'
 import type { Camera, MeshBasicMaterial } from 'three'
 import {
   maxShapeSize,
   resizeAlongAxis,
+  resizeShapeAlong,
   scaleShape,
 } from '../geometry/dimensions'
 import { assemblyAnchor, assemblyHalfExtent } from '../geometry/assembly'
 import type { SnapTarget } from '../geometry/snap'
 import { snapSinglePoint } from '../geometry/snap'
 import { hostSurfaceFor, samePatch, slideAnchor, surfaceFor } from '../geometry/surfaces'
+import type { SurfaceDef } from '../geometry/surfaces'
 import { endFaceFrame } from '../geometry/prism'
+import { outlineAxis } from '../geometry/outline'
 import { toLocalPoint, toLocalRay, toWorldDir, toWorldPoint } from '../geometry/transform'
 import type { SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
@@ -40,6 +43,8 @@ import type { DropCache } from './dropCache'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
 import { RotationDial } from './RotationDial'
 import { SceneObjects } from './SceneObjects'
+import { MarqueeControl, MarqueeRect } from './SelectionMarquee'
+import { MARQUEE_SLOP, boxSpan, useMarquee } from './marquee'
 import { PlacingPreview } from './SketchLayer'
 import {
   advanceTurn,
@@ -62,7 +67,20 @@ import {
   snapTargets,
 } from './snapping'
 
-type Controls = { enabled: boolean } | null
+/**
+ * The slice of OrbitControls this file touches: whether it is listening, and
+ * which gesture each mouse button asks it for.
+ *
+ * Structural rather than the real class, because the ref is handed to drei's
+ * component, which is typed loosely enough that naming the class here would buy
+ * nothing. Both fields are written imperatively -- `enabled` because a drag has
+ * to stop the camera synchronously, inside the press that started it, and the
+ * buttons because which one orbits is decided per press.
+ */
+type Controls = {
+  enabled: boolean
+  mouseButtons: { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null }
+} | null
 type Store = ReturnType<typeof useDoc.getState>
 type DragOf<K extends Drag['kind']> = Extract<Drag, { kind: K }>
 
@@ -128,6 +146,17 @@ type SketchGrab = {
   /** Distance from the sketch's centre at grab time, for the ring. */
   radius: number
   shape: Shape2D
+  /**
+   * The outline's spin at the grab.
+   *
+   * The two tangent arrows lie along the OUTLINE's own axes rather than the
+   * surface's, so the world line the pointer is read against depends on this --
+   * and pinning it is what stops a ring turn landing between two frames of an
+   * arrow drag from swinging the line the drag is being measured on.
+   */
+  rotation: number
+  /** The depth the normal arrow started from, for the same reason. */
+  depth: number
 }
 
 let sketchGrab: SketchGrab | null = null
@@ -647,25 +676,22 @@ function dragSketchGizmo(
 
   // Pinned on the first frame and never re-read: see SketchGrab.
   if (sketchGrab === null || sketchGrab.key !== key) {
+    const pinned = {
+      key,
+      anchor: feature.anchor,
+      shape: feature.shape,
+      rotation: feature.rotation,
+      depth: feature.depth,
+    }
     if (handle.axis === 'all') {
       const radius = ringRadius(raycaster, camera, centre)
       if (radius === null) return
-      sketchGrab = {
-        key,
-        anchor: feature.anchor,
-        axis: null,
-        radius,
-        shape: feature.shape,
-      }
+      sketchGrab = { ...pinned, axis: null, radius }
     } else {
-      const frame = host.frame(feature.anchor)
-      const dir = toWorldDir(
-        object.transform,
-        handle.axis === 0 ? frame.uDir : frame.vDir
-      ).normalize()
+      const dir = sketchAxisDir(object, host, feature.anchor, handle.axis, feature.rotation)
       const axis = beginAxisDrag(raycaster.ray, [centre.x, centre.y, centre.z], dir)
       if (!axis) return
-      sketchGrab = { key, anchor: feature.anchor, axis, radius: 0, shape: feature.shape }
+      sketchGrab = { ...pinned, axis, radius: 0 }
     }
   }
 
@@ -685,26 +711,63 @@ function dragSketchGizmo(
     return
   }
 
-  const frame = host.frame(grab.anchor)
-  const dir = toWorldDir(
-    object.transform,
-    handle.axis === 0 ? frame.uDir : frame.vDir
-  ).normalize()
-
+  const dir = sketchAxisDir(object, host, grab.anchor, handle.axis, grab.rotation)
   const travel = axisTravel(grab.axis, raycaster.ray, dir)
   if (travel === null) return
+
+  // The third arrow. It is the only one whose drag changes what the SOLID is
+  // rather than where the sketch sits on it: pull it away from the face and the
+  // projection rises into a boss, push it back through and the same number goes
+  // negative and sinks into a pocket. Zero on the way past is the flat
+  // projection it started as, which is what makes the three one gesture.
+  if (handle.axis === 2) {
+    s.depthTo(grab.depth + travel)
+    return
+  }
+
+  // Right-drag: stretch the outline along the arrow rather than sliding it.
+  if (handle.mode === 'size') {
+    s.resizeShapeTo(
+      resizeShapeAlong(grab.shape, handle.axis, travel, maxShapeSize(object.base))
+    )
+    return
+  }
+
+  // A slide is stored in the SURFACE's u and v, and the arrow points along the
+  // OUTLINE's axes, so the travel is decomposed back onto the frame it is
+  // written in. At rotation zero this is the identity and the two agree.
+  const [au, av] = outlineAxis(handle.axis, grab.rotation)
 
   // Null means the slide has walked off the edge of its own patch. The sketch
   // holds its last position rather than wrapping onto the next face round the
   // corner -- which `clampAnchor`, inside `moveTo`, has usually pinned it short
   // of long before the raw point ever gets there.
-  const next = slideAnchor(
-    host,
-    grab.anchor,
-    handle.axis === 0 ? travel : 0,
-    handle.axis === 1 ? travel : 0
-  )
+  const next = slideAnchor(host, grab.anchor, travel * au, travel * av)
   if (next) s.moveTo(next)
+}
+
+/**
+ * World direction of one of the sketch gizmo's three arrows.
+ *
+ * The tangent pair are the OUTLINE's axes -- the surface's u and v, spun by the
+ * sketch's own rotation the same way `sampleOutline` spins the shape -- so an
+ * arrow always lies along the edge of the thing it is about to stretch. The
+ * third is the surface normal, which carries no spin: turning a sketch in its
+ * own plane cannot tilt the face it lies on.
+ */
+function sketchAxisDir(
+  object: SceneObject,
+  host: SurfaceDef,
+  anchor: SurfaceAnchor,
+  axis: GizmoAxis,
+  rotation: number
+): Vector3 {
+  const frame = host.frame(anchor)
+  if (axis === 2) return toWorldDir(object.transform, frame.normal).normalize()
+
+  const [au, av] = outlineAxis(axis, rotation)
+  const local = frame.uDir.clone().multiplyScalar(au).addScaledVector(frame.vDir, av)
+  return toWorldDir(object.transform, local).normalize()
 }
 
 /**
@@ -945,6 +1008,9 @@ function Scene({
       <RotationDial />
       <SnapMarker />
       <Interaction meshes={meshes} />
+      {/* Inside the canvas because it projects each object's gizmo through the
+          camera to decide what the box caught. What it draws is outside. */}
+      <MarqueeControl />
 
       <OrbitControls
         ref={controlsRef as never}
@@ -982,11 +1048,30 @@ function hintFor(
     case 'cut-gizmo':
       return gizmoHint(handle)
     case 'sketch-gizmo':
-      if (handle?.mode === 'rotate') return 'Turning the sketch'
-      return handle?.axis === 'all'
-        ? 'Resizing the sketch'
-        : 'Sliding the sketch along its surface'
+      return sketchHint(handle)
   }
+}
+
+/**
+ * What each of the sketch gizmo's handles is doing.
+ *
+ * Its own function rather than a branch inside `gizmoHint`, because the two
+ * gizmos share a shape and not a vocabulary: an object's arrows name world
+ * axes, and a sketch's name the outline's own directions and the face it lies
+ * on. Reusing one hint for both would have to say "X" where the user is looking
+ * at an amber arrow lying along the edge of a rectangle.
+ */
+function sketchHint(handle: GizmoHandle | null): string {
+  if (!handle) return ''
+  if (handle.mode === 'rotate') return 'Turning the sketch'
+  if (handle.axis === 'all') return 'Resizing the sketch'
+  if (handle.axis === 2) {
+    return 'Setting the depth -- push back through the face to cut inward'
+  }
+  const name = handle.axis === 0 ? 'U' : 'V'
+  return handle.mode === 'size'
+    ? `Resizing the sketch along ${name} -- right-drag`
+    : `Sliding the sketch along ${name}`
 }
 
 function gizmoHint(handle: GizmoHandle | null): string {
@@ -1068,6 +1153,11 @@ function DragHint() {
     if (s.drag.kind === 'sketch-gizmo') return s.drag.handle
     return null
   })
+  // The marquee is not one of the document's drags -- drawing a box edits
+  // nothing -- so it is asked about separately. Both selectors collapse to a
+  // value that changes a handful of times per gesture rather than per move.
+  const marqueeing = useMarquee((s) => s.box !== null && boxSpan(s.box) >= MARQUEE_SLOP)
+  const caught = useDoc((s) => s.selectedObjectIds.length)
   const readout = useRef<HTMLSpanElement>(null)
 
   // The snap readout is written straight into the DOM for the same reason the
@@ -1095,6 +1185,16 @@ function DragHint() {
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
   }, [kind])
+
+  if (marqueeing) {
+    return (
+      <div className="viewport-hint">
+        {caught === 0
+          ? 'Nothing in the box yet -- it catches an object by its centre'
+          : `${caught} object${caught === 1 ? '' : 's'} selected -- hold Shift to add to the selection`}
+      </div>
+    )
+  }
 
   if (kind === 'idle') return null
 
@@ -1130,6 +1230,31 @@ export function Viewport() {
     const track = (e: KeyboardEvent | PointerEvent) => {
       modifiers.shift = e.shiftKey
     }
+
+    /**
+     * Which mouse button orbits, re-decided before every press.
+     *
+     * The left button used to orbit from empty space; the selection box now
+     * starts there, and two gestures cannot share one button. So orbit moves to
+     * the MIDDLE button, and stays reachable on the left with Alt held for the
+     * mice and trackpads that have no middle button to press. Panning is
+     * untouched on the right.
+     *
+     * Written on every press rather than once at mount for two reasons: the
+     * controls are created inside the canvas and the ref is empty when this
+     * effect first runs, and Alt is a per-press question, since OrbitControls
+     * reads this map at pointer-down and never again during the drag.
+     *
+     * Capture phase on the window, so it lands before the controls' own
+     * listener on the canvas sees the same press.
+     */
+    const armCamera = (e: PointerEvent) => {
+      const controls = controlsRef.current
+      if (!controls) return
+      controls.mouseButtons.LEFT = e.altKey ? MOUSE.ROTATE : null
+      controls.mouseButtons.MIDDLE = MOUSE.ROTATE
+      controls.mouseButtons.RIGHT = MOUSE.PAN
+    }
     // A window that loses focus never sees the keyup, so the flag would stay
     // stuck on and the next object drag would go vertical out of nowhere.
     const blur = () => {
@@ -1150,6 +1275,15 @@ export function Viewport() {
       }
 
       if (e.key === 'Escape') {
+        // A marquee in flight is cancelled rather than committed, and the
+        // selection it was drawn over is put back -- it applies its catch live,
+        // so by now the selection it started from is gone.
+        const marquee = useMarquee.getState()
+        if (marquee.box) {
+          s.selectObjects(marquee.base)
+          marquee.clear()
+          return
+        }
         s.endDrag()
         clearGrabs()
         useObjectMenu.getState().closeMenu()
@@ -1187,6 +1321,7 @@ export function Viewport() {
       }
     }
 
+    window.addEventListener('pointerdown', armCamera, true)
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', finish)
     window.addEventListener('pointermove', track, { passive: true })
@@ -1194,6 +1329,7 @@ export function Viewport() {
     window.addEventListener('keyup', track)
     window.addEventListener('blur', blur)
     return () => {
+      window.removeEventListener('pointerdown', armCamera, true)
       window.removeEventListener('pointerup', finish)
       window.removeEventListener('pointercancel', finish)
       window.removeEventListener('pointermove', track)
@@ -1212,10 +1348,16 @@ export function Viewport() {
       <Canvas
         camera={{ position: [6.2, 4.6, 6.2], fov: 45, near: 0.1, far: 200 }}
         dpr={[1, 2]}
-        onPointerMissed={() => selectObject(null)}
+        // The left button is the marquee's, and it clears the selection itself
+        // on a press that drew no box -- so only the other buttons are answered
+        // here, and the two can never both fire on one gesture.
+        onPointerMissed={(e) => {
+          if (e.button !== 0) selectObject(null)
+        }}
       >
         <Scene controlsRef={controlsRef} meshes={meshes} />
       </Canvas>
+      <MarqueeRect />
       <RotationReadout />
       <DragHint />
       <ObjectMenu />

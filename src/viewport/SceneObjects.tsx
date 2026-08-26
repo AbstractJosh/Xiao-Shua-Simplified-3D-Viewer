@@ -14,6 +14,7 @@ import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
 import { publishScene } from './snapping'
 import { isRightClick, noteRightPress, useObjectMenu } from './ObjectMenu'
+import { useMarquee } from './marquee'
 import { TransformGizmo } from './TransformGizmo'
 
 /** Selection is carried by the object's own material and outline, which is why
@@ -67,6 +68,11 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
   const openMenu = useObjectMenu((s) => s.openMenu)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
+  // A marquee re-decides the selection on every pointer move. The highlight is
+  // the point of that and follows along, but a gizmo hopping between solids as
+  // the box grows would read as three objects being dragged at once -- so it
+  // stands down until the box is let go, the way it does for the cut plane.
+  const marqueeing = useMarquee((s) => s.box !== null)
   // The finer selection wins the gizmo. Selecting a sketch is a statement about
   // wanting to work on the sketch, and the same precedence already governs the
   // Delete key -- a feature goes before the object that hosts it.
@@ -152,8 +158,10 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     }
 
     if (primarySelection(s) !== id) {
-      // The first press only selects. Dragging an unselected object still
-      // orbits the camera, which is what keeps orbit-anywhere intact.
+      // The first press only selects, so an object cannot be shoved across the
+      // scene by a click that was only meant to pick it. The press is spent
+      // either way: the left button no longer orbits from the body of a solid
+      // any more than it does from empty space, where it draws a box instead.
       s.selectObject(id)
       return
     }
@@ -191,15 +199,16 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           object was touched would read as the selection being lost.
 
           Exactly one gizmo is ever on screen. This is the selected object's,
-          and it stands down for the two things that outrank it: an armed cut
+          and it stands down for the three things that outrank it: an armed cut
           plane, whose own arrows would otherwise be one of two sets to tell
-          apart, and a selected sketch, which gets the finer gizmo of the two.
+          apart, a selected sketch, which gets the finer gizmo of the two, and a
+          marquee in flight, whose selection is still being drawn.
 
           It sits at the object's ASSEMBLY ANCHOR, not at its transform: merging
           two solids leaves one gizmo, and it belongs midway between the two that
           went in rather than parked on whichever happened to be the host. For an
           unmerged object the two are the same point. */}
-      {selected && !cutActive && !sketchSelected && (
+      {selected && !cutActive && !sketchSelected && !marqueeing && (
         <TransformGizmo
           position={assemblyAnchor(selected)}
           rotation={selected.transform.rotation}

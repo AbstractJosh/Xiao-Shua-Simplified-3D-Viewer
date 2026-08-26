@@ -14,6 +14,7 @@ import { applyCuts } from './cut'
 import { buildSweptPrism, endPlaneFor, outlineOnSurface } from './prism'
 import { anchorIsCurved, hostSurfaceFor, surfaceFor } from './surfaces'
 import { objectMatrix } from './transform'
+import { sweepOp } from './types'
 import type { BaseSolid, Doc, Feature, SceneObject } from './types'
 import { LOG_TAG } from '../appInfo'
 
@@ -47,7 +48,9 @@ export type EvalResult = {
 
 /** A feature with no depth contributes nothing; it is drawn as a projection. */
 function isInert(f: Feature): boolean {
-  return !f.enabled || f.depth <= 0
+  // Exactly zero, not "at most zero": depth is signed now, and a negative one
+  // is a pocket rather than nothing at all.
+  return !f.enabled || f.depth === 0
 }
 
 /**
@@ -72,7 +75,12 @@ function isInert(f: Feature): boolean {
 function buildTool(base: BaseSolid, feature: Feature): Brush | null {
   const host = hostSurfaceFor(base, feature.anchor)
   const ring = outlineOnSurface(host, feature.anchor, feature)
-  const { tIn, tOut } = host.sweep(feature.anchor, feature.depth, feature.op)
+  // The surface layer is asked for a MAGNITUDE and a direction: it branches on
+  // the direction anyway -- what a sweep buries behind the face is not what it
+  // raises in front of it -- so handing it a signed number would only move that
+  // branch inside seven implementations of it.
+  const op = sweepOp(feature.depth)
+  const { tIn, tOut } = host.sweep(feature.anchor, Math.abs(feature.depth), op)
   const endPlane = endPlaneFor(host, feature.anchor, feature)
   const prism = buildSweptPrism(ring, tIn, tOut, endPlane)
   // A null prism means the tilt drove the tool degenerate; the caller reports
@@ -81,19 +89,14 @@ function buildTool(base: BaseSolid, feature: Feature): Brush | null {
 
   if (endPlane || !anchorIsCurved(feature.anchor)) return makeBrush(prism)
 
-  const signed = feature.op === 'extrude' ? feature.depth : -feature.depth
-  const offset = host.offsetGeometry(signed)
+  const offset = host.offsetGeometry(feature.depth)
   // A collapsed offset means the feature passes clean through: the untrimmed
   // prism is then exactly the right tool.
   if (!offset) return makeBrush(prism)
 
   const prismBrush = makeBrush(prism)
   const offsetBrush = makeBrush(offset)
-  const trimmed = csg(
-    prismBrush,
-    offsetBrush,
-    feature.op === 'extrude' ? INTERSECTION : SUBTRACTION
-  )
+  const trimmed = csg(prismBrush, offsetBrush, op === 'extrude' ? INTERSECTION : SUBTRACTION)
   disposeBrush(prismBrush)
   disposeBrush(offsetBrush)
   return trimmed
@@ -232,7 +235,11 @@ function applyFeature(base: BaseSolid, feature: Feature, prev: Brush): Step {
   try {
     tool = buildTool(base, feature)
     if (!tool) return { brush: prev, owned: false, failed: [feature.id] }
-    const next = csg(prev, tool, feature.op === 'extrude' ? ADDITION : SUBTRACTION)
+    const next = csg(
+      prev,
+      tool,
+      sweepOp(feature.depth) === 'extrude' ? ADDITION : SUBTRACTION
+    )
     return { brush: next, owned: true, failed: [] }
   } catch (err) {
     // A malformed tool must never take the whole document down; skip the

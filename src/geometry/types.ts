@@ -23,7 +23,26 @@ export type ShapeKind = Shape2D['type']
  */
 export type BoxFace = 0 | 1 | 2 | 3 | 4 | 5
 
+/**
+ * Which way a feature's depth sweeps.
+ *
+ * NOT a document field. A feature carries one SIGNED depth, because outward and
+ * inward are the two ends of one number rather than two modes -- the moment they
+ * were a mode as well, "extrude at depth -0.3" and "intrude at depth 0.3" named
+ * the same solid, and every consumer had to remember to consult both. What is
+ * left is a direction, derived from the sign wherever the geometry needs to know
+ * which way it is cutting.
+ *
+ * It stays a named type because the surface layer genuinely branches on it, and
+ * asymmetrically: how far a feature may reach outward is not how far it may
+ * reach in, so `maxDepth` has to be asked one direction at a time.
+ */
 export type FeatureOp = 'extrude' | 'intrude'
+
+/** The direction a signed depth sweeps. Zero is inert, and reads as outward. */
+export function sweepOp(depth: number): FeatureOp {
+  return depth < 0 ? 'intrude' : 'extrude'
+}
 
 export type PlatonicKind = 'tetrahedron' | 'octahedron' | 'dodecahedron'
 
@@ -87,8 +106,17 @@ export type Feature = {
   shape: Shape2D
   /** Spin of the outline within the tangent frame, in radians. */
   rotation: number
-  op: FeatureOp
-  /** 0 means inert: drawn as a surface projection, contributes no solid. */
+  /**
+   * How far the feature sweeps, SIGNED along the surface normal: positive adds
+   * material, negative cuts it away, and 0 is inert -- drawn as a surface
+   * projection, contributing no solid.
+   *
+   * One number rather than a magnitude plus a mode. The two directions are the
+   * two ends of a slider, which is the control they were always going to be,
+   * and a sign cannot disagree with itself the way a mode and a magnitude can.
+   * The limits are still asymmetric -- see `depthLimits` -- because a boss may
+   * reach further out than a pocket may reach in.
+   */
   depth: number
   enabled: boolean
   /**
@@ -194,8 +222,9 @@ export function defaultShape(kind: ShapeKind): Shape2D {
 
 /**
  * A fresh sketch lands as a pure projection: depth 0, no tilt, no face offset.
- * Depth arrives when the user chooses extrude or intrude, which is what makes
- * those two the same object rather than two different creation paths.
+ * Depth arrives when the user drags the normal arrow or moves the Extrude
+ * slider off zero, in either direction -- which is what makes a boss and a
+ * pocket the same object rather than two different creation paths.
  */
 export function defaultFeature(anchor: SurfaceAnchor, shape: Shape2D): Feature {
   return {
@@ -203,7 +232,6 @@ export function defaultFeature(anchor: SurfaceAnchor, shape: Shape2D): Feature {
     anchor,
     shape,
     rotation: 0,
-    op: 'extrude',
     depth: 0,
     enabled: true,
     tilt: [0, 0, 0],
