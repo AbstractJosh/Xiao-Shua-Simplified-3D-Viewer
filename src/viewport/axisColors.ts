@@ -21,13 +21,19 @@ export const AXIS_COLORS = ['#ff1744', '#00e676', '#2979ff'] as const
 export const AXIS_CSS_VARS = ['--axis-x', '--axis-y', '--axis-z'] as const
 
 /**
- * The sketch gizmo's two tangent directions, U and V.
+ * The sketch gizmo's three directions: the outline's own U and V, and the
+ * surface normal it sweeps along.
  *
  * Deliberately nowhere near the X/Y/Z triad. A sketch gizmo does something
  * genuinely different from the object one -- it slides a projection across a
- * surface, and its two axes are that surface's own tangents, not world
- * directions -- so reusing red and green would say the two gizmos were the same
- * tool at different scales. Amber and magenta share no hue with any of the
- * three, which is what keeps them apart on a solid that has both on it at once.
+ * surface and pushes it in or out of one -- so reusing red and green would say
+ * the two gizmos were the same tool at different scales. Amber, magenta and
+ * cyan share no hue with any of the three, which is what keeps them apart on a
+ * solid that has both gizmos near it at once.
+ *
+ * Cyan is the odd one of the three on purpose: the normal arrow is the odd
+ * handle. Its two neighbours slide a shape ACROSS a face, where it is the only
+ * one that leaves the face at all, and the only one whose drag changes what the
+ * solid is rather than where the sketch sits on it.
  */
-export const SKETCH_AXIS_COLORS = ['#ffb300', '#e040fb'] as const
+export const SKETCH_AXIS_COLORS = ['#ffb300', '#e040fb', '#00e5ff'] as const

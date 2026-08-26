@@ -284,6 +284,16 @@ body {
   right: 0;
 }
 
+/* The gesture list is the one panel whose content is sentences rather than
+   controls, and 268px of them wrap into a column too narrow to read. Widened
+   by what it holds instead of by a flag on the tool, so a panel is still just a
+   panel and Help is not a special case anyone has to remember to pass. It opens
+   leftwards from the right edge of the bar, so the extra width has somewhere to
+   go. */
+.nav-panel:has(.keys) {
+  width: 330px;
+}
+
 @keyframes nav-panel-in {
   from {
     opacity: 0;
@@ -534,12 +544,92 @@ body {
   touch-action: none;
 }
 
+/* Wide enough that nothing in it has to be scrolled sideways to be read.
+
+   The old 372px was not, and the reason is worth writing down because it is
+   invisible in the markup: `overflow-y: auto` alone makes the OTHER axis
+   compute to `auto` as well, so the console was a horizontally scrolling
+   element too -- and every hover tip is a 240px absolutely positioned bubble
+   that is `visibility: hidden` rather than `display: none`, which keeps its box
+   and so keeps its overflow. A dot beside a long heading put a quarter of that
+   bubble past the right edge, permanently, and the console grew a scrollbar for
+   something nobody could see.
+
+   Both halves of that are fixed here. The width leaves room for the widest
+   bubble beside the longest heading in the console, and `overflow-x: clip`
+   makes it structural: `clip` is not a scrolling value, so unlike `hidden` it
+   does not turn this into a scroll container on that axis and does not disturb
+   the vertical scroll. Whatever a future panel overflows by, the console cannot
+   become a sideways-scrolling element again. */
 .console {
-  flex: 0 0 372px;
+  flex: 0 0 440px;
   background: var(--panel);
   border-left: 1px solid var(--border);
   overflow-y: auto;
+  overflow-x: clip;
   overscroll-behavior: contain;
+}
+
+/* --- console tabs --- */
+
+/* Sticky, not scrolled away with the panels: the console is a scroll container,
+   and a switch you have to scroll back up to find is a switch that gets used
+   once. Opaque for the same reason -- panels pass underneath it. */
+.console-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.console-tab {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px 9px;
+  appearance: none;
+  border: 0;
+  /* The underline is the whole of the selected state, so it is written on every
+     tab and only its colour changes -- otherwise the row would shift by a pixel
+     as the selection moved. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.console-tab:hover:not(.console-tab-active) {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.console-tab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Says the other tab has something in it now. Selecting an object fills Edit
+   and changes nothing on View, so without this a click on a solid leaves the
+   console looking inert. */
+.console-tab-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 /* --- sections --- */
@@ -1295,42 +1385,26 @@ body {
   border-color: var(--accent);
 }
 
-/* --- operation toggle --- */
+/* --- which way a feature went --- */
 
-.op-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 14px 0 12px;
-}
+/* The Extrude / Intrude toggle that used to sit here is gone. The two were
+   never separate operations -- they are the two ends of one signed depth -- so
+   what replaced a pair of mode buttons is a slider that crosses zero, which
+   needs no styling of its own.
 
-.op-btn {
-  padding: 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+   What the buttons DID carry was a colour, and that is worth keeping: a scene
+   tree whose rows differ by one word is a tree nobody reads. The pair moves
+   here, onto the tail of each feature row, where green still means material
+   added and red means material taken away. */
+.feature-action {
   color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.12s;
 }
 
-.op-btn:hover {
-  color: var(--text);
-  background: #1e232c;
-}
-
-.op-active.op-out {
-  background: color-mix(in srgb, var(--out) 18%, transparent);
-  border-color: var(--out);
+.feature-out {
   color: var(--out);
 }
 
-.op-active.op-in {
-  background: color-mix(in srgb, var(--in) 18%, transparent);
-  border-color: var(--in);
+.feature-in {
   color: var(--in);
 }
 
@@ -1473,8 +1547,8 @@ body {
   text-decoration: none;
 }
 
-/* Indent plus a rule: at 372px the rule carries the nesting more cheaply than
-   whitespace alone. */
+/* Indent plus a rule: in a column this narrow the rule carries the nesting more
+   cheaply than whitespace alone. */
 .tree-features {
   list-style: none;
   margin: 2px 0 4px 9px;
@@ -1582,14 +1656,37 @@ body {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
+/* No width of its own. It used to claim 300px inside a 268px panel, which --
+   with the border-box sizing everything here uses -- put it 56px past the
+   panel's right border, so the last word of the longer gestures was written on
+   the viewport. The list is prose and wraps, so the panel is the one that
+   decides how wide it is.
+
+   The height is capped rather than left to the content: the gesture list is the
+   one panel long enough to run off the bottom of a laptop screen, and a panel
+   is absolutely positioned, so it would simply be cut off with no way to reach
+   the rest. 118px is the chrome above and below it -- the 46px bar, the 7px the
+   panel hangs below it, the panel's own padding and heading, and a margin at
+   the bottom of the window -- so the list takes whatever is left. Scrolling the
+   list and not the panel keeps the title and the close button pinned.
+
+   `overflow-x: clip` for the reason written up at .console: `overflow-y: auto`
+   alone resolves the other axis to `auto` too, and `clip` is not a scrolling
+   value, so this cannot become a sideways-scrolling element whatever a future
+   gesture line overflows by. */
 .keys {
   margin: 0;
-  padding: 0;
-  width: 300px;
+  padding: 0 4px 0 0;
   list-style: none;
   display: flex;
   flex-direction: column;
   gap: 5px;
+  max-height: calc(100vh - 118px);
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3a444f transparent;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
@@ -1620,6 +1717,25 @@ body {
 .viewport-hint-bad {
   border-color: color-mix(in srgb, var(--danger) 55%, transparent);
   color: var(--danger);
+}
+
+/* The selection box.
+
+   Fixed, not absolute, for the same reason the object menu is: the corners come
+   straight from pointer events, which speak client space.
+
+   Deliberately faint. It is drawn over the scene for the whole of a gesture
+   whose entire point is watching which solids light up underneath it, so a
+   heavier fill would hide the answer it exists to show. The dashed edge is what
+   keeps it legible against a solid and against the grid both, without a fill
+   dark enough to matter. */
+.marquee {
+  position: fixed;
+  z-index: 30;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* --- export --- */

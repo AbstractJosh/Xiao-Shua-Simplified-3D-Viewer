@@ -11,7 +11,7 @@
  *
  * Run: npx tsx scripts/interaction-check.ts
  */
-import { Mesh, Raycaster, Vector3 } from 'three'
+import { Mesh, PerspectiveCamera, Raycaster, Vector3 } from 'three'
 
 const realWarn = console.warn.bind(console)
 console.warn = (...args: unknown[]) => {
@@ -22,11 +22,23 @@ console.warn = (...args: unknown[]) => {
 import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
 import { hostSurfaceFor, surfaceFor } from '../src/geometry/surfaces'
 import { outlineOnSurface } from '../src/geometry/prism'
+import { outlineAxis, sampleOutline } from '../src/geometry/outline'
+import { MIN_SHAPE, resizeShapeAlong } from '../src/geometry/dimensions'
+import { clampDepth, depthLimits } from '../src/geometry/surfaces'
 import { planeSeparates } from '../src/geometry/cut'
 import { objectSnapTargets, snapTranslation, DEFAULT_SNAP_DISTANCE } from '../src/geometry/snap'
 import { pickAnchorAcrossObjects, pickAnchorOnObject } from '../src/viewport/picking'
 import { publishScene, resolveSolidDrop } from '../src/viewport/snapping'
 import { useTools } from '../src/store/toolStore'
+import { useDoc } from '../src/store/docStore'
+import {
+  centreOnScreen,
+  claimsPress,
+  normaliseBox,
+  objectsInBox,
+  selectionFor,
+} from '../src/viewport/marquee'
+import type { Press } from '../src/viewport/marquee'
 import {
   MORPH_ANGLES,
   NGON_HOLD_MS,
@@ -206,7 +218,6 @@ console.log('\n4. Hits on derived geometry')
         anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
         shape: { type: 'circle', r: 0.3 },
         rotation: 0,
-        op: 'extrude',
         depth: 0.3,
         enabled: true,
         tilt: [0, 0, 0],
@@ -633,6 +644,259 @@ console.log('\n10. planeSeparates refuses a graze')
     'a diagonal plane through the middle does',
     planeSeparates(geometry, origin(0), new Vector3(1, 1, 0).normalize())
   )
+}
+
+// --- 11. The selection box catches objects by their gizmos ------------------
+console.log('\n11. The marquee projects centres of mass into screen space')
+{
+  // 90 degrees of vertical field on a square view makes the projection exact by
+  // hand: tan(45) is 1, so a point one unit sideways for every unit of depth
+  // lands precisely on the edge of the view.
+  const camera = new PerspectiveCamera(90, 1, 0.1, 100)
+  camera.position.set(0, 0, 10)
+  camera.updateMatrixWorld()
+  camera.updateProjectionMatrix()
+  const view = { left: 0, top: 0, width: 800, height: 800 }
+
+  const at = (id: string, position: Vec3) => object(CUBE, id, position)
+  const screen = (o: SceneObject) => centreOnScreen(o, camera, view)
+
+  const centre = screen(at('origin', [0, 0, 0]))
+  check('an object on the axis lands in the middle of the view', centre !== null)
+  if (centre) {
+    near('its x is half the width', centre.x, 400, 1e-6)
+    near('and its y half the height', centre.y, 400, 1e-6)
+  }
+
+  const right = screen(at('right', [5, 0, 0]))
+  if (right) near('five units right, ten deep, is half way to the edge', right.x, 600, 1e-6)
+
+  // The one place the two coordinate systems disagree: NDC y climbs toward the
+  // top of the screen and client y falls.
+  const up = screen(at('up', [0, 5, 0]))
+  if (up) near('and five units UP is half way to the TOP', up.y, 200, 1e-6)
+
+  // Behind the camera, which sits at z = 10 looking down -Z. Projected naively
+  // this lands back inside the view, mirrored through the origin -- so a box
+  // drawn on empty sky would gather up whatever stood behind the user.
+  check('an object behind the camera is off screen', screen(at('back', [0, 0, 20])) === null)
+
+  const objects = [at('a', [0, 0, 0]), at('b', [5, 0, 0]), at('c', [-5, 0, 0])]
+  const caught = (x0: number, y0: number, x1: number, y1: number) =>
+    objectsInBox(objects, normaliseBox({ x0, y0, x1, y1 }), camera, view).join()
+
+  check(
+    'a box over the middle takes only what is under it',
+    caught(350, 350, 450, 450) === 'a',
+    caught(350, 350, 450, 450)
+  )
+  check(
+    'a wider box takes everything it reaches',
+    caught(150, 350, 650, 450) === 'a,b,c',
+    caught(150, 350, 650, 450)
+  )
+  // Dragged from the far corner back: the same three, in the same order. The
+  // primary is the head of this list, and it must not depend on which way the
+  // pointer happened to travel.
+  check(
+    'and drawing it backwards gives the same list',
+    caught(650, 450, 150, 350) === 'a,b,c',
+    caught(650, 450, 150, 350)
+  )
+  check('a box on empty sky takes nothing', caught(10, 10, 60, 60) === '')
+
+  // The centre is the test, not the silhouette. This box covers a good part of
+  // the right-hand cube's body -- the solid is 2 units wide and reaches back to
+  // x = 4 -- but not the dot the user can see standing for it.
+  check('a box over an object but not its gizmo takes nothing', caught(480, 350, 560, 450) === '')
+}
+
+// --- 11b. A merged object is caught at the middle of the whole -------------
+console.log('\n11b. The marquee reads a merged object as one thing')
+{
+  const camera = new PerspectiveCamera(90, 1, 0.1, 100)
+  camera.position.set(0, 0, 10)
+  camera.updateMatrixWorld()
+  camera.updateProjectionMatrix()
+  const view = { left: 0, top: 0, width: 800, height: 800 }
+
+  // Two cubes welded four units apart. The single gizmo left behind sits midway
+  // between them, at x = 2 -- and that, not the host it was merged into, is what
+  // the box has to catch.
+  const part = object(CUBE, 'part', [4, 0, 0])
+  const merged: SceneObject = { ...object(CUBE, 'merged', [0, 0, 0]), parts: [part] }
+  const at = centreOnScreen(merged, camera, view)
+  check('a merged pair projects from the middle of the two', at !== null)
+  // x = 2 at ten units of depth is a fifth of the way to the edge: 400 + 80.
+  if (at) near('which is on neither solid', at.x, 480, 1e-6)
+
+  const box = (x0: number, x1: number) =>
+    objectsInBox([merged], normaliseBox({ x0, y0: 350, x1, y1: 450 }), camera, view).join()
+  check('a box on the middle catches it', box(460, 500) === 'merged')
+  check('a box on the host alone does not', box(380, 420) === '')
+}
+
+// --- 11c. What the box produces, and what it leaves alone ------------------
+console.log('\n11c. A marquee replaces the selection, or adds to it')
+{
+  check(
+    'a plain box replaces whatever was selected',
+    selectionFor(['old'], ['a', 'b'], false).join() === 'a,b'
+  )
+  // Primary first, and the existing selection leads: sweeping up more solids
+  // must not move the gizmo or change what a merge would fold into.
+  check(
+    'a shift-box appends to it, primary first',
+    selectionFor(['old'], ['a', 'b'], true).join() === 'old,a,b'
+  )
+  check(
+    'and never names the same object twice',
+    selectionFor(['a'], ['a', 'b'], true).join() === 'a,b'
+  )
+
+  // A marquee re-decides the selection on every pointer move, and almost every
+  // one of those moves lands on the same set. The store has to recognise that,
+  // or the whole scene re-renders at pointer rate.
+  const doc = () => useDoc.getState()
+  const id = doc().addObject(CUBE, [0, 0, 0])
+  doc().selectObjects([id])
+  const first = doc().selectedObjectIds
+  doc().selectObjects([id])
+  check('re-selecting the same set changes nothing at all', doc().selectedObjectIds === first)
+  doc().selectObjects([])
+  check('and emptying it does', doc().selectedObjectIds.length === 0)
+  doc().removeObject(id)
+}
+
+// --- 11d. Whose press is it -----------------------------------------------
+console.log('\n11d. The box only takes the presses nothing else wanted')
+{
+  // A plain left press on bare canvas, with nothing under it and no gesture in
+  // flight. Every case below is this one with a single field disturbed, so what
+  // each check proves is exactly the clause it names.
+  const bare: Press = {
+    button: 0,
+    pointerType: 'mouse',
+    altKey: false,
+    onCanvas: true,
+    hits: 0,
+    dragging: false,
+  }
+  const claims = (patch: Partial<Press>) => claimsPress({ ...bare, ...patch })
+
+  check('a left press on empty canvas starts a box', claims({}))
+  check('so does the same press from a pen', claims({ pointerType: 'pen' }))
+
+  // Right-drag pans the camera and right-click opens the object menu; the
+  // middle button now orbits.
+  check('the right button does not', !claims({ button: 2 }))
+  check('nor does the middle one', !claims({ button: 1 }))
+  // A touchscreen has no second button to move orbit onto, so one finger keeps
+  // turning the camera there.
+  check('nor one finger on a touchscreen', !claims({ pointerType: 'touch' }))
+  // Alt is what puts orbit back on the left button for a mouse with no wheel
+  // to press.
+  check('nor a left press with Alt held, which orbits', !claims({ altKey: true }))
+  // The hint, the object menu and the box itself all sit inside the viewport
+  // without being the scene.
+  check('nor a press on an overlay rather than the canvas', !claims({ onCanvas: false }))
+  // The press landed on a solid, a gizmo arrow, a sketch or a face handle.
+  check('nor a press that landed on something in the scene', !claims({ hits: 1 }))
+  // A solid dragged off the palette is released over the canvas, but the press
+  // that started it happened on a console chip.
+  check('nor a press while a placement is already running', !claims({ dragging: true }))
+}
+
+// --- 12. The sketch gizmo's own axes ---------------------------------------
+console.log('\n12. The tangent arrows follow the OUTLINE, not the surface')
+{
+  // The two arrows lie along the outline's own axes so a right-drag stretches
+  // the dimension the arrow points down. That only holds while this agrees to
+  // the last bit with the rotation `sampleOutline` turns the shape by -- and
+  // the failure it would cause is silent: a sketch that slides sideways when
+  // dragged along its own edge.
+  const [u0, v0] = outlineAxis(0, 0)
+  near('at rest the first axis is the surface U', u0, 1, 1e-12)
+  near('with nothing in V', v0, 0, 1e-12)
+  const [u1, v1] = outlineAxis(1, 0)
+  near('and the second is V', v1, 1, 1e-12)
+  near('with nothing in U', u1, 0, 1e-12)
+
+  for (const rotation of [0.3, 1.1, -0.7, Math.PI]) {
+    const a = outlineAxis(0, rotation)
+    const b = outlineAxis(1, rotation)
+    near(`the pair stays unit at ${rotation}`, Math.hypot(a[0], a[1]), 1, 1e-12)
+    near('and perpendicular', a[0] * b[0] + a[1] * b[1], 0, 1e-12)
+
+    // A 2x2 square's far corner is the sum of its two half-axes, and
+    // `sampleOutline` puts it wherever it turns the shape to. If the two ever
+    // disagreed about which way positive rotation goes, this is where it shows.
+    const corner = sampleOutline({ type: 'rect', w: 2, h: 2 }, rotation, false)[2]
+    near('and the outline agrees where its corner went', corner[0], a[0] + b[0], 1e-12)
+    near('on the other coordinate too', corner[1], a[1] + b[1], 1e-12)
+  }
+}
+
+// --- 12b. What a right-drag on a tangent arrow does -------------------------
+console.log('\n12b. The tangent arrows stretch the outline')
+{
+  // Centred outlines, so pulling ONE side out by `travel` grows the whole
+  // dimension by twice it -- the same convention the object gizmo's arrows use
+  // on a solid's width.
+  const rect = { type: 'rect', w: 0.6, h: 0.4 } as const
+  const wider = resizeShapeAlong(rect, 0, 0.1, 1)
+  check('the first arrow drives a rectangle width', wider.type === 'rect')
+  if (wider.type === 'rect') {
+    near('growing it by twice the travel', wider.w, 0.8, 1e-12)
+    near('and leaving the height alone', wider.h, 0.4, 1e-12)
+  }
+  const taller = resizeShapeAlong(rect, 1, -0.1, 1)
+  if (taller.type === 'rect') {
+    near('the second drives the height, and shrinks too', taller.h, 0.2, 1e-12)
+    near('leaving the width alone', taller.w, 0.6, 1e-12)
+  }
+
+  // A radius is measured from the centre already, so it takes the travel
+  // unhalved -- and there is no second dimension for the other arrow to drive.
+  const circle = { type: 'circle', r: 0.3 } as const
+  for (const axis of [0, 1] as const) {
+    const grown = resizeShapeAlong(circle, axis, 0.1, 1)
+    if (grown.type === 'circle') {
+      near(`arrow ${axis} grows a circle by the travel itself`, grown.r, 0.4, 1e-12)
+    }
+  }
+  const ngon = resizeShapeAlong({ type: 'ngon', r: 0.3, sides: 6 }, 0, 0.1, 1)
+  check('a polygon keeps its side count', ngon.type === 'ngon' && ngon.sides === 6)
+
+  // The same ceilings the ring and the Inspector honour: a rectangle is
+  // measured across, a radius from the middle.
+  const capped = resizeShapeAlong(rect, 0, 99, 1)
+  if (capped.type === 'rect') near('a rectangle stops at twice the bound', capped.w, 2, 1e-12)
+  const cappedR = resizeShapeAlong(circle, 0, 99, 1)
+  if (cappedR.type === 'circle') near('a radius stops at the bound itself', cappedR.r, 1, 1e-12)
+  const floored = resizeShapeAlong(circle, 0, -99, 1)
+  if (floored.type === 'circle') near('and never shrinks past nothing', floored.r, MIN_SHAPE, 1e-12)
+}
+
+// --- 12c. One signed depth, with two different reaches ---------------------
+console.log('\n12c. Depth is one signed number, clamped asymmetrically')
+{
+  // A boss may stand further proud of a face than a pocket may sink into it,
+  // which is why the slider is not symmetric about zero and why the clamp has
+  // to be asked one direction at a time.
+  const top: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
+  const host = hostSurfaceFor(CUBE, top)
+  const limit = depthLimits(host, top)
+  check('a cube reaches further out than in', limit.out > limit.in, `${limit.out} vs ${limit.in}`)
+  check('and both are positive magnitudes', limit.in > 0 && limit.out > 0)
+
+  near('a depth inside the range is left alone', clampDepth(host, top, 0.3), 0.3, 1e-12)
+  near('so is a negative one', clampDepth(host, top, -0.3), -0.3, 1e-12)
+  near('an overreach outward stops at the outward limit', clampDepth(host, top, 99), limit.out, 1e-12)
+  // The one that matters: a clamp that took a magnitude would hand this back
+  // pointing the wrong way, turning a pocket into a boss at the limit.
+  near('and an overreach inward keeps its direction', clampDepth(host, top, -99), -limit.in, 1e-12)
+  near('zero is inert either way', clampDepth(host, top, 0), 0, 1e-12)
 }
 
 console.log(

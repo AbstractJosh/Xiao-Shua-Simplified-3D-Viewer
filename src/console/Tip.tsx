@@ -25,9 +25,14 @@ export function Tip({
    * Which edge of the dot the bubble hangs from, and so which way it opens.
    *
    * Rightwards by default, because every dot in the app sits just after a label
-   * near the left edge of its panel, and the console clips its own overflow at
-   * 372px -- a bubble opening the other way would be cut off. Pass 'right' for
-   * a dot near a right-hand edge, where that reverses.
+   * near the left edge of its panel, and the console clips its own overflow --
+   * a bubble opening the other way would be cut off. Pass 'right' for a dot
+   * near a right-hand edge, where that reverses.
+   *
+   * The console is sized so the widest bubble still fits beside the longest
+   * heading in it. That is a real constraint on `.console`'s width, not a
+   * coincidence: these bubbles keep their boxes while hidden, so one that did
+   * not fit used to give the whole console a horizontal scrollbar.
    */
   align?: 'left' | 'right'
 }) {

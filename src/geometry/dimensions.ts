@@ -86,6 +86,43 @@ export function scaleShape(shape: Shape2D, factor: number, max: number): Shape2D
 }
 
 /**
+ * Grow or shrink a sketch outline along ONE of its own axes, by how far the
+ * pointer pulled that side's skin.
+ *
+ * The mirror of `resizeAlongAxis` for solids, and it follows the same
+ * convention: the outline is centred on its anchor, so pulling one side out by
+ * `travel` grows the whole dimension by twice that. A radius is measured from
+ * the centre already, so it takes the travel unhalved.
+ *
+ * Only a rectangle has two dimensions to tell apart. A circle and a polygon
+ * carry one radius between them, so both arrows drive it and the gesture is the
+ * ring's -- which is honest rather than a limitation to hide: there is no way
+ * to write down a wider-than-tall circle in a `Shape2D`, and pretending
+ * otherwise would mean the arrow moved something the panel could not show.
+ */
+export function resizeShapeAlong(
+  shape: Shape2D,
+  axis: 0 | 1,
+  travel: number,
+  max: number
+): Shape2D {
+  switch (shape.type) {
+    case 'circle':
+      return { type: 'circle', r: clamp(shape.r + travel, MIN_SHAPE, max) }
+    case 'ngon':
+      return { ...shape, r: clamp(shape.r + travel, MIN_SHAPE, max) }
+    case 'rect': {
+      const grown = clamp(
+        (axis === 0 ? shape.w : shape.h) + travel * 2,
+        MIN_SHAPE,
+        max * 2
+      )
+      return axis === 0 ? { ...shape, w: grown } : { ...shape, h: grown }
+    }
+  }
+}
+
+/**
  * Which field one axis drives, and how far the surface moves when it changes.
  *
  * `perUnit` is the distance the solid's surface travels along the axis per unit

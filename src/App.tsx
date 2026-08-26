@@ -1,11 +1,5 @@
-import { ClipboardPanel } from './console/ClipboardPanel'
-import { Inspector } from './console/Inspector'
+import { Console } from './console/Console'
 import { NavBar } from './console/NavBar'
-import { ObjectPanel } from './console/ObjectPanel'
-import { PlacementPanel } from './console/PlacementPanel'
-import { SceneTree } from './console/SceneTree'
-import { ShapePalette } from './console/ShapePalette'
-import { SolidPalette } from './console/SolidPalette'
 import { Viewport } from './viewport/Viewport'
 
 /**
@@ -21,19 +15,7 @@ export default function App() {
 
       <main className="main">
         <Viewport />
-        <aside className="console">
-          {/* Top of the console, above the fixed catalogue below it: what you
-              saved is yours and specific to this scene, so it is the first
-              thing to reach for rather than something to scroll past ten
-              primitives to find. */}
-          <ClipboardPanel />
-          <SolidPalette />
-          <ShapePalette />
-          <PlacementPanel />
-          <ObjectPanel />
-          <Inspector />
-          <SceneTree />
-        </aside>
+        <Console />
       </main>
     </div>
   )

@@ -5,15 +5,31 @@ import { useEvalStatus } from '../store/evalStore'
 import { Section } from './Field'
 import { MergeIcon } from './navIcons'
 
-function describe(f: Feature): string {
-  const shape =
-    f.shape.type === 'circle'
-      ? `Circle r${f.shape.r.toFixed(2)}`
-      : f.shape.type === 'rect'
-        ? `Rect ${f.shape.w.toFixed(2)}x${f.shape.h.toFixed(2)}`
-        : `${f.shape.sides}-gon r${f.shape.r.toFixed(2)}`
-  const action = f.depth === 0 ? 'projection' : `${f.op} ${f.depth.toFixed(2)}`
-  return `${shape} - ${action}`
+function shapeLabel(f: Feature): string {
+  return f.shape.type === 'circle'
+    ? `Circle r${f.shape.r.toFixed(2)}`
+    : f.shape.type === 'rect'
+      ? `Rect ${f.shape.w.toFixed(2)}x${f.shape.h.toFixed(2)}`
+      : `${f.shape.sides}-gon r${f.shape.r.toFixed(2)}`
+}
+
+/**
+ * What the feature does, and which way.
+ *
+ * The sign carries the direction now, so the row NAMES the direction and shows
+ * the reach unsigned: "extrude -0.30" would state the same fact twice, in two
+ * ways that read as a contradiction. The tint is the other half of that -- it
+ * is what the Extrude / Intrude buttons used to say in green and red before the
+ * two collapsed into one slider, and losing it would leave a column of rows
+ * that differ by one word.
+ */
+function action(f: Feature): { text: string; tone: string } {
+  if (f.depth === 0) return { text: 'projection', tone: '' }
+  const out = f.depth > 0
+  return {
+    text: `${out ? 'extrude' : 'intrude'} ${Math.abs(f.depth).toFixed(2)}`,
+    tone: out ? ' feature-out' : ' feature-in',
+  }
 }
 
 /** A renamed object answers to its own name; an unnamed one to its solid. */
@@ -175,7 +191,10 @@ export function SceneTree() {
                     >
                       <span className="feature-index">{j + 1}</span>
                       <span className="feature-text">
-                        {describe(f)}
+                        {shapeLabel(f)} -{' '}
+                        <span className={`feature-action${action(f).tone}`}>
+                          {action(f).text}
+                        </span>
                         {failed.includes(f.id) && (
                           <span className="feature-error" title="This feature could not be applied">
                             failed

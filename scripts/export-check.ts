@@ -103,7 +103,6 @@ const CIRCLE_BOSS: Feature = {
   anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
   shape: { type: 'circle', r: 0.3 },
   rotation: 0,
-  op: 'extrude',
   depth: 0.3,
   enabled: true,
   tilt: [0, 0, 0],

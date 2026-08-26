@@ -165,11 +165,14 @@ function Arrow({
   axis,
   color,
   sizable,
+  sizeOnly,
   onGrab,
 }: {
   axis: GizmoAxis
   color: string
   sizable: boolean
+  /** This arrow has no slide, so both buttons resize along it. See the prop. */
+  sizeOnly: boolean
   onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
 }) {
   const rotation = AXIS_ROTATIONS[axis]
@@ -183,8 +186,12 @@ function Arrow({
     // axis. Two gestures on one handle rather than two sets of arrows: the
     // second set would double the clutter for an operation that is, spatially,
     // exactly the same drag.
-    if (e.button === 0) onGrab({ mode: 'move', axis }, e)
-    else if (e.button === 2 && sizable) onGrab({ mode: 'size', axis }, e)
+    //
+    // A size-only arrow answers both buttons with the same gesture. It is not a
+    // handle that ignores a button -- which reads as broken -- but one where
+    // there is no second thing to do: nothing slides along it.
+    if (e.button === 0) onGrab({ mode: sizeOnly ? 'size' : 'move', axis }, e)
+    else if (e.button === 2 && (sizable || sizeOnly)) onGrab({ mode: 'size', axis }, e)
   }
 
   return (
@@ -245,6 +252,7 @@ export function TransformGizmo({
   rotation,
   quaternion,
   axes = [0, 1, 2],
+  sizeOnlyAxes = [],
   colors = AXIS_COLORS,
   ring = true,
   size = 1,
@@ -262,11 +270,19 @@ export function TransformGizmo({
    */
   quaternion?: Quaternion
   /**
-   * Which arrows to draw. A sketch gets [0, 1] because it has two directions to
-   * move in: the surface's own U and V. There is no third -- leaving the face
-   * is not a slide across it.
+   * Which arrows to draw. A sketch gets all three, but its third is not a
+   * direction to move in: see `sizeOnlyAxes`.
    */
   axes?: GizmoAxis[]
+  /**
+   * Arrows with no slide of their own, where BOTH buttons resize.
+   *
+   * The sketch gizmo's normal arrow is the case: a sketch cannot move off the
+   * surface it is anchored to, so there is no slide along that direction -- but
+   * how far it sweeps ALONG it is exactly a size, and it is the one number the
+   * arrow was added to drag.
+   */
+  sizeOnlyAxes?: GizmoAxis[]
   colors?: readonly string[]
   ring?: boolean
   /** Multiplier on the apparent size, for gizmos that annotate small things. */
@@ -334,6 +350,7 @@ export function TransformGizmo({
             axis={axis}
             color={colors[axis] ?? AXIS_COLORS[axis]}
             sizable={sizable}
+            sizeOnly={sizeOnlyAxes.includes(axis)}
             onGrab={grab}
           />
         ))}

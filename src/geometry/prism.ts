@@ -2,6 +2,7 @@ import { BufferAttribute, BufferGeometry, Euler, Vector3 } from 'three'
 import type { ProjectedPoint, SurfaceDef } from './surfaces'
 import { anchorIsCurved, tangentBasis } from './surfaces'
 import { sampleOutline } from './outline'
+import { sweepOp } from './types'
 import type { Feature, SurfaceAnchor } from './types'
 
 /**
@@ -71,7 +72,7 @@ export type EndFaceFrame = {
 }
 
 /** What `endPlaneFor` needs; a whole Feature satisfies it. */
-type EndPlaneSpec = Pick<Feature, 'op' | 'depth' | 'tilt' | 'faceOffset'>
+type EndPlaneSpec = Pick<Feature, 'depth' | 'tilt' | 'faceOffset'>
 
 /**
  * A ring normal grazing the end plane makes the ray/plane solve explode, and a
@@ -146,8 +147,7 @@ function endFaceBasis(
   const normal = f.normal.clone().applyEuler(new Euler(tx, ty, tz, 'XYZ')).normalize()
   if (normal.lengthSq() < 0.5) return null
 
-  const signed = feature.op === 'extrude' ? feature.depth : -feature.depth
-  const origin = f.origin.clone().addScaledVector(f.normal, signed)
+  const origin = f.origin.clone().addScaledVector(f.normal, feature.depth)
   return { origin, normal, ...inPlaneAxes(f.uDir, f.vDir, normal) }
 }
 
@@ -182,17 +182,16 @@ export function endPlaneFor(
 
   // The end that moves is the one the operation creates; the base of the
   // extrusion stays welded to the surface either way.
-  const end = feature.op === 'extrude' ? 'out' : 'in'
+  const end = sweepOp(feature.depth) === 'extrude' ? 'out' : 'in'
   // Untilted, the plane is parallel to the surface and the constant-depth
   // landing is the one the unslid sweep would have produced (see EndPlane).
   const untilted = tx === 0 && ty === 0 && tz === 0
-  const signed = feature.op === 'extrude' ? feature.depth : -feature.depth
   return {
     origin: basis.origin,
     normal: basis.normal,
     end,
     slide,
-    alongNormal: untilted ? signed : null,
+    alongNormal: untilted ? feature.depth : null,
   }
 }
 
@@ -212,8 +211,10 @@ export function endFaceFrame(
   feature: EndPlaneSpec
 ): EndFaceFrame | null {
   // Depth 0 means the sketch is still a pure projection: there is no created
-  // face to grab, and the plane would land back on the host surface.
-  if (!(feature.depth > 0)) return null
+  // face to grab, and the plane would land back on the host surface. EXACTLY
+  // zero: depth is signed, and a pocket's floor is as much a created face as a
+  // boss's top -- it is simply on the other side of the surface.
+  if (feature.depth === 0) return null
 
   const basis = endFaceBasis(surface, anchor, feature)
   if (!basis) return null
@@ -374,8 +375,7 @@ export function endFaceRing(
   const plane = endPlaneFor(surface, anchor, feature)
   if (plane) return endPlanePoints(ring, plane) ?? []
 
-  const signed = feature.op === 'extrude' ? feature.depth : -feature.depth
-  return ring.map((p) => p.position.clone().addScaledVector(p.normal, signed))
+  return ring.map((p) => p.position.clone().addScaledVector(p.normal, feature.depth))
 }
 
 /**

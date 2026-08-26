@@ -30,6 +30,26 @@ export function sampleOutline(
   return raw.map(([x, y]): Point2 => [x * cos - y * sin, x * sin + y * cos])
 }
 
+/**
+ * One of the outline's OWN axes, written in the surface's (u, v).
+ *
+ * The sketch gizmo's two tangent arrows lie along these rather than along the
+ * surface's raw u and v, so that a right-drag stretches the dimension the arrow
+ * is actually pointing down -- on a rectangle spun 30 degrees, the width axis is
+ * spun with it. A slide is stored in (u, v) though, so the travel an arrow reads
+ * has to come back here to be written down.
+ *
+ * Here beside `sampleOutline` because it IS that rotation, applied to the unit
+ * axes instead of to the shape: the two would silently disagree the moment one
+ * of them changed sign convention, and the disagreement would show up as a
+ * sketch that slid sideways when it was dragged along its own edge.
+ */
+export function outlineAxis(axis: 0 | 1, rotation: number): Point2 {
+  const cos = Math.cos(rotation)
+  const sin = Math.sin(rotation)
+  return axis === 0 ? [cos, sin] : [-sin, cos]
+}
+
 function rawOutline(shape: Shape2D, curved: boolean): Point2[] {
   switch (shape.type) {
     case 'circle':

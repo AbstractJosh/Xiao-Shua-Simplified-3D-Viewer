@@ -63,6 +63,9 @@ import { ObjectPanel } from '../src/console/ObjectPanel'
 import { PlacementPanel } from '../src/console/PlacementPanel'
 import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
+import { Console } from '../src/console/Console'
+import { MarqueeRect } from '../src/viewport/SelectionMarquee'
+import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
 import { SolidList, SolidPalette } from '../src/console/SolidPalette'
 import { NGON_LABEL } from '../src/console/ngon'
 import { SOLID_TEMPLATES } from '../src/console/solidIcons'
@@ -92,7 +95,11 @@ import {
   thumbnailFor,
 } from '../src/console/thumbnailGeometry'
 import { signedVolume } from '../src/geometry/volume'
-import { selectedObjectId as primarySelection, useDoc } from '../src/store/docStore'
+import {
+  DEFAULT_FEATURE_DEPTH,
+  selectedObjectId as primarySelection,
+  useDoc,
+} from '../src/store/docStore'
 import { useEvalStatus } from '../src/store/evalStore'
 import { useLibrary } from '../src/store/libraryStore'
 import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
@@ -465,15 +472,16 @@ check('and it is selected', featureId !== '', featureId)
   hides('and nothing to reset', panel, 'Reset face')
 
   const tree = markupOf('SceneTree (projection)', SceneTree)
-  shows('the tree nests the sketch under its object', tree, 'Circle r0.30 - projection')
+  shows('the tree nests the sketch under its object', tree, 'Circle r0.30 - ')
+  shows('and says it is still flat', tree, 'class="feature-action">projection<')
   shows('and counts it', tree, '>1f<')
 }
 
-doc().setOp(cubeId, featureId, 'extrude')
+doc().setDepth(cubeId, featureId, DEFAULT_FEATURE_DEPTH)
 const docAfterExtrude = doc().doc
 {
   const feature = doc().doc.objects.find((o) => o.id === cubeId)?.features[0]
-  check('choosing Extrude gives the sketch a depth', (feature?.depth ?? 0) > 0, `${feature?.depth}`)
+  check('extruding gives the sketch a depth', (feature?.depth ?? 0) > 0, `${feature?.depth}`)
 
   const panel = markupOf('Inspector (extruded)', Inspector)
   hides('the inert notice is gone', panel, 'Projection only')
@@ -485,7 +493,7 @@ const docAfterExtrude = doc().doc
   shows('and the hint that the face is draggable too', panel, 'drag the end face itself')
 
   const tree = markupOf('SceneTree (extruded)', SceneTree)
-  shows('the tree says extrude now', tree, 'Circle r0.30 - extrude 0.30')
+  shows('the tree says extrude now', tree, 'feature-action feature-out">extrude 0.30<')
 }
 
 // --- 4. The End face panel reaches the geometry ---------------------------
@@ -919,18 +927,27 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   doc().updatePlacing(gizmoCube, { on: 'box-face', face: 2, u: 0, v: 0 })
   doc().commitPlacing()
   const feature = doc().doc.objects[0].features[0]
-  doc().patchFeature(gizmoCube, feature.id, { op: 'intrude', depth: 0.9 })
+  // Negative, because depth is signed: a pocket is the same number as a boss
+  // pointing the other way.
+  doc().patchFeature(gizmoCube, feature.id, { depth: -0.9 })
   const deep = depthOf(gizmoCube)
-  near('the pocket starts at the depth it was given', deep, 0.9, 1e-9)
+  near('the pocket starts at the depth it was given', deep, -0.9, 1e-9)
 
   const grabbed = baseOf(gizmoCube)
   doc().startGizmo(gizmoCube, { mode: 'size', axis: 'all' })
   doc().resizeObjectTo(scaleUniform(grabbed, 0.25))
   check('scaling keeps the sketch', doc().doc.objects[0].features.length === 1, `${doc().doc.objects[0].features.length}`)
+  // Compared as a REACH, not as a value: standing a pocket down makes the
+  // signed number larger, since it is climbing back toward zero.
   check(
     'and stands its depth down to fit the smaller solid',
-    depthOf(gizmoCube) < deep,
+    Math.abs(depthOf(gizmoCube)) < Math.abs(deep),
     `${depthOf(gizmoCube).toFixed(4)} from ${deep.toFixed(4)}`
+  )
+  check(
+    'without turning the pocket into a boss',
+    depthOf(gizmoCube) < 0,
+    `${depthOf(gizmoCube).toFixed(4)}`
   )
   doc().endDrag()
   doc().undo()
@@ -1918,7 +1935,7 @@ for (const { label, base, anchor, expect } of ANCHORS) {
     shows(`its ${shape.label} offers the right dimensions`, flat, shape.expect)
     hides(`and a flat ${shape.label} has no End face group`, flat, 'End face')
 
-    doc().setOp(id, fid, 'extrude')
+    doc().setDepth(id, fid, DEFAULT_FEATURE_DEPTH)
     const solid = markupOf(`Inspector (${label} / ${shape.label}, extruded)`, Inspector)
     shows(`extruding on a ${label} reveals the End face group`, solid, 'End face')
     shows(`with a tilt for the ${shape.label}`, solid, '>Tilt<')
@@ -1926,6 +1943,159 @@ for (const { label, base, anchor, expect } of ANCHORS) {
 
     doc().removeObject(id)
   }
+}
+
+// --- the selection box ------------------------------------------------------
+console.log('\nThe selection box only appears once it is one')
+{
+  const marquee = () => useMarquee.getState()
+  // Rendered directly rather than through `markupOf`, which counts an empty
+  // render as a failure -- and drawing nothing is half of what is under test.
+  const drawnBox = () => renderToStaticMarkup(createElement(MarqueeRect))
+
+  marquee().clear()
+  check('with no gesture running there is no box', drawnBox() === '')
+
+  // A press that has not travelled is still a click on empty space, and a
+  // rectangle flashing up under every one of those would be noise.
+  marquee().begin(100, 100, [])
+  marquee().to(100 + MARQUEE_SLOP - 1, 100)
+  check('a press that has barely moved draws nothing', drawnBox() === '')
+
+  marquee().to(340, 260)
+  const drawn = drawnBox()
+  shows('once it is a box it is drawn', drawn, 'class="marquee"')
+  shows('anchored at the press', drawn, 'left:100px')
+  shows('and top:100px', drawn, 'top:100px')
+  shows('240 wide', drawn, 'width:240px')
+  shows('and 160 tall', drawn, 'height:160px')
+
+  // Dragged up and to the left instead: the same rectangle, described from the
+  // corner it now occupies rather than with negative width.
+  marquee().begin(340, 260, [])
+  marquee().to(100, 100)
+  const back = drawnBox()
+  shows('a box dragged backwards starts at the same corner', back, 'left:100px')
+  shows('and top:100px', back, 'top:100px')
+  shows('with the same width', back, 'width:240px')
+  shows('and the same height', back, 'height:160px')
+
+  marquee().clear()
+}
+
+// --- the console's two tabs -------------------------------------------------
+console.log('\nThe console splits into View and Edit')
+{
+  // The split is by what a panel is FOR: View works with nothing selected, Edit
+  // only means anything once something is. Both lists are checked whole, so a
+  // panel that quietly lands in both tabs -- or in neither -- fails here.
+  const VIEW = ['>Clipboard<', '>Solids<', '>Shapes<', '>Scene<']
+  const EDIT = ['>Position &amp; Rotation<', '>Dimensions<', '>Sketch<']
+
+  tools().setConsoleTab('view')
+  const view = markupOf('Console (View)', Console)
+  shows('both tabs are offered', view, '>View<')
+  shows('and Edit is one of them', view, '>Edit<')
+  shows('View is the one marked selected', view, 'aria-selected="true" class="console-tab console-tab-active">View')
+  for (const panel of VIEW) shows(`View carries ${panel}`, view, panel)
+  for (const panel of EDIT) hides(`and not ${panel}`, view, panel)
+
+  tools().setConsoleTab('edit')
+  const edit = markupOf('Console (Edit)', Console)
+  shows('Edit is the one marked selected now', edit, 'aria-selected="true" class="console-tab console-tab-active">Edit')
+  for (const panel of EDIT) shows(`Edit carries ${panel}`, edit, panel)
+  for (const panel of VIEW) hides(`and not ${panel}`, edit, panel)
+
+  // Selecting an object fills the Edit tab and changes nothing on View, so the
+  // tab itself has to say so or the console reads as inert to the click.
+  tools().setConsoleTab('view')
+  doc().selectObject(null)
+  hides(
+    'with nothing selected the Edit tab is unmarked',
+    markupOf('Console (nothing selected)', Console),
+    'console-tab-dot'
+  )
+  const marked = doc().addObject(defaultBaseFor('box'), [0, 0, 0])
+  doc().selectObject(marked)
+  shows(
+    'selecting an object marks it',
+    markupOf('Console (object selected)', Console),
+    'console-tab-dot'
+  )
+  doc().removeObject(marked)
+}
+
+// --- one Extrude, signed both ways ------------------------------------------
+console.log('\nExtrude is one control that crosses zero')
+{
+  const id = doc().addObject(defaultBaseFor('box'), [0, 0, 0])
+  doc().startPlacing(defaultShape('circle'))
+  doc().updatePlacing(id, { on: 'box-face', face: 2, u: 0, v: 0 })
+  doc().commitPlacing()
+  const fid = doc().selectedFeatureId
+  check('a sketch to work with', fid !== null)
+  if (fid !== null) {
+    const depth = () => doc().doc.objects.find((o) => o.id === id)?.features[0].depth ?? NaN
+
+    const flat = markupOf('Inspector (flat)', Inspector)
+    shows('the depth control is called Extrude', flat, '>Extrude<')
+    hides('and there is no separate Intrude mode', flat, '>Intrude<')
+    shows('a flat sketch says what it is', flat, 'Projection only')
+
+    // The whole point of collapsing the two modes: one slider, and its range
+    // straddles zero rather than starting there.
+    shows('the slider reaches below zero', flat, 'type="range" min="-3"')
+    shows('and above it, further', flat, 'max="4"')
+
+    doc().setDepth(id, fid, 0.3)
+    near('a positive depth is a boss', depth(), 0.3, 1e-12)
+    const out = markupOf('Inspector (boss)', Inspector)
+    hides('which is no longer a projection', out, 'Projection only')
+    shows('and has an end face to lean', out, 'End face')
+
+    // The half that used to need a mode switch, and now needs a minus sign.
+    doc().setDepth(id, fid, -0.5)
+    near('a negative one is a pocket', depth(), -0.5, 1e-12)
+    const into = markupOf('Inspector (pocket)', Inspector)
+    hides('a pocket is not a projection either', into, 'Projection only')
+    shows('and leans exactly like a boss does', into, 'End face')
+
+    // The clamp lives in the store, so the slider, the button and the gizmo's
+    // normal arrow cannot disagree about how far a feature may reach.
+    doc().setDepth(id, fid, 99)
+    check('an overreach outward is clamped', depth() > 0 && depth() <= 4, `${depth()}`)
+    doc().setDepth(id, fid, -99)
+    check('and an overreach inward keeps its sign', depth() < 0 && depth() >= -3, `${depth()}`)
+
+    doc().setDepth(id, fid, 0)
+    shows('back at zero it is a projection again', markupOf('Inspector (flat again)', Inspector), 'Projection only')
+
+    // The gizmo's third arrow writes the same number, and a whole drag of it
+    // costs ONE undo step rather than one per frame.
+    // Read as the top of the history rather than as its length: the stack is
+    // capped, and by this point in the suite it has long since filled, so a
+    // count would sit at the cap however many entries a drag pushed.
+    const priorDoc = doc().doc
+    doc().startSketchGizmo(id, fid, { mode: 'size', axis: 2 })
+    doc().depthTo(0.2)
+    doc().depthTo(0.4)
+    doc().depthTo(0.55)
+    doc().endDrag()
+    near('the arrow drag lands on its last depth', depth(), 0.55, 1e-12)
+    check(
+      'and the whole gesture is one undo step, taken from where it started',
+      doc().past[doc().past.length - 1] === priorDoc
+    )
+    doc().undo()
+    near('so one undo rewinds the whole drag', depth(), 0, 1e-12)
+
+    // Dragged back THROUGH the face in one gesture: the same arrow, past zero.
+    doc().startSketchGizmo(id, fid, { mode: 'size', axis: 2 })
+    doc().depthTo(-0.4)
+    doc().endDrag()
+    near('the same arrow cuts inward past zero', depth(), -0.4, 1e-12)
+  }
+  doc().removeObject(id)
 }
 
 console.log(

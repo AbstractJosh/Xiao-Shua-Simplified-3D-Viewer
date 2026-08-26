@@ -82,7 +82,6 @@ function sketch(over: Partial<Feature> & { anchor: Feature['anchor'] }): Feature
     id: `k${featureCounter}`,
     shape: { type: 'circle', r: 0.3 },
     rotation: 0,
-    op: 'extrude',
     depth: 0.3,
     enabled: true,
     tilt: [0, 0, 0],
@@ -107,14 +106,12 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
               sketch({
                 anchor: { on: 'sphere', theta: 0, phi: Math.PI / 2 },
                 shape: { type: 'rect', w: 0.7, h: 0.7 },
-                op: 'extrude',
                 depth: 0.3,
               }),
               sketch({
                 anchor: { on: 'sphere', theta: Math.PI, phi: Math.PI / 2 },
                 shape: { type: 'circle', r: 0.45 },
-                op: 'intrude',
-                depth: 0.3,
+                depth: -0.3,
               }),
             ],
           }
@@ -134,20 +131,17 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
               sketch({
                 anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
                 shape: { type: 'circle', r: 0.35 },
-                op: 'extrude',
                 depth: 0.35,
               }),
               sketch({
                 anchor: { on: 'box-face', face: 4, u: 0.35, v: -0.2 },
                 shape: { type: 'ngon', r: 0.3, sides: 6 },
-                op: 'intrude',
-                depth: 0.4,
+                depth: -0.4,
               }),
               sketch({
                 anchor: { on: 'box-face', face: 0, u: -0.4, v: 0.4 },
                 shape: { type: 'circle', r: 0.2 },
-                op: 'intrude',
-                depth: 2.5,
+                depth: -2.5,
               }),
             ],
           }
@@ -167,14 +161,12 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
               sketch({
                 anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
                 shape: { type: 'circle', r: 0.35 },
-                op: 'extrude',
                 depth: 0.35,
               }),
               sketch({
                 anchor: { on: 'box-face', face: 4, u: 0.35, v: -0.2 },
                 shape: { type: 'ngon', r: 0.3, sides: 6 },
-                op: 'intrude',
-                depth: 0.4,
+                depth: -0.4,
               }),
             ],
           }
@@ -200,8 +192,7 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
             sketch({
               anchor: { on: 'cylinder', theta: 0, y: 0.2 },
               shape: { type: 'circle', r: 0.3 },
-              op: 'intrude',
-              depth: 0.35,
+              depth: -0.35,
             }),
           ],
         }),
@@ -213,7 +204,6 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
             sketch({
               anchor: { on: 'planar-face', face: 0, u: 0, v: 0 },
               shape: { type: 'ngon', r: 0.35, sides: 6 },
-              op: 'extrude',
               depth: 0.8,
               tilt: [0, 0, Math.PI / 9],
               faceOffset: [0.35, 0],

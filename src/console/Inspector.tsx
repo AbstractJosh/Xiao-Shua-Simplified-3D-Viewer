@@ -1,8 +1,8 @@
 import { MIN_SHAPE, maxShapeSize } from '../geometry/dimensions'
-import { hostSurfaceFor } from '../geometry/surfaces'
+import { depthLimits, hostSurfaceFor } from '../geometry/surfaces'
 import { isCurvedAnchor, shapeRadius } from '../geometry/types'
 import type { Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
-import { selectedFeature, selectedObject, useDoc } from '../store/docStore'
+import { DEFAULT_FEATURE_DEPTH, selectedFeature, selectedObject, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { NumberField, Section, Vec2Field, Vec3Field } from './Field'
 import { Tip } from './Tip'
@@ -80,7 +80,7 @@ export function Inspector() {
   const object = useDoc(selectedObject)
   const feature = useDoc(selectedFeature)
   const patchFeature = useDoc((s) => s.patchFeature)
-  const setOp = useDoc((s) => s.setOp)
+  const setDepth = useDoc((s) => s.setDepth)
   const removeFeature = useDoc((s) => s.removeFeature)
   const failed = useEvalStatus((s) => s.failed)
 
@@ -97,9 +97,14 @@ export function Inspector() {
   const host = hostSurfaceFor(object.base, feature.anchor)
   // The anchor is not optional: a cylinder's cap and its wall allow different
   // depths, and without it the slider would let the cap overshoot the solid.
-  const depthLimit = host.maxDepth(feature.op, feature.anchor)
-  const depth = Math.min(feature.depth, depthLimit)
-  const tiltLimit = maxTiltDeg(feature.anchor, feature.shape, depth)
+  // The two ends are different numbers -- a boss may stand further proud than a
+  // pocket may sink -- so the slider is deliberately not symmetric about zero.
+  const limit = depthLimits(host, feature.anchor)
+  const depth = Math.max(-limit.in, Math.min(limit.out, feature.depth))
+  // The tilt bound is about how far the pillar leans before the sweep gives
+  // out, which is a question about its LENGTH; a pocket leans exactly as far as
+  // a boss of the same depth.
+  const tiltLimit = maxTiltDeg(feature.anchor, feature.shape, Math.abs(depth))
   const sizeLimit = maxShapeSize(object.base)
   const patch = (p: Partial<Feature>) => patchFeature(object.id, feature.id, p)
   const skipped = failed.includes(feature.id)
@@ -177,38 +182,41 @@ export function Inspector() {
         onChange={(deg) => patch({ rotation: (deg * Math.PI) / 180 })}
       />
 
-      <div className="op-row">
-        <button
-          type="button"
-          className={`op-btn${feature.op === 'extrude' ? ' op-active op-out' : ''}`}
-          onClick={() => setOp(object.id, feature.id, 'extrude')}
-        >
-          Extrude
-        </button>
-        <button
-          type="button"
-          className={`op-btn${feature.op === 'intrude' ? ' op-active op-in' : ''}`}
-          onClick={() => setOp(object.id, feature.id, 'intrude')}
-        >
-          Intrude
-        </button>
-      </div>
-
+      {/* ONE control, not two modes. Outward and inward were never two
+          different operations -- they are the two ends of one sweep, and a
+          feature that carried both a magnitude and a mode could say the same
+          thing twice, in two ways that disagreed. The slider crosses zero,
+          which is also where a pure projection sits, so the whole range from
+          pocket to projection to boss is one drag. */}
       <NumberField
-        label="Depth"
+        label="Extrude"
         value={depth}
-        min={0}
-        max={depthLimit}
-        onChange={(depth) => patch({ depth })}
+        min={-limit.in}
+        max={limit.out}
+        tip="Positive adds material, negative cuts it away, and zero leaves the sketch as a flat projection. The two ends are not the same reach: a boss may stand further proud of the surface than a pocket may sink into it. The gizmo's third arrow, the one facing away from the face, drags this same number."
+        onChange={(next) => setDepth(object.id, feature.id, next)}
       />
       {feature.depth === 0 && (
-        <p className="hint">
-          Projection only. Pick Extrude or Intrude, or raise the depth.
-        </p>
+        <>
+          <p className="hint">
+            Projection only. Move Extrude off zero -- either way -- or drag the
+            arrow facing away from the surface.
+          </p>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setDepth(object.id, feature.id, DEFAULT_FEATURE_DEPTH)}
+            >
+              Extrude
+            </button>
+          </div>
+        </>
       )}
 
-      {/* Tilt and slide only mean anything once there is a pillar to lean. */}
-      {feature.depth > 0 && (
+      {/* Tilt and slide only mean anything once there is a pillar to lean, and
+          a pocket has one as much as a boss does. */}
+      {feature.depth !== 0 && (
         <>
           {/* Vec3Field spends .subhead on its own label, so a group heading has
               to sit a weight above it or "End face" reads as an empty field. */}
