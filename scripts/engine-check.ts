@@ -42,9 +42,11 @@ import {
   axisTarget,
   axisTravel,
   beginAxisDrag,
+  nearestLocalAxis,
   nearestViewAxis,
   turnedPosition,
   turnedRotation,
+  WORLD_FRAME,
 } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { snapAlongAxis } from '../src/geometry/snap'
@@ -1168,11 +1170,64 @@ console.log('\n16. A ring turn runs about one axis and unwraps past half a circl
   check('looking down X turns about X', side.index === 0, `axis ${side.index}`)
   near('and that one faces the camera too', side.axis.x, 1, 1e-9)
 
-  // The axes are the TARGET's, not the world's: turn the object a quarter turn
-  // about Y and its local X now points down world -Z, so a camera looking down
-  // -Z must pick that axis rather than world Z.
+  // The axes are whichever frame the caller names. Handed a target's own
+  // rotation -- which is what the CUT PLANE does, its tilt being the thing the
+  // ring drives -- a quarter turn about Y puts local X down world -Z, so a
+  // camera looking down -Z picks that axis rather than world Z.
   const turned = nearestViewAxis([0, Math.PI / 2, 0], down)
-  check('a rotated target offers its OWN axes', turned.index === 0, `axis ${turned.index}`)
+  check('a frame of its own offers its OWN axes', turned.index === 0, `axis ${turned.index}`)
+
+  // The OBJECT gizmo names the world frame instead, so the same rotated target
+  // still turns about world Z. The three axes on offer never move, however far
+  // the object has been turned -- which is the point: the arrows do not move
+  // either, and a ring that wandered off them would not match what is drawn.
+  const world = nearestViewAxis(WORLD_FRAME, down)
+  check('but the world frame ignores the target', world.index === 2, `axis ${world.index}`)
+  near('and still faces the camera', world.axis.z, 1, 1e-9)
+
+  // Said the other way round, which is how the gesture actually reads: the turn
+  // runs IN the world plane most square-on to the camera, since that plane's
+  // normal is the axis left out of it. Down -Z, that plane is XY.
+  const oblique = nearestViewAxis(WORLD_FRAME, new Vector3(0.2, -0.95, 0.24).normalize())
+  check(
+    'a camera looking down turns things in the XZ plane',
+    oblique.index === 1,
+    `axis ${oblique.index}`
+  )
+  near('about +Y, back toward the viewer', oblique.axis.y, 1, 1e-9)
+}
+
+{
+  // Resizing survives the arrows leaving the object's frame. A world arrow is
+  // matched to the local dimension it most nearly runs along, so the side that
+  // grows is the side being pulled.
+  const x = new Vector3(1, 0, 0)
+  const y = new Vector3(0, 1, 0)
+  const z = new Vector3(0, 0, 1)
+
+  const flat = nearestLocalAxis(WORLD_FRAME, x)
+  check('an unturned object maps each arrow to itself', flat === 0, `local ${flat}`)
+  const flatZ = nearestLocalAxis(WORLD_FRAME, z)
+  check('and so on down the three', flatZ === 2, `local ${flatZ}`)
+
+  // A quarter turn about Y sends local Z along world +X, so the world X arrow
+  // now resizes the box's DEPTH -- which is the dimension that visibly faces
+  // the arrow being dragged.
+  const quarter: Vec3 = [0, Math.PI / 2, 0]
+  const fromX = nearestLocalAxis(quarter, x)
+  check('a quarter turn hands world X to local Z', fromX === 2, `local ${fromX}`)
+  // Unsigned: local X points down world -Z after that turn, and pulling the +Z
+  // arrow outward still widens it. A solid grows both ways about its centre, so
+  // which end of the local axis faces the arrow makes no difference.
+  const fromZ = nearestLocalAxis(quarter, z)
+  check('and world Z to local X, sign and all', fromZ === 0, `local ${fromZ}`)
+  const fromY = nearestLocalAxis(quarter, y)
+  check('while Y, the axis turned about, is untouched', fromY === 1, `local ${fromY}`)
+
+  // Between the right angles it is the nearest answer rather than an exact one,
+  // and it must still be one of the three -- never a refusal.
+  const askew = nearestLocalAxis([0.3, 0.4, 0.2], y)
+  check('an askew object still names an axis', [0, 1, 2].includes(askew), `local ${askew}`)
 }
 
 {

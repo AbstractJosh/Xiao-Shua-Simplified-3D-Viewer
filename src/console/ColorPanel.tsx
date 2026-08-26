@@ -54,7 +54,7 @@ const UNIT_STEP = 0.04
  * `.picker-ring` in styles.css, which owns those two lengths and cannot hand a
  * number back to TypeScript: change one, change both.
  */
-const RING_MID = 1 - 24 / 132
+const RING_MID = 1 - 20 / 104
 
 /**
  * The saturation a drag on the ring lands on when the colour it started from
@@ -231,7 +231,7 @@ export function ColorPanel() {
 
   return (
     <Section
-      title="Colour"
+      title="Color"
       hint={count > 1 ? `${count} selected` : undefined}
       tip="Turn the ring for the hue and the slider beside it for brightness, or type an exact colour into the hex field. Apply paints whatever is selected and nothing else, and puts the colour on the shelf below for next time."
     >
@@ -351,13 +351,6 @@ export function ColorPanel() {
             ))}
           </div>
         </div>
-
-        {count === 0 && (
-          <p className="empty picker-empty">
-            Nothing selected. Click an object -- or shift-click several -- and Apply paints
-            those and nothing else.
-          </p>
-        )}
       </div>
     </Section>
   )

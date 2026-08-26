@@ -51,10 +51,12 @@ import {
   axisTarget,
   axisTravel,
   beginAxisDrag,
+  nearestLocalAxis,
   nearestViewAxis,
   pointerAngle,
   turnedPosition,
   turnedRotation,
+  WORLD_FRAME,
 } from './gizmoDrag'
 import type { AxisGrab, TurnGrab } from './gizmoDrag'
 import { clearRotationIndicator, rotationIndicator } from './rotationIndicator'
@@ -472,7 +474,17 @@ function readTurn(
   centre: Vector3,
   rotation: Vec3,
   /** The target's ORIGIN, which is `centre` for everything but a merged object. */
-  position: Vec3
+  position: Vec3,
+  /**
+   * The frame whose three axes the turn may snap to, which is NOT always the
+   * rotation the target starts from.
+   *
+   * They part company wherever the gizmo is drawn in a frame the target does
+   * not carry. The object gizmo is exactly that case: its arrows stand in the
+   * world, so its ring turns about world X, Y or Z, while `rotation` remains
+   * the object's own Euler because that is what the turn is composed onto.
+   */
+  axisFrame: Vec3 = rotation
 ): { grab: TurnGrab; total: number } | null {
   const facing = camera.quaternion.clone()
   const right = new Vector3(1, 0, 0).applyQuaternion(facing)
@@ -487,9 +499,11 @@ function readTurn(
     turnKey = key
     turnGrab = {
       // Chosen once, at the grab: an axis re-picked each frame would swap
-      // mid-turn as the object rotated past 45 degrees, and the target would
-      // visibly jump onto a different axis part-way through one gesture.
-      axis: nearestViewAxis(rotation, normal).axis,
+      // mid-turn as the frame it is picked from rotated past 45 degrees, and
+      // the target would visibly jump onto a different axis part-way through
+      // one gesture. (For a world frame the axes hold still and only orbiting
+      // could swap them, but the rule costs nothing and covers both cases.)
+      axis: nearestViewAxis(axisFrame, normal).axis,
       rotation,
       position,
       lastAngle: angle,
@@ -547,7 +561,11 @@ function dragGizmo(
   const key = `${drag.objectId}|${drag.handle.mode}|${drag.handle.axis}`
 
   if (drag.handle.mode === 'rotate') {
-    const turn = readTurn(key, raycaster, camera, centre, rotation, position)
+    // World axes, matching the arrows: the ring turns about whichever of X, Y
+    // and Z most faces the camera -- equivalently, it turns IN whichever world
+    // plane most faces the camera. An object already turned 30 degrees offers
+    // the same three choices as one straight out of the palette.
+    const turn = readTurn(key, raycaster, camera, centre, rotation, position, WORLD_FRAME)
     if (!turn) return
     s.setObjectTransform(object.id, {
       // About the ring, not about the host's origin: a merged object has to spin
@@ -575,7 +593,14 @@ function dragGizmo(
     return
   }
 
-  const dir = axisWorld(rotation, drag.handle.axis)
+  // The arrow points along a WORLD axis, so that is the line the pointer is
+  // measured against and the direction a slide runs in.
+  const dir = axisWorld(WORLD_FRAME, drag.handle.axis)
+  // A resize cannot follow it there. A solid's dimensions are its own -- there
+  // is no "wider along world X" for a box standing at an angle -- so the world
+  // arrow is matched to the local axis it most nearly runs along, and that is
+  // the one that grows. See `nearestLocalAxis`.
+  const sizeAxis = nearestLocalAxis(rotation, dir)
   // `anchor` is read ONLY here, on the frame that starts the gesture. From then
   // on the grab's own origin is the axis, which is what keeps a still pointer
   // from walking the object back and forth -- see gizmoDrag.ts.
@@ -586,7 +611,7 @@ function dragGizmo(
         axis,
         radius: 0,
         object,
-        half: assemblyHalfExtent(object, drag.handle.axis as GizmoAxis),
+        half: assemblyHalfExtent(object, sizeAxis),
         size: 0,
       }
     )
@@ -598,7 +623,7 @@ function dragGizmo(
 
   if (drag.handle.mode === 'size') {
     if (grab.object.parts.length === 0) {
-      s.resizeObjectTo(resizeAlongAxis(grab.object.base, drag.handle.axis, travel))
+      s.resizeObjectTo(resizeAlongAxis(grab.object.base, sizeAxis, travel))
       return
     }
     // A merged object cannot be resized along one axis: the parts are rotated

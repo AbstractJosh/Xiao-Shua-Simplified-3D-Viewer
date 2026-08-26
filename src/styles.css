@@ -1957,8 +1957,7 @@ body {
 
 /* Three columns: the ring, the brightness slider beside it, and everything that
    is not a dial -- Apply, the hex field, the shelf of colours already used.
-   `1fr` on the last so the side column takes whatever the two dials leave, and
-   the empty note below spans all three. */
+   `1fr` on the last so the side column takes whatever the two dials leave. */
 .picker {
   display: grid;
   grid-template-columns: auto auto 1fr;
@@ -1971,8 +1970,8 @@ body {
    1 minus the hole's inset over this width. Change one, change both. */
 .picker-ring {
   position: relative;
-  width: 132px;
-  height: 132px;
+  width: 104px;
+  height: 104px;
   flex: 0 0 auto;
   border-radius: 50%;
   cursor: crosshair;
@@ -1988,25 +1987,25 @@ body {
   outline-offset: 3px;
 }
 
-/* 24px of inset is 24px of band. The border reads as the ring's inner edge, so
+/* 20px of inset is 20px of band. The border reads as the ring's inner edge, so
    the band looks drawn rather than merely left over. */
 .picker-ring-hole {
   position: absolute;
-  inset: 24px;
+  inset: 20px;
   border-radius: 50%;
   background: var(--panel);
   border: 1px solid var(--border);
   pointer-events: none;
 }
 
-/* Narrower than the 24px band it rides, so a sliver of the hue it is sitting on
+/* Narrower than the 20px band it rides, so a sliver of the hue it is sitting on
    still shows either side of it -- a knob that covered the band would hide the
    one thing you are aiming at. */
 .picker-knob {
   position: absolute;
-  width: 18px;
-  height: 18px;
-  margin: -9px 0 0 -9px;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
   border-radius: 50%;
   border: 2px solid #ffffff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
@@ -2018,7 +2017,7 @@ body {
 .picker-bar {
   position: relative;
   width: 26px;
-  height: 132px;
+  height: 104px;
   flex: 0 0 auto;
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -2047,10 +2046,14 @@ body {
   pointer-events: none;
 }
 
+/* This column, not the ring, is what sets the panel's height: Apply, the hex
+   field and a two-row shelf stack taller than the dials beside them. Its gap
+   and the shelf's slot size are therefore the two numbers that actually make
+   the panel shorter -- shrinking the ring alone only adds slack beside it. */
 .picker-side {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -2110,10 +2113,12 @@ body {
 
 /* Two rows of four, at a fixed size rather than stretched across the column:
    these are swatches to recognise, not buttons to aim at, and four of them
-   sharing 226px would each be half the height of the ring beside them. */
+   sharing 226px would each be half the height of the ring beside them. 26px
+   is still comfortably above a pointer target's floor, and two rows of it is
+   what keeps the shelf from out-measuring the dials. */
 .picker-recent {
   display: grid;
-  grid-template-columns: repeat(4, 34px);
+  grid-template-columns: repeat(4, 26px);
   gap: 6px;
   margin-top: 2px;
 }
@@ -2147,9 +2152,4 @@ body {
   background: transparent;
   border-style: dashed;
   cursor: default;
-}
-
-/* Spans all three columns rather than crowding in beside the shelf. */
-.picker-empty {
-  grid-column: 1 / -1;
 }

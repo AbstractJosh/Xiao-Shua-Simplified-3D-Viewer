@@ -299,6 +299,12 @@ export function makeObject(base: BaseSolid, position: Vec3): SceneObject {
  * Palette entry ordering + labels are UI concerns, but the default dimensions
  * are geometry: every primitive lands roughly 2 units across so one drops next
  * to another at a sane relative size.
+ *
+ * Solids standing on the SAME cross-section share that section's default, so a
+ * family reads as one set: everything round starts at radius 1, and a pyramid
+ * and a prism of the same side count start on the same polygon. A cone landing
+ * a hair narrower than the sphere beside it was a mismatch nobody could name
+ * but everybody could see.
  */
 export function defaultBaseFor(
   kind: SolidKind,
@@ -311,15 +317,15 @@ export function defaultBaseFor(
     case 'sphere':
       return { kind: 'sphere', radius: 1 }
     case 'cylinder':
-      return { kind: 'cylinder', radius: 0.8, height: 2 }
+      return { kind: 'cylinder', radius: 1, height: 2 }
     case 'cone':
-      return { kind: 'cone', radius: 0.9, height: 2 }
+      return { kind: 'cone', radius: 1, height: 2 }
     case 'capsule':
-      return { kind: 'capsule', radius: 0.6, height: 1.2 }
+      return { kind: 'capsule', radius: 1, height: 1.2 }
     case 'pyramid':
       return { kind: 'pyramid', radius: 1, height: 1.8, sides: sides ?? 4 }
     case 'prism':
-      return { kind: 'prism', radius: 0.9, height: 1.8, sides: sides ?? 6 }
+      return { kind: 'prism', radius: 1, height: 1.8, sides: sides ?? 6 }
     case 'platonic':
       return { kind: 'platonic', radius: 1.1, solid: platonic ?? 'tetrahedron' }
   }

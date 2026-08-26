@@ -19,12 +19,25 @@ import { rotationIndicator } from './rotationIndicator'
  * is where to draw it and what to do when a handle is grabbed; the gizmo itself
  * owns no state and knows nothing about documents or tools.
  *
- * Turned into the target's frame rather than the world's, which is the only
- * choice that makes the right-drag mean anything: a box's width is measured
- * along its OWN X, so an arrow that resized along world X would stretch the
- * wrong dimension the moment the object was rotated. It pays off on the cut
- * plane too, where the local +Y arrow is the plane's normal -- the one
- * direction a blade actually wants to be nudged along.
+ * WHICH FRAME the arrows stand in is the caller's to decide, and the three
+ * callers do not agree, because the thing an arrow means differs:
+ *
+ *   - The cut plane passes its own rotation. Local +Y is the blade's normal,
+ *     the one direction a blade wants to be nudged along, and an arrow that
+ *     stopped tracking the tilt would stop pointing at it.
+ *   - A sketch passes a quaternion built from the surface it lies on. Its
+ *     arrows are U, V and the normal; there is nowhere else for them to be.
+ *   - A selected object passes NOTHING, so the arrows stand in the world. Its
+ *     arrows are directions to slide in and a ring to turn by, and those are
+ *     worth more as a fixed reference than as a readout of the object's
+ *     current angle -- axes that rode the object moved out from under the
+ *     second half of every rotation gesture.
+ *
+ * The object's own frame has not stopped mattering; it has moved to where it
+ * is actually needed. A right-drag still resizes one of the object's OWN
+ * dimensions -- there is no such thing as a box that is wider along world X --
+ * and Viewport's `nearestLocalAxis` maps the world arrow that was grabbed onto
+ * the local dimension it most nearly runs along.
  */
 
 const RING_COLOR = '#eceff4'

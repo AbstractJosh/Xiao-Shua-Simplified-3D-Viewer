@@ -2004,7 +2004,7 @@ console.log('\nThe console splits into View and Edit')
   // The split is by what a panel is FOR: View works with nothing selected, Edit
   // only means anything once something is. Both lists are checked whole, so a
   // panel that quietly lands in both tabs -- or in neither -- fails here.
-  const VIEW = ['>Clipboard<', '>Solids<', '>Shapes<', '>Colour<', '>Scene<']
+  const VIEW = ['>Clipboard<', '>Solids<', '>Shapes<', '>Color<', '>Scene<']
   const EDIT = ['>Position &amp; Rotation<', '>Dimensions<', '>Sketch<']
 
   tools().setConsoleTab('view')
@@ -2290,11 +2290,15 @@ console.log('\nThe colour picker, and the selection it paints')
   doc().selectObject(null)
   const idle = markupOf('ColorPanel (nothing selected)', ColorPanel)
   shows('with nothing selected Apply stands down', idle, 'disabled=""')
-  shows('and says why', idle, 'Nothing selected.')
+  // No inline note about it any more. An empty selection is the state this
+  // panel opens in, so a paragraph explaining it was 50px of height charged
+  // on every visit to say what the greyed-out button already says; the reason
+  // rides Apply's own title, where it costs nothing.
+  hides('without a note charging the panel height for it', idle, 'Nothing selected.')
+  shows('the reason rides Apply instead', idle, 'Select an object first')
 
   doc().selectObject(a)
   const one = markupOf('ColorPanel (one selected)', ColorPanel)
-  hides('one object selected drops the empty note', one, 'Nothing selected.')
   shows('the hex field reads back that colour', one, 'value="#3366cc"')
   shows('and it is a field, not a label', one, 'class="picker-hex-input"')
   shows('the ring is there to turn', one, 'aria-label="Hue, 220 degrees"')

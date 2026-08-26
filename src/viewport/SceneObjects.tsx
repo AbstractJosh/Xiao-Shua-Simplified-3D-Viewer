@@ -272,11 +272,20 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           It sits at the object's ASSEMBLY ANCHOR, not at its transform: merging
           two solids leaves one gizmo, and it belongs midway between the two that
           went in rather than parked on whichever happened to be the host. For an
-          unmerged object the two are the same point. */}
+          unmerged object the two are the same point.
+
+          It takes the anchor's POSITION but not its rotation. The arrows stand
+          in the world frame and stay there: red is world X at every angle the
+          object is ever turned to, and the ring turns about world X, Y or Z.
+          Axes that rode the object had the property every rotation gesture has
+          to fight -- turning a thing moves the very handles you turn it by, so
+          a second turn is aimed at arrows the first one carried off, and there
+          is no way back to square except by eye. Fixed axes are a frame to work
+          against. What the object's own rotation still decides is which of its
+          DIMENSIONS a right-drag resizes; `nearestLocalAxis` makes that call. */}
       {selected && !cutActive && !sketchSelected && !marqueeing && (
         <TransformGizmo
           position={assemblyAnchor(selected)}
-          rotation={selected.transform.rotation}
           controlsRef={controlsRef}
           onGrab={(handle) => startGizmo(selected.id, handle)}
         />
