@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { CUT_POSITION_LIMIT, useTools } from '../store/toolStore'
 import type { EraseScope } from '../store/toolStore'
+import { MAX_SIZE } from '../geometry/dimensions'
 import type { SceneObject, Vec3 } from '../geometry/types'
 import { selectedObject, useDoc } from '../store/docStore'
 import { EraseIcon } from './navIcons'
@@ -149,8 +150,15 @@ type Placement = {
   setRotation: (rotation: Vec3) => void
 }
 
-/** Position is this panel's own bound; nothing on the gizmo side reads it. */
-const OBJECT_POSITION_LIMIT = 8
+/**
+ * Position is this panel's own bound; nothing on the gizmo side reads it.
+ *
+ * Matched to `MAX_SIZE`, so a scene can hold a few of the largest solids the
+ * app allows side by side rather than stacking them on the origin. It also
+ * sets the furthest any coordinate can get from the origin -- this plus half a
+ * diagonal -- which is the number `brep.ts` sizes its weld against.
+ */
+const OBJECT_POSITION_LIMIT = MAX_SIZE
 
 export function PlacementPanel() {
   const object = useDoc(selectedObject)
@@ -211,6 +219,7 @@ export function PlacementPanel() {
           outranks the selection, so it cannot be showing for both. */}
       {!cutActive && object?.erase && <EraseActions eraser={object} />}
       <Vec3Field
+        unit
         label="Position"
         value={target.position}
         min={-target.positionLimit}
@@ -224,8 +233,13 @@ export function PlacementPanel() {
         value={target.rotation}
         min={-180}
         max={180}
-        step={1}
-        decimals={0}
+        // A TENTH of a degree, not a whole one. The scrub starts at one step a
+        // pixel and accelerates from there, so a whole-degree step left it with
+        // no fine end at all -- half a degree was simply not reachable by drag,
+        // however slowly you moved. A full sweep still crosses in the same 600
+        // pixels; it is the first few that got finer.
+        step={0.1}
+        decimals={1}
         degrees
         onChange={target.setRotation}
       />

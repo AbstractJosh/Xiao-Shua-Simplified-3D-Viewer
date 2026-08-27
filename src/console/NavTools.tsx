@@ -4,7 +4,8 @@ import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { cutPlaneNormal, useTools } from '../store/toolStore'
 import { NumberField } from './Field'
 import { NavTool } from './NavTool'
-import { CutIcon, HelpIcon, SnapIcon } from './navIcons'
+import { CutIcon, HelpIcon, SnapIcon, UnitsIcon } from './navIcons'
+import { UNIT_MODES } from '../units'
 
 export function SnapTool() {
   const snap = useTools((s) => s.snap)
@@ -26,11 +27,12 @@ export function SnapTool() {
           when the tool is idle reads as a bug. */}
       <fieldset className="tool-group" disabled={!snap}>
         <NumberField
+          unit
           label="Distance"
           value={snapDistance}
-          min={0.02}
-          max={0.6}
-          step={0.01}
+          min={0.005}
+          max={2}
+          step={0.005}
           onChange={setSnapDistance}
         />
       </fieldset>
@@ -70,13 +72,14 @@ const RECEIPT_MS = 8000
 /**
  * The two things you do to an armed plane, beside the switch that armed it.
  *
- * In the bar rather than in the console because they are ACTIONS, not settings:
- * the plane is aimed by dragging its gizmo in the viewport, and the button that
- * fires the cut wants to be a short travel from the hand that just aimed it --
- * not at the end of a scroll through the panels that describe the document.
+ * On the island rather than in the console because they are ACTIONS, not
+ * settings: the plane is aimed by dragging its gizmo in the viewport, and the
+ * button that fires the cut wants to be a short travel from the hand that just
+ * aimed it -- not at the end of a scroll through the panels that describe the
+ * document. Over the scene it is shorter still than it was in the bar.
  *
- * They exist only while the tool is armed, so the bar is no wider than before
- * for anyone not cutting.
+ * They exist only while the tool is armed, so the island is no taller than its
+ * two switches for anyone not cutting.
  */
 export function CutActions() {
   const cutActive = useTools((s) => s.cutActive)
@@ -98,8 +101,8 @@ export function CutActions() {
     setStatus(null)
   }, [planeKey])
 
-  // And it goes on its own even if nothing moves: it hangs below the bar, over
-  // the viewport, which is the very thing this tool was moved out of.
+  // And it goes on its own even if nothing moves: it hangs off the island, over
+  // the scene the plane was aimed at.
   useEffect(() => {
     if (status === null) return
     const timer = setTimeout(() => setStatus(null), RECEIPT_MS)
@@ -140,9 +143,10 @@ export function CutActions() {
         type="button"
         className="nav-action nav-action-primary"
         disabled={objectCount === 0}
-        // What the button is about to destroy cannot fit on a 46px bar, so it
-        // rides the button itself. The count in the label carries the part that
-        // must not be missed: whether this is about to cut everything.
+        // What the button is about to destroy is a sentence, and the island is
+        // 176px wide, so it rides the button itself. The count in the label
+        // carries the part that must not be missed: whether this is about to
+        // cut everything.
         title={target}
         onClick={cut}
       >
@@ -192,14 +196,15 @@ export function HelpTool() {
         <li><b>Drag</b> the gizmo ring to scale every dimension at once</li>
         <li><b>Right-drag</b> the ring to turn, about whichever axis faces you</li>
         <li>The <b>cut plane</b> carries the same gizmo; its ring sizes the guide</li>
-        <li><b>Apply cut</b> and <b>Reset plane</b> appear in the bar once it is armed</li>
+        <li><b>Apply cut</b> and <b>Reset plane</b> appear on the island once it is armed</li>
         <li><b>Drag</b> a sketch to slide it across its own surface</li>
         <li>A selected sketch gets three arrows: two along the outline's own edges, one facing away from the face</li>
         <li><b>Right-drag</b> either edge arrow to stretch the outline along it</li>
         <li><b>Drag</b> the arrow facing away to set the depth -- push it back through the face to cut inward instead</li>
         <li>Its ring scales the outline, the same way an object's scales the solid</li>
         <li><b>Drag</b> the highlighted end face of an extrusion to lean it</li>
-        <li><b>Snap</b> and <b>Cut</b> live in the bar above</li>
+        <li><b>Snap</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene</li>
+        <li><b>Drag the island by its title</b> to move it -- it snaps flush to whichever edge or corner you drop it near -- and click the title to collapse it</li>
         <li><b>Orbit</b> with middle-drag, or <b>Alt</b> and left-drag; zoom to scroll</li>
         <li><b>Pan</b> with right-drag on empty space</li>
         <li><b>Delete</b> removes the selected sketch, or the object</li>
@@ -214,6 +219,46 @@ export function HelpTool() {
         <li>Each tile turns on its own; <b>sweep across one</b> to spin it and look it over</li>
         <li>Three tiles show models at a time; <b>scroll the row sideways</b> for the rest</li>
       </ul>
+    </NavTool>
+  )
+}
+
+/**
+ * Which unit lengths are SHOWN in.
+ *
+ * A panel-only tool, like Help: there is nothing here to switch on or off, so
+ * the button opens the choice rather than toggling anything. It sits in the
+ * island beside Snap because it belongs to the same family -- a setting you
+ * reach for while looking at the model, not a property of any one solid.
+ *
+ * Discrete buttons rather than a dropdown, reusing the `seg` control the side
+ * count already uses: three options, all of them one or two characters, and a
+ * select would hide two of the three behind a click to save no space at all.
+ *
+ * Nothing in the document changes when this does. The geometry is scene units
+ * whatever is on screen; see `units.ts`.
+ */
+export function UnitsTool() {
+  const displayUnit = useTools((s) => s.displayUnit)
+  const setDisplayUnit = useTools((s) => s.setDisplayUnit)
+
+  return (
+    <NavTool id="units" label="Units" icon={<UnitsIcon />} panelTitle="Units">
+      <div className="tool-group">
+        <div className="seg">
+          {UNIT_MODES.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={`seg-btn${displayUnit === mode ? ' seg-active' : ''}`}
+              aria-pressed={displayUnit === mode}
+              onClick={() => setDisplayUnit(mode)}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+      </div>
     </NavTool>
   )
 }

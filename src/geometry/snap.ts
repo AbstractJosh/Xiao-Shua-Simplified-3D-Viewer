@@ -721,7 +721,10 @@ export function snapAlongAxis(
  * solved as a clamped line-line approach, where a corner passing a hair to one
  * side of the segment end is still the catch the user meant.
  */
-const RESIDUE_TOL = 1e-6
+// Raised with the envelope: this is a WORLD distance, and out at the far
+// corner of the scene float32 steps by about 7.6e-6, so a residue judged
+// against 1e-6 was being asked to resolve below the noise floor.
+const RESIDUE_TOL = 1e-4
 
 /** Distance from an arrived point to the target it was aimed at. */
 function distanceToTarget(p: Vector3, target: SnapTarget): number {

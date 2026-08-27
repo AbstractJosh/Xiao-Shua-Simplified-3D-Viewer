@@ -611,10 +611,37 @@ export function worldBounds(obj: SceneObject): Box3 {
  * Two evaluations of the same solid are not bit-identical once one of them has
  * an extra boolean in it -- the result is retriangulated, and the volume moves
  * in the last few digits. This sits far above that and far below a real bite:
- * the smallest solid the app can build is 0.1 across, which is a thousand times
- * this even if only a corner of it lands.
+ * the smallest solid the app can build is 0.01 across -- a millionth of a cubic
+ * unit -- which is a thousand times this even if only a corner of it lands.
+ *
+ * It moved with `MIN_DIMENSION`, and had to: volume is cubic, so dropping the
+ * smallest legal solid from 0.1 to 0.01 across took its volume from 1e-3 to
+ * 1e-6. Left at the old 1e-6 this would have sat exactly ON the smallest
+ * possible bite, and a one-millimetre eraser would have reported removing
+ * nothing at all.
  */
-const MIN_ERASE_VOLUME = 1e-6
+const MIN_ERASE_VOLUME = 1e-9
+
+/**
+ * And a RELATIVE floor beside it, because the noise this is trying to clear is
+ * itself proportional to the volume being measured.
+ *
+ * The two evaluations differ by a boolean, so the vertices it created are new
+ * ones, quantised by float32 at whatever magnitude the solid sits at. The
+ * resulting wobble goes as (changed area) x (float32 step) -- both linear in
+ * size -- so it lands at roughly a billionth of the volume itself, whatever
+ * that volume is. A fixed floor cannot straddle that: 1e-9 is right for a
+ * millimetre cube and pure noise for a five-metre one, where the same
+ * arithmetic wobbles by about 1e-4 and every eraser that MISSED would report a
+ * bite.
+ *
+ * A hundred times the noise. At a volume of 8 -- the two-unit cube this
+ * constant was originally hand-tuned against -- it works out at 8e-7, which is
+ * the 1e-6 that used to be written here. The old absolute number was a relative
+ * one in disguise. `cut.ts` has been doing it this way all along; see
+ * `MIN_HALF_FRACTION`.
+ */
+const MIN_ERASE_FRACTION = 1e-7
 
 /**
  * Did the second version of this object genuinely lose material to the first?
@@ -633,7 +660,10 @@ export function removesMaterial(before: SceneObject, after: SceneObject): boolea
   const nowVolume = signedVolume(now.geometry)
   now.geometry.dispose()
 
-  return wasVolume - nowVolume > MIN_ERASE_VOLUME
+  return (
+    wasVolume - nowVolume >
+    Math.max(MIN_ERASE_VOLUME, Math.abs(wasVolume) * MIN_ERASE_FRACTION)
+  )
 }
 
 /** Drop every cached brush. Used when the document is replaced wholesale. */

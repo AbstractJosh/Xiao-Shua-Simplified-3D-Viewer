@@ -50,6 +50,7 @@ function MergedSize({ object }: { object: SceneObject }) {
 
   return (
     <NumberField
+      unit
       label="Size"
       value={extent}
       // The range the object can actually take: the factor limits of the
@@ -106,6 +107,7 @@ export function ObjectPanel() {
         return (
           <>
             <NumberField
+              unit
               label="Width"
               value={x}
               min={MIN_DIMENSION}
@@ -113,6 +115,7 @@ export function ObjectPanel() {
               onChange={(w) => setBase({ kind: 'box', size: [w, y, z] })}
             />
             <NumberField
+              unit
               label="Height"
               value={y}
               min={MIN_DIMENSION}
@@ -120,6 +123,7 @@ export function ObjectPanel() {
               onChange={(h) => setBase({ kind: 'box', size: [x, h, z] })}
             />
             <NumberField
+              unit
               label="Depth"
               value={z}
               min={MIN_DIMENSION}
@@ -133,6 +137,7 @@ export function ObjectPanel() {
       case 'sphere':
         return (
           <NumberField
+            unit
             label="Radius"
             value={base.radius}
             min={MIN_DIMENSION}
@@ -149,6 +154,7 @@ export function ObjectPanel() {
       case 'platonic':
         return (
           <NumberField
+            unit
             label="Radius"
             value={base.radius}
             min={MIN_DIMENSION}
@@ -163,6 +169,7 @@ export function ObjectPanel() {
         return (
           <>
             <NumberField
+              unit
               label="Radius"
               value={base.radius}
               min={MIN_DIMENSION}
@@ -170,6 +177,7 @@ export function ObjectPanel() {
               onChange={(radius) => setBase({ ...base, radius })}
             />
             <NumberField
+              unit
               label="Height"
               value={base.height}
               min={MIN_DIMENSION}
@@ -189,6 +197,7 @@ export function ObjectPanel() {
         return (
           <>
             <NumberField
+              unit
               label="Radius"
               value={base.radius}
               min={MIN_DIMENSION}
@@ -196,6 +205,7 @@ export function ObjectPanel() {
               onChange={(radius) => setBase({ ...base, radius })}
             />
             <NumberField
+              unit
               label="Height"
               value={base.height}
               min={MIN_DIMENSION}

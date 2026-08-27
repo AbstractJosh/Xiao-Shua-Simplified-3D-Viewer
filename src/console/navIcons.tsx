@@ -27,6 +27,17 @@ export function SnapIcon() {
   )
 }
 
+/** A rule with its graduations -- the thing a length is read against, and the
+ *  one object in a workshop whose whole job is to say what a number means. */
+export function UnitsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <rect x="2.5" y="6.5" width="15" height="7" rx="1.2" {...STROKE} />
+      <path d="M6 6.5v3M10 6.5v4M14 6.5v3" {...STROKE} />
+    </svg>
+  )
+}
+
 /** A solid crossed by a line that carries on past both of its edges. */
 export function CutIcon() {
   return (

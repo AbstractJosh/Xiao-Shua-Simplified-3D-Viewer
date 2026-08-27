@@ -1,4 +1,4 @@
-import { MIN_SHAPE, maxShapeSize } from '../geometry/dimensions'
+import { MAX_FACE_OFFSET, MIN_SHAPE, maxShapeSize } from '../geometry/dimensions'
 import { depthLimits, hostSurfaceFor } from '../geometry/surfaces'
 import { isCurvedAnchor, shapeRadius } from '../geometry/types'
 import type { Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
@@ -24,8 +24,10 @@ const MAX_TILT_DEG = 60
  */
 const MIN_TILT_DEG = 5
 
-/** How far the created face may slide within its own plane, in object units. */
-const MAX_SLIDE = 1.5
+/** How far the created face may slide within its own plane, in object units.
+ *  Shared with the drag that does the same thing in the viewport, which used to
+ *  keep its own copy of this number and had to be edited in step. */
+const MAX_SLIDE = MAX_FACE_OFFSET
 
 function anchorLabel(anchor: SurfaceAnchor): string {
   switch (anchor.on) {
@@ -113,6 +115,7 @@ export function Inspector() {
     <Section title="Sketch" hint={anchorLabel(feature.anchor)}>
       {feature.shape.type === 'circle' && (
         <NumberField
+          unit
           label="Radius"
           value={feature.shape.r}
           min={MIN_SHAPE}
@@ -124,6 +127,7 @@ export function Inspector() {
       {feature.shape.type === 'rect' && (
         <>
           <NumberField
+            unit
             label="Width"
             value={feature.shape.w}
             min={MIN_SHAPE}
@@ -133,6 +137,7 @@ export function Inspector() {
             }
           />
           <NumberField
+            unit
             label="Height"
             value={feature.shape.h}
             min={MIN_SHAPE}
@@ -147,6 +152,7 @@ export function Inspector() {
       {feature.shape.type === 'ngon' && (
         <>
           <NumberField
+            unit
             label="Radius"
             value={feature.shape.r}
             min={MIN_SHAPE}
@@ -189,6 +195,7 @@ export function Inspector() {
           which is also where a pure projection sits, so the whole range from
           pocket to projection to boss is one drag. */}
       <NumberField
+        unit
         label="Extrude"
         value={depth}
         min={-limit.in}
@@ -252,6 +259,7 @@ export function Inspector() {
           />
 
           <Vec2Field
+            unit
             label="Slide"
             labels={['U', 'V']}
             value={feature.faceOffset}

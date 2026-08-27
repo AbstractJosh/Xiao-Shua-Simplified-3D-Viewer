@@ -52,7 +52,9 @@ export function RotationDial() {
     // wedge round and make the angle it reports look wrong.
     group.quaternion.copy(rotationIndicator.facing)
     group.scale.setScalar(
-      Math.max(0.3, Math.min(4, camera.position.distanceTo(group.position) * 0.16))
+      // Clamps widened with the size envelope, at both ends -- see the same
+      // pair in `TransformGizmo`.
+      Math.max(0.03, Math.min(25, camera.position.distanceTo(group.position) * 0.16))
     )
 
     // Project the dial's centre so the degree chip can sit beside it. Done here

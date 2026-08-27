@@ -28,8 +28,8 @@ const DISC_AXIS = new Vector3(0, 0, 1)
  * target larger than the face it belongs to, but floored so that feature still
  * has something a pointer can find.
  */
-const DISC_MIN = 0.03
-const DISC_MAX = 0.1
+const DISC_MIN = 0.003
+const DISC_MAX = 0.6
 const DISC_FRACTION = 0.35
 
 type Handle = {

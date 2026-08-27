@@ -30,8 +30,19 @@ const PROBE_PAINT = 'cut-probe'
 /** A side thinner than this fraction of the whole is a graze, not a cut. */
 const MIN_HALF_FRACTION = 1e-3
 
-/** Below this a "solid" is numerical dust, and ratios against it are noise. */
-const MIN_VOLUME = 1e-9
+/**
+ * Below this a "solid" is numerical dust, and ratios against it are noise.
+ *
+ * Cubic, so it moves with `MIN_DIMENSION`: the smallest solid the app can build
+ * is a millimetre across, and a millimetre cube is 1e-6 of a cubic unit. This
+ * stays a comfortable three orders below that.
+ */
+const MIN_VOLUME = 1e-12
+
+/** A direction vector shorter than this square-root carries no direction. Its
+ *  own constant because it is a LENGTH: it was reading `MIN_VOLUME`, which is a
+ *  volume, and the two only ever agreed by accident. */
+const MIN_DIRECTION_LEN_SQ = 1e-12
 
 /**
  * The half-space an object keeps, as a box large enough to swallow it.
@@ -54,7 +65,7 @@ export function halfSpaceGeometry(
   const keep = new Vector3().copy(normal).multiplyScalar(side)
   // A zero-length normal would make the alignment quaternion NaN, and NaN
   // vertices poison the evaluator for every later operation, not just this one.
-  if (keep.lengthSq() < MIN_VOLUME) keep.set(0, side, 0)
+  if (keep.lengthSq() < MIN_DIRECTION_LEN_SQ) keep.set(0, side, 0)
   keep.normalize()
 
   const geom = new BoxGeometry(span, span, span)

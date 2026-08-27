@@ -1,12 +1,14 @@
 import type { BufferGeometry } from 'three'
 import {
-  COPLANAR_TOLERANCE,
+  COPLANAR_RATIO,
   MAX_BREP_VERTICES,
   flatFaces,
   healTJunctions,
   indexByPosition,
   isManifold,
+  reachOfGeometry,
   shells,
+  weldToleranceFor,
 } from './brep'
 import type { BrepFace, BrepMesh } from './brep'
 import type { Vec3 } from './types'
@@ -30,9 +32,10 @@ import type { Vec3 } from './types'
  * face is one face with a hole in it -- so it opens as a body you can select,
  * measure, cut and boolean, rather than as a bag of loose facets.
  *
- * Units are MILLIMETRES, one scene unit to one millimetre. The app's own units
- * are abstract, so any mapping is a convention; millimetres is the one every
- * mechanical CAD package opens in without asking.
+ * Units are MILLIMETRES, a hundred of them to the scene unit -- because a scene
+ * unit is ten centimetres. Millimetres are what every mechanical CAD package
+ * opens in without asking, so the file speaks them whatever the app is
+ * currently showing on screen.
  */
 
 /** What a written file turned out to be, for the receipt in the export bar. */
@@ -47,10 +50,16 @@ export type StepResult = {
   openEdges: number
 }
 
-/** The accuracy the file claims, in scene units. It is the flatness tolerance
- *  `brep.ts` merges faces within, since that is the largest distance by which
- *  anything here departs from what the evaluator produced. */
-const UNCERTAINTY = COPLANAR_TOLERANCE
+/**
+ * Millimetres to the scene unit.
+ *
+ * One unit is ten centimetres -- see `dimensions.ts`, which is where that is
+ * decided -- and STEP files are written in millimetres, so every coordinate is
+ * multiplied by this on the way out. Directions are not: they are normalised,
+ * and a scaled unit vector is no longer a unit vector.
+ */
+const MM_PER_UNIT = 100
+
 
 const cross = (a: Vec3, b: Vec3): Vec3 => [
   a[1] * b[2] - a[2] * b[1],
@@ -145,10 +154,12 @@ function vertexRefs(entities: Entities, mesh: BrepMesh): VertexRefs {
   const point = (v: number): string => {
     const hit = points.get(v)
     if (hit) return hit
+    // The single place a scene coordinate becomes a file coordinate, and so
+    // the single place the unit conversion belongs.
     const id = entities.add(
-      `CARTESIAN_POINT('',(${real(mesh.points[v * 3])},${real(mesh.points[v * 3 + 1])},${real(
-        mesh.points[v * 3 + 2]
-      )}))`
+      `CARTESIAN_POINT('',(${real(mesh.points[v * 3] * MM_PER_UNIT)},${real(
+        mesh.points[v * 3 + 1] * MM_PER_UNIT
+      )},${real(mesh.points[v * 3 + 2] * MM_PER_UNIT)}))`
     )
     points.set(v, id)
     return id
@@ -291,14 +302,25 @@ export function buildStep(
   geometry: BufferGeometry,
   options: { name: string; timestamp: string }
 ): StepResult {
-  const welded = indexByPosition(geometry)
+  // The tolerances are settled HERE, once, from how far this particular scene
+  // reaches -- and then the same pair is used for the weld, the repair, the
+  // face-flattening and the accuracy written into the file, so the number the
+  // file claims is the number the geometry was actually built to. Coordinates
+  // arrive in world space, so a small part parked far from the origin is a
+  // large model as far as float32 is concerned; the reach is measured, not
+  // assumed from the solid's own size.
+  const reach = reachOfGeometry(geometry)
+  const weld = weldToleranceFor(reach)
+  const coplanar = weld * COPLANAR_RATIO
+
+  const welded = indexByPosition(geometry, weld)
   if (welded.points.length / 3 >= MAX_BREP_VERTICES) {
     throw new Error('Too much geometry for a STEP file: reduce the scene and try again.')
   }
   // Once, deliberately. A second pass finds vertices lying on the slivers the
   // first one made and tears the mesh apart faster than it mends it -- measured,
   // and the reason `healTJunctions` does not simply loop until it converges.
-  const { mesh } = healTJunctions(welded)
+  const { mesh } = healTJunctions(welded, weld)
   const closed = isManifold(mesh)
 
   const entities = new Entities()
@@ -306,7 +328,7 @@ export function buildStep(
   let faceCount = 0
 
   for (const shell of shells(mesh)) {
-    const faces = flatFaces(mesh, shell)
+    const faces = flatFaces(mesh, shell, coplanar)
     faceCount += faces.length
     const ref = writeShell(entities, mesh, faces, closed)
     bodies.push(
@@ -335,9 +357,15 @@ export function buildStep(
   const millimetre = entities.add(`( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) )`)
   const radian = entities.add(`( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) )`)
   const steradian = entities.add(`( NAMED_UNIT(*) SOLID_ANGLE_UNIT() SI_UNIT($,.STERADIAN.) )`)
+  // The accuracy the file CLAIMS, and it is the flatness tolerance faces were
+  // actually merged within -- the largest distance by which anything here
+  // departs from what the evaluator produced. It is derived per file now, so a
+  // small part claims the tight accuracy it was really built to instead of
+  // inheriting the loosest the app can work at. In millimetres, like every
+  // other length in the file.
   const uncertainty = entities.add(
     `UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(${real(
-      UNCERTAINTY
+      coplanar * MM_PER_UNIT
     )}),${millimetre},'distance_accuracy_value','confusion accuracy')`
   )
   const context = entities.add(

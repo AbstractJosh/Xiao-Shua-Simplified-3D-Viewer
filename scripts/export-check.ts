@@ -59,6 +59,7 @@ import {
   indexByPosition,
   isManifold,
   shells,
+  weldToleranceFor,
 } from '../src/geometry/brep'
 import type { BrepMesh } from '../src/geometry/brep'
 import { signedVolume } from '../src/geometry/volume'
@@ -479,6 +480,81 @@ console.log('\n8. Triangles read back as topology')
   const round = flatFaces(sphere, shells(sphere)[0])
   check('a sphere keeps its facets rather than flattening', round.length > 100, `${round.length} faces`)
   ball.dispose()
+
+  // The same solid, parked well away from the origin.
+  //
+  // These are WORLD coordinates by the time they reach the welder, so distance
+  // from the origin costs precision the way size does. What this pins is that
+  // the DERIVED tolerance stays inside the window where the weld and the
+  // T-junction repair both work: too tight and the shell never closes, too
+  // loose and the repair splits edges that were never cracked and tears the
+  // mesh apart. It is the second of those this catches in practice -- an
+  // earlier derivation overshot the ceiling and this is what said so.
+  //
+  // It does NOT prove the tolerance must RISE with distance; at seventy the
+  // floor alone still works. `weldToleranceFor` is checked against the measured
+  // window directly, just below.
+  resetEvaluator()
+  const far = exportGeometry(
+    scene(object({ kind: 'box', size: [2, 2, 2] }, [CIRCLE_BOSS], [70, 0, 0]))
+  )
+  const farHealed = healTJunctions(indexByPosition(far))
+  check('a solid seventy units from the origin still welds closed', isManifold(farHealed.mesh))
+  near(
+    'and the repair still moves nothing there',
+    meshVolume(farHealed.mesh),
+    signedVolume(far),
+    1e-4
+  )
+  far.dispose()
+
+  // A genuine step must SURVIVE the flattening, and nothing else in this suite
+  // would notice if it stopped.
+  //
+  // An over-merge is invisible to every other check here: swallow a shallow
+  // face into its neighbour's plane and the file is still manifold, still one
+  // closed solid, still the right volume -- because the volume is measured off
+  // the MESH and the merge only changes which plane a face claims to lie on.
+  // The part simply arrives in the CAD package with a feature missing. The
+  // margin is thinnest far from the origin, where the flatness tolerance is
+  // widest, so it is checked at both ends.
+  const shallow: Feature = { ...CIRCLE_BOSS, depth: 0.01 }
+  for (const [where, at] of [
+    ['at the origin', [0, 0, 0]],
+    ['and seventy units out', [70, 0, 0]],
+  ] as [string, Vec3][]) {
+    resetEvaluator()
+    const stepped = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] }, [shallow], at)))
+    const merged = healTJunctions(indexByPosition(stepped)).mesh
+    const faces = flatFaces(merged, shells(merged)[0])
+    check(
+      `a one-millimetre step is not flattened away ${where}`,
+      faces.length > 6,
+      `${faces.length} faces`
+    )
+    stepped.dispose()
+  }
+
+  // The bracket itself, across the envelope `dimensions.ts` allows. The window
+  // was measured by sweeping tolerance against distance (see `weldToleranceFor`);
+  // this is what keeps a later edit to the derivation inside it.
+  // 93 is the worst the envelope allows: a 50-unit solid out at 50, stood on
+  // its diagonal. Across all of it the derived weld must land in the window the
+  // sweep found workable -- and it must RISE, or the far end is running on the
+  // floor by luck rather than by design.
+  const brackets = [1, 8, 50, 93].map((r) => weldToleranceFor(r))
+  for (const [i, reach] of [1, 8, 50, 93].entries()) {
+    check(
+      `the weld stays inside its window at reach ${reach}`,
+      brackets[i] >= 1e-5 - 1e-12 && brackets[i] <= 2e-5 + 1e-12,
+      `${brackets[i].toExponential(2)}`
+    )
+  }
+  check(
+    'and it widens with the model rather than sitting at the floor',
+    brackets[3] > brackets[0],
+    `${brackets[0].toExponential(2)} at reach 1 -> ${brackets[3].toExponential(2)} at reach 93`
+  )
 }
 
 // --- 9. STEP output --------------------------------------------------------
@@ -517,6 +593,22 @@ console.log('\n9. STEP output')
   const text = await blob.text()
 
   check('it is an ISO 10303-21 exchange file', text.startsWith('ISO-10303-21;'), text.slice(0, 20))
+
+  // MILLIMETRES, a hundred to the scene unit. The file declares the unit and
+  // then has to actually speak it: a 2-unit cube is 200 mm across, so its
+  // corners sit at +/-100 and nothing may be written at +/-1. Both halves are
+  // checked, because declaring millimetres while emitting scene units would
+  // open perfectly and describe a part a hundred times too small.
+  check('lengths are declared in millimetres', text.includes('SI_UNIT(.MILLI.,.METRE.)'))
+  resetEvaluator()
+  const plain = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] })))
+  const plainText = await (await buildExportBlob(plain, 'step', STAMP)).blob.text()
+  const corners = (plainText.match(/CARTESIAN_POINT\('',\(([-\d.E,]+)\)\)/g) ?? []).flatMap((m) =>
+    (m.match(/-?[\d.]+(?:E-?\d+)?/g) ?? []).map(Number)
+  )
+  const widest = corners.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
+  near('and a two-unit cube measures 200 of them across', widest, 100, 1e-6)
+  plain.dispose()
   check('and it is terminated', text.trimEnd().endsWith('END-ISO-10303-21;'))
   check('the header names a schema', text.includes("FILE_SCHEMA(('AUTOMOTIVE_DESIGN"))
   check(
