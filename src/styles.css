@@ -14,6 +14,13 @@
      tree. One idea, one colour, at sketch scale and at object scale alike. */
   --erase: var(--in);
 
+  /* Rulers, in the viewport and in the list that manages them. Yellow because
+     nothing else in the app is: the solids are warm grey, the gizmo owns red,
+     green and blue, a sketch owns amber and magenta, and the selection glow is
+     accent blue -- so a measurement laid across a scene is never mistaken for
+     part of it. Mirrored in Rulers.tsx, which cannot read a custom property. */
+  --ruler: #ffd60a;
+
   /* Axis identity, shared by the console's X/Y/Z letters and the viewport's
      gizmo arrows. Fully saturated on purpose: the arrows are small and drawn
      over solids in the same warm grey as everything else, so they have to win
@@ -285,6 +292,24 @@ body {
    go. */
 .nav-panel:has(.keys) {
   width: 330px;
+}
+
+/* And the other end of the same idea. The units menu is three buttons of two
+   characters, and at the shared 268px it was mostly empty air: a strip of
+   controls parked in the corner of a box sized for a field it does not have.
+   It takes its width from its content instead, with a floor so the head -- the
+   title and the close cross -- is never the thing that overflows. */
+.nav-panel:has(.units-modes) {
+  width: max-content;
+  min-width: 150px;
+}
+
+/* The three divide the row between them. Left at their natural widths they
+   would huddle at one end of the segment's outline, which is the empty space
+   again, one level in. */
+.units-modes .seg-btn {
+  flex: 1;
+  padding-inline: 8px;
 }
 
 @keyframes nav-panel-in {
@@ -2431,6 +2456,165 @@ body {
   white-space: nowrap;
   /* It sits over the thing being turned, and must never eat the drag. */
   pointer-events: none;
+}
+
+/* A ruler's own readout, pinned to the middle of the line it belongs to.
+
+   Built on the rotation chip above -- same box, same monospaced tabular figures
+   -- because they are the same kind of thing: a number the scene is producing,
+   parked beside the geometry producing it rather than in a panel across the
+   window. It differs only in colour, which is the ruler's, and in being
+   centred on its point rather than offset down and to the right: a turn has a
+   dial under it to keep clear of, and a ruler has a line the number is welcome
+   to sit on -- the opaque backing breaks the line under it, which is how a
+   dimension has been labelled on a drawing for as long as there have been
+   drawings.
+
+   The centring rides in the transform the rAF loop writes, not here: the loop
+   sets `transform` outright every frame, so anything this rule put there would
+   be gone before it was painted. */
+.ruler-chip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 2px 7px;
+  background: rgba(20, 23, 29, 0.92);
+  border: 1px solid color-mix(in srgb, var(--ruler) 40%, transparent);
+  border-radius: 5px;
+  color: var(--ruler);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  white-space: nowrap;
+  /* Rulers are laid across the very things they measure, and this must never
+     eat the press that selects one. */
+  pointer-events: none;
+}
+
+/* The selected ruler's reading is the one being changed, so it carries the same
+   weight its line does. */
+.ruler-chip-on {
+  border-color: var(--ruler);
+  font-weight: 600;
+}
+
+/* --- the ruler list --- */
+
+/* Sits under Add ruler in the tool's panel, which the island opens sideways
+   across the scene. Capped in height rather than allowed to grow: the panel
+   hangs over the viewport, and a dozen rulers would otherwise turn it into a
+   column running off the bottom of the window. */
+.ruler-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 7px 0 0;
+  padding: 0;
+  max-height: 188px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ruler-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+}
+
+/* The selected row wears the ruler's own colour rather than the accent every
+   other selected thing in the app wears, so the panel and the line in the scene
+   are plainly the same object. */
+.ruler-row-on {
+  background: color-mix(in srgb, var(--ruler) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ruler) 45%, transparent);
+}
+
+.ruler-pick {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ruler-pick:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ruler-row-on .ruler-pick {
+  color: var(--ruler);
+  font-weight: 600;
+}
+
+.ruler-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The reading is pushed to the far end and set in the same monospaced figures
+   the chip in the scene uses, so a column of rulers can be read down rather
+   than across. */
+.ruler-reading {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ruler-row-on .ruler-reading {
+  color: color-mix(in srgb, var(--ruler) 75%, var(--text));
+}
+
+/* The cross that deletes one. Red at rest rather than only on hover: it is the
+   one irreversible control in the panel -- a ruler is not in the document, so
+   undo does not reach it -- and a destructive button that looks like every
+   other button until the pointer is already on it is a button that gets
+   pressed by mistake. */
+.ruler-remove {
+  display: flex;
+  align-items: center;
+  padding: 0 7px;
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: color-mix(in srgb, var(--danger) 78%, transparent);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.ruler-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+.ruler-remove:hover {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  color: var(--danger);
+}
+
+/* The list's empty branch says so in the panel's own note voice, and gives back
+   the margin the paragraph above it would otherwise stack with. */
+.ruler-empty {
+  margin: 7px 0 0;
 }
 
 /* --- reset controls --- */

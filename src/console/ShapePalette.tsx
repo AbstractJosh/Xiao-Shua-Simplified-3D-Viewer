@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Shape2D } from '../geometry/types'
+import { defaultShape } from '../geometry/types'
 import {
   DEFAULT_SIDES,
   NGON_HOLD_MS,
@@ -13,8 +14,6 @@ import {
 } from './ngon'
 import { useDoc } from '../store/docStore'
 import { Section } from './Field'
-
-const NGON_RADIUS = 0.35
 
 /** Motion the user did not ask for and cannot stop; honour the system setting. */
 function prefersReducedMotion() {
@@ -118,7 +117,11 @@ function NgonChip() {
             onPointerDown={(e) => {
               e.preventDefault()
               setResting(sides)
-              startPlacing({ type: 'ngon', r: NGON_RADIUS, sides })
+              // The size comes from `defaultShape` rather than from a literal
+              // here: the palette is not the place that decides how big a
+              // fresh sketch is, and a second copy of that number is a second
+              // thing to miss when the scale of the app moves.
+              startPlacing(defaultShape('ngon', sides))
             }}
           />
         ))}
@@ -166,10 +169,10 @@ export function ShapePalette() {
       tip="Drag a shape onto any object in the scene. It lands on the surface under the pointer, flat faces and curved ones alike, and becomes a boss or a pocket once it has a depth."
     >
       <div className="palette">
-        <SimpleChip label="Circle" shape={{ type: 'circle', r: 0.3 }}>
+        <SimpleChip label="Circle" shape={defaultShape('circle')}>
           <circle cx="16" cy="16" r="12" />
         </SimpleChip>
-        <SimpleChip label="Rectangle" shape={{ type: 'rect', w: 0.6, h: 0.6 }}>
+        <SimpleChip label="Rectangle" shape={defaultShape('rect')}>
           <rect x="4" y="6" width="24" height="20" rx="1.5" />
         </SimpleChip>
         <NgonChip />

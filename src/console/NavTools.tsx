@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { Vec3 } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
-import { cutPlaneNormal, useTools } from '../store/toolStore'
+import { cutPlaneNormal, rulerLength, useTools } from '../store/toolStore'
 import { NumberField } from './Field'
 import { NavTool } from './NavTool'
-import { CutIcon, HelpIcon, SnapIcon, UnitsIcon } from './navIcons'
-import { UNIT_MODES } from '../units'
+import { CutIcon, HelpIcon, RulerIcon, SnapIcon, UnitsIcon } from './navIcons'
+import { UNIT_MODES, formatLength } from '../units'
 
 export function SnapTool() {
   const snap = useTools((s) => s.snap)
@@ -171,6 +171,102 @@ export function CutActions() {
 }
 
 /**
+ * The rulers in the scene, and the button that adds one.
+ *
+ * A tool with BOTH a switch and a panel, which no other tool in the island has:
+ * pressing the button engages the tool and lays the first ruler down, so the
+ * commonest thing anyone wants from it -- one ruler, now -- is a single click
+ * and never opens anything. The caret beside it opens the list, which is where
+ * the second and third come from, and where any of them is deleted.
+ *
+ * The list is the tool's memory made visible. Rulers are small and get left
+ * lying across a scene, and one dragged behind a solid is a thing you can no
+ * longer find by looking -- so every one of them has a row here, saying what it
+ * reads, with a press to bring its handles back and a cross to take it away.
+ */
+export function RulerTool() {
+  const rulerActive = useTools((s) => s.rulerActive)
+  const rulers = useTools((s) => s.rulers)
+  const selectedRuler = useTools((s) => s.selectedRuler)
+  const displayUnit = useTools((s) => s.displayUnit)
+  const setRulerActive = useTools((s) => s.setRulerActive)
+  const addRuler = useTools((s) => s.addRuler)
+  const removeRuler = useTools((s) => s.removeRuler)
+  const selectRuler = useTools((s) => s.selectRuler)
+
+  return (
+    <NavTool
+      id="ruler"
+      label="Ruler"
+      icon={<RulerIcon />}
+      active={rulerActive}
+      onToggle={setRulerActive}
+      panelTitle="Rulers"
+    >
+      <div className="tool-group">
+        <button type="button" className="nav-action" onClick={addRuler}>
+          Add ruler
+        </button>
+
+        {rulers.length === 0 ? (
+          // Said out loud rather than left as an empty box. The list is also
+          // the answer to "where did my ruler go", and a blank panel does not
+          // distinguish "none" from "not loaded".
+          <p className="nav-note ruler-empty">No rulers yet.</p>
+        ) : (
+          <ul className="ruler-list">
+            {rulers.map((ruler, i) => {
+              const chosen = selectedRuler?.id === ruler.id
+              return (
+                <li
+                  key={ruler.id}
+                  className={`ruler-row${chosen ? ' ruler-row-on' : ''}`}
+                >
+                  {/* Selecting from here keeps whichever end is already in
+                      hand, so pressing the row of the ruler you are working on
+                      does not throw the gizmo back to the far end of it. */}
+                  <button
+                    type="button"
+                    className="ruler-pick"
+                    aria-pressed={chosen}
+                    onClick={() =>
+                      selectRuler({ id: ruler.id, end: chosen ? selectedRuler.end : 0 })
+                    }
+                  >
+                    <span className="ruler-name">{`Ruler ${i + 1}`}</span>
+                    <span className="ruler-reading">
+                      {formatLength(rulerLength(ruler), displayUnit)}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="ruler-remove"
+                    title={`Delete ruler ${i + 1}`}
+                    aria-label={`Delete ruler ${i + 1}`}
+                    onClick={() => removeRuler(ruler.id)}
+                  >
+                    <svg viewBox="0 0 10 10" aria-hidden>
+                      <path
+                        d="M2.5 2.5 L7.5 7.5 M7.5 2.5 L2.5 7.5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+    </NavTool>
+  )
+}
+
+/**
  * The gesture list, which used to be a permanent section at the bottom of the
  * console. It is read once or twice by a new user and never again, so it earns
  * a button rather than a panel that everything else has to scroll past.
@@ -190,11 +286,14 @@ export function HelpTool() {
         <li>Merged solids become one object with one gizmo; undo takes them apart</li>
         <li>The <b>Scene</b> list is a priority order -- use a row's arrows to move it, and where two objects share a surface the higher one is drawn</li>
         <li><b>Export</b> writes the whole scene: .glb, .obj or .stl for a mesh, .step for a CAD solid</li>
+        <li><b>Units</b>, beside Export, chooses what every length is shown in -- mm, cm, or auto per value; the model itself never changes</li>
         <li><b>Shift</b> while moving an object lifts it instead</li>
         <li><b>Drag</b> a gizmo arrow to move along that axis, snapping as it goes</li>
         <li><b>Right-drag</b> the same arrow to resize the object along it</li>
         <li><b>Drag</b> the gizmo ring to scale every dimension at once</li>
         <li><b>Right-drag</b> the ring to turn, about whichever axis faces you</li>
+        <li><b>Hold Ctrl</b> and the ring becomes three planes -- XY, XZ and YZ -- and dragging one slides within that plane</li>
+        <li>A plane seen edge-on stands down, so from straight above only the ground plane is offered</li>
         <li>The <b>cut plane</b> carries the same gizmo; its ring sizes the guide</li>
         <li><b>Apply cut</b> and <b>Reset plane</b> appear on the island once it is armed</li>
         <li><b>Drag</b> a sketch to slide it across its own surface</li>
@@ -203,11 +302,16 @@ export function HelpTool() {
         <li><b>Drag</b> the arrow facing away to set the depth -- push it back through the face to cut inward instead</li>
         <li>Its ring scales the outline, the same way an object's scales the solid</li>
         <li><b>Drag</b> the highlighted end face of an extrusion to lean it</li>
-        <li><b>Snap</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene</li>
+        <li>The <b>Ruler</b> tool lays a 50 mm measuring line down; its readout rides the middle of it</li>
+        <li><b>Click a ruler</b> to select it -- it thickens into yellow and black stripes and the end you pressed nearest takes the arrows</li>
+        <li><b>Press the knob</b> at the other end to move the arrows there; each end snaps to corners and edges as you drag it</li>
+        <li>A ruler's gizmo has no ring, so it carries the three plane handles <b>all the time</b> -- no Ctrl needed</li>
+        <li><b>Delete</b> removes the selected ruler; the <b>caret beside Ruler</b> opens the list, to add more or delete one with its red cross</li>
+        <li><b>Snap</b>, <b>Ruler</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene</li>
         <li><b>Drag the island by its title</b> to move it -- it snaps flush to whichever edge or corner you drop it near -- and click the title to collapse it</li>
         <li><b>Orbit</b> with middle-drag, or <b>Alt</b> and left-drag; zoom to scroll</li>
         <li><b>Pan</b> with right-drag on empty space</li>
-        <li><b>Delete</b> removes the selected sketch, or the object</li>
+        <li><b>Delete</b> removes the selected ruler, or the selected sketch, or the object</li>
         <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>
         <li><b>Ctrl+C</b> / <b>Ctrl+V</b> copy the selected object and paste it beside itself</li>
         <li>The console on the right holds the scene: Clipboard, Solids, Shapes, Colour and Scene</li>
@@ -227,9 +331,20 @@ export function HelpTool() {
  * Which unit lengths are SHOWN in.
  *
  * A panel-only tool, like Help: there is nothing here to switch on or off, so
- * the button opens the choice rather than toggling anything. It sits in the
- * island beside Snap because it belongs to the same family -- a setting you
- * reach for while looking at the model, not a property of any one solid.
+ * the button opens the choice rather than toggling anything.
+ *
+ * In the BAR, immediately right of Export, rather than on the island over the
+ * scene where it started. The island holds MODES -- Snap, Ruler, Cut -- each
+ * aimed at the solid under the pointer and each changing what the next drag
+ * does. A unit changes no gesture and no geometry: it re-reads every length in
+ * the app at once, which is document-wide, like the three controls it now sits
+ * among. Beside Export specifically because the two answer one question from
+ * either side of it -- what are these numbers in, on screen and in the file.
+ *
+ * Being in the bar is also what makes its menu drop DOWN from the button, the
+ * way Export's does. On the island it had to open sideways, across the scene,
+ * because a panel hanging below would have covered the buttons under it in the
+ * column; see the `.tool-island .nav-panel` rules.
  *
  * Discrete buttons rather than a dropdown, reusing the `seg` control the side
  * count already uses: three options, all of them one or two characters, and a
@@ -243,8 +358,15 @@ export function UnitsTool() {
   const setDisplayUnit = useTools((s) => s.setDisplayUnit)
 
   return (
-    <NavTool id="units" label="Units" icon={<UnitsIcon />} panelTitle="Units">
-      <div className="tool-group">
+    // Opens leftwards like everything else in this cluster: the panel is wider
+    // than the button and there is no room to its right.
+    <NavTool id="units" label="Units" icon={<UnitsIcon />} panelTitle="Units" align="right">
+      {/* Named so the panel can size itself to three two-character buttons
+          rather than to the 268px a snap field or a ruler list wants. The
+          width lives in CSS, keyed off what the panel HOLDS -- the same way
+          Help's is -- so a panel stays a panel and nothing here has to pass a
+          flag about its own layout. */}
+      <div className="tool-group units-modes">
         <div className="seg">
           {UNIT_MODES.map((mode) => (
             <button

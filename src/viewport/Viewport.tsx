@@ -31,6 +31,7 @@ import {
   useTools,
 } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
+import { RulerReadouts, Rulers } from './Rulers'
 import {
   pickAnchorAcrossObjects,
   pickAnchorOnObject,
@@ -55,15 +56,19 @@ import {
   axisTarget,
   axisTravel,
   beginAxisDrag,
+  beginPlaneDrag,
   nearestLocalAxis,
   nearestViewAxis,
+  planeTarget,
+  planeTravel,
   pointerAngle,
   snapTurn,
   turnedPosition,
   turnedRotation,
   WORLD_FRAME,
 } from './gizmoDrag'
-import type { AxisGrab, TurnGrab } from './gizmoDrag'
+import type { AxisGrab, PlaneGrab, TurnGrab } from './gizmoDrag'
+import { clearModifiers, modifiers, planeHandles } from './modifiers'
 import { clearRotationIndicator, rotationIndicator } from './rotationIndicator'
 import {
   resolveAxisMove,
@@ -107,12 +112,6 @@ const FACE_OFFSET_LIMIT = MAX_FACE_OFFSET
 const GRID_Y = -0.002
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
-
-/**
- * Live modifier state. The gestures are driven from a frame loop rather than
- * from the event that set the key, so the flag has to outlive that event.
- */
-const modifiers = { shift: false }
 
 /**
  * Where the pointer sat relative to the thing it grabbed, so the first frame of
@@ -186,6 +185,12 @@ type GizmoGrab = {
    * an origin read fresh each frame plus a separately remembered position.
    */
   axis: AxisGrab | null
+  /**
+   * The same thing for a plane handle: where the target sat and where the
+   * pointer met the plane, both pinned. Null for every gesture that is not a
+   * plane drag, exactly as `axis` is null for every one that is not an arrow.
+   */
+  plane: PlaneGrab | null
   /** Distance from the gizmo centre at grab time, for the ring. */
   radius: number
   /**
@@ -211,7 +216,7 @@ let gizmoGrab: GizmoGrab | null = null
 function clearGrabs(kind: Drag['kind'] = 'idle'): void {
   if (kind !== 'moving-object') objectGrab = null
   if (kind !== 'moving-face') faceGrab = null
-  if (kind !== 'gizmo' && kind !== 'cut-gizmo') gizmoGrab = null
+  if (kind !== 'gizmo' && kind !== 'cut-gizmo' && kind !== 'ruler-gizmo') gizmoGrab = null
   if (kind !== 'sketch-gizmo') {
     sketchGrab = null
     sketchTurnKey = ''
@@ -592,11 +597,55 @@ function dragGizmo(
     return
   }
 
+  if (drag.handle.mode === 'plane') {
+    // The plane the target slides in, pinned at the grab: a world axis for the
+    // normal, and the anchor as it stood when the quad was taken hold of. Read
+    // fresh from the live anchor each frame it would chase the very thing it is
+    // moving -- the feedback loop gizmoDrag.ts opens with, in two dimensions
+    // instead of one.
+    const normal = axisWorld(WORLD_FRAME, drag.handle.axis)
+    const grab = gizmoGrabFor(key, () => {
+      const met = pickPlanePoint(raycaster, centre, normal)
+      return (
+        met && {
+          axis: null,
+          plane: beginPlaneDrag(met, anchor),
+          radius: 0,
+          object,
+          half: 0,
+          size: 0,
+        }
+      )
+    })
+    if (!grab?.plane || !grab.object) return
+
+    const met = pickPlanePoint(raycaster, grab.plane.origin, normal)
+    if (met === null) return
+    const landed = planeTarget(grab.plane, planeTravel(grab.plane, met))
+    const desired: Vec3 = [
+      landed[0] - (anchor[0] - position[0]),
+      landed[1] - (anchor[1] - position[1]),
+      landed[2] - (anchor[2] - position[2]),
+    ]
+
+    // Snapped the way the BODY drag is, not the way an arrow is -- the free
+    // corner seek, which may pull the solid a little out of the plane to meet
+    // something. That is the same bargain dragging an object across the ground
+    // already strikes, and for the same reason: a plane handle is aimed at a
+    // PLACE rather than along a direction, so landing flush against a
+    // neighbour is worth more than the plane held to the last micron. An arrow
+    // is the opposite case and keeps `resolveAxisMove`, because there the one
+    // coordinate is the whole of the promise.
+    s.moveObjectTo(resolveObjectMove(object.id, desired))
+    return
+  }
+
   if (drag.handle.axis === 'all') {
     const radius = ringRadius(raycaster, camera, centre)
     if (radius === null) return
     const grab = gizmoGrabFor(key, () => ({
       axis: null,
+      plane: null,
       radius,
       object,
       half: 0,
@@ -625,6 +674,7 @@ function dragGizmo(
     return (
       axis && {
         axis,
+        plane: null,
         radius: 0,
         object,
         half: assemblyHalfExtent(object, sizeAxis),
@@ -690,6 +740,11 @@ function dragSketchGizmo(
 
   const host = hostSurfaceFor(object.base, feature.anchor)
   const handle = drag.handle
+  // A sketch's gizmo draws no plane quads -- see `planes` on TransformGizmo --
+  // so this cannot arrive. Answered anyway rather than left to fall through
+  // into the tangent branch below, which would read a plane's normal axis as
+  // one of the outline's own directions and slide the sketch sideways.
+  if (handle.mode === 'plane') return
   const key = `${drag.objectId}|${drag.id}|${handle.mode}|${handle.axis}`
   const centre = toWorldPoint(object.transform, host.frame(feature.anchor).origin)
 
@@ -843,9 +898,53 @@ function dragCutGizmo(
     // The plane's rotation IS its tilt, so the ring drives the same three
     // numbers the Tilt rows do -- one axis at a time, which is exactly the
     // move a blade wants and the hardest one to dial in by typing.
-    const turn = readTurn(key, raycaster, camera, centre, plane.rotation, plane.position)
+    //
+    // WHICH axis is picked in the world frame, matching the arrows: a blade
+    // already tilted 30 degrees offers the same three choices as a flat one,
+    // rather than three that rode the turn before it.
+    const turn = readTurn(
+      key,
+      raycaster,
+      camera,
+      centre,
+      plane.rotation,
+      plane.position,
+      WORLD_FRAME
+    )
     if (!turn) return
     tools.setCutPlane({ rotation: turnedRotation(turn.grab, turn.total) })
+    return
+  }
+
+  if (drag.handle.mode === 'plane') {
+    const normal = axisWorld(WORLD_FRAME, drag.handle.axis)
+    const grab = gizmoGrabFor(key, () => {
+      const met = pickPlanePoint(raycaster, centre, normal)
+      return (
+        met && {
+          axis: null,
+          plane: beginPlaneDrag(met, plane.position),
+          radius: 0,
+          object: null,
+          half: 0,
+          size: plane.size,
+        }
+      )
+    })
+    if (!grab?.plane) return
+
+    const met = pickPlanePoint(raycaster, grab.plane.origin, normal)
+    if (met === null) return
+    const [x, y, z] = planeTarget(grab.plane, planeTravel(grab.plane, met))
+    // Unsnapped and clamped, exactly as the arrows are: a blade is not a solid
+    // and has no corners to seek, but it must not be dragged out of the scene.
+    tools.setCutPlane({
+      position: [
+        clamp(x, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+        clamp(y, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+        clamp(z, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+      ],
+    })
     return
   }
 
@@ -854,6 +953,7 @@ function dragCutGizmo(
     if (radius === null) return
     const grab = gizmoGrabFor(key, () => ({
       axis: null,
+      plane: null,
       radius,
       object: null,
       half: 0,
@@ -867,13 +967,17 @@ function dragCutGizmo(
     return
   }
 
-  const dir = axisWorld(plane.rotation, drag.handle.axis)
+  // A WORLD axis, exactly as the object gizmo's arrows are. The blade's own
+  // normal is no longer one of the three, which is the trade: a tilted plane
+  // is nudged in the frame the scene is measured in rather than in one that
+  // tilts out from under the arrow between one drag and the next.
+  const dir = axisWorld(WORLD_FRAME, drag.handle.axis)
   // The plane drifts exactly the way an object does, and for the same reason:
   // it is the thing being moved, so its live position cannot also be the origin
   // the pointer is measured against.
   const grab = gizmoGrabFor(key, () => {
     const axis = beginAxisDrag(raycaster.ray, plane.position, dir)
-    return axis && { axis, radius: 0, object: null, half: 0, size: plane.size }
+    return axis && { axis, plane: null, radius: 0, object: null, half: 0, size: plane.size }
   })
   if (!grab?.axis) return
 
@@ -891,6 +995,89 @@ function dragCutGizmo(
       clamp(z, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
     ],
   })
+}
+
+/**
+ * Slide one end of a ruler along an axis.
+ *
+ * The shortest of the gizmo drags, because an end is a POINT: there is no
+ * rotation to compose onto, no dimension to grow, and no assembly anchor to
+ * measure from. What is left is the pinned axis grab every other arrow uses,
+ * and then the one thing that makes the tool worth having -- the landing point
+ * is offered to the snapper before it is written down.
+ *
+ * Snapped as a free POINT rather than along the axis, which is the one place
+ * this parts company with the object gizmo. That gizmo snaps along the arrow
+ * alone, so a slide keeps its promise that nothing but one coordinate changes;
+ * here the promise worth keeping is the other one. A ruler is for saying how far
+ * it is from THIS corner to THAT one, and an end that stopped a fraction of a
+ * millimetre short of the corner -- because the corner was not on the line the
+ * arrow ran along -- would measure the wrong thing while the marker claimed
+ * contact. So the end goes where the corner is, and the arrow that carried it
+ * there follows it.
+ *
+ * Nothing is excluded from the search: a ruler belongs to no object, so every
+ * corner, edge and face in the scene is fair game.
+ */
+function dragRulerGizmo(drag: DragOf<'ruler-gizmo'>, raycaster: Raycaster): void {
+  const tools = useTools.getState()
+  const ruler = tools.rulers.find((r) => r.id === drag.rulerId)
+  // The ring is not drawn on a ruler, so `all` cannot be grabbed -- but the
+  // handle type carries it, and answering it with nothing is cheaper than a
+  // second handle type that differs by one case.
+  if (!ruler || drag.handle.axis === 'all') return
+
+  const end = ruler.ends[drag.end]
+  const key = `ruler|${drag.rulerId}|${drag.end}|${drag.handle.mode}|${drag.handle.axis}`
+
+  // A ruler's gizmo has no ring, so its quads are not behind Control -- they
+  // stand permanently, and they are the handle that puts an end somewhere
+  // rather than merely somewhere along a line.
+  if (drag.handle.mode === 'plane') {
+    const normal = axisWorld(WORLD_FRAME, drag.handle.axis)
+    const at = new Vector3(end[0], end[1], end[2])
+    const grab = gizmoGrabFor(key, () => {
+      const met = pickPlanePoint(raycaster, at, normal)
+      return (
+        met && {
+          axis: null,
+          plane: beginPlaneDrag(met, end),
+          radius: 0,
+          object: null,
+          half: 0,
+          size: 0,
+        }
+      )
+    })
+    if (!grab?.plane) return
+
+    const met = pickPlanePoint(raycaster, grab.plane.origin, normal)
+    if (met === null) return
+    const landed = planeTarget(grab.plane, planeTravel(grab.plane, met))
+    // The same free point snap the arrows use, and for the same reason: the
+    // end goes where the corner is.
+    const caught = resolvePoint(new Vector3(landed[0], landed[1], landed[2]))
+    tools.setRulerEnd(drag.rulerId, drag.end, [caught.x, caught.y, caught.z])
+    return
+  }
+
+  const dir = axisWorld(WORLD_FRAME, drag.handle.axis)
+
+  // The end drifts exactly the way an object does, and for the same reason: it
+  // is the thing being moved, so its live position cannot also be the origin
+  // the pointer is measured against. See gizmoDrag.ts.
+  const grab = gizmoGrabFor(key, () => {
+    const axis = beginAxisDrag(raycaster.ray, end, dir)
+    return axis && { axis, plane: null, radius: 0, object: null, half: 0, size: 0 }
+  })
+  if (!grab?.axis) return
+
+  const travel = axisTravel(grab.axis, raycaster.ray, dir)
+  if (travel === null) return
+
+  const landed = axisTarget(grab.axis, dir, travel)
+  const caught = resolvePoint(new Vector3(landed[0], landed[1], landed[2]))
+  tools.setRulerEnd(drag.rulerId, drag.end, [caught.x, caught.y, caught.z])
 }
 
 /**
@@ -960,6 +1147,9 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
         return
       case 'cut-gizmo':
         dragCutGizmo(drag, raycaster, camera)
+        return
+      case 'ruler-gizmo':
+        dragRulerGizmo(drag, raycaster)
         return
     }
   })
@@ -1076,6 +1266,7 @@ function Scene({
       <PlacingPreview />
       <PlacingSolidPreview />
       <CutPlaneGizmo controlsRef={controlsRef} />
+      <Rulers controlsRef={controlsRef} />
       <RotationDial />
       <SnapMarker />
       {/* Inside the canvas because it is the camera it reports on and flies.
@@ -1124,6 +1315,8 @@ function hintFor(
     case 'gizmo':
     case 'cut-gizmo':
       return gizmoHint(handle)
+    case 'ruler-gizmo':
+      return rulerHint(handle)
     case 'sketch-gizmo':
       return sketchHint(handle)
   }
@@ -1140,6 +1333,9 @@ function hintFor(
  */
 function sketchHint(handle: GizmoHandle | null): string {
   if (!handle) return ''
+  // Unreachable -- a sketch gizmo draws no quads -- and answered so the U/V
+  // naming below is never handed a plane's normal axis to name.
+  if (handle.mode === 'plane') return ''
   if (handle.mode === 'rotate') return 'Turning the sketch'
   if (handle.axis === 'all') return 'Resizing the sketch'
   if (handle.axis === 2) {
@@ -1151,9 +1347,36 @@ function sketchHint(handle: GizmoHandle | null): string {
     : `Sliding the sketch along ${name}`
 }
 
+/**
+ * What a ruler's arrow is doing.
+ *
+ * Its own line rather than a branch in `gizmoHint`, for the reason the sketch's
+ * is: the gesture is shared but the vocabulary is not. An object's arrow moves
+ * an object, and this one moves a point that is half of a measurement -- and it
+ * says the ends catch, because catching is the whole reason to drag one rather
+ * than type two coordinates.
+ */
+function rulerHint(handle: GizmoHandle | null): string {
+  if (!handle || handle.axis === 'all') return ''
+  const caught = 'it snaps to corners and edges'
+  return handle.mode === 'plane'
+    ? `Moving the ruler end in the ${PLANE_NAMES[handle.axis]} plane -- ${caught}`
+    : `Moving the ruler end along ${AXIS_NAMES[handle.axis]} -- ${caught}`
+}
+
+/**
+ * The two axes a plane handle leaves free, named by the axis it is normal to.
+ *
+ * The handle is indexed by its normal -- the one direction it will not move you
+ * in -- because that is the promise it makes; what a user is looking at is the
+ * pair, so the readout says the pair.
+ */
+const PLANE_NAMES = ['YZ', 'XZ', 'XY'] as const
+
 function gizmoHint(handle: GizmoHandle | null): string {
   if (!handle) return ''
   if (handle.mode === 'rotate') return 'Turning about the axis nearest the camera'
+  if (handle.mode === 'plane') return `Moving in the ${PLANE_NAMES[handle.axis]} plane`
   if (handle.axis === 'all') return 'Scaling every dimension at once'
   const name = AXIS_NAMES[handle.axis]
   return handle.mode === 'move'
@@ -1225,6 +1448,7 @@ function DragHint() {
   )
   const handle = useDoc((s) => {
     if (s.drag.kind === 'gizmo' || s.drag.kind === 'cut-gizmo') return s.drag.handle
+    if (s.drag.kind === 'ruler-gizmo') return s.drag.handle
     // A sketch drag carries a bare axis rather than a handle; the hint only
     // needs to tell the ring from the arrows.
     if (s.drag.kind === 'sketch-gizmo') return s.drag.handle
@@ -1297,6 +1521,10 @@ export function Viewport() {
       else if (s.drag.kind === 'placing') s.commitPlacing()
       else if (s.drag.kind !== 'idle') s.endDrag()
       snapIndicator.hit = null
+      // The plane handles were latched up for the length of the drag, whatever
+      // Control has been doing meanwhile. This is the one place that sees every
+      // gesture end, so it is where they are let go.
+      planeHandles.held = false
       // The frame loop clears these too, but a press that lands before the next
       // frame would inherit them -- and a grab offset from the previous gesture
       // is exactly the teleport it exists to prevent.
@@ -1306,6 +1534,10 @@ export function Viewport() {
 
     const track = (e: KeyboardEvent | PointerEvent) => {
       modifiers.shift = e.shiftKey
+      // Meta counts as Control; see `modifiers`. Read off whatever event is to
+      // hand rather than from a keydown alone, because a window that regains
+      // focus with the key already down never sees the press.
+      modifiers.ctrl = e.ctrlKey || e.metaKey
     }
 
     /**
@@ -1332,11 +1564,10 @@ export function Viewport() {
       controls.mouseButtons.MIDDLE = MOUSE.ROTATE
       controls.mouseButtons.RIGHT = MOUSE.PAN
     }
-    // A window that loses focus never sees the keyup, so the flag would stay
-    // stuck on and the next object drag would go vertical out of nowhere.
-    const blur = () => {
-      modifiers.shift = false
-    }
+    // A window that loses focus never sees the keyup, so a flag would stay
+    // stuck on and the next object drag would go vertical -- or the next gizmo
+    // come up wearing planes -- out of nowhere.
+    const blur = clearModifiers
 
     const onKey = (e: KeyboardEvent) => {
       track(e)
@@ -1363,13 +1594,33 @@ export function Viewport() {
         }
         s.endDrag()
         clearGrabs()
+        planeHandles.held = false
         useObjectMenu.getState().closeMenu()
         s.selectObject(null)
+        // The ruler stays, its handles go. Escape has always meant "put that
+        // down", and the one thing it must not do is throw away a measurement
+        // that took two snapped ends to place -- that is what the cross in the
+        // ruler list is for.
+        useTools.getState().selectRuler(null)
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        // A feature is the finer selection, so it goes first: deleting the
-        // whole object out from under a selected sketch would be a surprise.
+        // WHAT DELETE TAKES is whatever is currently wearing the handles, and
+        // the branches are in that order.
+        //
+        // A selected ruler goes first, because a selected ruler holds the only
+        // gizmo on screen -- it takes the gizmo from the object, and pressing
+        // an object hands it back -- so it is unambiguously the thing being
+        // worked on. This is the one way to delete one without going to the
+        // list, and it is the way anyone reaches for first, since Delete
+        // already removes everything else you can select in this app.
+        //
+        // Then a feature, which is the finer selection of the two below it:
+        // deleting the whole object out from under a selected sketch would be
+        // a surprise.
+        const ruler = useTools.getState().selectedRuler
         const selected = primarySelection(s)
-        if (selected && s.selectedFeatureId) {
+        if (ruler) {
+          useTools.getState().removeRuler(ruler.id)
+        } else if (selected && s.selectedFeatureId) {
           s.removeFeature(selected, s.selectedFeatureId)
         } else if (selected) {
           s.removeObject(selected)
@@ -1423,7 +1674,11 @@ export function Viewport() {
     // pointer-UP -- by which time the pointer has usually left the arrow.
     <div className="viewport" onContextMenu={(e) => e.preventDefault()}>
       <Canvas
-        camera={{ position: [6.2, 4.6, 6.2], fov: 45, near: 0.005, far: 1000 }}
+        // Four units out -- 40 cm -- which frames the 10 cm solid the palette
+        // drops with a comfortable margin of ground around it, rather than the
+        // metre of empty grid the opening shot used to hold. The direction is
+        // unchanged: down the corner, so all three axes read at once.
+        camera={{ position: [2.5, 1.85, 2.5], fov: 45, near: 0.005, far: 1000 }}
         // A five-metre solid needs the camera 113 units out to frame it; a
         // millimetre one fills the view from 0.023 units away, which was INSIDE
         // the old near plane -- the app simply could not draw a part that small.
@@ -1437,6 +1692,11 @@ export function Viewport() {
         // here, and the two can never both fire on one gesture.
         onPointerMissed={(e) => {
           if (e.button !== 0) selectObject(null)
+          // Whichever button: a press that reached nothing in the scene reached
+          // no ruler either, and a selected ruler holds the only gizmo on
+          // screen -- so there has to be a way to put it down that is not
+          // hunting for its row in a panel. The rulers themselves stay.
+          useTools.getState().selectRuler(null)
         }}
       >
         <Scene controlsRef={controlsRef} meshes={meshes} />
@@ -1446,6 +1706,7 @@ export function Viewport() {
       <SelectionHud />
       <MarqueeRect />
       <RotationReadout />
+      <RulerReadouts />
       <DragHint />
       <ObjectMenu />
     </div>

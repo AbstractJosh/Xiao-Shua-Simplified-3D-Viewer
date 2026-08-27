@@ -133,10 +133,15 @@ import {
   ISLAND_MARGIN,
   ISLAND_SNAP,
   RECENT_COLOR_SLOTS,
+  RULER_LENGTH,
   cutPlaneNormal,
   dockIsland,
+  rulerLength,
+  rulerSpawn,
   useTools,
 } from '../src/store/toolStore'
+import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
+import { formatLength } from '../src/units'
 
 /**
  * Panels render lengths in whatever unit the tool island is set to, so the
@@ -646,7 +651,7 @@ doc().selectObject(pyramidId)
 // --- 3. A sketch, then an extrusion ---------------------------------------
 console.log('\n3. A sketch on an object becomes an extrusion')
 
-doc().startPlacing({ type: 'circle', r: 0.3 })
+doc().startPlacing(defaultShape('circle'))
 // Travelling over empty space first: the sketch has no host yet.
 doc().updatePlacing(null, null)
 doc().updatePlacing(cubeId, { on: 'box-face', face: 2, u: 0, v: 0 })
@@ -670,7 +675,7 @@ check('and it is selected', featureId !== '', featureId)
   hides('and nothing to reset', panel, 'Reset face')
 
   const tree = markupOf('SceneTree (projection)', SceneTree)
-  shows('the tree nests the sketch under its object', tree, 'Circle r0.30 - ')
+  shows('the tree nests the sketch under its object', tree, 'Circle r0.15 - ')
   shows('and says it is still flat', tree, 'class="feature-action">projection<')
   shows('and counts it', tree, '>1f<')
 }
@@ -691,7 +696,7 @@ const docAfterExtrude = doc().doc
   shows('and the hint that the face is draggable too', panel, 'drag the end face itself')
 
   const tree = markupOf('SceneTree (extruded)', SceneTree)
-  shows('the tree says extrude now', tree, 'feature-action feature-out">extrude 0.30<')
+  shows('the tree says extrude now', tree, 'feature-action feature-out">extrude 0.15<')
 }
 
 // --- 4. The End face panel reaches the geometry ---------------------------
@@ -700,14 +705,18 @@ console.log('\n4. Tilt and slide reach the solid')
 const baseline = measure(cubeId)
 {
   check('the extruded cube builds', baseline.failed.length === 0, baseline.failed.join(','))
-  // Cube plus a 0.3-deep boss on the +Y face, which stands 0.3 proud of it.
-  near('the boss stands proud of the face', baseline.max[1], 1.3, 1e-6)
-  near('and the cube is otherwise untouched', baseline.max[0], 1, 1e-6)
+  // A 10 cm cube plus a 15 mm boss on the +Y face, which stands that far proud
+  // of it: half the cube's span, plus the depth.
+  near('the boss stands proud of the face', baseline.max[1], 0.5 + DEFAULT_FEATURE_DEPTH, 1e-6)
+  near('and the cube is otherwise untouched', baseline.max[0], 0.5, 1e-6)
 }
 
-// The boss is 0.3 deep on a 0.3 sketch radius, so the panel's slider should
-// stop just short of atan(1) = 45 degrees.
-const TILT_BOUND = tiltBoundDeg(0.3, 0.3)
+// The boss is as deep as the sketch's radius -- both 15 mm -- so the panel's
+// slider should stop just short of atan(1) = 45 degrees. Written as the two
+// values rather than as 45, so it is the RATIO being pinned: halve the app's
+// default scale and this number must not move.
+const SKETCH_R = 0.15
+const TILT_BOUND = tiltBoundDeg(DEFAULT_FEATURE_DEPTH, SKETCH_R)
 const TILT_DEG = 20
 doc().patchFeature(cubeId, featureId, { tilt: [rad(TILT_DEG), 0, 0] })
 const tilted = measure(cubeId)
@@ -719,7 +728,7 @@ const tilted = measure(cubeId)
   near(
     'the high side rises by r*tan(tilt)',
     tilted.max[1] - baseline.max[1],
-    0.3 * Math.tan(rad(TILT_DEG)),
+    SKETCH_R * Math.tan(rad(TILT_DEG)),
     5e-3
   )
   // Pivoting about the centre takes as much off one side as it adds to the
@@ -740,15 +749,15 @@ const tilted = measure(cubeId)
   )
 }
 
-const SLIDE_U = 0.8
+const SLIDE_U = 0.4
 doc().patchFeature(cubeId, featureId, { tilt: [0, 0, 0], faceOffset: [SLIDE_U, 0] })
 const slid = measure(cubeId)
 {
   check('a slid feature still builds', slid.failed.length === 0, slid.failed.join(','))
-  // The base of the boss stays on the face and the top slides to u = 0.8, so
+  // The base of the boss stays on the face and the top slides to u = 0.4, so
   // the pillar leans out past the side of the cube by the sketch radius.
-  near('the leaning pillar overhangs the cube', slid.max[0], SLIDE_U + 0.3, 1e-3)
-  near('but only along U', slid.max[2], 1, 1e-6)
+  near('the leaning pillar overhangs the cube', slid.max[0], SLIDE_U + SKETCH_R, 1e-3)
+  near('but only along U', slid.max[2], 0.5, 1e-6)
   // A shear moves no material, which is what "the base stays put" means.
   near('sliding shears the pillar rather than growing it', slid.volume, baseline.volume, 1e-6)
 
@@ -756,7 +765,7 @@ const slid = measure(cubeId)
   shows(
     'the panel reads back the slide it applied',
     panel,
-    trackOf(0.8, MAX_FACE_OFFSET, 0.01)
+    trackOf(SLIDE_U, MAX_FACE_OFFSET, 0.01)
   )
 }
 
@@ -793,7 +802,9 @@ const slid = measure(cubeId)
     extreme.failed.includes(featureId),
     extreme.failed.join(',') || 'nothing failed'
   )
-  near('and the object still builds, minus the feature', extreme.volume, 8, 1e-6)
+  // The bare 10 cm cube: one cubic unit, and the feature gone without taking
+  // the solid with it.
+  near('and the object still builds, minus the feature', extreme.volume, 1, 1e-6)
 
   publish(extreme.failed)
   const panel = markupOf('Inspector (skipped)', Inspector)
@@ -850,8 +861,8 @@ console.log('\n5. The cut tool splits an object in two')
 
 doc().selectObject(prismId)
 tools().setCutActive(true)
-// The prism is 1.8 tall and rests on the grid, so this plane is halfway up it.
-tools().setCutPlane({ position: [-3, 0.9, 0], rotation: [0, 0, 0] })
+// The prism is 0.9 tall and rests on the grid, so this plane is halfway up it.
+tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 {
   // Arming puts the two ACTIONS on the island, a short travel from the gizmo
   // that just aimed the plane. The plane's numbers stay in the console.
@@ -3044,17 +3055,205 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // all three units agree -- is asserted exactly, just above.
   near('at about the step the control is written in', perPixel[0], 0.05, 1e-3)
 
-  // And the selector itself.
+  // And the selector itself, which lives in the BAR beside Export rather than
+  // on the island: a unit is a reading of the whole document, not a mode aimed
+  // at the solid under the pointer.
   useTools.setState({ openPanel: 'units' })
-  const island = markupOf('ToolIsland (units)', ToolIsland)
-  for (const mode of UNIT_MODES) shows(`the island offers ${mode}`, island, `>${mode}<`)
-  shows('with the current one marked', island, 'seg-btn seg-active')
+  const bar = markupOf('NavBar (units)', NavBar)
+  for (const mode of UNIT_MODES) shows(`the bar offers ${mode}`, bar, `>${mode}<`)
+  shows('with the current one marked', bar, 'seg-btn seg-active')
+  // The menu opens the way the rest of that cluster does -- downwards from the
+  // button, right-aligned to it -- which is the class the CSS reads.
+  shows('and its menu hangs off the button like Export', bar, 'nav-panel nav-panel-right')
+  // The hook the width rule reads. Without the class the menu falls back to the
+  // shared 268px, which for three two-character buttons is mostly empty air.
+  shows('the mode row is marked so the panel can fit it', bar, 'tool-group units-modes')
+  hides(
+    'the island no longer carries it',
+    markupOf('ToolIsland (no units)', ToolIsland),
+    '>Units<'
+  )
 
-  // Collapsing the island takes the panel with it. This was a check for the
-  // snap panel by name, so units would have sprung back open on its own.
+  // It is not an island panel any more, so collapsing the island must leave it
+  // alone. The invariant that DOES shut a panel with the island is asserted
+  // where the panels it still owns are -- snap and ruler.
   useTools.getState().setIslandCollapsed(true)
-  check('collapsing the island shuts the units panel', useTools.getState().openPanel === null)
-  useTools.setState({ islandCollapsed: false, displayUnit: 'cm' })
+  check(
+    'collapsing the island leaves the units menu open',
+    useTools.getState().openPanel === 'units'
+  )
+  useTools.setState({ islandCollapsed: false, openPanel: null, displayUnit: 'cm' })
+}
+
+console.log('\nThe ruler measures the scene without joining it')
+{
+  const tools = () => useTools.getState()
+
+  // At rest the tool is a switch with nothing behind it, which is the state
+  // every session opens in.
+  check('no rulers until one is asked for', tools().rulers.length === 0)
+  check('and the tool is disarmed', tools().rulerActive === false)
+
+  // One press does the whole of what pressing it ever means: arm the tool AND
+  // lay a ruler down. A switch that turns on and shows nothing reads as broken.
+  tools().setRulerActive(true)
+  check('arming lays exactly one ruler down', tools().rulers.length === 1)
+  const first = tools().rulers[0]
+  near('a fresh ruler is 50 mm', rulerLength(first), RULER_LENGTH, 1e-12)
+  near('which is half a scene unit', RULER_LENGTH, 0.5, 1e-12)
+  check(
+    'and it lands selected, on its first end',
+    tools().selectedRuler?.id === first.id && tools().selectedRuler?.end === 0
+  )
+
+  // Arming an already-populated tool must not keep breeding rulers: Add in the
+  // panel is the way to a second one, and the button is a switch.
+  tools().setRulerActive(false)
+  tools().setRulerActive(true)
+  check('re-arming does not add another', tools().rulers.length === 1)
+
+  // Disarming HIDES. A ruler took two snapped ends to place, and a stray click
+  // on the switch must not throw that away -- but the handles go with it, since
+  // a gizmo over something nobody can see is a handle onto nothing.
+  tools().setRulerActive(false)
+  check('disarming keeps the rulers', tools().rulers.length === 1)
+  check('and drops the selection with them', tools().selectedRuler === null)
+  tools().setRulerActive(true)
+
+  // A second one, from the panel. It lands selected, so the ruler just asked
+  // for is the one carrying the handles.
+  tools().addRuler()
+  check('Add lays down another', tools().rulers.length === 2)
+  const second = tools().rulers[1]
+  check('and takes the selection', tools().selectedRuler?.id === second.id)
+  check('leaving the first one alone', tools().rulers[0].id === first.id)
+
+  // Consecutive rulers are stepped sideways rather than dropped on one line,
+  // where the second would be hidden exactly by the first. Stated as the rule
+  // rather than as a transcript of two positions.
+  const lanes = [0, 1].map((n) => rulerSpawn(n))
+  check(
+    'each new ruler is stepped clear of the last',
+    lanes[0][0][2] !== lanes[1][0][2],
+    `${lanes[0][0][2]} vs ${lanes[1][0][2]}`
+  )
+  check(
+    'and the step wraps, so the ninth is not a metre off screen',
+    JSON.stringify(rulerSpawn(8)) === JSON.stringify(rulerSpawn(0))
+  )
+  for (const lane of [0, 3, 7]) {
+    near(
+      `lane ${lane} still measures 50 mm`,
+      rulerLength({ id: 'probe', ends: rulerSpawn(lane) }),
+      RULER_LENGTH,
+      1e-12
+    )
+  }
+
+  // Moving an end moves that end and nothing else -- the invariant behind
+  // `setRulerEnd` rebuilding the pair rather than writing through it.
+  const before = tools().rulers[0].ends[0]
+  tools().setRulerEnd(first.id, 1, [0.5, 0, 0])
+  const moved = tools().rulers.find((r) => r.id === first.id)
+  check('the ruler survives the write', moved !== undefined)
+  if (moved) {
+    check('one end moves', JSON.stringify(moved.ends[1]) === JSON.stringify([0.5, 0, 0]))
+    check('and the other stays', JSON.stringify(moved.ends[0]) === JSON.stringify(before))
+    near(
+      'so the reading follows the ends',
+      rulerLength(moved),
+      Math.hypot(0.5 - before[0], -before[1], -before[2]),
+      1e-12
+    )
+  }
+
+  // Deleting clears a selection pointing at what was deleted, and only that: a
+  // selection left pointing at a ruler that is gone would leave the gizmo drawn
+  // where it last stood, grabbable, writing to nothing.
+  tools().selectRuler({ id: first.id, end: 0 })
+  tools().removeRuler(second.id)
+  check('deleting one leaves the rest', tools().rulers.length === 1)
+  check('and does not disturb a selection elsewhere', tools().selectedRuler?.id === first.id)
+  tools().removeRuler(first.id)
+  check('deleting the selected one clears the selection', tools().selectedRuler === null)
+  check('and the tool is left empty rather than switched off', tools().rulerActive === true)
+
+  // Empty and armed is a reachable state, so arming out of it has to lay one
+  // down again rather than leave a live switch over an empty scene.
+  tools().setRulerActive(false)
+  tools().setRulerActive(true)
+  check('arming an emptied tool lays one down again', tools().rulers.length === 1)
+
+  // The stripes are graduations first: one per centimetre, until there would be
+  // too many to see, and evenly spaced from then on. Stated as the rule.
+  const stripesIn = (length: number) => Math.round(0.5 / stripeFraction(length))
+  check('a 50 mm ruler is ruled in centimetres', stripesIn(0.5) === 5, `${stripesIn(0.5)}`)
+  check('and a 20 cm one likewise', stripesIn(2) === 20, `${stripesIn(2)}`)
+  check('past the cap the count stops climbing', stripesIn(20) === 40, `${stripesIn(20)}`)
+  check('and a ruler shorter than one stripe still gets one', stripesIn(0.01) === 1)
+
+  // Nothing a ruler does is an edit. The whole reason it lives in the tool
+  // store is that measuring must not land in undo history, so a user rewinding
+  // an edit does not first have to walk back through their own measuring.
+  const doc = useDoc.getState().doc
+  tools().addRuler()
+  tools().setRulerEnd(tools().rulers[0].id, 0, [1, 1, 1])
+  check('measuring never touches the document', useDoc.getState().doc === doc)
+
+  // And the panel that manages them. It hangs off the caret beside the switch,
+  // which is what makes one ruler a single click and the rest a list.
+  tools().setOpenPanel('ruler')
+  const island = markupOf('ToolIsland (rulers)', ToolIsland)
+  shows('the island carries the ruler tool', island, '>Ruler<')
+  shows('with a way to add another', island, 'Add ruler')
+  shows('every ruler is listed by name', island, '>Ruler 1<')
+  shows('and the second one too', island, '>Ruler 2<')
+  shows(
+    'each row carries what it reads, in the island unit',
+    island,
+    formatLength(rulerLength(tools().rulers[0]), SHOWN)
+  )
+  shows('the selected row is marked', island, 'ruler-row ruler-row-on')
+  shows('and every row carries a delete control', island, 'aria-label="Delete ruler 1"')
+
+  // The readouts are DOM nodes outside the canvas -- one per ruler, marked so
+  // the selected one's reading carries the weight its line does. Empty on the
+  // way out of the server render, because where each one SITS is projected from
+  // the camera and written in by a frame loop that never runs here; what is
+  // being pinned is that there is a node per ruler at all, and that the tool
+  // being off leaves none of them behind.
+  const chips = markupOf('RulerReadouts', RulerReadouts)
+  check(
+    'a readout per ruler',
+    (chips.match(/class="ruler-chip/g) ?? []).length === tools().rulers.length,
+    `${(chips.match(/class="ruler-chip/g) ?? []).length} for ${tools().rulers.length}`
+  )
+  shows('with the selected one marked', chips, 'ruler-chip ruler-chip-on')
+  shows('and each one hidden until it has been placed', chips, 'display:none')
+  tools().setRulerActive(false)
+  check(
+    'and none at all with the tool off',
+    renderToStaticMarkup(createElement(RulerReadouts)) === '',
+    'a disarmed RulerReadouts renders nothing'
+  )
+  tools().setRulerActive(true)
+
+  // The empty branch says so out loud: this list is also the answer to "where
+  // did my ruler go", and a blank panel does not tell "none" from "not loaded".
+  for (const ruler of [...tools().rulers]) tools().removeRuler(ruler.id)
+  shows('an empty list says so', markupOf('ToolIsland (no rulers)', ToolIsland), 'No rulers yet.')
+
+  // It is an island panel like the others, so shutting the island shuts it --
+  // otherwise it springs back the next time the island opens, from a click
+  // nobody made.
+  tools().setIslandCollapsed(true)
+  check('collapsing the island shuts the ruler panel', tools().openPanel === null)
+  useTools.setState({
+    islandCollapsed: false,
+    rulerActive: false,
+    rulers: [],
+    selectedRuler: null,
+  })
 }
 
 console.log(

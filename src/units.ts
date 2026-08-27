@@ -66,6 +66,20 @@ export function fromDisplay(shown: number, unit: Unit): number {
   return shown / PER_UNIT[unit]
 }
 
+/**
+ * A length as a person reads it: the number, its places, and the unit it is in.
+ *
+ * For the places that SHOW a length rather than edit one -- a ruler's readout,
+ * a row in the ruler list -- where `NumberField`'s box, spinner and scrub are
+ * all machinery for a value nobody is going to type. It goes through the same
+ * three functions the fields do, so a ruler saying 50.0 mm and a dimension row
+ * saying 50.0 mm cannot start disagreeing about what 0.5 units is.
+ */
+export function formatLength(sceneValue: number, mode: UnitMode): string {
+  const unit = resolveUnit(sceneValue, mode)
+  return `${toDisplay(sceneValue, unit).toFixed(PLACES[unit])} ${SUFFIX[unit]}`
+}
+
 export function suffixOf(unit: Unit): string {
   return SUFFIX[unit]
 }

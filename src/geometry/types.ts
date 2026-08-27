@@ -271,14 +271,35 @@ export function nextCutId(): string {
   return `c${cutCounter}`
 }
 
-export function defaultShape(kind: ShapeKind): Shape2D {
+/**
+ * How wide a fresh primitive lands: ONE SCENE UNIT, which `units.ts` fixes at
+ * ten centimetres. A cube off the palette is 10 x 10 x 10 cm.
+ *
+ * A plain number rather than `fromDisplay(10, 'cm')`, because geometry never
+ * sees a display unit -- the rule at the top of `units.ts` -- so the conversion
+ * is stated here in words and the source stays in scene units.
+ *
+ * Every default below is written against it. That is what keeps the palette one
+ * SET rather than ten numbers: change this and the whole family moves together,
+ * a sketch included, instead of a cube drifting away from the sphere it is
+ * meant to drop beside.
+ */
+const DEFAULT_SPAN = 1
+
+/**
+ * A fresh sketch lands well inside the face it is dropped on -- under a third
+ * of a span across -- so there is room to see it, move it and grow it before it
+ * meets an edge. One that arrived filling its face would have to be shrunk
+ * before it could be aimed.
+ */
+export function defaultShape(kind: ShapeKind, sides?: number): Shape2D {
   switch (kind) {
     case 'circle':
-      return { type: 'circle', r: 0.3 }
+      return { type: 'circle', r: DEFAULT_SPAN * 0.15 }
     case 'rect':
-      return { type: 'rect', w: 0.6, h: 0.6 }
+      return { type: 'rect', w: DEFAULT_SPAN * 0.3, h: DEFAULT_SPAN * 0.3 }
     case 'ngon':
-      return { type: 'ngon', r: 0.35, sides: 6 }
+      return { type: 'ngon', r: DEFAULT_SPAN * 0.175, sides: sides ?? 6 }
   }
 }
 
@@ -341,14 +362,15 @@ export function makeObject(base: BaseSolid, position: Vec3): SceneObject {
 
 /**
  * Palette entry ordering + labels are UI concerns, but the default dimensions
- * are geometry: every primitive lands roughly 2 units across so one drops next
- * to another at a sane relative size.
+ * are geometry: every primitive lands roughly one span across -- ten
+ * centimetres, see `DEFAULT_SPAN` -- so one drops next to another at a sane
+ * relative size, and at a size a person can name without doing arithmetic.
  *
  * Solids standing on the SAME cross-section share that section's default, so a
- * family reads as one set: everything round starts at radius 1, and a pyramid
- * and a prism of the same side count start on the same polygon. A cone landing
- * a hair narrower than the sphere beside it was a mismatch nobody could name
- * but everybody could see.
+ * family reads as one set: everything round starts at half a span, and a
+ * pyramid and a prism of the same side count start on the same polygon. A cone
+ * landing a hair narrower than the sphere beside it was a mismatch nobody could
+ * name but everybody could see.
  */
 export function defaultBaseFor(
   kind: SolidKind,
@@ -357,21 +379,31 @@ export function defaultBaseFor(
 ): BaseSolid {
   switch (kind) {
     case 'box':
-      return { kind: 'box', size: [2, 2, 2] }
+      return { kind: 'box', size: [DEFAULT_SPAN, DEFAULT_SPAN, DEFAULT_SPAN] }
     case 'sphere':
-      return { kind: 'sphere', radius: 1 }
+      return { kind: 'sphere', radius: DEFAULT_SPAN / 2 }
     case 'cylinder':
-      return { kind: 'cylinder', radius: 1, height: 2 }
+      return { kind: 'cylinder', radius: DEFAULT_SPAN / 2, height: DEFAULT_SPAN }
     case 'cone':
-      return { kind: 'cone', radius: 1, height: 2 }
+      return { kind: 'cone', radius: DEFAULT_SPAN / 2, height: DEFAULT_SPAN }
     case 'capsule':
-      return { kind: 'capsule', radius: 1, height: 1.2 }
+      return { kind: 'capsule', radius: DEFAULT_SPAN / 2, height: DEFAULT_SPAN * 0.6 }
     case 'pyramid':
-      return { kind: 'pyramid', radius: 1, height: 1.8, sides: sides ?? 4 }
+      return {
+        kind: 'pyramid',
+        radius: DEFAULT_SPAN / 2,
+        height: DEFAULT_SPAN * 0.9,
+        sides: sides ?? 4,
+      }
     case 'prism':
-      return { kind: 'prism', radius: 1, height: 1.8, sides: sides ?? 6 }
+      return {
+        kind: 'prism',
+        radius: DEFAULT_SPAN / 2,
+        height: DEFAULT_SPAN * 0.9,
+        sides: sides ?? 6,
+      }
     case 'platonic':
-      return { kind: 'platonic', radius: 1.1, solid: platonic ?? 'tetrahedron' }
+      return { kind: 'platonic', radius: DEFAULT_SPAN * 0.55, solid: platonic ?? 'tetrahedron' }
   }
 }
 
