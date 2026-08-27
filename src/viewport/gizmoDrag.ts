@@ -82,6 +82,62 @@ export function axisTarget(grab: AxisGrab, dir: Vector3, travel: number): Vec3 {
   ]
 }
 
+// --- Sliding in a plane ------------------------------------------------------
+
+/**
+ * The plane version of `AxisGrab`, pinned at the gesture's start for exactly
+ * the same reason and against exactly the same failure.
+ *
+ * TWO points, both frozen: where the target sat when the quad was grabbed, and
+ * where the pointer met the plane at that moment. The travel is the difference
+ * between the pointer's current meeting point and `at`, which is why `origin`
+ * has to stay put -- it is the plane's own anchor, and a plane that chased the
+ * thing it was moving would drift under the gesture the way the axis line
+ * would. See the walkthrough at the top of this module; the arithmetic differs
+ * but the loop is identical.
+ */
+export type PlaneGrab = {
+  /** Where the target sat when the quad was grabbed, in world space. */
+  origin: Vector3
+  /** Where the pointer met the plane at that moment. */
+  at: Vector3
+}
+
+/**
+ * Begin a plane drag from the point the pointer met the plane.
+ *
+ * The meeting point is passed in rather than solved here, because finding it
+ * needs a camera-shaped thing and this module deliberately has none -- the same
+ * division `readTurn` already keeps, where the viewport meets the plane and the
+ * arithmetic lives here.
+ */
+export function beginPlaneDrag(hit: Vector3, position: Vec3): PlaneGrab {
+  return {
+    origin: new Vector3(position[0], position[1], position[2]),
+    at: hit.clone(),
+  }
+}
+
+/**
+ * How far the pointer has travelled across the plane since the grab.
+ *
+ * A vector rather than a scalar -- a plane has two directions to go in -- but
+ * measured against the grab's own meeting point, never against where the target
+ * has since moved to, which is the invariant this module exists for.
+ */
+export function planeTravel(grab: PlaneGrab, hit: Vector3): Vector3 {
+  return hit.clone().sub(grab.at)
+}
+
+/** Where the target should sit, given that travel. */
+export function planeTarget(grab: PlaneGrab, travel: Vector3): Vec3 {
+  return [
+    grab.origin.x + travel.x,
+    grab.origin.y + travel.y,
+    grab.origin.z + travel.z,
+  ]
+}
+
 // --- Turning ----------------------------------------------------------------
 
 /**

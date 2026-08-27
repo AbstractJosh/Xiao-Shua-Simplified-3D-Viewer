@@ -1,5 +1,5 @@
 /**
- * The four glyphs in the top bar.
+ * The glyphs the tool buttons carry.
  *
  * All on one 20x20 grid with the same 1.6 stroke, because they sit inches apart
  * on a single row and any drift in weight between them shows immediately. Each
@@ -34,6 +34,25 @@ export function UnitsIcon() {
     <svg viewBox="0 0 20 20" aria-hidden>
       <rect x="2.5" y="6.5" width="15" height="7" rx="1.2" {...STROKE} />
       <path d="M6 6.5v3M10 6.5v4M14 6.5v3" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * A dimension line: a span with a tick standing across each end.
+ *
+ * Deliberately NOT a rule with graduations, which is the Units glyph above --
+ * the two buttons sit one above the other in the island, and a second ruler
+ * shape there would say they were two halves of one control. This draws what
+ * the tool actually makes: a measurement pinned between two ends, which are the
+ * two things you take hold of.
+ */
+export function RulerIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M4 13 L16 7" {...STROKE} />
+      <path d="M2.9 10.9 L5.1 15.1" {...STROKE} />
+      <path d="M14.9 4.9 L17.1 9.1" {...STROKE} />
     </svg>
   )
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
-import { CutActions, CutTool, SnapTool, UnitsTool } from '../console/NavTools'
+import { CutActions, CutTool, RulerTool, SnapTool } from '../console/NavTools'
 import { dockIsland, useTools } from '../store/toolStore'
 
 /**
@@ -211,8 +211,12 @@ export function ToolIsland() {
 
       {!collapsed && (
         <div className="island-body">
+          {/* The three MODES -- what the next drag will do. Units left for the
+              bar: it changes no gesture and no geometry, only what the numbers
+              on screen are counted in, so it belongs with the document-wide
+              controls rather than with the things aimed at a solid. */}
           <SnapTool />
-          <UnitsTool />
+          <RulerTool />
           <CutTool />
           {/* Only on screen while the plane is armed, so the island is no taller
               than two buttons for anyone not cutting. */}

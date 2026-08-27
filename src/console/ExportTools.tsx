@@ -41,8 +41,8 @@ const FORMAT_BLURB: Record<ExportFormat, string> = {
 const gist = (blurb: string): string => blurb.split('. ')[0]
 
 /**
- * Export, docked at the right of the bar beside undo and redo, with its formats
- * behind a menu.
+ * Export, docked at the right of the bar beside the unit selector, undo and
+ * redo, with its formats behind a menu.
  *
  * It sits there because of what it is: an act on the whole document, like the
  * two beside it, rather than a mode aimed at whatever is selected the way Snap

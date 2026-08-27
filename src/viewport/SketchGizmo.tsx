@@ -79,6 +79,12 @@ export function SketchGizmo({
       // and a height to stretch one at a time, and on a circle or a polygon,
       // which have one radius between them, both arrows drive that instead.
       sizable
+      // No plane quads. A sketch is anchored to a surface and slides in that
+      // surface's own u and v, so there is no such thing as moving it through
+      // the world's XZ plane -- and its two tangent arrows already ARE the two
+      // directions it can go. The ring keeps its ring on Control, because there
+      // is nothing here for it to give way to.
+      planes={false}
       size={SKETCH_SCALE}
       controlsRef={controlsRef}
       onGrab={(handle) => startSketchGizmo(object.id, feature.id, handle)}

@@ -11,7 +11,7 @@
  *
  * Run: npx tsx scripts/interaction-check.ts
  */
-import { Mesh, PerspectiveCamera, Raycaster, Vector3 } from 'three'
+import { Euler, Mesh, PerspectiveCamera, Raycaster, Vector3 } from 'three'
 
 const realWarn = console.warn.bind(console)
 console.warn = (...args: unknown[]) => {
@@ -38,6 +38,9 @@ import {
   viewUp,
 } from '../src/viewport/compassViews'
 import { useTools } from '../src/store/toolStore'
+import { PLANE_ROTATIONS, planesUp } from '../src/viewport/TransformGizmo'
+import { modifiers, planeHandles, clearModifiers } from '../src/viewport/modifiers'
+import { beginPlaneDrag, planeTarget, planeTravel } from '../src/viewport/gizmoDrag'
 import { useDoc } from '../src/store/docStore'
 import {
   centreOnScreen,
@@ -988,6 +991,118 @@ console.log('\n13. The compass flies the camera to the face it names')
   const second = takeRequest()
   check('a second click redirects rather than queueing',
     second !== null && Math.abs(second.z - 1) < 1e-9)
+}
+
+console.log('\nThe gizmo trades its ring for three planes')
+{
+  // Which plane each quad IS. The rotation stands a +Z-facing quad onto the
+  // plane named by the axis it is normal to, and the arithmetic is done by hand
+  // in the source -- so it is stated here rather than trusted, because nothing
+  // at runtime would notice it drifting until a drag in what looked like the
+  // ground plane walked the solid up a wall.
+  for (const axis of [0, 1, 2] as const) {
+    const euler = new Euler(...PLANE_ROTATIONS[axis], 'XYZ')
+    const normal = new Vector3(0, 0, 1).applyEuler(euler)
+    const wanted = new Vector3(axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0)
+    // Either facing: a quad is drawn double-sided and a slide across it is the
+    // same slide from behind, so only the LINE the normal runs along matters.
+    near(
+      `plane ${axis} faces along its own axis`,
+      Math.abs(normal.dot(wanted)),
+      1,
+      1e-9
+    )
+
+    // And the quad has to land in the world's positive corner, where the arrows
+    // point -- a handle drawn behind the object it belongs to is a handle
+    // nobody finds. Its own local +X and +Y are what the drawn square spans.
+    const inU = new Vector3(1, 0, 0).applyEuler(euler)
+    const inV = new Vector3(0, 1, 0).applyEuler(euler)
+    for (const [name, dir] of [['U', inU], ['V', inV]] as const) {
+      const along = [dir.x, dir.y, dir.z]
+      const live = along.findIndex((c) => Math.abs(c) > 0.5)
+      check(
+        `plane ${axis} spans a world axis in ${name}`,
+        live >= 0 && Math.abs(Math.abs(along[live]) - 1) < 1e-9,
+        `${dir.toArray()}`
+      )
+      check(`and spans it POSITIVELY in ${name}`, along[live] > 0, `${dir.toArray()}`)
+      check(`and it is not the normal in ${name}`, live !== axis)
+    }
+    // Between them the two must span the OTHER two axes, not the same one
+    // twice -- which is what a rotation with a sign wrong would produce.
+    check(
+      `plane ${axis} spans two different axes`,
+      Math.abs(inU.dot(inV)) < 1e-9,
+      `${inU.dot(inV)}`
+    )
+  }
+
+  // The swap itself. This is the whole of what Control does to the gizmo.
+  clearModifiers()
+  check('at rest the ring keeps its place', planesUp(true) === false)
+  check('and a gizmo with no ring shows planes anyway', planesUp(false) === true)
+
+  modifiers.ctrl = true
+  check('Control brings the planes out', planesUp(true) === true)
+  modifiers.ctrl = false
+  check('and letting go puts the ring back', planesUp(true) === false)
+
+  // The latch: a gesture must not lose its own handle because a finger came off
+  // the key half way through the drag.
+  planeHandles.held = true
+  check('a plane in hand holds the others up', planesUp(true) === true)
+  clearModifiers()
+  check('and the gesture ending lets them go', planesUp(true) === false)
+
+  // A window that loses focus never sees the keyup, so everything is dropped
+  // together rather than leaving the next gizmo wearing planes out of nowhere.
+  modifiers.ctrl = true
+  modifiers.shift = true
+  planeHandles.held = true
+  clearModifiers()
+  check(
+    'losing focus forgets every one of them',
+    !modifiers.ctrl && !modifiers.shift && !planeHandles.held
+  )
+
+  // The drag arithmetic, which is the axis version in two dimensions: pinned at
+  // the grab, and every frame computed from that pin rather than added to the
+  // last frame's answer.
+  const grab = beginPlaneDrag(new Vector3(2, 0, 3), [1, 1, 1])
+  const still = planeTarget(grab, planeTravel(grab, new Vector3(2, 0, 3)))
+  check(
+    'a pointer that has not moved moves nothing',
+    JSON.stringify(still) === JSON.stringify([1, 1, 1]),
+    `${still}`
+  )
+
+  const moved = planeTarget(grab, planeTravel(grab, new Vector3(2.5, 0, 4)))
+  check(
+    'and travel across the plane carries the target with it',
+    JSON.stringify(moved) === JSON.stringify([1.5, 1, 2]),
+    `${moved}`
+  )
+
+  // The invariant the whole of gizmoDrag exists for: the answer comes from the
+  // GRAB, so re-reading it after the target has moved gives the same result
+  // rather than compounding. A grab that re-measured would walk the solid a
+  // step further every frame the pointer stood still.
+  const again = planeTarget(grab, planeTravel(grab, new Vector3(2.5, 0, 4)))
+  check(
+    'reading it twice gives one answer, not two steps',
+    JSON.stringify(again) === JSON.stringify(moved),
+    `${again} vs ${moved}`
+  )
+
+  // And it is reversible: back to where the grab was taken is back to where the
+  // target started, however far the pointer went in between.
+  const home = planeTarget(grab, planeTravel(grab, new Vector3(2, 0, 3)))
+  check(
+    'coming back to the grab comes back to the start',
+    JSON.stringify(home) === JSON.stringify([1, 1, 1]),
+    `${home}`
+  )
 }
 
 console.log(

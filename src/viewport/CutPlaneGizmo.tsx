@@ -73,13 +73,17 @@ export function CutPlaneGizmo({
           Position fields are gone from the panel: two ways to set one number,
           one of them a slider you cannot see the effect of without looking
           away. Tilt stays typed -- an angle is far easier to dial in than to
-          drag, and the tilt is what decides which way the halves fall. The
-          arrows follow the plane's own frame, so the green one is its normal.
+          drag, and the tilt is what decides which way the halves fall.
+          NO rotation is passed, so the arrows and the ring stand in the world,
+          exactly as they do for a selected object: a tilted blade is nudged
+          along the same X, Y and Z everything else in the scene is measured
+          in, and it turns about those too rather than about axes the last turn
+          has already moved. The quad below still carries the tilt -- it is the
+          blade -- so the green arrow is no longer the normal.
           Right-drag does nothing here: a plane has no per-axis extent, and its
           one dimension -- the guide square -- is what the ring scales. */}
       <TransformGizmo
         position={plane.position}
-        rotation={plane.rotation}
         sizable={false}
         controlsRef={controlsRef}
         onGrab={startCutGizmo}

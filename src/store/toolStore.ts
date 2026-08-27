@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { Euler, Vector3 } from 'three'
 import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
+import { fromDisplay } from '../units'
 import type { UnitMode } from '../units'
 import type { Vec3 } from '../geometry/types'
 
@@ -23,10 +24,16 @@ import type { Vec3 } from '../geometry/types'
  * console now, because a popover hanging off the toolbar covered the only thing
  * a plane can be aimed against.
  */
-export type NavPanel = 'snap' | 'units' | 'export' | 'help' | null
+export type NavPanel = 'snap' | 'units' | 'ruler' | 'export' | 'help' | null
 
-/** The panels that hang off buttons INSIDE the tool island. */
-export const ISLAND_PANELS: NavPanel[] = ['snap', 'units']
+/**
+ * The panels that hang off buttons INSIDE the tool island, which go off screen
+ * with it when it is collapsed.
+ *
+ * `units` is not one of them any more: its button moved to the bar, beside
+ * Export, where nothing collapses underneath it.
+ */
+export const ISLAND_PANELS: NavPanel[] = ['snap', 'ruler']
 
 /** Position + Euler XYZ rotation of the cut gizmo, and its visual extent. */
 export type CutPlaneState = { position: Vec3; rotation: Vec3; size: number }
@@ -56,10 +63,12 @@ export const CUT_POSITION_LIMIT = 50
 export const CUT_SIZE_MIN = 0.05
 export const CUT_SIZE_MAX = 80
 
+/** Twice the span a fresh solid lands at, so the blade overhangs the thing it
+ *  is about to sever rather than ending somewhere inside it. */
 const DEFAULT_CUT_PLANE: CutPlaneState = {
   position: [0, 0, 0],
   rotation: [0, 0, 0],
-  size: 4,
+  size: 2,
 }
 
 /**
@@ -170,6 +179,99 @@ export const RECENT_COLOR_SLOTS = 8
 /** Which objects a confirmed eraser takes material out of. */
 export type EraseScope = 'all' | 'selected'
 
+// --- Rulers -----------------------------------------------------------------
+
+/**
+ * A measurement laid across the scene: two points, and the distance between
+ * them.
+ *
+ * Here rather than in the document for the reason the cut plane is: a ruler
+ * measures what you have built, it is not part of it. Nothing it does changes a
+ * solid, nothing about it is exported, and dropping one across two faces must
+ * not land in undo history -- otherwise a user hunting for the edit they want
+ * to reverse has to walk back through their own measuring first.
+ *
+ * The ends are a TUPLE rather than two named fields, so the end being dragged
+ * is an index the gesture can carry and the store can write back without a
+ * branch per end. Which of the two is which carries no meaning: a ruler is the
+ * segment between them, and reversing it measures the same length.
+ */
+export type Ruler = { id: string; ends: [Vec3, Vec3] }
+
+/** Which end of a ruler. See `Ruler.ends`. */
+export type RulerEnd = 0 | 1
+
+/**
+ * The ruler being worked on, and which of its ends holds the gizmo.
+ *
+ * ONE end at a time, deliberately. Two sets of arrows a few centimetres apart
+ * -- often overlapping, since a short ruler is shorter than the gizmo drawn at
+ * either end of it -- is two sets of arrows to tell apart mid-drag, which is
+ * the same reason an armed cut plane takes the gizmo away from the selected
+ * object. The other end stays a knob you can press, so swapping ends is one
+ * click rather than a mode.
+ */
+export type RulerSelection = { id: string; end: RulerEnd } | null
+
+/**
+ * What a fresh ruler measures: 50 mm, which is `0.5` of a scene unit.
+ *
+ * Written as the conversion rather than as `0.5` so the number in the source
+ * is the number in the spec; see `units.ts` for why one unit is ten
+ * centimetres.
+ */
+export const RULER_LENGTH = fromDisplay(50, 'mm')
+
+/**
+ * How far apart consecutive rulers are laid down.
+ *
+ * Spawning every ruler on the same line would make the second one look like it
+ * never appeared -- it would be hidden, exactly, by the first. A step across
+ * puts each new one beside its predecessor where it can be seen and grabbed.
+ */
+const RULER_SPACING = fromDisplay(15, 'mm')
+
+/** How many are laid out before the spacing starts again from the first line.
+ *  Without a wrap the tenth ruler spawns a metre from the origin, off screen at
+ *  the zoom anyone measuring a part is working at. */
+const RULER_LANES = 8
+
+/**
+ * Ids climb forever, and never restart, so a ruler deleted while its own drag
+ * was in flight cannot have the gesture land on whatever took its place.
+ * Separate from the document's counters for the same reason those are separate
+ * from each other.
+ */
+let rulerCounter = 0
+
+/**
+ * Where the next ruler goes: along world X, resting on the grid, stepped
+ * sideways from the one before it.
+ *
+ * Pure and exported so `ui-check` can state the rule rather than transcribe one
+ * result. The lane comes from the id counter rather than from how many rulers
+ * currently exist, so deleting one does not drop the next one on top of a
+ * survivor.
+ */
+export function rulerSpawn(lane: number): [Vec3, Vec3] {
+  const z = (lane % RULER_LANES) * RULER_SPACING
+  return [
+    [-RULER_LENGTH / 2, 0, z],
+    [RULER_LENGTH / 2, 0, z],
+  ]
+}
+
+/** What a ruler reads: the straight-line distance between its two ends. */
+export function rulerLength(ruler: Ruler): number {
+  const [a, b] = ruler.ends
+  return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+}
+
+function makeRuler(): Ruler {
+  rulerCounter += 1
+  return { id: `r${rulerCounter}`, ends: rulerSpawn(rulerCounter - 1) }
+}
+
 export type ToolState = {
   snap: boolean
   snapDistance: number
@@ -216,6 +318,21 @@ export type ToolState = {
    */
   eraseScope: EraseScope
 
+  /**
+   * Whether the ruler tool is engaged, and so whether any ruler is drawn.
+   *
+   * A visibility switch rather than a mode: nothing about how the rest of the
+   * app behaves changes with it, and the rulers it hides are still there when
+   * it comes back on. That is the difference between this and the cut tool,
+   * which resets its plane on the way out -- a plane is aimed for one act and
+   * fired, where a measurement is a thing you put down and come back to.
+   */
+  rulerActive: boolean
+  /** Every ruler in the scene, in the order they were laid down. */
+  rulers: Ruler[]
+  /** The one being worked on, and which end holds the gizmo. */
+  selectedRuler: RulerSelection
+
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
   setDisplayUnit: (unit: UnitMode) => void
@@ -226,6 +343,14 @@ export type ToolState = {
   setIslandCollapsed: (collapsed: boolean) => void
   setIslandPlacement: (placement: IslandPlacement) => void
   setEraseScope: (scope: EraseScope) => void
+  /** Engage the tool, laying down a first ruler if there are none. */
+  setRulerActive: (on: boolean) => void
+  /** Lay down another and take it as the selection. */
+  addRuler: () => void
+  removeRuler: (id: string) => void
+  selectRuler: (selection: RulerSelection) => void
+  /** Write one end's position, from its gizmo or from anywhere else. */
+  setRulerEnd: (id: string, end: RulerEnd, position: Vec3) => void
   /** Record a colour as just used, moving it to the front if it is already
    *  there rather than letting the shelf fill with one repeated swatch. */
   noteRecentColor: (color: string) => void
@@ -254,6 +379,12 @@ export const useTools = create<ToolState>((set) => ({
   // Empty, not seeded with a starter palette: every slot on screen is a colour
   // this user actually chose, so the grid is a history rather than a suggestion.
   recentColors: [],
+
+  // Nothing measured until asked for. The first click on the tool is what lays
+  // a ruler down, so the button is never a switch with nothing behind it.
+  rulerActive: false,
+  rulers: [],
+  selectedRuler: null,
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
@@ -287,6 +418,64 @@ export const useTools = create<ToolState>((set) => ({
   setIslandPlacement: (placement) => set({ islandPlacement: placement }),
 
   setEraseScope: (scope) => set({ eraseScope: scope }),
+
+  // Arming lays a ruler down rather than arming an empty tool: a switch that
+  // turns on and shows nothing reads as broken, and "give me a ruler" is the
+  // whole of what pressing this button ever means. Re-arming after every ruler
+  // has been deleted takes the same branch, so the tool is never on and empty.
+  //
+  // Disarming keeps them. They are measurements of a scene that has not
+  // changed, and the one thing that must not happen is a stray click on the
+  // switch throwing away work that took two snapped ends to place. The
+  // selection goes, though -- a gizmo hanging over a ruler nobody can see
+  // would be a handle onto nothing.
+  setRulerActive: (on) =>
+    set((s) => {
+      if (!on) return { rulerActive: false, selectedRuler: null }
+      if (s.rulers.length > 0) return { rulerActive: true }
+      const ruler = makeRuler()
+      return {
+        rulerActive: true,
+        rulers: [ruler],
+        selectedRuler: { id: ruler.id, end: 0 },
+      }
+    }),
+
+  // Selected as it lands, so the ruler you just asked for is the one carrying
+  // the handles -- and armed with it, since adding one from the panel while the
+  // tool is off would otherwise put a ruler in a list nothing draws.
+  addRuler: () =>
+    set((s) => {
+      const ruler = makeRuler()
+      return {
+        rulerActive: true,
+        rulers: [...s.rulers, ruler],
+        selectedRuler: { id: ruler.id, end: 0 },
+      }
+    }),
+
+  removeRuler: (id) =>
+    set((s) => ({
+      rulers: s.rulers.filter((r) => r.id !== id),
+      // A selection pointing at a ruler that no longer exists would leave the
+      // gizmo drawn at the last place it stood, grabbable, writing to nothing.
+      selectedRuler: s.selectedRuler?.id === id ? null : s.selectedRuler,
+    })),
+
+  selectRuler: (selection) => set({ selectedRuler: selection }),
+
+  setRulerEnd: (id, end, position) =>
+    set((s) => ({
+      rulers: s.rulers.map((r) => {
+        if (r.id !== id) return r
+        // Rebuilt as a fresh pair rather than written through: what draws the
+        // line is memoised on the array it came from, and an end mutated in
+        // place would move with nothing noticing it had.
+        const ends: [Vec3, Vec3] =
+          end === 0 ? [position, r.ends[1]] : [r.ends[0], position]
+        return { ...r, ends }
+      }),
+    })),
 
   noteRecentColor: (color) =>
     set((s) => ({

@@ -4,7 +4,7 @@ import { useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
-import { HelpTool } from './NavTools'
+import { HelpTool, UnitsTool } from './NavTools'
 
 /**
  * Object count belongs next to the triangle count, not in the scene tree: it is
@@ -27,11 +27,12 @@ function Stats() {
  * The top bar: identity, what leaves the app, and the state of the document.
  * What you build stays in the console on the right.
  *
- * What is left here is what is aimed at the WHOLE DOCUMENT -- export, undo,
- * redo, the counts -- plus the gesture list. Snap and Cut went the other way,
- * out of the bar and onto the scene itself (see `ToolIsland`): they are modes
- * aimed at a solid you are looking at, and reaching them at the top edge of the
- * window meant the hand and the eye in two different places.
+ * What is left here is what is aimed at the WHOLE DOCUMENT -- export, the unit
+ * every length is read in, undo, redo, the counts -- plus the gesture list.
+ * Snap, Ruler and Cut went the other way, out of the bar and onto the scene
+ * itself (see `ToolIsland`): they are modes aimed at a solid you are looking
+ * at, and reaching them at the top edge of the window meant the hand and the
+ * eye in two different places.
  */
 export function NavBar() {
   const undo = useDoc((s) => s.undo)
@@ -87,6 +88,12 @@ export function NavBar() {
             are acts on the whole document -- and the two that step through its
             history are the ones an export belongs beside. */}
         <ExportTools />
+        {/* Beside Export because the two answer the same question -- what are
+            these numbers in -- one on screen and one in the file. It came off
+            the island for the same reason the rest of this cluster is here:
+            it is not a mode aimed at a solid, it is a reading of every length
+            in the app at once. */}
+        <UnitsTool />
         <div className="seg">
           <button
             type="button"

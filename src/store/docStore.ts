@@ -25,16 +25,26 @@ import { baseParams } from '../geometry/dimensions'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject, removesMaterial, worldBounds } from '../geometry/evaluate'
 import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
+// Type only, and the one thing this store borrows from the other. A ruler
+// belongs to the tool store -- measuring is not an edit -- but the gesture that
+// drags one of its ends is dispatched from `Drag` like every other, and naming
+// which end is the tool store's word to define.
+import type { RulerEnd } from './toolStore'
 
 /** Depth the Extrude button gives a flat sketch, so the slider has somewhere
- *  to start from. Every other way in writes a depth of its own. */
-export const DEFAULT_FEATURE_DEPTH = 0.3
+ *  to start from. Every other way in writes a depth of its own.
+ *
+ *  15 mm, against the 10 cm span a fresh solid lands at: enough that the first
+ *  press reads as a boss standing off a face, not as a second solid. */
+export const DEFAULT_FEATURE_DEPTH = 0.15
 
 /** A template's position before the drop decides one. */
 const ZERO: Vec3 = [0, 0, 0]
 
-/** Daylight between a pasted copy and the object it came from. */
-const PASTE_GAP = 0.4
+/** Daylight between a pasted copy and the object it came from -- a fifth of a
+ *  default solid's span, which is wide enough to read as two objects and narrow
+ *  enough that the copy lands where you were already looking. */
+const PASTE_GAP = 0.2
 
 export type Drag =
   | { kind: 'idle' }
@@ -95,6 +105,19 @@ export type Drag =
    * which is why the handle type is the same one.
    */
   | { kind: 'cut-gizmo'; handle: GizmoHandle }
+  /**
+   * One end of a ruler being dragged, by the gizmo standing on it.
+   *
+   * Here, alongside the cut plane's, although a ruler lives in the tool store
+   * too: this union is the single dispatch table the viewport's frame loop
+   * switches on, and a gesture missing from it is a gesture that never gets a
+   * frame. Like the cut plane's, it carries no snapshot flag -- measuring a
+   * scene is not an edit to it, and must not land in undo history.
+   *
+   * Only `move` handles are ever drawn on a ruler: an end is a point, so there
+   * is nothing to resize along an axis and nothing to turn. See `Rulers.tsx`.
+   */
+  | { kind: 'ruler-gizmo'; rulerId: string; end: RulerEnd; handle: GizmoHandle }
 
 /** Which arrow of a gizmo, in the gizmo's own frame. */
 export type GizmoAxis = 0 | 1 | 2
@@ -105,9 +128,26 @@ export type GizmoAxis = 0 | 1 | 2
  * `move` slides along the axis and `size` resizes along it -- the left and
  * right buttons on the same arrow. The ring is a `size` with no axis, because
  * scaling everything at once is the one operation that has no direction.
+ *
+ * `plane` is the ring's understudy: hold Control and the ring gives way to
+ * three quads, and dragging one slides the target within that plane. It is a
+ * `move` in every way that matters -- the same gesture, the same snapping, the
+ * same history semantics -- and a mode of its own only because what the pointer
+ * is measured against is a plane rather than a line.
  */
 export type GizmoHandle =
   | { mode: 'move'; axis: GizmoAxis }
+  /**
+   * One of the three plane handles, named by the axis it is NORMAL to: 0 is the
+   * YZ plane, 1 is XZ, 2 is XY.
+   *
+   * Named by the normal rather than by the pair it spans because that is the
+   * one axis the drag does NOT move along, which is the whole of what the
+   * handle promises -- and because it makes the plane an ordinary `GizmoAxis`,
+   * so it colours itself from the same three values the arrows do and needs no
+   * second vocabulary anywhere downstream.
+   */
+  | { mode: 'plane'; axis: GizmoAxis }
   | { mode: 'size'; axis: GizmoAxis }
   | { mode: 'size'; axis: 'all' }
   /**
@@ -251,6 +291,7 @@ type State = {
   /** The sketch's spin within its own tangent frame, in radians. */
   rotateShapeTo: (rotation: number) => void
   startCutGizmo: (handle: GizmoHandle) => void
+  startRulerGizmo: (rulerId: string, end: RulerEnd, handle: GizmoHandle) => void
   /**
    * The continuous part of a gizmo resize: one history entry per gesture.
    *
@@ -850,6 +891,12 @@ export const useDoc = create<State>((set, get) => {
     },
 
     startCutGizmo: (handle) => set({ drag: { kind: 'cut-gizmo', handle } }),
+
+    // No selection written alongside it, unlike the object and sketch gizmos:
+    // a ruler's gizmo only exists on the ruler that is already selected, so
+    // there is nothing here for the press to pick.
+    startRulerGizmo: (rulerId, end, handle) =>
+      set({ drag: { kind: 'ruler-gizmo', rulerId, end, handle } }),
 
     scaleObject: (id, factor) =>
       commitCoalesced(

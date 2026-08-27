@@ -277,6 +277,10 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
   // tell apart mid-drag, so the plane -- the thing being actively aimed -- takes
   // the gizmo for as long as the tool is armed, and the selection gives it up.
   const cutActive = useTools((s) => s.cutActive)
+  // And a selected ruler is the same claim: its own end carries arrows, and one
+  // set at a time is the rule the whole viewport keeps. Deselecting the ruler --
+  // Escape, or a click on empty space -- hands the gizmo straight back.
+  const rulerSelected = useTools((s) => s.rulerActive && s.selectedRuler !== null)
   const openMenu = useObjectMenu((s) => s.openMenu)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
@@ -358,6 +362,13 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     // here would abandon the drop half-finished and grab something else.
     if (s.drag.kind !== 'idle') return
 
+    // A press on a solid is a claim on the gizmo, and a selected ruler is
+    // holding it. Handed over here rather than left for Escape, so the rule
+    // stays the one the viewport keeps everywhere: whatever you pressed last is
+    // the thing with handles on it. The ruler itself stays exactly where it is
+    // -- this puts it down, it does not throw it away.
+    useTools.getState().selectRuler(null)
+
     // The right button is not a drag on the body. It selects, notes where it
     // landed, and leaves the rest to the release: a small movement opens the
     // menu, a large one was the camera being panned. Starting a move here --
@@ -419,9 +430,10 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           object was touched would read as the selection being lost.
 
           Exactly one gizmo is ever on screen. This is the selected object's,
-          and it stands down for the three things that outrank it: an armed cut
+          and it stands down for the four things that outrank it: an armed cut
           plane, whose own arrows would otherwise be one of two sets to tell
-          apart, a selected sketch, which gets the finer gizmo of the two, and a
+          apart, a selected ruler, which is the same claim made by a different
+          tool, a selected sketch, which gets the finer gizmo of the two, and a
           marquee in flight, whose selection is still being drawn.
 
           It sits at the object's ASSEMBLY ANCHOR, not at its transform: merging
@@ -438,7 +450,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           is no way back to square except by eye. Fixed axes are a frame to work
           against. What the object's own rotation still decides is which of its
           DIMENSIONS a right-drag resizes; `nearestLocalAxis` makes that call. */}
-      {selected && !cutActive && !sketchSelected && !marqueeing && (
+      {selected && !cutActive && !rulerSelected && !sketchSelected && !marqueeing && (
         <TransformGizmo
           position={assemblyAnchor(selected)}
           controlsRef={controlsRef}
