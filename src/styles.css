@@ -93,7 +93,12 @@ body {
   /* The name is the only thing here that may shrink, and only after the tools
      have taken the room they need. */
   flex: 0 1 auto;
-  overflow: hidden;
+  /* NO `overflow: hidden` here, and it is load-bearing that there is not:
+     Import's receipt hangs BELOW the bar out of this box, and a clipping
+     ancestor swallows it entirely -- a successful import that says nothing
+     reads exactly like one that never ran. The wordmark does its own
+     truncation with its own `overflow` and `text-overflow`, which is what
+     this was for and is all it was for. */
 }
 
 .brand-mark {
@@ -370,6 +375,10 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
+  /* Never the part that gives when the bar runs out of room. The name beside
+     Import truncates instead -- a clipped word is still a word, and half a
+     button is a missing feature. */
+  flex: 0 0 auto;
 }
 
 /* The file input. Reachable by the dialog it opens and by nothing else: it is

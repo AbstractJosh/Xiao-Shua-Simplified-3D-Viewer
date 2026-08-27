@@ -512,6 +512,43 @@ doc().selectObject(pyramidId)
     shows(`it accepts ${ext}`, left, ext)
   }
 
+  // Two invariants that markup cannot show and that both, when broken, look
+  // to a user like the identical symptom: pick a file, nothing happens.
+  {
+    const source = readFileSync(
+      new URL('../src/console/ImportTools.tsx', import.meta.url),
+      'utf8'
+    )
+    // `e.target.files` is a LIVE view of the input's selection, not a snapshot.
+    // Clearing the value empties it, so a read taken afterwards -- or a
+    // reference held across the clear -- finds nothing to import and the whole
+    // thing silently does not run.
+    const copied = source.indexOf('Array.from(e.target.files')
+    const cleared = source.indexOf("e.target.value = ''")
+    check('the chosen files are copied out of the input', copied > 0, `at ${copied}`)
+    check(
+      'before its value is cleared, not after',
+      copied > 0 && cleared > copied,
+      `copy at ${copied}, clear at ${cleared}`
+    )
+
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    // The receipt is absolutely positioned BELOW the bar, so any clipping
+    // ancestor eats it -- and an import that reports nothing reads exactly like
+    // one that never happened.
+    // Comments stripped first: the rule EXPLAINS why it must not clip, and the
+    // explanation necessarily contains the declaration it is warning against.
+    const brand = (css.split('.brand {')[1]?.split('}')[0] ?? '').replace(
+      /\/\*[\s\S]*?\*\//g,
+      ''
+    )
+    check(
+      'and nothing clips the receipt that reports them',
+      brand.trim().length > 0 && !/overflow:\s*hidden/.test(brand),
+      /overflow:\s*hidden/.test(brand) ? 'the brand slot still clips' : 'clear'
+    )
+  }
+
   const snap = markupOf('SnapTool', SnapTool)
   shows('snapping is on by default', snap, 'aria-pressed="true"')
   // One click engages the tool; the parameter is the rare act and sits behind
