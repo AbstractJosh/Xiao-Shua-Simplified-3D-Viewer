@@ -17,6 +17,16 @@ import { nextCutId } from './types'
 
 const UP = new Vector3(0, 1, 0)
 
+/**
+ * The paint on a brush nobody will ever look at.
+ *
+ * `planeSeparates` builds solids only to weigh them, so which solid their
+ * triangles came from is a question with no consumer. One shared key keeps
+ * those measurements out of the paint registry's way. The cut itself is a
+ * different matter -- see `applyCuts`.
+ */
+const PROBE_PAINT = 'cut-probe'
+
 /** A side thinner than this fraction of the whole is a graze, not a cut. */
 const MIN_HALF_FRACTION = 1e-3
 
@@ -66,15 +76,23 @@ function coveringSpan(geometry: BufferGeometry, origin: Vector3): number {
   return Math.max(reach, MIN_HALF_FRACTION) * 4
 }
 
-/** One intersection against a half-space, cleaning up the throwaway box brush. */
+/**
+ * One intersection against a half-space, cleaning up the throwaway box brush.
+ *
+ * `paint` is what the CUT FACE ends up wearing. That face is the near side of
+ * the box, so its triangles come from the box brush and carry the box's paint
+ * -- which is why the caller has to name one rather than let a scratch key leak
+ * onto a surface the user is about to look at.
+ */
 function intersectHalfSpace(
   solid: Brush,
   origin: Vector3,
   normal: Vector3,
   side: 1 | -1,
-  span: number
+  span: number,
+  paint: string
 ): Brush {
-  const half = makeBrush(halfSpaceGeometry(origin, normal, side, span))
+  const half = makeBrush(halfSpaceGeometry(origin, normal, side, span), paint)
   try {
     return csg(solid, half, INTERSECTION)
   } finally {
@@ -89,10 +107,17 @@ function intersectHalfSpace(
  * cache needs it: an uncut object returns the input brush untouched, and
  * disposing that would free geometry the cache still owns and the viewport is
  * still drawing. Intermediate results between cuts are ours, so we free those.
+ *
+ * `paint` is the object's OWN paint key, and the face the cut exposes is what
+ * wears it. On a merged object that face runs across parts of several colours,
+ * and one plane through an assembly is one surface -- so it takes the colour of
+ * the object the cut belongs to rather than trying to be several things at
+ * once. The parts either side of it keep theirs.
  */
 export function applyCuts(
   brush: Brush,
-  cuts: CutPlane[]
+  cuts: CutPlane[],
+  paint: string
 ): { brush: Brush; owned: boolean } {
   let current = brush
   let owned = false
@@ -112,7 +137,8 @@ export function applyCuts(
         origin,
         new Vector3(...cut.normal),
         cut.side,
-        span
+        span,
+        paint
       )
       if (owned) disposeBrush(current)
       current = next
@@ -136,7 +162,7 @@ function halfVolume(
   side: 1 | -1,
   span: number
 ): number {
-  const part = intersectHalfSpace(solid, origin, normal, side, span)
+  const part = intersectHalfSpace(solid, origin, normal, side, span, PROBE_PAINT)
   try {
     return Math.abs(signedVolume(part.geometry))
   } finally {
@@ -170,7 +196,7 @@ export function planeSeparates(
   // The caller's geometry belongs to the evaluator's cache: brushing it
   // directly would let disposal here free a buffer that is still on screen.
   const working = geometry.clone()
-  const solid = makeBrush(working)
+  const solid = makeBrush(working, PROBE_PAINT)
   const span = coveringSpan(working, origin)
   const floor = total * MIN_HALF_FRACTION
 

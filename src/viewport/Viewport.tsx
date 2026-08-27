@@ -41,6 +41,8 @@ import { dropCacheFor, releaseDropCache } from './dropCache'
 import { ObjectMenu, useObjectMenu } from './ObjectMenu'
 import type { DropCache } from './dropCache'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
+import { AxisCompass, CompassControl } from './AxisCompass'
+import { SelectionHud } from './SelectionHud'
 import { RotationDial } from './RotationDial'
 import { SceneObjects } from './SceneObjects'
 import { MarqueeControl, MarqueeRect } from './SelectionMarquee'
@@ -54,6 +56,7 @@ import {
   nearestLocalAxis,
   nearestViewAxis,
   pointerAngle,
+  snapTurn,
   turnedPosition,
   turnedRotation,
   WORLD_FRAME,
@@ -82,6 +85,11 @@ import {
 type Controls = {
   enabled: boolean
   mouseButtons: { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null }
+  /** The point the camera orbits, which a pan moves. Read by the compass, whose
+   *  flights turn about whatever the user is actually looking at. */
+  target: Vector3
+  /** Made to re-read the camera after something else has moved it. */
+  update: () => void
 } | null
 type Store = ReturnType<typeof useDoc.getState>
 type DragOf<K extends Drag['kind']> = Extract<Drag, { kind: K }>
@@ -514,7 +522,12 @@ function readTurn(
     rotationIndicator.startAngle = angle
   }
 
-  const total = advanceTurn(turnGrab, angle)
+  // Snapped on the way out, never on the way in. `advanceTurn` keeps the raw
+  // sweep on the grab, and everything downstream -- the rotation written to the
+  // document, the position carried round the pivot, the dial's own readout --
+  // reads the snapped number returned here, so the object sits exactly where
+  // the wedge says it does.
+  const total = snapTurn(advanceTurn(turnGrab, angle))
   rotationIndicator.active = true
   rotationIndicator.angle = total
   return { grab: turnGrab, total }
@@ -1032,6 +1045,9 @@ function Scene({
       <CutPlaneGizmo controlsRef={controlsRef} />
       <RotationDial />
       <SnapMarker />
+      {/* Inside the canvas because it is the camera it reports on and flies.
+          What it draws is a canvas of its own, outside -- see `AxisCompass`. */}
+      <CompassControl controlsRef={controlsRef} />
       <Interaction meshes={meshes} />
       {/* Inside the canvas because it projects each object's gizmo through the
           camera to decide what the box caught. What it draws is outside. */}
@@ -1382,6 +1398,8 @@ export function Viewport() {
       >
         <Scene controlsRef={controlsRef} meshes={meshes} />
       </Canvas>
+      <AxisCompass />
+      <SelectionHud />
       <MarqueeRect />
       <RotationReadout />
       <DragHint />

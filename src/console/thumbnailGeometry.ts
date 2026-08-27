@@ -33,6 +33,15 @@ export type Thumbnail = {
    */
   geometry: BufferGeometry
   /**
+   * Which solid each group of that geometry came from -- the object's id, and
+   * the id of every part merged into it that still shows a face.
+   *
+   * Carried so a tile of a merged object wears the colours the scene draws it
+   * in. A shelf whose tiles flattened an assembly to one colour would be
+   * advertising something other than what the tile drops. See `ObjectEval`.
+   */
+  paints: string[]
+  /**
    * The furthest any vertex reaches from that point.
    *
    * Measured exactly rather than taken from a bounding box's diagonal, which
@@ -69,7 +78,7 @@ export function thumbnailFor(object: SceneObject): Thumbnail {
     return hit
   }
 
-  const { geometry } = evaluateObject(object)
+  const { geometry, paints } = evaluateObject(object)
   // Turned the way it was saved. A custom put aside lying on its side is that
   // shape, and a thumbnail that stood it upright would be advertising something
   // other than what the tile drops.
@@ -96,7 +105,7 @@ export function thumbnailFor(object: SceneObject): Thumbnail {
     }
   }
 
-  const built: Thumbnail = { geometry, radius: Math.max(reach, 0.001) }
+  const built: Thumbnail = { geometry, paints, radius: Math.max(reach, 0.001) }
   cache.set(object, built)
 
   // Oldest first, which after the re-insertion above is the least recently used.

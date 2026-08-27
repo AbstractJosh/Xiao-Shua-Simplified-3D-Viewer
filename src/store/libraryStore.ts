@@ -94,5 +94,13 @@ export const useLibrary = create<LibraryState>((set) => ({
  */
 export function templateOf(object: SceneObject): SceneObject {
   const copy = cloneObject(object)
-  return { ...copy, transform: { ...copy.transform, position: [0, 0, 0] } }
+  return {
+    ...copy,
+    // Saved as a SHAPE, never as an eraser. The shelf is what you have built,
+    // and a tile that dropped a red ghost would be the one entry on it that
+    // does not add anything to the scene. Erase the same shape by dragging it
+    // out of Solids again, from the grip.
+    erase: undefined,
+    transform: { ...copy.transform, position: [0, 0, 0] },
+  }
 }

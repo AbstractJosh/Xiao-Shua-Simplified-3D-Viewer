@@ -35,6 +35,7 @@ import {
   scaleUniform,
 } from '../src/geometry/dimensions'
 import type { Axis } from '../src/geometry/dimensions'
+import { scaleAssembly } from '../src/geometry/assembly'
 import { platonicFaces } from '../src/geometry/solids'
 import {
   advanceTurn,
@@ -44,6 +45,9 @@ import {
   beginAxisDrag,
   nearestLocalAxis,
   nearestViewAxis,
+  snapTurn,
+  TURN_SNAP,
+  TURN_SNAP_WINDOW,
   turnedPosition,
   turnedRotation,
   WORLD_FRAME,
@@ -1155,7 +1159,7 @@ console.log('\n15. The sketch ring scales an outline without reshaping it')
 
 
 // --- 16. Turning with the ring ----------------------------------------------
-console.log('\n16. A ring turn runs about one axis and unwraps past half a circle')
+console.log('\n16. A ring turn runs about one axis, unwraps, and holds at 45 degrees')
 
 {
   // The axis is whichever of the target's OWN three best faces the viewer, so
@@ -1260,6 +1264,68 @@ console.log('\n16. A ring turn runs about one axis and unwraps past half a circl
     advanceTurn(grab, Math.atan2(Math.sin(raw), Math.cos(raw)))
   }
   near('reversing all the way returns to zero', grab.total, 0, 1e-9)
+}
+
+{
+  // Detents every 45 degrees, with 3 degrees of pull either side.
+  const deg = (d: number) => (d * Math.PI) / 180
+  const inDeg = (r: number) => (r * 180) / Math.PI
+
+  near('45 is a detent', TURN_SNAP, deg(45), 1e-12)
+  near('and the pull reaches 3 degrees', TURN_SNAP_WINDOW, deg(3), 1e-12)
+
+  // The stated case, from both sides and at the edges of the window.
+  for (const d of [42, 43.5, 45, 46.2, 48]) {
+    near(`${d} degrees lands on 45`, inDeg(snapTurn(deg(d))), 45, 1e-9)
+  }
+
+  // Just outside it the turn is the user's again, to the degree. This is what
+  // separates a magnet from a ratchet: no grid in the middle.
+  for (const d of [41.9, 48.1, 20, 63]) {
+    near(`${d} degrees is left alone`, inDeg(snapTurn(deg(d))), d, 1e-9)
+  }
+
+  // Every detent, the whole way round and past it, from both sides -- a
+  // rounding that only held near zero would strand the far half of a turn.
+  // Rolled into one assertion rather than eighty, since the answer worth
+  // reading is whether any of them missed.
+  const missed: string[] = []
+  for (let k = -10; k <= 10; k++) {
+    const detent = k * 45
+    for (const approach of [-2.5, 2.5]) {
+      const landed = inDeg(snapTurn(deg(detent + approach)))
+      if (Math.abs(landed - detent) > 1e-9) missed.push(`${detent} from ${approach}`)
+    }
+  }
+  check(
+    'every detent holds, from either side, past a full turn',
+    missed.length === 0,
+    missed.length ? missed.join('; ') : '21 detents, -450 to 450 degrees'
+  )
+
+  // Zero is a detent like the rest, so a press that was meant as a click does
+  // not tip the target over by a degree and a half.
+  near('a twitch at the start is nothing', snapTurn(deg(1.5)), 0, 1e-12)
+  near('and the same the other way', snapTurn(deg(-1.5)), 0, 1e-12)
+
+  // Idempotent, which is what lets the snapped value be handed to the document
+  // and the dial alike without either one drifting from the other.
+  const once = snapTurn(deg(44))
+  near('snapping a snapped turn changes nothing', snapTurn(once), once, 1e-12)
+
+  // The grab's own total stays raw: the detent is applied on the way out, so a
+  // pointer that drifts through 45 and carries on to 60 arrives at 60 rather
+  // than at 60 minus whatever the detent had quietly absorbed.
+  const grab: TurnGrab = {
+    axis: new Vector3(0, 1, 0),
+    rotation: [0, 0, 0],
+    position: [0, 0, 0],
+    lastAngle: 0,
+    total: 0,
+  }
+  for (const d of [10, 30, 44, 45, 46, 60]) snapTurn(advanceTurn(grab, deg(d)))
+  near('the running total never absorbs a snap', inDeg(grab.total), 60, 1e-9)
+  near('and the reading leaving it is free again', inDeg(snapTurn(grab.total)), 60, 1e-9)
 }
 
 {
@@ -1477,6 +1543,342 @@ console.log('\n18. Tilt and slide reach a pocket, not just a boss')
     leaned !== null && leaned.normal.y < 0.999,
     ''
   )
+}
+
+// --- 19. A merge keeps every colour ----------------------------------------
+console.log('\n19. A merge keeps every colour')
+{
+  // The document always held a colour per solid, and a merge never threw one
+  // away -- but the union that gets drawn is a single mesh, so until it could
+  // say which triangles came from which solid, one colour was all it could
+  // wear. `paints` is that answer: one entry per group, naming the solid whose
+  // triangles are in it.
+  //
+  // Checked against the GEOMETRY rather than against the renderer, because the
+  // claim is a geometric one. If group k really is the part's triangles and
+  // nobody else's, then for two disjoint cubes group k is a closed cube of
+  // volume 8 all by itself -- and a number cannot be approximately the right
+  // solid.
+
+  /** Signed volume of one group's triangles alone. */
+  const groupVolume = (geometry: BufferGeometry, at: number): number => {
+    const group = geometry.groups[at]
+    const pos = geometry.getAttribute('position')
+    const index = geometry.getIndex()
+    const vertex = (i: number) =>
+      new Vector3().fromBufferAttribute(pos, index ? index.getX(i) : i)
+
+    let volume = 0
+    const end = group.start + group.count
+    for (let i = group.start; i + 2 < end; i += 3) {
+      const a = vertex(i)
+      const b = vertex(i + 1)
+      const c = vertex(i + 2)
+      volume += a.dot(new Vector3().crossVectors(b, c)) / 6
+    }
+    return volume
+  }
+
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const at = (x: number, id: string, color?: string): SceneObject => ({
+    ...object(cube, [], [], id),
+    color,
+    transform: { position: [x, 0, 0], rotation: [0, 0, 0] },
+  })
+
+  {
+    const merged: SceneObject = {
+      ...at(0, 'red-host', '#cc2222'),
+      parts: [at(4, 'blue-guest', '#2244cc')],
+    }
+
+    resetEvaluator()
+    const { geometry, paints } = evaluateObject(merged)
+
+    check(
+      'a merge of two solids reports both of them',
+      paints.length === 2 && paints.includes('red-host') && paints.includes('blue-guest'),
+      paints.join(',')
+    )
+    check(
+      'one group per solid, so every group has a colour to wear',
+      geometry.groups.length === paints.length,
+      `${geometry.groups.length} groups, ${paints.length} paints`
+    )
+
+    const host = paints.indexOf('red-host')
+    const guest = paints.indexOf('blue-guest')
+    if (host >= 0 && guest >= 0 && geometry.groups.length === 2) {
+      near("the host's group is the host's cube, whole", groupVolume(geometry, host), 8, 0.02)
+      near("and the part's is the part's", groupVolume(geometry, guest), 8, 0.02)
+    }
+    geometry.dispose()
+  }
+
+  {
+    // Nesting, since a part may itself be a merge: its own parts have to arrive
+    // still saying which triangles were whose, or a merge of a merge would
+    // flatten to two colours instead of three.
+    const nested: SceneObject = {
+      ...at(0, 'outer-c'),
+      parts: [{ ...at(4, 'middle-c'), parts: [at(8, 'inner-c')] }],
+    }
+
+    resetEvaluator()
+    const { geometry, paints } = evaluateObject(nested)
+    check(
+      'a merge of a merge reports all three',
+      paints.length === 3 &&
+        ['outer-c', 'middle-c', 'inner-c'].every((id) => paints.includes(id)),
+      paints.join(',')
+    )
+    geometry.dispose()
+  }
+
+  {
+    // A part swallowed whole shows no face, so it must claim no colour: a paint
+    // for a solid with nothing on screen would leave the viewport building a
+    // material for a group that does not exist.
+    const swallowed: SceneObject = {
+      ...object({ kind: 'box', size: [4, 4, 4] }, [], [], 'big'),
+      parts: [at(0, 'tiny')],
+    }
+
+    resetEvaluator()
+    const { geometry, paints } = evaluateObject(swallowed)
+    check(
+      'a part buried inside its host claims no colour',
+      paints.length === 1 && paints[0] === 'big',
+      paints.join(',')
+    )
+    geometry.dispose()
+  }
+
+  {
+    // The cache key must not mention colour. It reads the parts, and a part
+    // carries its colour, so the obvious serialisation re-runs every boolean in
+    // an assembly to repaint one solid of it -- for a result identical triangle
+    // for triangle. Identity is the check: a cache hit hands back the very same
+    // geometry.
+    const painted: SceneObject = {
+      ...at(0, 'keep-host', '#cc2222'),
+      parts: [at(4, 'keep-guest', '#2244cc')],
+    }
+
+    resetEvaluator()
+    const first = evaluateDoc(scene(painted))
+    const before = first.objects[0].geometry
+    const named = first.objects[0].paints.join(',')
+
+    const repainted: SceneObject = {
+      ...painted,
+      color: '#22cc44',
+      parts: [{ ...painted.parts[0], color: '#cccc22' }],
+    }
+    const second = evaluateDoc(scene(repainted))
+    check(
+      'recolouring a merged object re-runs no boolean',
+      second.objects[0].geometry === before,
+      second.objects[0].geometry === before ? 'same geometry' : 'rebuilt'
+    )
+    check(
+      'and the paints still name the solids, not the colours',
+      second.objects[0].paints.join(',') === named,
+      second.objects[0].paints.join(',')
+    )
+  }
+
+  {
+    // The property a multi-material mesh actually rests on: the groups TILE the
+    // index buffer. A gap is triangles nothing draws, an overlap is triangles
+    // drawn twice in two colours, and neither throws -- both just look wrong,
+    // which is the kind of wrong a headless check is for. Run against the worst
+    // case there is: an assembly three levels deep, with a pocket through the
+    // host and a plane cut across the lot.
+    const drilled: Feature = {
+      ...defaultFeature({ on: 'box-face', face: 2, u: 0, v: 0 }, { type: 'circle', r: 0.4 }),
+      depth: -3,
+    }
+    const sliced: CutPlane = { id: 'paint-cut', origin: [0, 0, 0], normal: [0, 0, 1], side: 1 }
+    const gnarly: SceneObject = {
+      ...object(cube, [drilled], [sliced], 'g-host'),
+      parts: [at(1.5, 'g-one'), { ...at(3.2, 'g-two'), parts: [at(1.4, 'g-three')] }],
+    }
+
+    resetEvaluator()
+    const { geometry, paints, failed } = evaluateObject(gnarly)
+    check('a pocket and a cut lose no solid', paints.length === 4, paints.join(','))
+    check('and nothing failed on the way', failed.length === 0, failed.join(','))
+
+    const index = geometry.getIndex()
+    const total = index ? index.count : geometry.getAttribute('position').count
+    const covered = new Array<number>(total).fill(0)
+    let stray = 0
+    for (const group of geometry.groups) {
+      if ((group.materialIndex ?? -1) < 0 || (group.materialIndex ?? 0) >= paints.length) stray++
+      for (let i = group.start; i < Math.min(group.start + group.count, total); i++) {
+        covered[i] += 1
+      }
+    }
+    check('every group points at a paint', stray === 0, `${stray} stray`)
+    check(
+      'and the groups tile the mesh -- no triangle undrawn',
+      covered.every((n) => n === 1),
+      `${covered.filter((n) => n === 0).length} bare, ${covered.filter((n) => n > 1).length} doubled`
+    )
+    geometry.dispose()
+  }
+
+  {
+    // An unmerged solid is ONE paint, and that has to stay true rather than
+    // merely equivalent: the viewport gives a single-paint object one plain
+    // material, because a mesh with an ARRAY material draws group by group and
+    // a base solid that never met a boolean has no groups to draw.
+    resetEvaluator()
+    const { geometry, paints } = evaluateObject(object(cube, [], [], 'lonely'))
+    check(
+      'a lone solid is one paint',
+      paints.length === 1 && paints[0] === 'lonely',
+      paints.join(',')
+    )
+    geometry.dispose()
+  }
+}
+
+// --- 20. Erasing takes material away, and keeps it away ---------------------
+console.log('\n20. Erasing takes material away, and keeps it away')
+{
+  // An eraser is a solid stored on the object it cut -- the negative of a
+  // merged part -- and the whole of what makes it an ERASER rather than one
+  // more step in the middle is WHERE it runs: last, after the features and the
+  // cuts. Everything below is that claim, measured.
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const drill: BaseSolid = { kind: 'cylinder', radius: 0.4, height: 4 }
+
+  const hole = (id: string, at: Vec3): SceneObject => ({
+    ...object(drill, [], [], id),
+    transform: { position: at, rotation: [0, 0, 0] },
+  })
+
+  {
+    resetEvaluator()
+    const plain = evaluateObject(object(cube, [], [], 'plain'))
+    const whole = signedVolume(plain.geometry)
+    plain.geometry.dispose()
+
+    const drilled: SceneObject = {
+      ...object(cube, [], [], 'drilled'),
+      erased: [hole('bore', [0, 0, 0])],
+    }
+    resetEvaluator()
+    const cut = evaluateObject(drilled)
+    // A 0.4-radius bore clean through a 2-cube takes pi * 0.16 * 2 of it.
+    near('a bore takes its own volume out', whole - signedVolume(cut.geometry), Math.PI * 0.16 * 2, 0.02)
+    check('and nothing failed', cut.failed.length === 0, cut.failed.join(','))
+    cut.geometry.dispose()
+  }
+
+  {
+    // The ordering claim. A boss raised on the top face passes straight through
+    // where the bore runs; erasing LAST means the bore wins. Applied before the
+    // features instead, the boss would have filled the hole back in and the two
+    // volumes below would be equal.
+    const boss: Feature = {
+      ...defaultFeature({ on: 'box-face', face: 2, u: 0, v: 0 }, { type: 'circle', r: 0.6 }),
+      depth: 0.5,
+    }
+    resetEvaluator()
+    const bossed = evaluateObject(object(cube, [boss], [], 'bossed'))
+    const withBoss = signedVolume(bossed.geometry)
+    bossed.geometry.dispose()
+
+    resetEvaluator()
+    const both = evaluateObject({
+      ...object(cube, [boss], [], 'bossed-bore'),
+      erased: [hole('bore2', [0, 0, 0])],
+    })
+    const drilledVolume = signedVolume(both.geometry)
+    both.geometry.dispose()
+    check(
+      'a boss grown into the hole does not fill it back in',
+      withBoss - drilledVolume > 1,
+      `${(withBoss - drilledVolume).toFixed(4)} removed`
+    )
+  }
+
+  {
+    // A cut and an eraser on the same solid. Both take material away and they
+    // must compose rather than cancel: half a cube, then a bore through what
+    // is left.
+    const keep: CutPlane = { id: 'erase-cut', origin: [0, 0, 0], normal: [0, 0, 1], side: 1 }
+    resetEvaluator()
+    const halved = evaluateObject(object(cube, [], [keep], 'halved'))
+    const half = signedVolume(halved.geometry)
+    halved.geometry.dispose()
+
+    resetEvaluator()
+    const both = evaluateObject({
+      ...object(cube, [], [keep], 'halved-bore'),
+      erased: [hole('bore3', [0, 0, 0])],
+    })
+    // The bore straddles the cut plane, so exactly half of it lands in the half
+    // that was kept.
+    near('a cut and an eraser compose', half - signedVolume(both.geometry), Math.PI * 0.16, 0.02)
+    both.geometry.dispose()
+  }
+
+  {
+    // A hole is a solid, and it scales with the object it is in. Left alone it
+    // would stay the size it was while the object grew around it, which is the
+    // one thing a user resizing a drilled block never means.
+    const drilled: SceneObject = {
+      ...object(cube, [], [], 'scaled'),
+      erased: [hole('bore4', [0, 0, 0])],
+    }
+    resetEvaluator()
+    const before = evaluateObject(drilled)
+    const wasVolume = signedVolume(before.geometry)
+    before.geometry.dispose()
+
+    const bigger = scaleAssembly(drilled, 2)
+    resetEvaluator()
+    const after = evaluateObject(bigger)
+    // Every length doubled, so every volume is eight times what it was -- the
+    // hole included. A hole that stayed put would leave more material than that.
+    near('doubling the object doubles the hole', signedVolume(after.geometry), wasVolume * 8, 0.05)
+    after.geometry.dispose()
+  }
+
+  {
+    // The walls the hole opens up wear the OBJECT's paint, the rule a pocket's
+    // walls and a cut face already follow. An eraser is not in the scene by the
+    // time this runs and has no colour of its own to lend.
+    resetEvaluator()
+    const { geometry, paints } = evaluateObject({
+      ...object(cube, [], [], 'painted'),
+      color: '#cc2222',
+      erased: [hole('bore5', [0, 0, 0])],
+    })
+    check(
+      'the hole wears the colour of the solid it is in',
+      paints.length === 1 && paints[0] === 'painted',
+      paints.join(',')
+    )
+    geometry.dispose()
+  }
+
+  {
+    // An eraser parked clear of the solid must take nothing. The store refuses
+    // to store one that would -- see `removesMaterial` -- but the evaluator has
+    // to be harmless about it either way.
+    resetEvaluator()
+    const missed = evaluateObject({
+      ...object(cube, [], [], 'missed'),
+      erased: [hole('bore6', [0, 6, 0])],
+    })
+    near('an eraser that misses removes nothing', signedVolume(missed.geometry), 8, 1e-6)
+    missed.geometry.dispose()
+  }
 }
 
 console.log(

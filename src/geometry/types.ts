@@ -170,9 +170,15 @@ export type SceneObject = {
    * Optional rather than defaulted at creation so an untouched scene stays
    * exactly the document it was before colour existed: nothing to serialise,
    * nothing to diff, and one place -- the default above -- that decides what
-   * grey means. Colour belongs to the OBJECT, not to its parts: a merged
-   * assembly evaluates to a single mesh, so a part carrying a colour of its own
-   * would be describing a surface nothing draws.
+   * grey means.
+   *
+   * EVERY SOLID CARRIES ITS OWN, parts included. A merged assembly evaluates to
+   * a single mesh, but that mesh is grouped by the solid each triangle came
+   * from -- see `ObjectEval.paints` -- so a part's colour is a surface the
+   * viewport genuinely draws, and merging a red cube into a blue one leaves an
+   * object that is still red and blue. Painting an assembly through
+   * `setObjectColor` reaches all the way down, so "one colour" stays reachable;
+   * it is simply no longer forced.
    */
   color?: string
   base: BaseSolid
@@ -195,6 +201,40 @@ export type SceneObject = {
    * than flattening, so the parts of the parts survive too.
    */
   parts: SceneObject[]
+  /**
+   * This object is an ERASER: a solid dragged in to take material away rather
+   * than to add it.
+   *
+   * A whole SceneObject and not a mode on some tool, because the point of it is
+   * that you aim it the way you aim anything else -- the same gizmo, the same
+   * Position panel, the same Size field, the same snapping. A tool with its own
+   * cut-down set of controls would be a second, worse way to place a solid.
+   *
+   * It draws as a translucent red ghost and takes nothing away until it is
+   * confirmed. A live preview would mean re-running the boolean on every
+   * overlapped object on every frame of every drag, which is the one thing the
+   * evaluator's whole design is arranged to avoid.
+   *
+   * Absent rather than false on an ordinary solid: an untouched scene stays
+   * exactly the document it was before erasers existed.
+   */
+  erase?: boolean
+  /**
+   * Solids that have been erased OUT of this one, each a whole SceneObject in
+   * this object's local space -- the negative of `parts`.
+   *
+   * Applied LAST, after the features and the cuts, which is what makes it an
+   * eraser rather than one more step in the middle: a boss grown into the hole
+   * afterwards does not fill it back in.
+   *
+   * The user cannot see or edit these. Confirming a subtraction is a one-way
+   * act -- the eraser is consumed and there is no row to reopen. They are still
+   * stored rather than baked into a mesh because every mesh in this app is
+   * DERIVED from the document: freezing the result would mean a base solid that
+   * is a bag of triangles, and the object would lose its Size field, its
+   * sketches and its cuts along with its editability.
+   */
+  erased?: SceneObject[]
 }
 
 export type Doc = { objects: SceneObject[] }
@@ -279,6 +319,10 @@ export function cloneObject(obj: SceneObject): SceneObject {
     features: o.features.map((f) => ({ ...f, id: nextFeatureId() })),
     cuts: o.cuts.map((c) => ({ ...c, id: nextCutId() })),
     parts: o.parts.map(remint),
+    // Holes travel with the copy, and their ids are reminted like everything
+    // else: an erased solid is a whole SceneObject, and two of them sharing an
+    // id would collide in every map keyed by one.
+    ...(o.erased ? { erased: o.erased.map(remint) } : {}),
   })
   return remint(structuredClone(obj))
 }

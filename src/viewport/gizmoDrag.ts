@@ -107,7 +107,8 @@ export type TurnGrab = {
   position: Vec3
   /** Last frame's raw pointer angle, for unwrapping. */
   lastAngle: number
-  /** Signed total swept since the grab, unwrapped, in radians. */
+  /** Signed total swept since the grab, unwrapped, in radians. Raw: the
+   *  detents `snapTurn` applies are never folded back in here. */
   total: number
 }
 
@@ -234,6 +235,44 @@ export function advanceTurn(grab: TurnGrab, angle: number): number {
   grab.total += wrap(angle - grab.lastAngle)
   grab.lastAngle = angle
   return grab.total
+}
+
+/** The detents a turn lands on: every 45 degrees, the whole way round. Eight
+ *  of them, which are the angles a thing built out of boxes wants to sit at. */
+export const TURN_SNAP = Math.PI / 4
+
+/** How near one has to come to be taken by it -- 3 degrees either side, so
+ *  everything from 42 to 48 reads as 45, and the same at every other detent. */
+export const TURN_SNAP_WINDOW = (3 * Math.PI) / 180
+
+/**
+ * Pull a sweep onto the nearest detent, if it is close enough to one.
+ *
+ * A magnet rather than a ratchet: between the detents the turn stays
+ * continuous, so 20 degrees still means 20 degrees. Only the last few degrees
+ * of the approach are taken over, which is the part a hand cannot do -- landing
+ * a free drag on exactly 90 is a matter of luck at any zoom level, and being
+ * one degree out is invisible until two faces refuse to sit flush.
+ *
+ * Zero is a detent like any other, so the first 3 degrees of every gesture hold
+ * still and a press that was meant as a click leaves the target where it was.
+ *
+ * It snaps the SWEEP, not the angle the target ends up at: what lands on a
+ * multiple of 45 is how far THIS gesture has turned, added to whatever the
+ * target already carried. An object standing askew at 10 degrees turns to 55,
+ * not to 45. The ring measures a turn rather than a heading, and its readout
+ * says so; a snap that quietly corrected the object's own angle as well would
+ * move it by an amount the user never dragged.
+ *
+ * Pure, and deliberately kept out of the running total: `advanceTurn` goes on
+ * accumulating the raw pointer angle, so a drag that crosses a detent and
+ * carries on comes out the far side exactly where the pointer is. Were the
+ * snapped value written back instead, every crossing would shift the origin of
+ * the measurement and the error would pile up over a long turn.
+ */
+export function snapTurn(total: number): number {
+  const detent = Math.round(total / TURN_SNAP) * TURN_SNAP
+  return Math.abs(total - detent) <= TURN_SNAP_WINDOW ? detent : total
 }
 
 /**

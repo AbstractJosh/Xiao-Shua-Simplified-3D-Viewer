@@ -16,12 +16,13 @@ import { RECENT_COLOR_SLOTS, useTools } from '../store/toolStore'
 import { Section } from './Field'
 
 /**
- * Colour, on the View tab under Shapes.
+ * Colour, in the console under Shapes.
  *
- * It sits with the palettes rather than in Edit, beside the other controls that
- * only wake up once something is selected, for a reason that is about the
- * gesture rather than about the data: the two panels above it are the ones you
- * come to the View tab to use, and choosing a colour is the same kind of act --
+ * It sits with the palettes rather than with the selection panel in the
+ * viewport, beside the other controls that only wake up once something is
+ * selected, for a reason that is about the gesture rather than about the data:
+ * the two panels above it are the ones you come to the console to use, and
+ * choosing a colour is the same kind of act --
  * you reach for a swatch, not for a field on the thing you have selected. Apply
  * is what ties it back to the selection, and it is the only part of this panel
  * that reaches outside it.

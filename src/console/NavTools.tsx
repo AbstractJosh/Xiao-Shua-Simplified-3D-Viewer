@@ -176,12 +176,16 @@ export function HelpTool() {
     <NavTool id="help" label="Help" icon={<HelpIcon />} panelTitle="Controls" align="right">
       <ul className="keys">
         <li><b>Drag</b> a solid from Solids into the scene to add it</li>
+        <li><b>Sweep across</b> a Solids row to choose how many sides its base has</li>
+        <li><b>Drag the small grip</b> at the right of a Solids row to place the same solid as an <b>eraser</b> -- aim it like anything else, then confirm the subtraction under Position &amp; Rotation</li>
         <li><b>Drag</b> a 2D shape from Shapes onto any object</li>
         <li><b>Click</b> an object to select it, then <b>drag</b> it to move it</li>
         <li><b>Shift-click</b> objects to gather them, then <b>Merge</b> under Scene</li>
         <li><b>Drag from empty space</b> for a selection box; it takes every object whose gizmo falls inside it</li>
         <li><b>Shift</b> while dragging the box adds its catch to what is already selected</li>
         <li>Merged solids become one object with one gizmo; undo takes them apart</li>
+        <li>The <b>Scene</b> list is a priority order -- use a row's arrows to move it, and where two objects share a surface the higher one is drawn</li>
+        <li><b>Export</b> writes the whole scene: .glb, .obj or .stl for a mesh, .step for a CAD solid</li>
         <li><b>Shift</b> while moving an object lifts it instead</li>
         <li><b>Drag</b> a gizmo arrow to move along that axis, snapping as it goes</li>
         <li><b>Right-drag</b> the same arrow to resize the object along it</li>
@@ -201,12 +205,12 @@ export function HelpTool() {
         <li><b>Delete</b> removes the selected sketch, or the object</li>
         <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>
         <li><b>Ctrl+C</b> / <b>Ctrl+V</b> copy the selected object and paste it beside itself</li>
-        <li>The console has two tabs: <b>View</b> holds Clipboard, Solids, Shapes, Colour and Scene; <b>Edit</b> holds the controls for whatever is selected</li>
+        <li>The console on the right holds the scene: Clipboard, Solids, Shapes, Colour and Scene</li>
         <li><b>Colour</b> paints the selected objects: turn the ring for the hue, the slider for brightness, then <b>Apply</b></li>
         <li>Or type the colour straight into the <b>hex field</b> under Apply -- that is also the way to reach a muted one, since the ring carries hue alone</li>
         <li>Applied colours land on the <b>shelf</b> below; click one to load it back into the picker</li>
-        <li>A dot on <b>Edit</b> means something is selected and its controls are waiting there</li>
-        <li>Saved objects live in <b>Clipboard</b>, on the View tab; drag one back in</li>
+        <li>Selecting something slides its <b>position, rotation and size</b> into the bottom-right of the viewport; a selected sketch adds its own controls under them</li>
+        <li>Saved objects live in <b>Clipboard</b>, at the top of the console; drag one back in</li>
         <li>Each tile turns on its own; <b>sweep across one</b> to spin it and look it over</li>
         <li>Three tiles show models at a time; <b>scroll the row sideways</b> for the rest</li>
       </ul>

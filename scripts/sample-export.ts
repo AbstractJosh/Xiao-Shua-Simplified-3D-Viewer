@@ -217,20 +217,86 @@ const SAMPLES: { name: string; format: ExportFormat; doc: Doc }[] = [
       ],
     },
   },
+  {
+    // For a slicer. STL is triangles and nothing else, so what this proves is
+    // simply that the solid is watertight -- which a slicer will say plainly if
+    // it is not.
+    name: `${APP_SLUG}-cube-boss-and-pocket`,
+    format: 'stl',
+    doc: {
+      objects: [
+        object(
+          { kind: 'box', size: [2, 2, 2] },
+          {
+            features: [
+              sketch({
+                anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
+                shape: { type: 'circle', r: 0.35 },
+                depth: 0.35,
+              }),
+              sketch({
+                anchor: { on: 'box-face', face: 0, u: -0.4, v: 0.4 },
+                shape: { type: 'circle', r: 0.2 },
+                depth: -2.5,
+              }),
+            ],
+          }
+        ),
+      ],
+    },
+  },
+  {
+    // For a CAD package, and the sample worth opening first: a drilled and cut
+    // block, where the thing to look at is the TOPOLOGY. Each flat face should
+    // select as one face rather than as a fan of triangles, the drilled face
+    // should carry its hole as an inner boundary, and the whole thing should
+    // arrive as a solid body that will take a fillet.
+    name: `${APP_SLUG}-drilled-and-cut`,
+    format: 'step',
+    doc: {
+      objects: [
+        object(
+          { kind: 'box', size: [2, 2, 2] },
+          {
+            cut: 'keep+',
+            features: [
+              sketch({
+                anchor: { on: 'box-face', face: 2, u: 0, v: 0 },
+                shape: { type: 'circle', r: 0.4 },
+                depth: -3,
+              }),
+              sketch({
+                anchor: { on: 'box-face', face: 0, u: 0, v: 0 },
+                shape: { type: 'rect', w: 0.8, h: 0.8 },
+                depth: -0.5,
+              }),
+            ],
+          }
+        ),
+        object({ kind: 'prism', radius: 1, height: 1.8, sides: 6 }, { at: [3.4, 0, 0] }),
+      ],
+    },
+  },
 ]
 
 for (const { name, format, doc } of SAMPLES) {
   resetEvaluator()
   const result = evaluateDoc(doc)
   const geometry = mergedGeometry(doc, result)
-  const { blob, triangles, vertices } = await buildExportBlob(geometry, format)
+  // A fixed stamp, so re-running this writes byte-identical files and a diff
+  // against the last run shows geometry changes rather than the clock.
+  const { blob, triangles, vertices, detail } = await buildExportBlob(
+    geometry,
+    format,
+    '2026-01-01T00:00:00'
+  )
   geometry.dispose()
   const buf = Buffer.from(await blob.arrayBuffer())
   const file = join(outDir, `${name}.${format}`)
   writeFileSync(file, buf)
   console.log(
     `${file}\n  ${(buf.length / 1024).toFixed(1)} KB - ${doc.objects.length} object(s) - ` +
-      `${triangles.toLocaleString()} tris - ${vertices.toLocaleString()} verts` +
+      (detail ?? `${triangles.toLocaleString()} tris - ${vertices.toLocaleString()} verts`) +
       `${result.failed.length ? ` - FAILED: ${result.failed.join(',')}` : ''}`
   )
 }

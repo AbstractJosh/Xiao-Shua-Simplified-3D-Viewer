@@ -41,6 +41,31 @@ function walk(
 }
 
 /**
+ * The colour of every solid in the object, keyed by the id its paint uses.
+ *
+ * The evaluator hands the viewport a list of PAINT KEYS -- one per group in the
+ * merged geometry, each the id of the solid whose triangles are in it -- and
+ * this is the other half of that: the colours the document holds for those ids.
+ * The two together are what let one mesh wear several colours.
+ *
+ * `undefined` for a solid that was never painted, which is not the same as
+ * absent: the caller has to be able to tell "this part is the default grey"
+ * from "this key is not one of ours", and only the first should draw.
+ *
+ * Walks the whole tree for the reason everything else here does -- a part that
+ * was itself a merge brings its own parts' colours with it.
+ */
+export function assemblyColors(obj: SceneObject): Map<string, string | undefined> {
+  const colors = new Map<string, string | undefined>()
+  const collect = (o: SceneObject) => {
+    colors.set(o.id, o.color)
+    for (const part of o.parts) collect(part)
+  }
+  collect(obj)
+  return colors
+}
+
+/**
  * The centre of a merged object, in its OWN local space.
  *
  * The average of every constituent solid's origin -- the host's, which is the
@@ -149,6 +174,26 @@ export function assemblyParams(obj: SceneObject): number[] {
 }
 
 /** The solids alone: bases, the offsets between them, and the cuts through them. */
+/**
+ * A solid nested inside another -- a merged part, or a hole erased out of it --
+ * scaled along with its host.
+ *
+ * The offset from the host scales as well as the solid. Scaling the solids and
+ * leaving the gaps would pull a merged assembly apart at exactly the rate it
+ * grew, and would slide every hole out from under the feature it was cut for.
+ */
+const scaleNested = (f: number) => (nested: SceneObject): SceneObject => ({
+  ...scaleSolids(nested, f),
+  transform: {
+    ...nested.transform,
+    position: [
+      nested.transform.position[0] * f,
+      nested.transform.position[1] * f,
+      nested.transform.position[2] * f,
+    ] as Vec3,
+  },
+})
+
 function scaleSolids(obj: SceneObject, f: number): SceneObject {
   const base = scaleUniform(obj.base, f)
   return {
@@ -166,20 +211,11 @@ function scaleSolids(obj: SceneObject, f: number): SceneObject {
       ...cut,
       origin: [cut.origin[0] * f, cut.origin[1] * f, cut.origin[2] * f] as Vec3,
     })),
-    parts: obj.parts.map((part) => ({
-      ...scaleSolids(part, f),
-      // The gap between a part and its host is a length too. Scaling the solids
-      // and leaving the gaps would pull a merged assembly apart at exactly the
-      // rate it grew.
-      transform: {
-        ...part.transform,
-        position: [
-          part.transform.position[0] * f,
-          part.transform.position[1] * f,
-          part.transform.position[2] * f,
-        ] as Vec3,
-      },
-    })),
+    parts: obj.parts.map(scaleNested(f)),
+    // A hole is a solid like any other and scales with the object it is in.
+    // Left alone it would stay the size it was while the object grew around it,
+    // which is the one thing a user resizing a drilled block never means.
+    ...(obj.erased ? { erased: obj.erased.map(scaleNested(f)) } : {}),
   }
 }
 

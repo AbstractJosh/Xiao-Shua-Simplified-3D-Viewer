@@ -2,10 +2,21 @@ import { Mesh, MeshStandardMaterial } from 'three'
 import type { BufferGeometry } from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js'
+import { STLExporter } from 'three/addons/exporters/STLExporter.js'
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js'
+import { buildStep } from './step'
 import { EXPORT_MODEL_NAME, LOG_TAG } from '../appInfo'
 
-export type ExportFormat = 'glb' | 'obj'
+/**
+ * Four formats, and they answer two different questions.
+ *
+ * GLB, OBJ and STL are MESH formats: a surface made of triangles, which is
+ * exactly what the evaluator produces, so all three are a serialisation of what
+ * is already on screen. STEP is a SOLID format -- faces on surfaces bounded by
+ * edges bounded by vertices -- so it is the only one that has to reconstruct
+ * anything, and `brep.ts` is where that happens.
+ */
+export type ExportFormat = 'glb' | 'obj' | 'stl' | 'step'
 
 export type ExportResult = {
   filename: string
@@ -14,11 +25,16 @@ export type ExportResult = {
   vertices: number
   /** False when welding was skipped, so the caller can stay honest about it. */
   welded: boolean
+  /** What the format made of the solid, when that is worth saying: STEP reports
+   *  the bodies and faces it built, since neither is a triangle count. */
+  detail?: string
 }
 
 export const FORMAT_INFO: Record<ExportFormat, { label: string; mime: string; ext: string }> = {
   glb: { label: 'GLB', mime: 'model/gltf-binary', ext: 'glb' },
   obj: { label: 'OBJ', mime: 'model/obj', ext: 'obj' },
+  stl: { label: 'STL', mime: 'model/stl', ext: 'stl' },
+  step: { label: 'STEP', mime: 'model/step', ext: 'step' },
 }
 
 export function triangleCount(geom: BufferGeometry): number {
@@ -75,10 +91,40 @@ export function prepareForExport(geometry: BufferGeometry): {
  */
 export async function buildExportBlob(
   geometry: BufferGeometry,
-  format: ExportFormat
-): Promise<{ blob: Blob; triangles: number; vertices: number; welded: boolean }> {
+  format: ExportFormat,
+  /** Written into the STEP header. Passed in so a file is reproducible. */
+  timestamp = new Date().toISOString().replace(/[.]\d+Z$/, '')
+): Promise<{
+  blob: Blob
+  triangles: number
+  vertices: number
+  welded: boolean
+  detail?: string
+}> {
   if (triangleCount(geometry) === 0) {
     throw new Error('Nothing to export: the solid is empty.')
+  }
+
+  // STEP takes the geometry UNWELDED. `prepareForExport` welds on position and
+  // normal together, which keeps hard edges looking hard and is exactly right
+  // for a mesh format -- and exactly wrong here, where a cube corner has to
+  // come out as one vertex rather than three. `brep.ts` does its own welding,
+  // on position alone, for that reason.
+  if (format === 'step') {
+    const step = buildStep(geometry, { name: EXPORT_MODEL_NAME, timestamp })
+    const bodies =
+      step.solids > 0
+        ? `${step.solids} solid${step.solids === 1 ? '' : 's'}`
+        : `${step.surfaces} surface${step.surfaces === 1 ? '' : 's'}`
+    return {
+      blob: new Blob([step.text], { type: FORMAT_INFO.step.mime }),
+      triangles: triangleCount(geometry),
+      vertices: geometry.getAttribute('position').count,
+      welded: true,
+      detail:
+        `${bodies} · ${step.faces.toLocaleString()} faces` +
+        (step.openEdges > 0 ? ` · ${step.openEdges} open edges` : ''),
+    }
   }
 
   const { geom, welded } = prepareForExport(geometry)
@@ -101,6 +147,18 @@ export async function buildExportBlob(
     if (format === 'obj') {
       const text = new OBJExporter().parse(mesh)
       return { blob: new Blob([text], { type: FORMAT_INFO.obj.mime }), ...stats }
+    }
+
+    if (format === 'stl') {
+      // Binary rather than ASCII: an STL vertex is written three times over
+      // whatever happens -- the format has no index -- so the one saving left
+      // to make is not spelling every float out in decimal, which is roughly a
+      // fifth of the size for exactly the same triangles.
+      const stl = new STLExporter().parse(mesh, { binary: true }) as DataView
+      // Through a Uint8Array view rather than the DataView itself: `Blob` wants
+      // a plain byte source, and the two describe the same bytes.
+      const bytes = new Uint8Array(stl.buffer as ArrayBuffer, stl.byteOffset, stl.byteLength)
+      return { blob: new Blob([bytes], { type: FORMAT_INFO.stl.mime }), ...stats }
     }
 
     const gltf = await new GLTFExporter().parseAsync(mesh, { binary: true })
@@ -135,8 +193,8 @@ export async function exportSolid(
   format: ExportFormat,
   baseName: string
 ): Promise<ExportResult> {
-  const { blob, triangles, vertices, welded } = await buildExportBlob(geometry, format)
+  const { blob, triangles, vertices, welded, detail } = await buildExportBlob(geometry, format)
   const filename = `${baseName}.${FORMAT_INFO[format].ext}`
   downloadBlob(blob, filename)
-  return { filename, bytes: blob.size, triangles, vertices, welded }
+  return { filename, bytes: blob.size, triangles, vertices, welded, detail }
 }

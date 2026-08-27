@@ -17,12 +17,13 @@ import {
   makeObject,
   nextFeatureId,
   nextObjectId,
+  solidLabel,
 } from '../geometry/types'
 import { clampDepth, conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
 import { assemblyBounds, assemblyParams, scaleAssembly } from '../geometry/assembly'
 import { baseParams } from '../geometry/dimensions'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
-import { evaluateObject } from '../geometry/evaluate'
+import { evaluateObject, removesMaterial, worldBounds } from '../geometry/evaluate'
 import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
 
 /** Depth the Extrude button gives a flat sketch, so the slider has somewhere
@@ -167,17 +168,45 @@ type State = {
    */
   mergeObjects: (ids: string[]) => number
 
-  startPlacingSolid: (base: BaseSolid) => void
+  /**
+   * Begin dragging a primitive in from the Solids list.
+   *
+   * `erase` makes it an ERASER: the same solid, aimed the same way, drawn as a
+   * translucent red ghost and taking nothing away until it is confirmed. It is
+   * a flag on the object rather than a separate gesture because everything
+   * after the drop -- moving, turning, resizing, snapping -- is identical, and
+   * a second placement path would be a second set of bugs.
+   */
+  startPlacingSolid: (base: BaseSolid, erase?: boolean) => void
   updatePlacingSolid: (position: Vec3 | null) => void
   commitPlacingSolid: () => void
 
-  addObject: (base: BaseSolid, position: Vec3) => string
+  /** `erase` drops it as an eraser rather than as a solid. See
+   *  `startPlacingSolid`; this is the keyboard's way in. */
+  addObject: (base: BaseSolid, position: Vec3, erase?: boolean) => string
   /**
    * Drop a copy of an object into the scene, clear of whatever it was copied
    * from. Returns the new object's id.
    */
   pasteObject: (object: SceneObject) => string
   removeObject: (id: string) => void
+  /**
+   * Move an object up or down the scene list -- `-1` toward the top, `+1`
+   * toward the bottom -- and with it, its rendering priority.
+   *
+   * The list has always been an order; this is what makes the order MEAN
+   * something. Where two solids present the very same surface -- the commonest
+   * case being two overlapping objects severed by one cut plane, whose caps are
+   * then coplanar and overlapping -- the depth buffer has no tiebreak and the
+   * shared face tears into a stipple of both colours. Which of them ought to
+   * win is not a question geometry can answer, so it is put to the user as the
+   * one control that can: position in the tree. Higher wins. See `depthBias`.
+   *
+   * A delta rather than a target index because the control is a pair of arrows
+   * on a row, and clamping "already at the top" to a no-op here keeps the
+   * button from spending an undo step on nothing.
+   */
+  moveObject: (id: string, delta: number) => void
   setObjectTransform: (id: string, transform: ObjectTransform) => void
   patchObject: (id: string, patch: Partial<SceneObject>) => void
   /**
@@ -267,6 +296,23 @@ type State = {
 
   /** Returns how many objects the plane genuinely severed. */
   applyCut: (originWorld: Vec3, normalWorld: Vec3, targetObjectIds: string[]) => number
+
+  /**
+   * Subtract an eraser from the objects it overlaps, and consume it.
+   *
+   * ONE WAY. The eraser leaves the scene and each object it cut keeps the hole
+   * as a negative solid it can no longer reach -- see `SceneObject.erased`. Undo
+   * puts the whole thing back in a single step, which is the only way back.
+   *
+   * `targetObjectIds` is the candidate list, so the caller decides whether that
+   * means every object in the scene or only the ones selected alongside the
+   * eraser. Whatever the list, an object the eraser does not actually take
+   * material out of is left alone rather than made to carry a hole that removes
+   * nothing and costs a boolean on every evaluation for ever.
+   *
+   * Returns how many objects genuinely lost material.
+   */
+  applyErase: (eraserId: string, targetObjectIds: string[]) => number
 
   undo: () => void
   redo: () => void
@@ -471,7 +517,10 @@ export const useDoc = create<State>((set, get) => {
       const { doc } = get()
       const chosen = ids
         .map((id) => doc.objects.find((o) => o.id === id))
-        .filter((o): o is SceneObject => o !== undefined)
+        // An eraser is a tool, not a part. Skipped rather than refused: a
+        // selection holding an eraser and two solids is a selection where the
+        // two solids are what the user meant to weld together.
+        .filter((o): o is SceneObject => o !== undefined && !o.erase)
       if (chosen.length < 2) return 0
 
       const [host, ...rest] = chosen
@@ -497,9 +546,15 @@ export const useDoc = create<State>((set, get) => {
       return rest.length
     },
 
-    startPlacingSolid: (base) =>
+    startPlacingSolid: (base, erase = false) =>
       set({
-        drag: { kind: 'placing-solid', template: makeObject(base, ZERO), position: null },
+        drag: {
+          kind: 'placing-solid',
+          template: erase
+            ? { ...makeObject(base, ZERO), name: `${solidLabel(base)} eraser`, erase: true }
+            : makeObject(base, ZERO),
+          position: null,
+        },
       }),
 
     startPlacingSolidTemplate: (template) =>
@@ -533,8 +588,11 @@ export const useDoc = create<State>((set, get) => {
       set({ drag: { kind: 'idle' }, selectedObjectIds: [object.id], selectedFeatureId: null })
     },
 
-    addObject: (base, position) => {
-      const object = makeObject(base, position)
+    addObject: (base, position, erase = false) => {
+      const plain = makeObject(base, position)
+      const object = erase
+        ? { ...plain, name: `${solidLabel(base)} eraser`, erase: true }
+        : plain
       commit((d) => ({ objects: [...d.objects, object] }))
       set({ selectedObjectIds: [object.id], selectedFeatureId: null })
       return object.id
@@ -557,6 +615,24 @@ export const useDoc = create<State>((set, get) => {
       commit((d) => ({ objects: [...d.objects, placed] }))
       set({ selectedObjectIds: [placed.id], selectedFeatureId: null })
       return placed.id
+    },
+
+    moveObject: (id, delta) => {
+      const { doc } = get()
+      const from = doc.objects.findIndex((o) => o.id === id)
+      if (from < 0 || delta === 0) return
+      const to = Math.min(doc.objects.length - 1, Math.max(0, from + delta))
+      // Already at the end it was asked to move toward. Not an edit, and an
+      // undo step for it would bury the edit before it -- the same rule Apply
+      // follows in `setObjectColor`.
+      if (to === from) return
+
+      commit((d) => {
+        const objects = [...d.objects]
+        const [moved] = objects.splice(from, 1)
+        objects.splice(to, 0, moved)
+        return { objects }
+      })
     },
 
     removeObject: (id) => {
@@ -614,13 +690,26 @@ export const useDoc = create<State>((set, get) => {
     setObjectColor: (ids, color) => {
       const targets = new Set(ids)
       if (targets.size === 0) return
+
+      // Right the way down. A merged object draws each solid in it in that
+      // solid's own colour -- which is what keeps the colours of the things
+      // that went into a merge -- so painting only the host would leave every
+      // part it absorbed wearing what it came in with, and Apply on an assembly
+      // would repaint a fraction of what the user had selected.
+      const repaint = (o: SceneObject): SceneObject => ({
+        ...o,
+        color,
+        parts: o.parts.map(repaint),
+      })
       // An Apply that repaints objects the colour they already wear changed
       // nothing, and must not cost an undo step -- the button is easy to press
       // twice, and the second press would otherwise bury the edit before it.
-      const painted = (o: SceneObject) => !targets.has(o.id) || o.color === color
+      const wears = (o: SceneObject): boolean =>
+        o.color === color && o.parts.every(wears)
+      const painted = (o: SceneObject) => !targets.has(o.id) || wears(o)
       if (get().doc.objects.every(painted)) return
       commit((d) => ({
-        objects: d.objects.map((o) => (targets.has(o.id) ? { ...o, color } : o)),
+        objects: d.objects.map((o) => (targets.has(o.id) ? repaint(o) : o)),
       }))
     },
 
@@ -981,6 +1070,65 @@ export const useDoc = create<State>((set, get) => {
         selectedObjectIds: s.selectedObjectIds.map((id) => renamed.get(id) ?? id),
       }))
       return split
+    },
+
+    applyErase: (eraserId, targetObjectIds) => {
+      const { doc } = get()
+      const eraser = doc.objects.find((o) => o.id === eraserId)
+      if (!eraser || !eraser.erase) return 0
+
+      // Cheap reject first. Evaluating an object is a full replay of its
+      // features and cuts, and a scene of a dozen solids where the eraser sits
+      // inside one of them should not pay for the other eleven twice over.
+      const reach = worldBounds(eraser)
+      const candidates = new Set(targetObjectIds)
+      const cut = new Map<string, SceneObject>()
+
+      for (const target of doc.objects) {
+        if (target.id === eraserId || target.erase || !candidates.has(target.id)) continue
+        if (!reach.intersectsBox(worldBounds(target))) continue
+
+        // Into the TARGET's own space, so the hole stays where it was aimed
+        // however the object is moved or turned afterwards. Reminted on the way
+        // in: the eraser is about to be deleted, and an id living on inside the
+        // object it cut would collide with nothing today and with everything
+        // the first time an unmerge or a paste went looking for it.
+        const hole: SceneObject = {
+          ...cloneObject(eraser),
+          erase: undefined,
+          transform: relativeTransform(target.transform, eraser.transform),
+        }
+        const holed: SceneObject = { ...target, erased: [...(target.erased ?? []), hole] }
+
+        // The exact question, asked of the geometry rather than of the boxes:
+        // did this actually take anything away? A box overlap is not an
+        // intersection, and an eraser that grazes a corner without touching the
+        // solid must not leave a hole behind that removes nothing.
+        try {
+          if (!removesMaterial(target, holed)) continue
+        } catch {
+          // An object the evaluator cannot build cannot be reasoned about
+          // either; leave it whole rather than cutting it on a guess.
+          continue
+        }
+        cut.set(target.id, holed)
+      }
+
+      if (cut.size === 0) return 0
+
+      // One history entry for the whole act: the holes AND the eraser leaving,
+      // so a single undo puts the eraser back exactly where it was aimed.
+      commit((d) => ({
+        objects: d.objects
+          .filter((o) => o.id !== eraserId)
+          .map((o) => cut.get(o.id) ?? o),
+      }))
+      set((s) => ({
+        ...prune(s.doc, s.selectedObjectIds, s.selectedFeatureId),
+        // A drag pointing at the eraser has nothing left to move.
+        drag: 'objectId' in s.drag && s.drag.objectId === eraserId ? { kind: 'idle' } : s.drag,
+      }))
+      return cut.size
     },
 
     undo: () =>

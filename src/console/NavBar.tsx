@@ -81,11 +81,14 @@ export function NavBar() {
         {/* Only on screen while the plane is armed, so the bar is no wider than
             before for anyone not cutting. */}
         <CutActions />
-        <span className="nav-sep" aria-hidden />
-        <ExportTools />
       </nav>
 
       <div className="topbar-right">
+        {/* With undo and redo rather than with the tools: Snap and Cut are
+            modes aimed at whatever is selected, while these three are acts on
+            the whole document -- and the two that step through its history are
+            the ones an export belongs beside. */}
+        <ExportTools />
         <div className="seg">
           <button
             type="button"

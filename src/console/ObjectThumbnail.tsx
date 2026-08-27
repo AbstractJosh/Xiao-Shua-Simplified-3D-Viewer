@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import type { Group } from 'three'
+import { assemblyColors } from '../geometry/assembly'
 import type { SceneObject } from '../geometry/types'
 import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
 import type { Thumbnail } from './thumbnailGeometry'
@@ -67,11 +68,12 @@ export type Turn = { angle: number; grabbed: boolean }
 function Model({
   thumbnail,
   turn,
-  color,
+  colors,
 }: {
   thumbnail: Thumbnail
   turn: { current: Turn }
-  color: string
+  /** The colour of every solid in the object, by paint key. See `Thumbnail`. */
+  colors: Map<string, string | undefined>
 }) {
   const spin = useRef<Group>(null)
 
@@ -93,11 +95,32 @@ function Model({
         {/* The geometry is already moved so the object's gizmo point is at the
             origin, which is what both of these rotations run about and what the
             camera is looking at. */}
-        <mesh geometry={thumbnail.geometry}>
-          {/* The object's own colour -- the scene's grey until it was given one
-              -- so a tile reads as the thing it will drop rather than as a
-              differently-painted cousin of it. */}
-          <meshStandardMaterial color={color} metalness={0.15} roughness={0.55} />
+        {/* Keyed by the paint set for the same reason the viewport's mesh is:
+            a material array that shrinks in place leaves a stale slot behind. */}
+        <mesh key={thumbnail.paints.join('|')} geometry={thumbnail.geometry}>
+          {/* Every solid in its own colour -- the scene's grey until it was
+              given one -- so a tile reads as the thing it will drop rather than
+              as a differently-painted cousin of it. A merged object gets one
+              material per part still showing a face; see the viewport's `Body`,
+              which draws the same mesh the same way and explains why the single
+              case may not be folded into an array of one. */}
+          {thumbnail.paints.length === 1 ? (
+            <meshStandardMaterial
+              color={colors.get(thumbnail.paints[0]) ?? DEFAULT_OBJECT_COLOR}
+              metalness={0.15}
+              roughness={0.55}
+            />
+          ) : (
+            thumbnail.paints.map((paint, i) => (
+              <meshStandardMaterial
+                key={paint}
+                attach={`material-${i}`}
+                color={colors.get(paint) ?? DEFAULT_OBJECT_COLOR}
+                metalness={0.15}
+                roughness={0.55}
+              />
+            ))
+          )}
         </mesh>
       </group>
     </group>
@@ -223,7 +246,7 @@ export function ObjectThumbnail({
           <ambientLight intensity={0.55} />
           <directionalLight position={[6, 9, 5]} intensity={2.1} />
           <directionalLight position={[-6, 3, -5]} intensity={0.7} color="#8fb4ff" />
-          <Model thumbnail={thumbnail} turn={turn} color={object.color ?? DEFAULT_OBJECT_COLOR} />
+          <Model thumbnail={thumbnail} turn={turn} colors={assemblyColors(object)} />
         </Canvas>
       ) : (
         <LoadingRing />

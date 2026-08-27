@@ -50,6 +50,22 @@ export function liveTiles(
   )
 }
 
+/**
+ * How many empty slots stand in for the shelf before anything is saved.
+ *
+ * Three, because three is what `.custom-grid` fits across the panel -- the
+ * stylesheet is where that number is really decided, and the two have to move
+ * together. It is the same three as `LIVE_LIMIT` by arithmetic and not by
+ * argument: one is what fits, the other is how many WebGL contexts may be lit
+ * at once, and they are free to part company.
+ */
+const EMPTY_SLOTS = 3
+
+/** What to do about an empty shelf, on the slots themselves. The panel's own
+ *  tip says it too; this is the copy that is under the pointer when someone
+ *  wonders what the dashed squares are for. */
+const SAVE_HINT = 'Right-click an object in the scene and choose Save as custom object'
+
 /** Primitives are centred on the local origin; this is the lift that rests one
  *  on the grid, for the keyboard path that drops without a pointer. */
 function groundedPosition(object: SceneObject): [number, number, number] {
@@ -156,6 +172,14 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
  * a placement and the window carries it onto the canvas from there. What lands
  * is a full copy -- features, cuts, merged parts, and the rotation it was saved
  * at -- with fresh ids, so it edits independently of the one it came from.
+ *
+ * EMPTY, IT IS STILL THE SHELF. Three dashed slots stand where the tiles will
+ * go, rather than a paragraph explaining that there are none. A shelf with
+ * spaces in it says what it holds and how much of it there is at a glance, and
+ * it says the same thing in the same place once something has been saved --
+ * where the paragraph was a different panel, in a different shape, that
+ * disappeared the moment it had been read once. The count beside the title
+ * reads 0 for the same reason: an empty list is a list, and it can say so.
  */
 export function ClipboardPanel() {
   const customs = useLibrary((s) => s.customs)
@@ -190,23 +214,24 @@ export function ClipboardPanel() {
   return (
     <Section
       title="Clipboard"
-      hint={customs.length > 0 ? `${customs.length}` : undefined}
+      hint={`${customs.length}`}
       tip="Right-click a solid in the scene and choose Save as custom object to put it here. Each tile turns on its own; sweep across one to spin it and look it over. Drag a tile onto the grid to place a copy, and scroll the row sideways for the rest."
       collapsible
       defaultOpen
     >
-      {customs.length === 0 ? (
-        <p className="empty">
-          Nothing saved yet. Right-click an object in the scene and choose
-          <em> Save as custom object</em>.
-        </p>
-      ) : (
-        <div className="custom-grid" ref={scroller}>
-          {customs.map((custom) => (
-            <CustomTile key={custom.id} custom={custom} live={live.has(custom.id)} />
-          ))}
-        </div>
-      )}
+      <div className="custom-grid" ref={scroller}>
+        {customs.length === 0
+          ? // Decoration, and hidden from a screen reader as such: an empty
+            // shelf read out as three unlabelled somethings is worse than an
+            // empty shelf read out as nothing, which is what it is. The tip on
+            // the heading is where that reader is told how to fill it.
+            Array.from({ length: EMPTY_SLOTS }, (_, i) => (
+              <div key={i} className="custom-slot" title={SAVE_HINT} aria-hidden />
+            ))
+          : customs.map((custom) => (
+              <CustomTile key={custom.id} custom={custom} live={live.has(custom.id)} />
+            ))}
+      </div>
     </Section>
   )
 }

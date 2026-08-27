@@ -1,5 +1,5 @@
 /**
- * Headless verification of GLB / OBJ export.
+ * Headless verification of GLB / OBJ / STL / STEP export.
  *
  * The load-bearing check is that welding preserves signed volume exactly. A
  * weld that merged across a hard edge, or collapsed a sliver, would still
@@ -53,6 +53,14 @@ console.warn = (...args: unknown[]) => {
 
 import { evaluateDoc, mergedGeometry, resetEvaluator } from '../src/geometry/evaluate'
 import { buildExportBlob, prepareForExport, triangleCount } from '../src/geometry/exporters'
+import {
+  flatFaces,
+  healTJunctions,
+  indexByPosition,
+  isManifold,
+  shells,
+} from '../src/geometry/brep'
+import type { BrepMesh } from '../src/geometry/brep'
 import { signedVolume } from '../src/geometry/volume'
 import { EXPORT_MODEL_NAME } from '../src/appInfo'
 import { IDENTITY_TRANSFORM } from '../src/geometry/types'
@@ -85,6 +93,13 @@ function object(
 }
 
 const scene = (...objects: SceneObject[]): Doc => ({ objects })
+
+/** A fixed clock, so a STEP file written twice is the same bytes twice. */
+const STAMP = '2026-01-01T00:00:00'
+
+function occurrencesOf(text: string, needle: string): number {
+  return text.split(needle).length - 1
+}
 
 /**
  * What the export panel actually hands to the exporter: every object baked
@@ -340,6 +355,276 @@ console.log('\n5. Every object, baked through its own transform')
   check('normals survive the bake unit length', worst < 1e-5, `worst deviation ${worst.toExponential(2)}`)
   turned.dispose()
   upright.dispose()
+}
+
+// --- 7. STL output ---------------------------------------------------------
+console.log('\n7. STL output')
+{
+  resetEvaluator()
+  const geometry = exportGeometry(CUBE_WITH_BOSS)
+  const expected = signedVolume(geometry)
+  const tris = triangleCount(geometry)
+  const { blob, triangles } = await buildExportBlob(geometry, 'stl', STAMP)
+  const buf = await blob.arrayBuffer()
+  const view = new DataView(buf)
+
+  // Binary STL is a fixed-size record format and nothing else: 80 bytes of
+  // header nobody reads, a triangle count, then exactly 50 bytes per triangle.
+  // If that arithmetic lands, the file is structurally sound by construction.
+  check(
+    'the header counts the triangles',
+    view.getUint32(80, true) === tris,
+    `${view.getUint32(80, true)} vs ${tris}`
+  )
+  check(
+    'and the file is exactly as long as that many records',
+    blob.size === 84 + tris * 50,
+    `${blob.size} vs ${84 + tris * 50}`
+  )
+  check('the reported triangle count agrees', triangles === tris, `${triangles}`)
+
+  const { STLLoader } = await import('three/addons/loaders/STLLoader.js')
+  const reopened = new STLLoader().parse(buf)
+  // The decisive one, as with GLB: reading the solid back out of the bytes.
+  // Winding, float order and the record stride all have to be right to land on
+  // the same volume, and STL stores a normal per facet that must not disagree.
+  near('the file reopens as the same solid', signedVolume(reopened), expected, 1e-3)
+  reopened.dispose()
+  geometry.dispose()
+}
+
+// --- 8. Triangles read back as topology ------------------------------------
+console.log('\n8. Triangles read back as topology')
+{
+  /** Signed volume straight off a welded mesh, without going through three. */
+  const meshVolume = (mesh: BrepMesh): number => {
+    let volume = 0
+    const p = mesh.points
+    for (let t = 0; t < mesh.tris.length; t += 3) {
+      const a = mesh.tris[t] * 3
+      const b = mesh.tris[t + 1] * 3
+      const c = mesh.tris[t + 2] * 3
+      volume +=
+        (p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) +
+          p[a + 1] * (p[b + 2] * p[c] - p[b] * p[c + 2]) +
+          p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c])) /
+        6
+    }
+    return volume
+  }
+
+  resetEvaluator()
+  const plain = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] })))
+  const cube = indexByPosition(plain)
+  check(
+    'a cube welds to 8 vertices, not 24',
+    cube.points.length / 3 === 8,
+    `${cube.points.length / 3}`
+  )
+  check('and it is already closed', isManifold(cube))
+  check('one solid', shells(cube).length === 1, `${shells(cube).length}`)
+  // The whole reason `flatFaces` exists. Twelve triangles are six faces, and a
+  // file that says twelve is one where every flat face arrives pre-shattered.
+  const cubeFaces = flatFaces(cube, shells(cube)[0])
+  check('twelve triangles are six faces', cubeFaces.length === 6, `${cubeFaces.length}`)
+  check(
+    'each bounded by one loop of four edges',
+    cubeFaces.every((f) => f.loops.length === 1 && f.loops[0].length === 4),
+    cubeFaces.map((f) => f.loops[0].length).join(',')
+  )
+  plain.dispose()
+
+  resetEvaluator()
+  const pair = exportGeometry(
+    scene(
+      object({ kind: 'box', size: [2, 2, 2] }, [], [-3, 0, 0], 'left'),
+      object({ kind: 'box', size: [2, 2, 2] }, [], [3, 0, 0], 'right')
+    )
+  )
+  const twoShells = shells(indexByPosition(pair)).length
+  check('two objects are two shells', twoShells === 2, `${twoShells}`)
+  pair.dispose()
+
+  // The case the repair exists for. A boolean retriangulates the face its tool
+  // touched and leaves the neighbours alone, so along every shared edge one
+  // side is a single long edge and the other a chain of short ones. Invisible
+  // in a mesh format; fatal to a solid.
+  resetEvaluator()
+  const bossed = exportGeometry(CUBE_WITH_BOSS)
+  const raw = indexByPosition(bossed)
+  check('a boolean leaves the mesh cracked', !isManifold(raw))
+  const healed = healTJunctions(raw)
+  check('and the repair closes it', isManifold(healed.mesh))
+  check('by splitting edges, not by moving anything', healed.split > 0, `${healed.split} points`)
+  // Nothing may be added to or taken from the solid on the way. A repair that
+  // nudged a vertex to close a crack would still produce a file that opens, and
+  // would be a different part.
+  //
+  // Not to the last bit, and it could not be: closing a crack means adopting
+  // the neighbour's vertex, which sits within a weld tolerance of this edge
+  // rather than exactly on it. The measured shift is around 1e-8 on a solid of
+  // volume 8 -- a hundredth of what float32 can even represent at that size --
+  // where a vertex genuinely dragged somewhere would move it by thousandths.
+  near('the repair closes cracks without moving the surface', meshVolume(healed.mesh), meshVolume(raw), 1e-6)
+  near('and matches what was exported', meshVolume(healed.mesh), signedVolume(bossed), 1e-6)
+  bossed.dispose()
+
+  // A curved surface must NOT collapse. The flood fill measures every candidate
+  // against the seed triangle's plane rather than its neighbour's for exactly
+  // this reason: compared neighbour to neighbour the plane drifts a little at
+  // each step, and a sphere is nothing but a great many little steps.
+  resetEvaluator()
+  const ball = exportGeometry(scene(object({ kind: 'sphere', radius: 1 })))
+  const sphere = indexByPosition(ball)
+  const round = flatFaces(sphere, shells(sphere)[0])
+  check('a sphere keeps its facets rather than flattening', round.length > 100, `${round.length} faces`)
+  ball.dispose()
+}
+
+// --- 9. STEP output --------------------------------------------------------
+console.log('\n9. STEP output')
+{
+  /**
+   * Ids must be unique, and every reference in the file has to land on one that
+   * exists. A dangling reference is the one error that makes a STEP file open
+   * as nothing at all, with no useful message.
+   */
+  const audit = (text: string) => {
+    const lines = text.split('\n')
+    const defined = new Set<number>()
+    let duplicated = 0
+    for (const line of lines) {
+      const at = /^#(\d+)=/.exec(line)
+      if (!at) continue
+      const id = Number(at[1])
+      if (defined.has(id)) duplicated++
+      defined.add(id)
+    }
+    let dangling = 0
+    for (const line of lines) {
+      const split = line.indexOf('=')
+      if (!line.startsWith('#') || split < 0) continue
+      for (const ref of line.slice(split).match(/#(\d+)/g) ?? []) {
+        if (!defined.has(Number(ref.slice(1)))) dangling++
+      }
+    }
+    return { defined, duplicated, dangling }
+  }
+
+  resetEvaluator()
+  const geometry = exportGeometry(CUBE_WITH_BOSS)
+  const { blob, detail } = await buildExportBlob(geometry, 'step', STAMP)
+  const text = await blob.text()
+
+  check('it is an ISO 10303-21 exchange file', text.startsWith('ISO-10303-21;'), text.slice(0, 20))
+  check('and it is terminated', text.trimEnd().endsWith('END-ISO-10303-21;'))
+  check('the header names a schema', text.includes("FILE_SCHEMA(('AUTOMOTIVE_DESIGN"))
+  check(
+    'and both sections are closed',
+    occurrencesOf(text, 'ENDSEC;') === 2,
+    `${occurrencesOf(text, 'ENDSEC;')}`
+  )
+  check('no NaN reached the file', !text.includes('NaN'))
+  // A STEP real must carry a decimal point. A bare integer among the
+  // coordinates is the easiest way to write a file every reader rejects.
+  check('every coordinate is written as a real', !/\(-?\d+,/.test(text))
+
+  const { defined, duplicated, dangling } = audit(text)
+  check('every entity id is unique', duplicated === 0, `${duplicated} repeated`)
+  check('and every reference resolves', dangling === 0, `${dangling} dangling`)
+  check('the file is not trivial', defined.size > 500, `${defined.size} entities`)
+
+  // The load-bearing check, and the reason `brep.ts` exists at all. In a solid,
+  // every edge is walked by exactly two faces, once in each direction. Any
+  // other count and the file describes faces that merely touch -- which opens
+  // as a heap of surfaces rather than as a body that can be cut or measured.
+  const orientations = new Map<string, string[]>()
+  for (const line of text.split('\n')) {
+    const at = /ORIENTED_EDGE\('',\*,\*,(#\d+),\.(T|F)\.\)/.exec(line)
+    if (!at) continue
+    const list = orientations.get(at[1])
+    if (list) list.push(at[2])
+    else orientations.set(at[1], [at[2]])
+  }
+  const curves = occurrencesOf(text, '=EDGE_CURVE(')
+  check('every edge belongs to two faces', [...orientations.values()].every((o) => o.length === 2))
+  check(
+    'and they walk it in opposite directions',
+    [...orientations.values()].every((o) => o.length === 2 && o[0] !== o[1])
+  )
+  check(
+    'with no edge left unused',
+    orientations.size === curves,
+    `${orientations.size} used of ${curves}`
+  )
+
+  check('the body is a solid, not a surface model', text.includes('MANIFOLD_SOLID_BREP'))
+  check('inside a B-rep shape representation', text.includes('ADVANCED_BREP_SHAPE_REPRESENTATION'))
+  check('reachable from a product definition', text.includes('SHAPE_DEFINITION_REPRESENTATION'))
+  check('and the receipt reports what it built', /^1 solid/.test(String(detail)), String(detail))
+
+  // Same solid, same stamp, same bytes -- which is what makes a file diffable,
+  // and this suite able to compare one against another at all.
+  const again = await buildExportBlob(geometry, 'step', STAMP)
+  check('the same solid writes the same file', (await again.blob.text()) === text)
+  geometry.dispose()
+}
+
+{
+  // A hole has to survive as a HOLE. Drilled through, the top and bottom faces
+  // are each one face carrying an inner boundary -- not a ring of loose
+  // triangles, and not a face with the middle quietly filled in.
+  resetEvaluator()
+  const pocket: Feature = { ...CIRCLE_BOSS, id: 'pocket', depth: -3 }
+  const geometry = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] }, [pocket])))
+  const text = await (await buildExportBlob(geometry, 'step', STAMP)).blob.text()
+  const withHoles = (text.match(/ADVANCED_FACE\('',\(#\d+,#\d+/g) ?? []).length
+  check('a drilled solid has faces with holes in them', withHoles === 2, `${withHoles} faces`)
+  check('the holes are inner bounds', text.includes('FACE_BOUND('))
+  check('and the outer boundaries stay outer', text.includes('FACE_OUTER_BOUND('))
+  geometry.dispose()
+}
+
+{
+  // Two objects are two bodies. One closed shell wrapped round two disjoint
+  // lumps is not a solid, and the stricter readers say so.
+  resetEvaluator()
+  const geometry = exportGeometry(
+    scene(
+      object({ kind: 'box', size: [2, 2, 2] }, [], [-3, 0, 0], 'left'),
+      object({ kind: 'sphere', radius: 1 }, [], [3, 0, 0], 'right')
+    )
+  )
+  const { blob, detail } = await buildExportBlob(geometry, 'step', STAMP)
+  const text = await blob.text()
+  check(
+    'two objects export as two solid bodies',
+    occurrencesOf(text, '=MANIFOLD_SOLID_BREP(') === 2,
+    `${occurrencesOf(text, '=MANIFOLD_SOLID_BREP(')}`
+  )
+  check('each in its own closed shell', occurrencesOf(text, '=CLOSED_SHELL(') === 2)
+  check('and the receipt says so', String(detail).startsWith('2 solids'), String(detail))
+  geometry.dispose()
+}
+
+{
+  // An eraser is a solid the user has AIMED and not yet taken. It is a
+  // translucent red ghost standing for material that is about to go, and
+  // writing it into a file would export the tool along with the work.
+  resetEvaluator()
+  const solidOnly = exportGeometry(scene(object({ kind: 'box', size: [2, 2, 2] })))
+  const expected = signedVolume(solidOnly)
+  solidOnly.dispose()
+
+  resetEvaluator()
+  const withGhost = exportGeometry({
+    objects: [
+      object({ kind: 'box', size: [2, 2, 2] }, [], [0, 0, 0], 'solid'),
+      { ...object({ kind: 'sphere', radius: 1 }, [], [0.5, 0, 0], 'ghost'), erase: true },
+    ],
+  })
+  near('an eraser in the scene is left out of the file', signedVolume(withGhost), expected, 1e-6)
+  withGhost.dispose()
 }
 
 // --- 6. Empty guard --------------------------------------------------------

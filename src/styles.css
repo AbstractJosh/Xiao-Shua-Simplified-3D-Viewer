@@ -9,6 +9,10 @@
   --out: #5fd68a;
   --in: #ff7a66;
   --danger: #e0574a;
+  /* An eraser is a subtraction, so it wears the colour a subtraction already
+     wears: --in is what tints an inward feature in the Inspector and the scene
+     tree. One idea, one colour, at sketch scale and at object scale alike. */
+  --erase: var(--in);
 
   /* Axis identity, shared by the console's X/Y/Z letters and the viewport's
      gizmo arrows. Fully saturated on purpose: the arrows are small and drawn
@@ -65,7 +69,9 @@ body {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   /* Panels hang out of the bar and have to paint over the canvas, which is a
-     WebGL surface and will otherwise win every stacking contest going. */
+     WebGL surface and will otherwise win every stacking contest going, and
+     over the widgets laid on top of it -- see `.viewport`, which keeps its own
+     stack sealed below this number rather than mixed in with it. */
   position: relative;
   z-index: 20;
 }
@@ -355,19 +361,10 @@ body {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 
-.nav-export-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 3px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* The receipt. Hangs below the buttons and clears itself; see RECEIPT_MS. */
+/* The receipt. Hangs below the tool and clears itself; see RECEIPT_MS. */
 .nav-flyout {
   position: absolute;
   top: calc(100% + 7px);
@@ -385,6 +382,13 @@ body {
   line-height: 1.45;
   word-break: break-all;
   animation: nav-panel-in 0.13s ease-out;
+}
+
+/* Docked at the right end of the bar, the receipt opens the way the menu above
+   it does -- leftwards, or a filename lands off the edge of the window. */
+.nav-flyout-right {
+  left: auto;
+  right: 0;
 }
 
 .nav-flyout-bad {
@@ -533,9 +537,25 @@ body {
   min-height: 0;
 }
 
+/* The scene, and everything laid over it.
+
+   `z-index` here is not about where the viewport sits -- it is what seals the
+   widgets INSIDE it into a stacking context of their own. Without it their
+   numbers were measured against the page, so the compass at 20 met the top bar
+   at 20 and won on document order, and painted straight over the export panel
+   hanging out of the bar. The bar's panels sit at 30, but 30 inside a context
+   pegged at 20 is still 20 from out here.
+
+   Sealed, the highest number in the viewport still loses to the bar, and the
+   overlays inside go on ordering themselves against each other unchanged.
+
+   0, not a positive number: there is nothing above the scene to clear. The
+   console beside it is unpositioned, so a positioned box already paints over
+   it, and the bar is what this must stay under. */
 .viewport {
   flex: 1 1 auto;
   position: relative;
+  z-index: 0;
   min-width: 0;
 }
 
@@ -568,68 +588,6 @@ body {
   overflow-y: auto;
   overflow-x: clip;
   overscroll-behavior: contain;
-}
-
-/* --- console tabs --- */
-
-/* Sticky, not scrolled away with the panels: the console is a scroll container,
-   and a switch you have to scroll back up to find is a switch that gets used
-   once. Opaque for the same reason -- panels pass underneath it. */
-.console-tabs {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  display: flex;
-  gap: 2px;
-  padding: 8px 10px 0;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-}
-
-.console-tab {
-  position: relative;
-  flex: 1 1 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 10px 9px;
-  appearance: none;
-  border: 0;
-  /* The underline is the whole of the selected state, so it is written on every
-     tab and only its colour changes -- otherwise the row would shift by a pixel
-     as the selection moved. */
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
-}
-
-.console-tab:hover:not(.console-tab-active) {
-  color: var(--text);
-  background: var(--panel-2);
-}
-
-.console-tab-active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-/* Says the other tab has something in it now. Selecting an object fills Edit
-   and changes nothing on View, so without this a click on a solid leaves the
-   console looking inert. */
-.console-tab-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 /* --- sections --- */
@@ -759,13 +717,14 @@ body {
   --solid-gap: 2px;
   max-height: calc(4 * var(--solid-row) + 3 * var(--solid-gap));
   overflow-y: auto;
-  /* Room for the scrollbar, so it never sits on top of a side-count chip. */
+  /* Room for the scrollbar, so it never sits on top of the eraser grip. */
   padding-right: 2px;
   scrollbar-width: thin;
   scrollbar-color: #3a444f transparent;
 }
 
 .solid-item {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -819,43 +778,219 @@ body {
   pointer-events: none;
 }
 
-/* Side counts stay on the row rather than in a popup: picking 6 and dragging
-   has to be one gesture. */
-.solid-item-sides {
+/* The side count is chosen by sweeping ACROSS the row, the way the polygon chip
+   in Shapes has always worked -- picking 6 and dragging stays one gesture, and
+   it costs no width at all, which is what freed the right end for the eraser
+   grip. What is left on the row is a readout: one tick per count, the current
+   one lit. The polygon chip advertises its family by cycling through it; ten
+   rows cycling at once would be a panel nobody could read, so these say it
+   quietly and hold still. */
+.solid-item-track {
   flex: 0 0 auto;
   display: flex;
+  align-items: center;
   gap: 3px;
+  pointer-events: none;
 }
 
-.solid-side {
-  width: 19px;
-  height: 19px;
+.solid-tick {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #39414d;
+  transition: background 0.12s, box-shadow 0.12s;
+}
+
+.solid-tick-on {
+  background: var(--accent);
+  /* Grown by a ring rather than by width, so the track never reflows and the
+     bands under it stay where the pointer found them. */
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* Laid over the row's body, stopping short of the grip. Invisible by design:
+   the ticks say a choice exists, and an outline per band would make a row of
+   five buttons out of what should read as one name. */
+.solid-bands {
+  position: absolute;
+  inset: 0 var(--solid-grip) 0 0;
+  display: flex;
+}
+
+.solid-band {
+  flex: 1 1 0;
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+
+.solid-band:active {
+  cursor: grabbing;
+}
+
+/* Keyboard only: a band has nothing to show a focus ring around, so it borrows
+   the track's language and lights the row edge instead. */
+.solid-band:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border-radius: 4px;
+}
+
+/* The eraser grip. Deliberately a fraction of the row -- adding is the common
+   act and gets the room, and a target the size of the row itself would be
+   caught by every drag that started a little too far right. Red, because what
+   it places is red, and because nothing else in this panel takes anything
+   away. */
+.solid-item {
+  --solid-grip: 26px;
+}
+
+.solid-erase {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
   display: grid;
   place-items: center;
   padding: 0;
   appearance: none;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: var(--panel-2);
+  background: transparent;
   color: #6d7686;
-  font-family: var(--mono);
-  font-size: 10px;
-  line-height: 1;
   cursor: grab;
   touch-action: none;
   user-select: none;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 
-.solid-side:hover {
-  border-color: var(--accent);
-  color: var(--text);
+.solid-erase svg {
+  width: 14px;
+  height: 14px;
 }
 
-.solid-side-active {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  color: var(--accent);
+.solid-item:hover .solid-erase {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+
+.solid-erase:hover {
+  border-color: color-mix(in srgb, var(--erase) 60%, transparent) !important;
+  background: color-mix(in srgb, var(--erase) 18%, transparent) !important;
+  color: var(--erase);
+}
+
+.solid-erase:active {
+  cursor: grabbing;
+}
+
+.solid-erase:focus-visible {
+  outline: none;
+  border-color: var(--erase) !important;
+  color: var(--erase);
+}
+
+/* The chip on an eraser's row in the scene tree. */
+.tree-erase {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--erase) 45%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--erase) 14%, transparent);
+  color: var(--erase);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* --- the eraser's confirm block, at the top of Position & Rotation --- */
+
+/* Boxed and tinted, because it is the one block in the console that is about an
+   object that is not really in the scene yet -- and because what it does cannot
+   be walked back except by undo. It reads as a state the panel is in rather
+   than as another row of controls. */
+.erase-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--erase) 40%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--erase) 9%, transparent);
+}
+
+.erase-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.erase-mark {
+  display: grid;
+  place-items: center;
+  color: var(--erase);
+}
+
+.erase-mark svg {
+  width: 15px;
+  height: 15px;
+}
+
+.erase-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--erase);
+}
+
+/* Full width, so the two choices split it evenly and neither reads as the
+   afterthought. */
+.erase-scope {
+  width: 100%;
+}
+
+.erase-scope .seg-btn {
+  flex: 1 1 0;
+  padding: 5px 6px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.erase-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.erase-confirm {
+  flex: 1 1 auto;
+}
+
+/* The confirm carries the erase colour rather than the accent: it is the only
+   button in the console that takes material away for good. */
+.erase-confirm:not(:disabled) {
+  background: var(--erase);
+  border-color: var(--erase);
+  color: #2a0f09;
+}
+
+.erase-confirm:not(:disabled):hover {
+  background: color-mix(in srgb, var(--erase) 82%, #ffffff);
+  border-color: color-mix(in srgb, var(--erase) 82%, #ffffff);
+}
+
+.erase-discard {
+  flex: 0 0 auto;
+}
+
+.erase-receipt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* --- clipboard: saved custom objects --- */
@@ -865,6 +1000,26 @@ body {
    to scroll to: the fourth tile would sit below the first, permanently in view
    and permanently unable to have a model. Three columns exactly, so the cap and
    the layout are the same number. */
+/* The shelf itself, framed.
+
+   The frame is what makes the row one thing: three tiles in a line read as
+   three separate controls that happen to be adjacent, and with nothing saved
+   at all three dashed squares read as three loose outlines floating in the
+   panel. Drawn round them, they are a shelf that is empty -- which is what it
+   is, and what the panel's count already says.
+
+   It earns its keep on a full shelf too: the row scrolls sideways, and the
+   frame is the edge a tile scrolls under. Without one the fourth tile simply
+   stopped mid-air at the panel's padding.
+
+   `var(--radius)` and `var(--border)` rather than a look of its own: it is the
+   same corner and the same line every other box in the console turns, and the
+   tiles inside turn it too. A frame with a rounder corner than the things in
+   it would read as a card wrapped round the shelf rather than as the shelf.
+
+   Percentage columns are measured against the CONTENT box, so the three still
+   fill the row exactly with the padding added; nothing about the sizing had to
+   change to put a border round it. */
 .custom-grid {
   display: grid;
   grid-auto-flow: column;
@@ -872,8 +1027,12 @@ body {
   gap: 8px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  /* Room for the scrollbar, so it never lands on a tile's name. */
-  padding-bottom: 4px;
+  /* A shade less below than above: the scrollbar sits in that gap when the
+     shelf is long enough to have one, and lands on the frame rather than on a
+     tile's name. */
+  padding: 8px 8px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   scroll-snap-type: x proximity;
   scrollbar-width: thin;
   scrollbar-color: #3a444f transparent;
@@ -887,6 +1046,28 @@ body {
   min-width: 0;
   /* Lands the row on tile boundaries, so a scroll leaves three whole models
      rather than two and two halves -- which would be four contexts to keep. */
+  scroll-snap-align: start;
+}
+
+/* Where a tile will go. Square like the drag surface below and dashed rather
+   than drawn, which is the difference between a place for something and a
+   thing: nothing here can be picked up, so it carries no border, no fill and
+   no cursor that says otherwise.
+
+   It stands in the row the tiles use rather than replacing it, so the shelf is
+   the same shape and in the same place whether or not anything has been saved
+   -- and saving the first object fills a slot instead of swapping one panel
+   for another. Slightly shorter than a filled tile, which carries a name field
+   under its square; an empty slot has no name to hold. */
+.custom-slot {
+  aspect-ratio: 1;
+  min-width: 0;
+  background: transparent;
+  /* The same dashed, inert square the colour shelf uses for a slot it has not
+     filled yet, and deliberately so: two shelves in one console that mean the
+     same thing should look like they do. */
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
   scroll-snap-align: start;
 }
 
@@ -1231,6 +1412,46 @@ body {
   border-color: var(--accent);
 }
 
+/* --- a number box is a scrub ------------------------------------------------
+
+   Dragged sideways to change the value, double-clicked to type one. Three
+   things follow from that, and all three are here rather than in the component
+   because they are what the box IS rather than what it does:
+
+   `ew-resize` is the whole of the affordance -- there is no room in a 46px
+   field for a hint, and the cursor is the one place a control can say "drag me"
+   without taking a pixel. It turns back into a caret once the box is open for
+   typing, which is the only state where it holds one.
+
+   `touch-action: none` because a horizontal drag over a box is a page swipe
+   until something says otherwise, and the browser decides that before the first
+   pointermove ever arrives.
+
+   And the spin buttons go. They were the other way to nudge a number and the
+   worse one, a pair of 6px arrows against the whole width of the box -- and
+   Chrome reserves their space whether or not it is drawing them, which is what
+   left "-0.90" with three characters to fit in inside the viewport panel. */
+.field-num,
+.vec3-input {
+  cursor: ew-resize;
+  touch-action: none;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.field-num:focus,
+.vec3-input:focus {
+  cursor: text;
+}
+
+.field-num::-webkit-outer-spin-button,
+.field-num::-webkit-inner-spin-button,
+.vec3-input::-webkit-outer-spin-button,
+.vec3-input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
 .field-range {
   width: 100%;
   height: 3px;
@@ -1458,6 +1679,31 @@ body {
 .icon-btn:hover {
   background: #262c37;
   color: var(--text);
+}
+
+/* An end-of-list arrow stays in place and stops responding, rather than
+   vanishing and shuffling the row's other buttons under the pointer. */
+.icon-btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
+/* The two order arrows read as ONE control, so they sit tighter to each other
+   than the row's 8px rhythm and take a single gap between them and the rest. */
+.tree-order {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0;
+}
+
+.tree-order .icon-btn {
+  width: 16px;
+  font-size: 9px;
 }
 
 /* --- scene tree --- */
@@ -1738,34 +1984,289 @@ body {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+/* --- axis compass --- */
+
+/* The corner compass: a second canvas, laid over the top-right of the scene.
+
+   Sized here and nowhere else -- the widget inside fits itself to whatever this
+   box measures, so the two cannot drift apart. It is small deliberately: a
+   canvas is a rectangle whether or not anything is drawn in the corners of it,
+   and every pixel of this one is a pixel of scene that cannot be dragged to
+   orbit. 112 is enough to read three letters on and little enough to lose.
+
+   Below the selection box in the stack, which is drawn over the whole of the
+   viewport for the length of a gesture, and above the scene it annotates. Both
+   numbers are read inside `.viewport`'s own stacking context, so neither can
+   reach the bar's panels however high it goes. */
+.axis-compass {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 112px;
+  height: 112px;
+  z-index: 20;
+}
+
+/* --- selection HUD --- */
+
+/* The panels for whatever is being aimed, over the bottom-right of the scene.
+
+   They were the console's Edit tab, and they are here because of what they do:
+   every one of them is a number you watch the SCENE to set. A position slider
+   means nothing unless the solid can be seen moving, and the eye had to cross
+   the whole window to check.
+
+   Out of the way rather than out of sight. Bottom-right leaves the middle of
+   the scene, the top-left corner a solid is usually framed in, and the drag
+   hint along the bottom centre all clear, and it is the corner furthest from
+   the compass in the other one.
+
+   It is EMPTY while it is out: the panels inside are mounted only when there is
+   something to aim, so what the transform does is bring an arriving panel in
+   rather than carry a stale one away. */
+.selection-hud {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 22;
+  /* Wide enough for the longest reading any row here can hold -- "-180" for a
+     rotation, "-8.00" for a position, and a merged size that can pass ten --
+     with the boxes below sized to fit six figures rather than to fit the panel.
+     A number a control cannot show is worse than a panel twenty pixels wider. */
+  width: 228px;
+  /* Never taller than the viewport it sits in: a sketch on a prism can run to
+     a dozen rows, and the panel is allowed to scroll rather than to grow off
+     the top of the window. */
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: rgba(20, 23, 29, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transform: translateX(calc(100% + 18px));
+  opacity: 0;
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1), opacity 0.16s ease;
+}
+
+.selection-hud-in {
+  transform: none;
+  opacity: 1;
+}
+
+/* A panel that arrives under the pointer with no warning is worse than one
+   that is simply there. */
+@media (prefers-reduced-motion: reduce) {
+  .selection-hud {
+    transition: opacity 0.16s ease;
+    transform: none;
+  }
+}
+
+/* --- and the compact form of the console's own panels ---------------------
+
+   Everything below re-sizes the SAME components the console renders, scoped to
+   this panel. Forking them into a compact second set would have meant two
+   definitions of every bound in the app, drifting apart on the first change to
+   either -- so what changes here is the layout and the type size, and nothing
+   at all changes about what the controls do.
+
+   The one thing taken away is prose: the tip dots explain a control in a
+   paragraph, and a paragraph is the thing this panel has no room for. They are
+   still on the same controls in every other place they appear. */
+.selection-hud .section {
+  padding: 7px 9px;
+}
+
+.selection-hud .section:last-child {
+  border-bottom: 0;
+}
+
+.selection-hud .section-title {
+  margin-bottom: 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.07em;
+}
+
+.selection-hud h3.section-title {
+  margin-top: 6px;
+}
+
+.selection-hud .section-hint {
+  font-size: 9px;
+}
+
+.selection-hud .tip {
+  display: none;
+}
+
+.selection-hud .subhead {
+  margin: 0 0 3px;
+  font-size: 10px;
+}
+
+.selection-hud .vec3,
+.selection-hud .vec2 {
+  margin-bottom: 7px;
+}
+
+.selection-hud .vec3-row {
+  grid-template-columns: 9px 1fr 46px;
+  gap: 5px;
+  margin-bottom: 3px;
+}
+
+.selection-hud .vec3-row-resettable {
+  grid-template-columns: 9px 1fr 46px 13px;
+}
+
+/* A NumberField is label over slider in the console, which is two lines for
+   one number. Here `display: contents` drops the head's own box so its label
+   and its box become cells of the field's own grid, and the row reads across:
+   name, slider, value -- the same shape as an axis row, so a panel of both
+   lines up down its whole height. */
+.selection-hud .field {
+  display: grid;
+  grid-template-columns: auto 1fr auto 46px;
+  align-items: center;
+  column-gap: 5px;
+  margin-bottom: 5px;
+}
+
+.selection-hud .field-head {
+  display: contents;
+}
+
+.selection-hud .field-label {
+  grid-column: 1;
+  font-size: 10px;
+}
+
+.selection-hud .field-range {
+  grid-column: 2;
+  height: 2px;
+}
+
+.selection-hud .field-head .reset-btn {
+  grid-column: 3;
+}
+
+.selection-hud .field-num {
+  grid-column: 4;
+  width: 46px;
+}
+
+.selection-hud .field-num,
+.selection-hud .vec3-input {
+  padding: 1px 3px;
+  font-size: 10px;
+}
+
+
+.selection-hud .field-range::-webkit-slider-thumb {
+  width: 10px;
+  height: 10px;
+}
+
+.selection-hud .field-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+}
+
+.selection-hud .reset-btn {
+  width: 13px;
+  height: 13px;
+}
+
+.selection-hud .reset-btn svg {
+  width: 9px;
+  height: 9px;
+}
+
+.selection-hud .hint,
+.selection-hud .empty {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.selection-hud .seg-btn {
+  padding: 2px 0;
+  font-size: 10px;
+}
+
+.selection-hud .btn {
+  padding: 3px 7px;
+  font-size: 10px;
+}
+
+.selection-hud .danger {
+  margin-top: 3px;
+  padding: 3px;
+  font-size: 10px;
+}
+
 /* --- export --- */
 
-/* Small enough to sit in a 46px bar beside two tool buttons, and monospaced so
-   ".glb" and ".obj" are the same width and the pair reads as one control. */
-.export-btn {
-  padding: 4px 9px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+/* Four rows in the tool panel, where the bar used to carry four buttons. Each
+   is an extension and what the format is FOR, because ".step" beside ".stl" is
+   a choice between two pieces of jargon -- and a panel has the width to answer
+   it, which a bar never did. */
+.export-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.export-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius);
   color: var(--text);
   font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  font-family: var(--mono);
-  line-height: 1.45;
+  font-size: 12px;
+  text-align: left;
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-.export-btn:hover:not(:disabled) {
+.export-item:hover:not(:disabled) {
   background: #1e232c;
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
-.export-btn:disabled {
+.export-item:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Monospaced and one width, so the four extensions make a column and the
+   sentences beside them all start on the same line. */
+.export-ext {
+  flex: 0 0 auto;
+  width: 38px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.export-gist {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Only ever on the row being written, and only while it is being written. */
+.export-busy {
+  flex: 0 0 auto;
+  color: var(--accent);
 }
 
 /* --- rotation readout --- */

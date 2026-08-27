@@ -29,6 +29,14 @@ import { planeSeparates } from '../src/geometry/cut'
 import { objectSnapTargets, snapTranslation, DEFAULT_SNAP_DISTANCE } from '../src/geometry/snap'
 import { pickAnchorAcrossObjects, pickAnchorOnObject } from '../src/viewport/picking'
 import { publishScene, resolveSolidDrop } from '../src/viewport/snapping'
+import {
+  COMPASS_VIEWS,
+  askForView,
+  orbitPosition,
+  takeRequest,
+  viewQuaternion,
+  viewUp,
+} from '../src/viewport/compassViews'
 import { useTools } from '../src/store/toolStore'
 import { useDoc } from '../src/store/docStore'
 import {
@@ -897,6 +905,89 @@ console.log('\n12c. Depth is one signed number, clamped asymmetrically')
   // pointing the wrong way, turning a pocket into a boss at the limit.
   near('and an overreach inward keeps its direction', clampDepth(host, top, -99), -limit.in, 1e-12)
   near('zero is inert either way', clampDepth(host, top, 0), 0, 1e-12)
+}
+
+// --- 13. The corner compass ------------------------------------------------
+console.log('\n13. The compass flies the camera to the face it names')
+{
+  // The cube reports a hit as the index of the material it landed on, and hands
+  // that index straight back as a view. Nothing checks the two agree at
+  // runtime, so it is checked here: the six must stand in the order
+  // BoxGeometry takes its materials, or clicking Top would fly you to Left.
+  const order = COMPASS_VIEWS.map((v) => `${'xyz'[v.axis]}${v.sign > 0 ? '+' : '-'}`).join(' ')
+  check('the six views stand in BoxGeometry material order', order === 'x+ x- y+ y- z+ z-', order)
+  check('and each is named for the face that looks that way',
+    COMPASS_VIEWS.map((v) => v.label).join(' ') === 'Right Left Top Bottom Front Back',
+    COMPASS_VIEWS.map((v) => v.label).join(' '))
+
+  // Every one of them, from a pivot that is NOT the origin -- which is where a
+  // panned scene leaves it, and the case a flight measured from the world
+  // centre would get wrong.
+  const focus = new Vector3(0.4, 1.2, -0.7)
+  const radius = 7.3
+  for (const view of COMPASS_VIEWS) {
+    const facing = viewQuaternion(view.dir)
+    const position = orbitPosition(facing, focus, radius)
+
+    near(`${view.label}: the camera keeps the distance it had`, position.distanceTo(focus), radius, 1e-9)
+    const stands = position.clone().sub(focus).normalize()
+    near(`${view.label}: and stands on that axis`, stands.dot(view.dir), 1, 1e-9)
+
+    const forward = new Vector3(0, 0, -1).applyQuaternion(facing)
+    near(`${view.label}: looking back down it`, forward.dot(view.dir), -1, 1e-9)
+
+    // The roll it arrives at is the one `viewUp` names, which is what stops a
+    // view from landing spun by an amount nobody asked for.
+    const up = new Vector3(0, 1, 0).applyQuaternion(facing)
+    near(`${view.label}: rolled the way it should be`, up.dot(viewUp(view.dir)), 1, 1e-9)
+
+    // And the tie between what is DRAWN and where a click goes: the compass
+    // turns the world by the inverse of the camera, so the ball just pressed
+    // has to end the flight pointing straight out of the screen at the user.
+    const drawn = view.dir.clone().applyQuaternion(facing.clone().invert())
+    near(`${view.label}: the ball pressed ends up facing you`, drawn.z, 1, 1e-9)
+  }
+
+  // Straight up and straight down are the two the general rule cannot answer:
+  // there, world Y is the direction being looked ALONG, so it says nothing
+  // about which way round the view is. The answer is the one a continuous
+  // orbit would have reached -- tip the front view over the top and up tips
+  // with it, from +Y to -Z.
+  check('the top view puts -Z at the top of the screen',
+    viewUp(new Vector3(0, 1, 0)).equals(new Vector3(0, 0, -1)))
+  check('and the bottom view the other way about',
+    viewUp(new Vector3(0, -1, 0)).equals(new Vector3(0, 0, 1)))
+  check('a front view is level', viewUp(new Vector3(0, 0, 1)).equals(new Vector3(0, 1, 0)))
+  // Only exactly overhead counts. A view three degrees off it is an ordinary
+  // one, and rolling it would be a jump in the middle of a smooth range.
+  check('and so is one nearly overhead',
+    viewUp(new Vector3(0.06, 1, 0).normalize()).equals(new Vector3(0, 1, 0)))
+
+  // A flight is measured from the point the camera ORBITS. After a pan that is
+  // not the origin, and a flight that kept its distance from the origin would
+  // land the user somewhere they had never been.
+  const camera = new PerspectiveCamera(45, 1, 0.1, 200)
+  camera.position.set(0, 0, 12)
+  const panned = new Vector3(6, 0, 0)
+  const away = camera.position.distanceTo(panned)
+  const flown = orbitPosition(viewQuaternion(new Vector3(0, 0, 1)), panned, away)
+  near('a flight after a pan keeps the panned distance', flown.distanceTo(panned), away, 1e-9)
+  check('which is not the distance to the origin',
+    Math.abs(flown.length() - camera.position.length()) > 1,
+    `${flown.length().toFixed(2)} vs ${camera.position.length().toFixed(2)}`)
+
+  // One click, one flight: the request is consumed rather than read, so a
+  // frame that picks it up cannot pick it up again on the next.
+  askForView(new Vector3(1, 0, 0))
+  const first = takeRequest()
+  check('a click leaves a request behind', first !== null && Math.abs(first.x - 1) < 1e-9)
+  check('and taking it clears it', takeRequest() === null)
+
+  askForView(new Vector3(1, 0, 0))
+  askForView(new Vector3(0, 0, 1))
+  const second = takeRequest()
+  check('a second click redirects rather than queueing',
+    second !== null && Math.abs(second.z - 1) < 1e-9)
 }
 
 console.log(

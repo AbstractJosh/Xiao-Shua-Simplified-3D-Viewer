@@ -19,24 +19,7 @@ import type { Vec3 } from '../geometry/types'
  * in the console now, because a popover hanging off the toolbar covered the
  * only thing a plane can be aimed against.
  */
-export type NavPanel = 'snap' | 'help' | null
-
-/**
- * Which half of the console is on screen.
- *
- * The two halves are split by what they are FOR, not by what they contain:
- * `view` is everything that is true of the scene whatever is selected -- what
- * you can drop in, what you have saved, and what the scene now holds -- and
- * `edit` is the controls that only mean anything once something IS selected.
- * That is why the palettes sit with the scene tree rather than with the
- * dimension fields: dragging a solid in and reading the tree are both things
- * you do with no selection at all.
- *
- * Here beside `openPanel` for the same reason that one is: it is chrome rather
- * than geometry, but keeping it in a store is what lets a headless render drive
- * the console exactly the way a click does.
- */
-export type ConsoleTab = 'view' | 'edit'
+export type NavPanel = 'snap' | 'export' | 'help' | null
 
 /** Position + Euler XYZ rotation of the cut gizmo, and its visual extent. */
 export type CutPlaneState = { position: Vec3; rotation: Vec3; size: number }
@@ -84,13 +67,15 @@ const DEFAULT_CUT_PLANE: CutPlaneState = {
  */
 export const RECENT_COLOR_SLOTS = 8
 
+/** Which objects a confirmed eraser takes material out of. */
+export type EraseScope = 'all' | 'selected'
+
 export type ToolState = {
   snap: boolean
   snapDistance: number
   cutActive: boolean
   cutPlane: CutPlaneState
   openPanel: NavPanel
-  consoleTab: ConsoleTab
   /**
    * Colours the picker has applied, MOST RECENT FIRST, capped at
    * `RECENT_COLOR_SLOTS`.
@@ -99,9 +84,23 @@ export type ToolState = {
    * this is how you have been working, not what you have built. It must not
    * land in undo history -- walking back an edit should not also forget the
    * colour you were using -- and it must outlive the panel, which unmounts
-   * every time the console switches to the Edit tab.
+   * whenever the console is rebuilt around it.
    */
   recentColors: string[]
+
+  /**
+   * What an eraser takes material out of when it is confirmed.
+   *
+   * `all` is the eraser as a physical object: whatever it is sitting inside
+   * loses the material, which is what a hole through a stack of plates means.
+   * `selected` narrows it to the objects picked out alongside the eraser, for
+   * the case where two things overlap and only one of them should be drilled.
+   *
+   * A tool preference rather than a field on the eraser: it describes how you
+   * are working, so it stays out of undo and survives the panel unmounting --
+   * the same rule the snap distance and the shelf of colours follow.
+   */
+  eraseScope: EraseScope
 
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
@@ -109,7 +108,7 @@ export type ToolState = {
   setCutPlane: (patch: Partial<CutPlaneState>) => void
   resetCutPlane: () => void
   setOpenPanel: (panel: NavPanel) => void
-  setConsoleTab: (tab: ConsoleTab) => void
+  setEraseScope: (scope: EraseScope) => void
   /** Record a colour as just used, moving it to the front if it is already
    *  there rather than letting the shelf fill with one repeated swatch. */
   noteRecentColor: (color: string) => void
@@ -121,9 +120,10 @@ export const useTools = create<ToolState>((set) => ({
   cutActive: false,
   cutPlane: DEFAULT_CUT_PLANE,
   openPanel: null,
-  // Opens on the half that works with nothing selected, which is also the half
-  // the first gesture of a session needs: drag a solid in from Solids.
-  consoleTab: 'view',
+  // Every object, because an eraser you have positioned inside something is an
+  // eraser you meant to cut that something with. Narrowing is the deliberate
+  // act, and it costs one click on the switch.
+  eraseScope: 'all',
   // Empty, not seeded with a starter palette: every slot on screen is a colour
   // this user actually chose, so the grid is a history rather than a suggestion.
   recentColors: [],
@@ -144,7 +144,7 @@ export const useTools = create<ToolState>((set) => ({
   // One panel at a time: they all hang off the same bar and would overlap.
   setOpenPanel: (panel) => set({ openPanel: panel }),
 
-  setConsoleTab: (tab) => set({ consoleTab: tab }),
+  setEraseScope: (scope) => set({ eraseScope: scope }),
 
   noteRecentColor: (color) =>
     set((s) => ({

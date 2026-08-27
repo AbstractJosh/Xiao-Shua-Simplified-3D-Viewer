@@ -64,10 +64,13 @@ import { PlacementPanel } from '../src/console/PlacementPanel'
 import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { Console } from '../src/console/Console'
+import { SelectionHud } from '../src/viewport/SelectionHud'
+import { SCRUB_SLOP, SCRUB_SPAN, scrubRate, scrubbed } from '../src/console/scrub'
 import { ColorPanel } from '../src/console/ColorPanel'
 import type { Hsv } from '../src/color'
 import { hexToHsv, hsvToHex, hueAt, lighten, parseHex, wheelHue } from '../src/color'
-import { bodyPaint } from '../src/viewport/SceneObjects'
+import { assemblyColors } from '../src/geometry/assembly'
+import { bodyPaint, depthBias } from '../src/viewport/SceneObjects'
 import { MarqueeRect } from '../src/viewport/SelectionMarquee'
 import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
 import { SolidList, SolidPalette } from '../src/console/SolidPalette'
@@ -80,7 +83,7 @@ import {
   scaleShape,
   scaleUniform,
 } from '../src/geometry/dimensions'
-import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
+import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
 import { AXIS_COLORS, AXIS_CSS_VARS } from '../src/viewport/axisColors'
 import { objectMatrix } from '../src/geometry/transform'
 import {
@@ -372,6 +375,32 @@ doc().selectObject(pyramidId)
     occurrences(tree, 'tree-object-head tree-selected') === 1,
     `${occurrences(tree, 'tree-object-head tree-selected')} selected rows`
   )
+
+  // The order is a control now, not a readout: every row carries a pair of
+  // arrows, and the two at the ends of the list are disabled rather than
+  // missing, so no row changes width as it travels.
+  check(
+    'every row can be reordered',
+    occurrences(tree, 'aria-label="Move up"') === 4 &&
+      occurrences(tree, 'aria-label="Move down"') === 4,
+    `${occurrences(tree, 'aria-label="Move up"')} up, ${occurrences(tree, 'aria-label="Move down"')} down`
+  )
+  check(
+    'the top row cannot go up',
+    occurrences(tree, 'Already at the top') === 1,
+    `${occurrences(tree, 'Already at the top')}`
+  )
+  check(
+    'and the bottom row cannot go down',
+    occurrences(tree, 'Already at the bottom') === 1,
+    `${occurrences(tree, 'Already at the bottom')}`
+  )
+  check(
+    'both ends are disabled, not hidden',
+    occurrences(tree, 'disabled=""') === 2,
+    `${occurrences(tree, 'disabled=""')} disabled`
+  )
+  shows('and the row number says what it is for', tree, 'title="Priority 1 of 4"')
 }
 
 {
@@ -380,8 +409,20 @@ doc().selectObject(pyramidId)
   const bar = markupOf('NavBar', NavBar)
   shows('the bar carries the snap tool', bar, '>Snap<')
   shows('and the cut tool', bar, '>Cut<')
-  shows('and the export buttons', bar, '>.glb<')
+  shows('and the export tool', bar, '>Export<')
   shows('and the help button', bar, '>Help<')
+  // Export is docked at the right, with the two other acts on the whole
+  // document -- and its formats are behind its menu rather than spread across
+  // the bar. Checked on the bar itself, since where a control SITS is the half
+  // of this that the tool's own markup cannot show.
+  const right = bar.slice(bar.indexOf('topbar-right'))
+  shows('docked on the right', right, '>Export<')
+  check(
+    'to the left of undo and redo',
+    right.indexOf('>Export<') < right.indexOf('>Undo<'),
+    `${right.indexOf('>Export<')} vs ${right.indexOf('>Undo<')}`
+  )
+  hides('with the formats behind its menu', bar, '>.glb<')
 
   const snap = markupOf('SnapTool', SnapTool)
   shows('snapping is on by default', snap, 'aria-pressed="true"')
@@ -451,13 +492,42 @@ doc().selectObject(pyramidId)
 }
 
 {
-  const panel = markupOf('ExportTools', ExportTools)
+  // Export is docked at the right of the bar now, and its formats are behind a
+  // menu: four extensions were a row of jargon charging permanent width for a
+  // choice made once a session. Closed, the bar carries the tool and nothing
+  // else -- which is the whole point of the change, so it is checked first.
+  tools().setOpenPanel(null)
+  const shut = markupOf('ExportTools (menu shut)', ExportTools)
+  shows('the tool is in the bar', shut, '>Export<')
+  for (const ext of ['>.glb<', '>.obj<', '>.stl<', '>.step<']) {
+    hides(`and ${ext} is not spread across it`, shut, ext)
+  }
+  // The tool carries no hover bubble of its own. It had one -- the caveat that
+  // was once a permanent line under the buttons -- and it was removed on
+  // purpose: the panel it hung over already names every format on its own row,
+  // so the bubble was prose in the way of the choice it described. Pinned as a
+  // `hides` rather than left unsaid, because `tip` is a prop any nav tool can
+  // take and nothing else would notice it coming back.
+  hides('and no hover bubble hangs off it', shut, 'nav-tip')
+
+  // Opened the way a click opens it: which panel is open is a store field, so a
+  // headless render drives the menu exactly as a pointer does.
+  tools().setOpenPanel('export')
+  const panel = markupOf('ExportTools (menu open)', ExportTools)
   shows('GLB is offered', panel, '>.glb<')
   shows('OBJ is offered', panel, '>.obj<')
-  // The caveat that used to be a permanent line under the buttons is now a
-  // hover bubble, but it is still in the markup -- which is the point: hiding
-  // it visually must not mean deleting it.
-  shows('and it still says what an export leaves out', panel, 'Sketch overlays are not included')
+  shows('STL is offered', panel, '>.stl<')
+  shows('STEP is offered', panel, '>.step<')
+  // Every row has to say what it is FOR. An extension alone tells nobody which
+  // of the four to reach for, and the row has the width the bar never had.
+  shows('and STL says what it is for', panel, '3D printing standard')
+  shows('as does STEP', panel, 'CAD interchange')
+  // The gist is taken from the blurb rather than written out again beside it,
+  // so a format has one description and the row cannot fall out of step with
+  // the hover text. Both are in the markup, from the one string.
+  shows('the row keeps the whole blurb on hover', panel, 'title="Plain text geometry. Universally readable')
+  shows('and shows its first sentence in the row', panel, '>Plain text geometry<')
+  tools().setOpenPanel(null)
 }
 
 // --- 3. A sketch, then an extrusion ---------------------------------------
@@ -1699,6 +1769,41 @@ publish([])
 }
 
 {
+  // An empty shelf is still the shelf. Three dashed slots stand where the tiles
+  // will go, in the same row, so saving the first object FILLS one instead of
+  // swapping a paragraph out for a panel -- and the panel has one shape rather
+  // than two, only one of which anyone ever tunes.
+  const saved = [...library().customs]
+  for (const custom of saved) library().removeCustom(custom.id)
+
+  const bare = markupOf('ClipboardPanel (empty)', ClipboardPanel)
+  shows('an empty shelf is still a shelf', bare, 'custom-grid')
+  check(
+    'with a slot where each tile will go',
+    occurrences(bare, 'custom-slot') === 3,
+    `${occurrences(bare, 'custom-slot')} slots`
+  )
+  hides('and no paragraph standing in for it', bare, 'class="empty"')
+  hides('nor a tile that is not there', bare, 'custom-grab')
+  // A list that can be empty can say it is: the count reads zero rather than
+  // vanishing, which is the same reading the slots give.
+  shows('the count reads zero', bare, '>0<')
+  // Nothing for a screen reader to trip over -- three unlabelled somethings
+  // read out is worse than an empty shelf read out as empty.
+  check(
+    'and the slots are hidden from a reader',
+    occurrences(bare, 'aria-hidden="true"') >= 3,
+    `${occurrences(bare, 'aria-hidden="true"')}`
+  )
+  // What the dashed squares are for is under the pointer, as well as in the
+  // panel's own tip.
+  shows('while saying what would fill them', bare, 'Save as custom object')
+
+  for (const custom of saved) library().saveCustom(custom.object)
+  check('and the shelf comes back', library().customs.length === saved.length, `${library().customs.length}`)
+}
+
+{
   // The model itself. Nothing here can be seen from a headless run, so what is
   // checked is what would be WRONG on screen: a model framed off its pivot
   // wobbles as it turns instead of spinning in place, and one too big for the
@@ -1998,46 +2103,64 @@ console.log('\nThe selection box only appears once it is one')
   marquee().clear()
 }
 
-// --- the console's two tabs -------------------------------------------------
-console.log('\nThe console splits into View and Edit')
+// --- what the console holds, and what the viewport holds --------------------
+console.log('\nThe console keeps the scene; the selection rides the viewport')
 {
-  // The split is by what a panel is FOR: View works with nothing selected, Edit
-  // only means anything once something is. Both lists are checked whole, so a
-  // panel that quietly lands in both tabs -- or in neither -- fails here.
-  const VIEW = ['>Clipboard<', '>Solids<', '>Shapes<', '>Color<', '>Scene<']
-  const EDIT = ['>Position &amp; Rotation<', '>Dimensions<', '>Sketch<']
+  // The split is by what a control is FOR. The console holds what is true of
+  // the scene whatever is selected, and every one of those works with nothing
+  // selected at all. What only means anything once something IS selected went
+  // to the panel in the corner of the viewport, where the thing being described
+  // can be watched while the number is dragged.
+  //
+  // Both lists are checked whole and against BOTH places, so a panel that
+  // quietly lands on the wrong side -- or in neither -- fails here.
+  const SCENE = ['>Clipboard<', '>Solids<', '>Shapes<', '>Color<', '>Scene<']
+  const SELECTION = ['>Position &amp; Rotation<', '>Dimensions<', '>Sketch<']
 
-  tools().setConsoleTab('view')
-  const view = markupOf('Console (View)', Console)
-  shows('both tabs are offered', view, '>View<')
-  shows('and Edit is one of them', view, '>Edit<')
-  shows('View is the one marked selected', view, 'aria-selected="true" class="console-tab console-tab-active">View')
-  for (const panel of VIEW) shows(`View carries ${panel}`, view, panel)
-  for (const panel of EDIT) hides(`and not ${panel}`, view, panel)
+  const id = doc().addObject(defaultBaseFor('box'), [0, 0, 0])
+  doc().selectObject(id)
 
-  tools().setConsoleTab('edit')
-  const edit = markupOf('Console (Edit)', Console)
-  shows('Edit is the one marked selected now', edit, 'aria-selected="true" class="console-tab console-tab-active">Edit')
-  for (const panel of EDIT) shows(`Edit carries ${panel}`, edit, panel)
-  for (const panel of VIEW) hides(`and not ${panel}`, edit, panel)
+  const console_ = markupOf('Console', Console)
+  for (const panel of SCENE) shows(`the console carries ${panel}`, console_, panel)
+  for (const panel of SELECTION) hides(`and no longer ${panel}`, console_, panel)
+  // The strip is gone with the tab it switched to. One column, all of it live.
+  hides('and the tab strip went with them', console_, 'console-tab')
 
-  // Selecting an object fills the Edit tab and changes nothing on View, so the
-  // tab itself has to say so or the console reads as inert to the click.
-  tools().setConsoleTab('view')
+  const hud = markupOf('SelectionHud (object)', SelectionHud)
+  shows('the viewport panel is in', hud, 'selection-hud-in')
+  shows('carrying Position & Rotation', hud, '>Position &amp; Rotation<')
+  shows('and Dimensions', hud, '>Dimensions<')
+  // The rule the panel is built on: a sketch panel under every selection was
+  // three quarters of its height saying nothing. Selecting the solid a sketch
+  // sits on is not selecting the sketch.
+  hides('but not the sketch controls, with no sketch selected', hud, '>Sketch<')
+  hides('nor any panel apologising for an empty selection', hud, 'Nothing selected')
+
+  doc().startPlacing(defaultShape('circle'))
+  doc().updatePlacing(id, { on: 'box-face', face: 2, u: 0, v: 0 })
+  doc().commitPlacing()
+  const withSketch = markupOf('SelectionHud (sketch)', SelectionHud)
+  shows('selecting a sketch brings the sketch controls in', withSketch, '>Sketch<')
+  shows('beside the placement it still has', withSketch, '>Position &amp; Rotation<')
+
+  // Nothing aimed, nothing shown -- and nothing mounted either, so the panel
+  // slides out empty rather than carrying a stale reading off the screen.
   doc().selectObject(null)
-  hides(
-    'with nothing selected the Edit tab is unmarked',
-    markupOf('Console (nothing selected)', Console),
-    'console-tab-dot'
-  )
-  const marked = doc().addObject(defaultBaseFor('box'), [0, 0, 0])
-  doc().selectObject(marked)
-  shows(
-    'selecting an object marks it',
-    markupOf('Console (object selected)', Console),
-    'console-tab-dot'
-  )
-  doc().removeObject(marked)
+  const empty = markupOf('SelectionHud (idle)', SelectionHud)
+  hides('with nothing selected the panel is out', empty, 'selection-hud-in')
+  for (const panel of SELECTION) hides(`and holds no ${panel}`, empty, panel)
+
+  // An armed cut plane is a thing being aimed, so the panel answers it: the
+  // plane has a placement like any other and no panel of its own.
+  tools().setCutActive(true)
+  const cut = markupOf('SelectionHud (cut armed)', SelectionHud)
+  shows('arming the cut tool brings it back', cut, 'selection-hud-in')
+  shows('for the plane', cut, '>cut plane<')
+  // But a plane has no extent of its own to change.
+  hides('without offering dimensions it does not have', cut, '>Dimensions<')
+  tools().setCutActive(false)
+
+  doc().removeObject(id)
 }
 
 // --- one Extrude, signed both ways ------------------------------------------
@@ -2265,6 +2388,7 @@ console.log('\nThe colour picker, and the selection it paints')
   doc().setObjectColor([], '#ff0000')
   check('and an empty selection paints nothing at all', doc().past.length === settled)
 
+
   // 5. The shelf of colours already used. It lives in the tool store, not the
   //    document: it must survive the panel unmounting on a tab switch, and it
   //    must stay out of undo -- walking back an edit should not also forget the
@@ -2286,7 +2410,6 @@ console.log('\nThe colour picker, and the selection it paints')
   )
 
   // 6. The panel itself.
-  tools().setConsoleTab('view')
   doc().selectObject(null)
   const idle = markupOf('ColorPanel (nothing selected)', ColorPanel)
   shows('with nothing selected Apply stands down', idle, 'disabled=""')
@@ -2331,7 +2454,374 @@ console.log('\nThe colour picker, and the selection it paints')
   )
   shows('and they say what they are for', bare, 'colours land here as you apply them')
 
-  for (const id of [a, b, c]) doc().removeObject(id)
+  // 7. What a merge does to two colours.
+  //
+  // Nothing, is the answer -- and it always did keep both in the document. What
+  // used to be lost was on the way to the screen: the union is one mesh, and
+  // one mesh wore one colour. Now every solid in an assembly is drawn in its
+  // own, so these two fields are the ones the viewport reads. See `ObjectEval`.
+  //
+  // Last, and on solids of its own, because it consumes one object into another
+  // and repaints both -- run any earlier it would be quietly rewriting the
+  // scene the checks above are reading.
+  const host = dragIn(defaultBaseFor('box'), -6, 3)
+  const guest = dragIn(defaultBaseFor('sphere'), -3, 3)
+  doc().setObjectColor([host], '#cc2222')
+  doc().setObjectColor([guest], '#2244cc')
+  doc().selectObjects([host, guest])
+  doc().mergeObjects([host, guest])
+  const assembly = () => doc().doc.objects.find((o) => o.id === host)
+  check('a merge keeps the host colour', assembly()?.color === '#cc2222', String(assembly()?.color))
+  check(
+    'and the solid it absorbed keeps its own',
+    assembly()?.parts[0]?.color === '#2244cc',
+    String(assembly()?.parts[0]?.color)
+  )
+
+  // The other half of the bargain: Apply aimed at an assembly has to reach all
+  // the way down. Painting only the host would repaint a fraction of what the
+  // user had selected, and the rest would sit there in the colour it came in.
+  doc().setObjectColor([host], '#33aa66')
+  check('Apply on an assembly paints the host', assembly()?.color === '#33aa66')
+  check('and every part inside it', assembly()?.parts[0]?.color === '#33aa66')
+  const whole = doc().past.length
+  doc().setObjectColor([host], '#33aa66')
+  check('re-applying it costs no undo step either', doc().past.length === whole)
+
+  // What the viewport looks a paint key up in.
+  const palette = assemblyColors(assembly() as SceneObject)
+  check('every solid in the assembly has a colour to look up', palette.size === 2, `${palette.size}`)
+  check(
+    'and an id that is not one of theirs has none',
+    !palette.has(c),
+    [...palette.keys()].join(',')
+  )
+
+  for (const id of [a, b, c, host]) doc().removeObject(id)
+}
+
+
+{
+  // 8. The scene tree is a priority order.
+  //
+  // Two objects that overlap and are then severed by ONE cut plane end up with
+  // cut faces that are coplanar and overlapping. The depth buffer has no
+  // tiebreak for that -- the shared face tears into a stipple of both colours,
+  // deciding pixel by pixel on rounding alone. It was always so; it simply
+  // could not be seen while every solid was the same grey. Geometry cannot say
+  // which should win, because both are equally there, so the list says it.
+  resetEvaluator()
+  doc().reset()
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+
+  const lower = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
+  const upper = doc().addObject({ kind: 'sphere', radius: 1.2 }, [1, 1, 0])
+  const order = () => doc().doc.objects.map((o) => o.id).join(',')
+
+  check('a new object lands at the bottom', order() === `${lower},${upper}`, order())
+  doc().moveObject(upper, -1)
+  check('and an arrow lifts it over the one above', order() === `${upper},${lower}`, order())
+  doc().undo()
+  check('undo puts the order back', order() === `${lower},${upper}`, order())
+  doc().redo()
+  check('and redo lifts it again', order() === `${upper},${lower}`, order())
+
+  // The button is easy to press at the end of the list, and a move that moves
+  // nothing must not bury the edit before it under an empty history entry.
+  const settled = doc().past.length
+  doc().moveObject(upper, -1)
+  check('moving past the top does nothing', order() === `${upper},${lower}`, order())
+  check('and costs no undo step', doc().past.length === settled, `${doc().past.length - settled}`)
+  doc().moveObject(lower, 1)
+  check('nor does moving past the bottom', doc().past.length === settled)
+  doc().moveObject('no-such-object', -1)
+  check('nor does moving something that is not there', doc().past.length === settled)
+
+  // A move is a move of ONE row, so the rest keep their order among themselves.
+  const third = doc().addObject({ kind: 'box', size: [1, 1, 1] }, [4, 1, 0])
+  doc().moveObject(third, -2)
+  check('a two-step move lands two rows up', order() === `${third},${upper},${lower}`, order())
+  doc().moveObject(third, 9)
+  check('and an overshoot stops at the end rather than wrapping', order() === `${upper},${lower},${third}`, order())
+
+  // 9. What the order does to the picture.
+  //
+  // A depth nudge, not a draw-order swap: `renderOrder` decides which mesh is
+  // submitted first, and for opaque geometry the depth test then throws that
+  // away and the tie comes straight back. Only an offset settles it.
+  const top = depthBias(0, 3)
+  const middle = depthBias(1, 3)
+  const bottom = depthBias(2, 3)
+  check(
+    'the top row is pulled furthest forward',
+    top.polygonOffsetUnits < middle.polygonOffsetUnits &&
+      middle.polygonOffsetUnits < bottom.polygonOffsetUnits,
+    `${top.polygonOffsetUnits}, ${middle.polygonOffsetUnits}, ${bottom.polygonOffsetUnits}`
+  )
+  check('and the offset is negative -- toward the camera', top.polygonOffsetUnits < 0)
+  check(
+    'units carries it, since coplanar faces share a slope',
+    Math.abs(top.polygonOffsetUnits) >= 1,
+    `${top.polygonOffsetUnits}`
+  )
+  check('the bottom row is left exactly alone', bottom.polygonOffsetUnits === 0)
+  check('and does not even turn the offset on', bottom.polygonOffset === false)
+  const only = depthBias(0, 1)
+  check(
+    'a scene of one object carries the material it always did',
+    only.polygonOffset === false && only.polygonOffsetUnits === 0,
+    `${only.polygonOffsetUnits}`
+  )
+
+  for (const id of [lower, upper, third]) doc().removeObject(id)
+}
+
+// --- dragging a number box --------------------------------------------------
+console.log('\nA number box is dragged sideways, and typed into on a double click')
+{
+  // What a pixel is worth. Never less than one step -- the smallest change the
+  // control can make at all -- and otherwise the range over the span, so a
+  // finely-stepped field does not need a drag across two monitors.
+  near('a position moves a step a pixel', scrubRate(-8, 8, 0.05), 0.05, 1e-12)
+  near('and a rotation a degree', scrubRate(-180, 180, 1), 1, 1e-12)
+  // A dimension is stepped in hundredths over eight units, which at a step a
+  // pixel would be an 800px drag. Here the range decides instead.
+  near('a wide, finely-stepped range spreads over the span', scrubRate(0.1, 8, 0.01), 7.9 / SCRUB_SPAN, 1e-12)
+  check('and the span is longer than the slider beside it', SCRUB_SPAN > 130, `${SCRUB_SPAN}`)
+  check('while the slop is a few pixels at most', SCRUB_SLOP > 0 && SCRUB_SLOP <= 5, `${SCRUB_SLOP}`)
+
+  // The reading itself.
+  near('a press that goes nowhere changes nothing', scrubbed(1.25, 0, -8, 8, 0.05), 1.25, 1e-12)
+  near('twenty pixels is a unit of position', scrubbed(1, 20, -8, 8, 0.05), 2, 1e-12)
+  near('and it runs backwards too', scrubbed(1, -20, -8, 8, 0.05), 0, 1e-12)
+  near('ninety pixels is a right angle', scrubbed(0, 90, -180, 180, 1), 90, 1e-12)
+
+  // Snapped to the step, so a dragged number is one that could have been typed.
+  const landed = scrubbed(0, 7, -8, 8, 0.05)
+  near('a drag lands on the step', Math.round(landed / 0.05) * 0.05, landed, 1e-12)
+  check('with no floating-point tail on it', String(landed).length <= 5, String(landed))
+
+  // Clamped at both ends...
+  near('a drag past the top stops there', scrubbed(7, 400, -8, 8, 0.05), 8, 1e-12)
+  near('and past the bottom likewise', scrubbed(-7, -400, -8, 8, 0.05), -8, 1e-12)
+
+  // ...and this is the reason the value is measured from the PRESS rather than
+  // folded into the running one. Dragging 400px past the ceiling and coming
+  // back 100 must arrive 100 pixels below it. Accumulated instead, everything
+  // the clamp swallowed would be lost and the value would come back short.
+  // A press at 7 hits the ceiling twenty pixels out and stays there for the
+  // next 280. Read again at ten pixels, it is 7.5 -- the travel from the press,
+  // not the travel since the last frame. Accumulated instead, the 280 pixels
+  // the clamp swallowed would have to be paid back before the value moved at
+  // all, and the number would hang at its limit long after the pointer left.
+  near('a long drag past the top holds at the top', scrubbed(7, 300, -8, 8, 0.05), 8, 1e-12)
+  near('and coming back reads the travel, not what the clamp swallowed', scrubbed(7, 10, -8, 8, 0.05), 7.5, 1e-12)
+
+  // And the box itself says which mode it is in. Read-only is the scrub: a
+  // caret taken on every press would swallow the first drag of every gesture.
+  const id = doc().addObject(defaultBaseFor('box'), [0, 0, 0])
+  doc().selectObject(id)
+  const hud = markupOf('SelectionHud (scrub boxes)', SelectionHud)
+  // Lower-cased first: React 19 writes the attribute in the case the PROP has,
+  // `readOnly=""`, and HTML parses attribute names case-insensitively -- so the
+  // box is genuinely read-only in a browser, and a check spelling it the HTML
+  // way would fail on markup that is perfectly correct.
+  const boxes = hud.toLowerCase()
+  check(
+    'every number box is a scrub at rest',
+    occurrences(boxes, 'readonly=""') === occurrences(boxes, 'type="number"'),
+    `${occurrences(boxes, 'readonly=""')} of ${occurrences(boxes, 'type="number"')}`
+  )
+  shows('and says so on hover', hud, 'title="Drag to change, double-click to type"')
+  // The attributes the sliders and the checks above both read are untouched by
+  // any of it.
+  shows('while keeping the bounds it always carried', hud, 'min="-8" max="8" step="0.05"')
+  doc().removeObject(id)
+}
+
+
+{
+  // 10. The eraser: a solid dragged in to take material away.
+  //
+  // It is a whole SceneObject and not a mode on some tool, so everything after
+  // the drop -- moving, turning, resizing, snapping, the Position panel -- is
+  // the code that was already there. What is new is the flag, the ghost, and
+  // the one-way act that spends it.
+  resetEvaluator()
+  doc().reset()
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+
+  // The grip on a Solids row starts the same gesture as the row, with a flag.
+  doc().startPlacingSolid({ kind: 'cylinder', radius: 0.4, height: 4 }, true)
+  const dragged = doc().drag
+  check(
+    'the grip drags an eraser rather than a solid',
+    dragged.kind === 'placing-solid' && dragged.template.erase === true,
+    dragged.kind
+  )
+  check(
+    'and it says so in its name',
+    dragged.kind === 'placing-solid' && dragged.template.name.endsWith('eraser'),
+    dragged.kind === 'placing-solid' ? dragged.template.name : ''
+  )
+  doc().updatePlacingSolid(null)
+  doc().commitPlacingSolid()
+  check('released off the canvas it lands nowhere', doc().doc.objects.length === 0)
+
+  const block = dragIn(defaultBaseFor('box'), 0, 0)
+  const clear = dragIn(defaultBaseFor('box'), 6, 0)
+  doc().startPlacingSolid({ kind: 'cylinder', radius: 0.4, height: 6 }, true)
+  doc().updatePlacingSolid(grounded({ kind: 'cylinder', radius: 0.4, height: 6 }, 0, 0))
+  doc().commitPlacingSolid()
+  const eraser = primarySelection(useDoc.getState()) ?? ''
+  const objectOf = (id: string) => doc().doc.objects.find((o) => o.id === id)
+
+  check('dropped, it is an object like any other', objectOf(eraser)?.erase === true)
+  check('and it is the selection, so the panel is aimed at it', doc().selectedObjectIds[0] === eraser)
+  // Moving it is the ordinary path, which is the whole point of it being an
+  // object: no second set of controls to keep in step with the first.
+  doc().setObjectTransform(eraser, { position: [0, 1, 0], rotation: [0, 0, 0] })
+  check('it moves like anything else', objectOf(eraser)?.transform.position[1] === 1)
+
+  const volumeOf = (id: string) => {
+    const object = objectOf(id)
+    if (!object) return 0
+    const { geometry } = evaluateObject(object)
+    const volume = signedVolume(geometry)
+    geometry.dispose()
+    return volume
+  }
+  const before = volumeOf(block)
+
+  // Confirming is ONE step and one history entry: the holes and the eraser
+  // leaving together, so a single undo puts it back where it was aimed.
+  const settled = doc().past.length
+  const cut = doc().applyErase(eraser, doc().doc.objects.map((o) => o.id))
+  check('it erases from what it overlaps', cut === 1, `${cut}`)
+  check('and only from that', objectOf(clear)?.erased === undefined)
+  check('the eraser is spent', objectOf(eraser) === undefined)
+  check('the block lost material', volumeOf(block) < before - 0.5, `${volumeOf(block).toFixed(3)}`)
+  check('the hole is kept on the object it cut', objectOf(block)?.erased?.length === 1)
+  check('one undo step for the whole act', doc().past.length === settled + 1)
+
+  doc().undo()
+  check('undo brings the eraser back', objectOf(eraser)?.erase === true)
+  check('and the block whole with it', Math.abs(volumeOf(block) - before) < 1e-9)
+
+  // Scope, as the switch drives it: the panel hands `applyErase` the candidate
+  // list, so "selected only" is a shorter list rather than a second code path.
+  const narrowed = doc().applyErase(eraser, [clear])
+  check('a target list it does not overlap erases nothing', narrowed === 0, `${narrowed}`)
+  check('and leaves the eraser standing', objectOf(eraser)?.erase === true)
+
+  // An eraser is a tool, not a part: welding one into a solid would make the
+  // hole permanent in the worst possible way, as material.
+  doc().selectObject(block)
+  doc().toggleObjectSelection(eraser)
+  check('merging refuses to weld an eraser in', doc().mergeObjects(doc().selectedObjectIds) === 0)
+
+  doc().removeObject(eraser)
+  for (const id of [block, clear]) doc().removeObject(id)
+}
+
+{
+  // 11. The two drag sources on a Solids row.
+  const rows = markupOf('SolidList', SolidList)
+  const pyramid = rows.split('<div class="solid-item"').find((r) => r.includes('Square pyramid')) ?? ''
+  const sphere = rows.split('<div class="solid-item"').find((r) => r.includes('>Sphere<')) ?? ''
+
+  // The side count is chosen by sweeping across the row now -- invisible bands,
+  // the way the polygon chip in Shapes has always worked -- which is what freed
+  // the right end of the row for the eraser grip.
+  check(
+    'a sided row splits into one band per count',
+    occurrences(pyramid, 'class="solid-band"') === 5,
+    `${occurrences(pyramid, 'class="solid-band"')} bands`
+  )
+  shows('and every band names its polygon', pyramid, 'aria-label="Pentagonal pyramid"')
+  // Invisible is fine for the bands; a row that gave no sign at all that a
+  // choice existed would not be. The ticks are that sign, and the readout.
+  check(
+    'with a tick per count to say the choice is there',
+    occurrences(pyramid, 'class="solid-tick') === 5,
+    `${occurrences(pyramid, 'class="solid-tick')} ticks`
+  )
+  check(
+    'exactly one of them lit',
+    occurrences(pyramid, 'solid-tick solid-tick-on') === 1,
+    `${occurrences(pyramid, 'solid-tick solid-tick-on')} lit`
+  )
+  check(
+    'a row with no side count has no bands',
+    occurrences(sphere, 'class="solid-band"') === 0,
+    `${occurrences(sphere, 'class="solid-band"')}`
+  )
+
+  // Every row carries the grip, sided or not -- a box eraser is the one you
+  // reach for most.
+  check(
+    'every row carries an eraser grip',
+    occurrences(rows, 'class="solid-erase"') === occurrences(rows, '<div class="solid-item"'),
+    `${occurrences(rows, 'class="solid-erase"')} grips`
+  )
+  shows('and it says what it places', sphere, 'Sphere eraser, drag into the scene')
+  shows('and that nothing happens until it is confirmed', sphere, 'until you confirm')
+}
+
+{
+  // 12. Confirming, at the top of the panel that aims it.
+  resetEvaluator()
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+  const solid = dragIn(defaultBaseFor('box'), 0, 0)
+
+  doc().selectObject(solid)
+  hides('an ordinary solid gets no subtract block', markupOf('PlacementPanel (solid)', PlacementPanel), 'Subtract mode')
+
+  doc().startPlacingSolid(defaultBaseFor('sphere'), true)
+  doc().updatePlacingSolid(grounded(defaultBaseFor('sphere'), 0, 0))
+  doc().commitPlacingSolid()
+  const eraser = primarySelection(useDoc.getState()) ?? ''
+
+  const panel = markupOf('PlacementPanel (eraser)', PlacementPanel)
+  shows('an eraser gets one', panel, 'Subtract mode')
+  // Above the rows, so the panel reads in the order the gesture runs: aim it,
+  // then take it.
+  check(
+    'above the position rows, not below them',
+    panel.indexOf('Subtract mode') < panel.indexOf('vec3-axis'),
+    ''
+  )
+  shows('with the switch the scope lives on', panel, 'aria-label="What this eraser cuts"')
+  shows('offering every object', panel, '>Every object<')
+  shows('and the selection alone', panel, '>Selected only<')
+  check(
+    'exactly one of the two engaged',
+    occurrences(panel, 'seg-btn seg-active') === 1,
+    `${occurrences(panel, 'seg-btn seg-active')}`
+  )
+  shows('a confirm', panel, 'erase-confirm')
+  shows('and a way out that cuts nothing', panel, 'erase-discard')
+  // The switch is a tool preference, not a document field: it must survive the
+  // panel unmounting and stay out of undo, like the snap distance.
+  tools().setEraseScope('selected')
+  const narrowed = markupOf('PlacementPanel (selected only)', PlacementPanel)
+  // Nothing is picked out alongside it yet, so there is nothing to subtract
+  // from and the button says so rather than doing nothing when pressed.
+  shows('narrowed with nothing picked, it stands down', narrowed, 'Shift-click the objects to erase from')
+  shows('and names the count it would cut', narrowed, 'Subtract from 0')
+  doc().toggleObjectSelection(solid)
+  shows(
+    'shift-clicking a solid gives it something to cut',
+    markupOf('PlacementPanel (one picked)', PlacementPanel),
+    'Subtract from 1'
+  )
+  tools().setEraseScope('all')
+
+  // The tree says which row is the ghost.
+  shows('the scene tree marks the eraser', markupOf('SceneTree (eraser)', SceneTree), '>erase<')
+
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+  void eraser
 }
 
 console.log(

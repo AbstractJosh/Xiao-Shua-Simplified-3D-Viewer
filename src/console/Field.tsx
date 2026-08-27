@@ -1,7 +1,146 @@
-import { useState } from 'react'
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Vec2, Vec3 } from '../geometry/types'
+import { SCRUB_SLOP, scrubbed } from './scrub'
 import { Tip } from './Tip'
+
+/**
+ * The number box every field in the app is edited through: drag it sideways to
+ * change the value, double-click it to type one.
+ *
+ * A slider finds roughly the right place and a keyboard settles an exact one,
+ * and between them there was nothing -- the box was a place to type five
+ * characters to move a solid by a twentieth of a unit. Dragging the number
+ * itself is the missing middle: it is the slider's feel at the box's
+ * resolution, in the same square of screen the value is already being read in,
+ * which matters most in the viewport panel where a slider is 130 pixels long.
+ *
+ * THE THREE GESTURES ARE KEPT APART BY WHAT THEY COST. A drag past
+ * `SCRUB_SLOP` changes the value; a press that never gets there changes
+ * nothing at all; and typing is behind a double click, because a box that took
+ * a caret on every press would be a box that swallowed the first drag of every
+ * gesture. Focus is refused on the way in for the same reason -- `mousedown`'s
+ * default is what focuses an input, and preventing it leaves click and double
+ * click untouched.
+ *
+ * Tabbing in still opens it for typing: a keyboard has no drag to offer, so
+ * focus arriving on its own is taken as the ask that a double click otherwise
+ * makes.
+ *
+ * WHILE TYPING, THE BOX HOLDS TEXT RATHER THAN A NUMBER. An `input[type=number]`
+ * reports "" for anything not yet a valid figure, and "2." on the way to "2.5"
+ * is exactly that -- so a box driven straight from the parsed value would take
+ * the decimal point, read zero, and rewrite what was typed. The draft is what
+ * is shown for as long as the box is being typed into, and the number is
+ * committed alongside it whenever the draft parses.
+ */
+function ScrubNumber({
+  className,
+  value,
+  min,
+  max,
+  step,
+  decimals,
+  onChange,
+}: {
+  className: string
+  value: number
+  min: number
+  max: number
+  step: number
+  decimals: number
+  onChange: (v: number) => void
+}) {
+  const box = useRef<HTMLInputElement>(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  /** The press in progress: where it started, and what the value was then.
+   *  A ref rather than state -- it changes on every pointer move and nothing
+   *  drawn depends on it. */
+  const press = useRef<{ x: number; from: number; live: boolean } | null>(null)
+  /** What to put back if the typing is abandoned. */
+  const before = useRef(value)
+
+  useEffect(() => {
+    if (!editing) return
+    const node = box.current
+    if (!node) return
+    node.focus()
+    node.select()
+  }, [editing])
+
+  const open = () => {
+    if (editing) return
+    before.current = value
+    setDraft(String(Number(value.toFixed(decimals))))
+    setEditing(true)
+  }
+
+  const down = (e: ReactPointerEvent<HTMLInputElement>) => {
+    if (editing || e.button !== 0) return
+    press.current = { x: e.clientX, from: value, live: false }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const move = (e: ReactPointerEvent<HTMLInputElement>) => {
+    const held = press.current
+    if (!held) return
+    const dx = e.clientX - held.x
+    if (!held.live && Math.abs(dx) < SCRUB_SLOP) return
+    held.live = true
+    onChange(scrubbed(held.from, dx, min, max, step))
+  }
+
+  const up = (e: ReactPointerEvent<HTMLInputElement>) => {
+    if (!press.current) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    press.current = null
+  }
+
+  return (
+    <input
+      ref={box}
+      className={className}
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={editing ? draft : Number(value.toFixed(decimals))}
+      readOnly={!editing}
+      // Not `onPointerDown`: preventing a pointerdown's default is allowed to
+      // take the click and the double click with it, and those are the other
+      // two gestures this box answers. A mousedown's default is only the focus.
+      onMouseDown={(e) => {
+        if (!editing) e.preventDefault()
+      }}
+      onPointerDown={down}
+      onPointerMove={move}
+      onPointerUp={up}
+      onPointerCancel={up}
+      onDoubleClick={open}
+      onFocus={open}
+      onChange={(e) => {
+        const text = e.target.value
+        setDraft(text)
+        const v = Number(text)
+        if (text !== '' && Number.isFinite(v)) {
+          onChange(Math.min(max, Math.max(min, v)))
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        else if (e.key === 'Escape') {
+          onChange(before.current)
+          e.currentTarget.blur()
+        }
+      }}
+      onBlur={() => setEditing(false)}
+      title="Drag to change, double-click to type"
+    />
+  )
+}
 
 type NumberFieldProps = {
   label: string
@@ -42,17 +181,14 @@ export function NumberField({
             onClick={() => onChange(resetTo)}
           />
         )}
-        <input
+        <ScrubNumber
           className="field-num"
-          type="number"
+          value={value}
           min={min}
           max={max}
           step={step}
-          value={Number(value.toFixed(decimals))}
-          onChange={(e) => {
-            const v = Number(e.target.value)
-            if (Number.isFinite(v)) onChange(clamp(v))
-          }}
+          decimals={decimals}
+          onChange={(v) => onChange(clamp(v))}
         />
       </div>
       <input
@@ -224,17 +360,14 @@ function AxisRow({
         value={value}
         onChange={(e) => onChange(clampTo(Number(e.target.value), min, max))}
       />
-      <input
+      <ScrubNumber
         className="vec3-input"
-        type="number"
+        value={value}
         min={min}
         max={max}
         step={step}
-        value={Number(value.toFixed(decimals))}
-        onChange={(e) => {
-          const v = Number(e.target.value)
-          if (Number.isFinite(v)) onChange(clampTo(v, min, max))
-        }}
+        decimals={decimals}
+        onChange={(v) => onChange(clampTo(v, min, max))}
       />
       {resetTo !== undefined && (
         <ResetButton

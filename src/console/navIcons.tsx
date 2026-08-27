@@ -60,6 +60,22 @@ export function MergeIcon() {
   )
 }
 
+/**
+ * Subtract, as CAD has always drawn it: a minus inside the solid.
+ *
+ * Not a pencil eraser, which would say "undo" as loudly as it says "take
+ * away", and not a second solid ghosted over the first the way `MergeIcon`
+ * pairs two rectangles -- at the 14px this is drawn at, the ghost is mush.
+ */
+export function EraseIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <rect x="3.2" y="5.4" width="13.6" height="9.2" rx="1.8" {...STROKE} />
+      <path d="M6.8 10h6.4" {...STROKE} />
+    </svg>
+  )
+}
+
 export function HelpIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden>

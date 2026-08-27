@@ -73,8 +73,8 @@ export function ObjectPanel() {
     return (
       <Section title="Dimensions">
         <p className="empty">
-          Nothing selected. Click an object to edit it, or drag a solid in from
-          the palette above.
+          Nothing selected. Click an object to edit it, or drag one in from the
+          Solids palette.
         </p>
       </Section>
     )

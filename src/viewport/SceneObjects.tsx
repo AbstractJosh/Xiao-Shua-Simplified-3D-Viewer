@@ -4,7 +4,7 @@ import { Edges } from '@react-three/drei'
 import type { ThreeEvent } from '@react-three/fiber'
 import type { Mesh } from 'three'
 import { lighten } from '../color'
-import { assemblyAnchor } from '../geometry/assembly'
+import { assemblyAnchor, assemblyColors } from '../geometry/assembly'
 import { evaluateDoc } from '../geometry/evaluate'
 import type { SnapEntry } from '../geometry/snap'
 import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
@@ -23,6 +23,27 @@ import { TransformGizmo } from './TransformGizmo'
  *  there is no separate highlight pass to keep in sync with the scene. */
 const EDGE_IDLE = '#2b3442'
 const EDGE_SELECTED = '#7cc0ff'
+
+/**
+ * An ERASER: a solid placed to take material away, drawn as a red ghost and
+ * taking nothing until it is confirmed.
+ *
+ * Translucent because what matters while aiming one is what is INSIDE it -- the
+ * material about to go -- and an opaque solid hides exactly that. Red because
+ * it is a subtraction, which is the reading `--in` already carries on an inward
+ * feature; the literal is repeated here because a material cannot read a CSS
+ * custom property, the same bargain `axisColors` strikes.
+ *
+ * It still writes depth. A ghost that did not would show through the very solid
+ * it is buried in, and "am I far enough in" is the one question aiming it asks.
+ */
+const ERASE_COLOR = '#ff7a66'
+const ERASE_EDGE = '#ff9d8e'
+const ERASE_OPACITY = 0.42
+const ERASE_EMISSIVE_INTENSITY = 0.3
+/** Selected, it brightens rather than turning blue -- the same rule a coloured
+ *  solid follows, and for the same reason: the red IS the message. */
+const ERASE_SELECTED_OPACITY = 0.6
 
 /**
  * The unselected solid: warm grey, and the colour every solid wears until the
@@ -111,6 +132,132 @@ export function bodyPaint(
   return { color: lifted(color), emissive: color, emissiveIntensity: SELECTED_OWN_INTENSITY }
 }
 
+/**
+ * Depth units per step down the scene tree.
+ *
+ * One is the smallest offset the GL spec guarantees will resolve: the value is
+ * multiplied by the implementation's own minimum resolvable depth difference,
+ * which is exactly the "just enough to break a tie" this wants. Raise it here,
+ * in one place, if a driver ever proves stingier than the guarantee.
+ */
+const BIAS_STEP = 1
+
+/**
+ * Which of two solids presenting the SAME surface gets drawn.
+ *
+ * Two objects that overlap and are then severed by one cut plane end up with
+ * cut faces that are coplanar AND overlapping. The depth buffer has no tiebreak
+ * for that: the shared face tears into a stipple of both colours, differing
+ * pixel to pixel on rounding alone. It was always so -- it simply could not be
+ * seen while every solid was the same grey.
+ *
+ * Geometry cannot answer which one ought to win, because both are equally
+ * there. The scene tree can: it has always been an order, and this makes the
+ * order mean something. Higher in the list wins, by the smallest depth nudge
+ * that resolves -- see `moveObject`, which is how the user says so.
+ *
+ * A NUDGE rather than a draw-order swap on purpose. `renderOrder` decides which
+ * mesh is submitted first, and for opaque geometry the depth test then throws
+ * that away and the tie comes back. Only a depth offset settles it.
+ *
+ * The bottom row is left exactly unbiased, so a scene of one object carries the
+ * material it always did, and the offsets only ever pull the rows above it
+ * forward. Exported for the check suite.
+ */
+export function depthBias(
+  rank: number,
+  count: number
+): { polygonOffset: boolean; polygonOffsetFactor: number; polygonOffsetUnits: number } {
+  const lift = Math.max(0, count - 1 - rank) * BIAS_STEP
+  return {
+    polygonOffset: lift > 0,
+    // Units is what actually separates two coplanar faces: it is a flat offset,
+    // and two coplanar polygons share a depth slope, so a slope-scaled factor
+    // alone would shift both by the same amount and settle nothing. The factor
+    // is still worth carrying for the steeply angled case, where interpolation
+    // across a long triangle is the larger error.
+    polygonOffsetFactor: -lift,
+    polygonOffsetUnits: -lift,
+  }
+}
+
+/**
+ * The material -- or materials -- a solid's body wears.
+ *
+ * An unmerged object is one solid and takes one material, which is the whole of
+ * what this used to be. A MERGED one is a single mesh cut from several solids,
+ * and the evaluator hands back a group per solid still showing a face, in
+ * `paints`. Each group gets its own material here, attached by index, and each
+ * looks its own colour up by the id its paint carries -- so a merge of a red
+ * cube and a blue one is drawn red and blue, and stays that way through the
+ * pockets and cuts that come after.
+ *
+ * The single case is kept genuinely single rather than folded into an array of
+ * one. `attach="material-0"` builds an array on the mesh, and a mesh with an
+ * array material draws GROUP BY GROUP -- so an object whose geometry never went
+ * through a boolean, and therefore has no groups at all, would render nothing.
+ */
+/**
+ * The eraser's own material. One, not one per paint: an eraser is never merged
+ * and never coloured, so there is only ever the one surface to describe.
+ */
+function EraseBody({ selected, bias }: { selected: boolean; bias: ReturnType<typeof depthBias> }) {
+  return (
+    <meshStandardMaterial
+      color={ERASE_COLOR}
+      emissive={ERASE_COLOR}
+      emissiveIntensity={selected ? ERASE_EMISSIVE_INTENSITY : 0}
+      transparent
+      opacity={selected ? ERASE_SELECTED_OPACITY : ERASE_OPACITY}
+      metalness={0}
+      roughness={0.5}
+      {...bias}
+    />
+  )
+}
+
+function Body({
+  paints,
+  colors,
+  selected,
+  bias,
+}: {
+  paints: string[]
+  colors: Map<string, string | undefined>
+  selected: boolean
+  /** The object's place in the scene tree, as a depth offset. See `depthBias`. */
+  bias: ReturnType<typeof depthBias>
+}) {
+  if (paints.length === 1) {
+    return (
+      <meshStandardMaterial
+        {...bodyPaint(colors.get(paints[0]), selected)}
+        {...bias}
+        metalness={0.15}
+        roughness={0.55}
+      />
+    )
+  }
+
+  // One bias for every group: the solids inside one object were welded into a
+  // single mesh by a union, which already removed the surfaces they shared, so
+  // there is nothing here to break a tie between. The tie is between OBJECTS.
+  return (
+    <>
+      {paints.map((paint, i) => (
+        <meshStandardMaterial
+          key={paint}
+          attach={`material-${i}`}
+          {...bodyPaint(colors.get(paint), selected)}
+          {...bias}
+          metalness={0.15}
+          roughness={0.55}
+        />
+      ))}
+    </>
+  )
+}
+
 type Props = {
   meshes: RefObject<Map<string, Mesh>>
   controlsRef: RefObject<{ enabled: boolean } | null>
@@ -152,6 +299,14 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
 
   const geometries = useMemo(
     () => new Map(result.objects.map((o) => [o.id, o.geometry])),
+    [result]
+  )
+
+  // Which solid each group of each object's mesh came from. Alongside the
+  // geometries rather than inside them because it is the one thing about a
+  // merged mesh the geometry cannot say for itself.
+  const paints = useMemo(
+    () => new Map(result.objects.map((o) => [o.id, o.paints])),
     [result]
   )
 
@@ -291,11 +446,12 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
         />
       )}
 
-      {doc.objects.map((object) => {
+      {doc.objects.map((object, rank) => {
         const geometry = geometries.get(object.id)
         if (!geometry) return null
 
         const isSelected = chosen.has(object.id)
+        const bodyPaints = paints.get(object.id) ?? [object.id]
         const feature =
           object.id === selectedObjectId
             ? object.features.find((f) => f.id === selectedFeatureId) ?? null
@@ -311,10 +467,20 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                 borrow. Disposing it here would free a buffer the next
                 evaluation hands straight back. */}
             <mesh
+              // Keyed by the paint set, so a merge or an unmerge remounts the
+              // mesh rather than editing a material array in place. React
+              // detaching one material of several restores whatever the slot
+              // held before it, which on a shrinking array is a stale entry --
+              // and a stale material slot draws a group the wrong colour. An
+              // eraser is one material whatever it is made of, so it keys as
+              // itself and never shares a mesh with the solid branch.
+              key={object.erase ? 'erase' : bodyPaints.join('|')}
               ref={registrarFor(object.id)}
               geometry={geometry}
-              castShadow
-              receiveShadow
+              // A ghost casts no shadow. It is not there yet, and a shadow
+              // under it would be the one part of the scene claiming it is.
+              castShadow={!object.erase}
+              receiveShadow={!object.erase}
               onPointerDown={(e) => onObjectPointerDown(e, object.id)}
               onContextMenu={(e) => {
                 e.stopPropagation()
@@ -324,18 +490,28 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                 openMenu(clientX, clientY, object.id)
               }}
             >
-              <meshStandardMaterial
-                {...bodyPaint(object.color, isSelected)}
-                metalness={0.15}
-                roughness={0.55}
-              />
+              {object.erase ? (
+                <EraseBody
+                  selected={isSelected}
+                  bias={depthBias(rank, doc.objects.length)}
+                />
+              ) : (
+                <Body
+                  paints={bodyPaints}
+                  colors={assemblyColors(object)}
+                  selected={isSelected}
+                  bias={depthBias(rank, doc.objects.length)}
+                />
+              )}
               {/* Edge outlines read as CAD, but rebuilding them every frame
                   competes with the boolean solve, so they are dropped for the
                   duration of a drag. */}
               {!dragging && (
                 <Edges
                   threshold={18}
-                  color={isSelected ? EDGE_SELECTED : EDGE_IDLE}
+                  color={
+                    object.erase ? ERASE_EDGE : isSelected ? EDGE_SELECTED : EDGE_IDLE
+                  }
                   lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
                 />
               )}

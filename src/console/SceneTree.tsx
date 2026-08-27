@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react'
 import type { Feature, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
@@ -38,10 +39,17 @@ function objectLabel(o: SceneObject): string {
 }
 
 /**
- * The scene, in evaluation order: objects outside, their features nested
- * within. Like the feature list it replaces, this is the document itself and
- * not a log of past actions -- toggling or deleting any row re-derives the
- * geometry.
+ * The scene, in PRIORITY order: objects outside, their features nested within.
+ * Like the feature list it replaces, this is the document itself and not a log
+ * of past actions -- toggling, reordering or deleting any row re-derives the
+ * geometry or the way it is drawn.
+ *
+ * The order is not decoration. Where two solids present the very same surface
+ * -- two overlapping objects severed by one cut plane, whose caps are then
+ * coplanar and overlapping -- the depth buffer has no tiebreak, and the shared
+ * face tears into a stipple of both colours. Row 1 wins that; see `depthBias`
+ * in the viewport, and `moveObject` in the store. Which is why every row
+ * carries a pair of arrows.
  */
 /**
  * Weld the selected objects into one.
@@ -56,10 +64,21 @@ function objectLabel(o: SceneObject): string {
  * The FIRST object picked is the one the rest merge into. It keeps its id, its
  * transform, its features and its cuts; the others become parts inside it, with
  * their placements rewritten into its local space so nothing moves.
+ *
+ * Nothing changes colour either. The result is one object, but it is drawn a
+ * solid at a time in the colours that went in, so a merge is not a decision
+ * about which of them to keep.
  */
 export function MergeButton() {
-  const selected = useDoc((s) => s.selectedObjectIds)
+  const selectedIds = useDoc((s) => s.selectedObjectIds)
+  const objects = useDoc((s) => s.doc.objects)
   const mergeObjects = useDoc((s) => s.mergeObjects)
+
+  // Erasers are skipped by the merge itself, so counting them here would offer
+  // to weld three things and weld two.
+  const selected = selectedIds.filter((id) =>
+    objects.some((o) => o.id === id && !o.erase)
+  )
 
   if (selected.length < 2) return null
 
@@ -67,7 +86,7 @@ export function MergeButton() {
     <button
       type="button"
       className="btn btn-primary merge-btn"
-      title="Weld the selected objects into the first one picked. They keep their own bases, features and cuts as parts inside it."
+      title="Weld the selected objects into the first one picked. They keep their own bases, features, cuts and colours as parts inside it."
       onClick={() => mergeObjects(selected)}
     >
       <span className="merge-btn-icon" aria-hidden>
@@ -75,6 +94,57 @@ export function MergeButton() {
       </span>
       Merge {selected.length} objects
     </button>
+  )
+}
+
+/**
+ * Move an object up or down the priority order.
+ *
+ * Two arrows rather than a drag handle: the list is short, the moves are single
+ * steps, and a button says what it does to a keyboard and a screen reader as
+ * well as to a pointer. Both are DISABLED at the ends rather than hidden, so
+ * the row does not change width as it travels -- a control that moves out from
+ * under the pointer is a control that takes two clicks to use twice.
+ */
+function OrderButtons({ id, rank, count }: { id: string; rank: number; count: number }) {
+  const moveObject = useDoc((s) => s.moveObject)
+  const step = (e: MouseEvent, delta: number) => {
+    // The row itself selects on click, and reordering is not selecting.
+    e.stopPropagation()
+    moveObject(id, delta)
+  }
+
+  return (
+    <span className="tree-order">
+      <button
+        type="button"
+        className="icon-btn"
+        disabled={rank === 0}
+        title={
+          rank === 0
+            ? 'Already at the top -- this object already wins any surface it shares'
+            : 'Move up. Higher in the list wins where two solids share a surface.'
+        }
+        aria-label="Move up"
+        onClick={(e) => step(e, -1)}
+      >
+        {'▲'}
+      </button>
+      <button
+        type="button"
+        className="icon-btn"
+        disabled={rank === count - 1}
+        title={
+          rank === count - 1
+            ? 'Already at the bottom -- it gives way on any surface it shares'
+            : 'Move down. Lower in the list gives way where two solids share a surface.'
+        }
+        aria-label="Move down"
+        onClick={(e) => step(e, 1)}
+      >
+        {'▼'}
+      </button>
+    </span>
   )
 }
 
@@ -104,7 +174,11 @@ export function SceneTree() {
   }
 
   return (
-    <Section title="Scene" hint={`${objects.length}`}>
+    <Section
+      title="Scene"
+      hint={`${objects.length}`}
+      tip="The list is a priority order, top to bottom. Where two objects present the same surface -- two overlapping solids cut by one plane, say -- the higher one is drawn and the lower gives way. The arrows on a row move it."
+    >
       <MergeButton />
       <ul className="tree">
         {objects.map((o, i) => {
@@ -119,7 +193,9 @@ export function SceneTree() {
                   e.shiftKey ? toggleObjectSelection(o.id) : selectObject(o.id)
                 }
               >
-                <span className="feature-index">{i + 1}</span>
+                <span className="feature-index" title={`Priority ${i + 1} of ${objects.length}`}>
+                  {i + 1}
+                </span>
                 <span className="tree-object-name">{objectLabel(o)}</span>
                 {o.features.length > 0 && (
                   <span
@@ -139,6 +215,17 @@ export function SceneTree() {
                     title={`${o.parts.length + 1} solids merged into one object`}
                   >
                     {o.parts.length + 1} merged
+                  </span>
+                )}
+                {/* A red ghost in the scene has an ordinary-looking row, and
+                    the one thing worth knowing about it is that it takes
+                    material away rather than adding it. */}
+                {o.erase && (
+                  <span
+                    className="tree-erase"
+                    title="An eraser. Aim it, then confirm the subtraction under Position & Rotation."
+                  >
+                    erase
                   </span>
                 )}
                 {/* Two halves of a cut solid look like two unrelated objects
@@ -163,6 +250,7 @@ export function SceneTree() {
                     failed
                   </span>
                 )}
+                <OrderButtons id={o.id} rank={i} count={objects.length} />
                 <button
                   type="button"
                   className="icon-btn"
