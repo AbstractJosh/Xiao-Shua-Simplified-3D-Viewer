@@ -5,6 +5,7 @@ import { Grid, OrbitControls } from '@react-three/drei'
 import { MOUSE, Mesh, Raycaster, Vector3 } from 'three'
 import type { Camera, MeshBasicMaterial } from 'three'
 import {
+  MAX_FACE_OFFSET,
   maxShapeSize,
   resizeAlongAxis,
   resizeShapeAlong,
@@ -43,6 +44,7 @@ import type { DropCache } from './dropCache'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
 import { AxisCompass, CompassControl } from './AxisCompass'
 import { SelectionHud } from './SelectionHud'
+import { ToolIsland } from './ToolIsland'
 import { RotationDial } from './RotationDial'
 import { SceneObjects } from './SceneObjects'
 import { MarqueeControl, MarqueeRect } from './SelectionMarquee'
@@ -94,8 +96,9 @@ type Controls = {
 type Store = ReturnType<typeof useDoc.getState>
 type DragOf<K extends Drag['kind']> = Extract<Drag, { kind: K }>
 
-/** Matches the Inspector's face-offset range; the drag must not out-run it. */
-const FACE_OFFSET_LIMIT = 1.5
+/** Matches the Inspector's face-offset range; the drag must not out-run it.
+ *  Both now read the one definition in `dimensions.ts`. */
+const FACE_OFFSET_LIMIT = MAX_FACE_OFFSET
 
 /**
  * The grid sits a hair BELOW y = 0 even though objects rest exactly on it:
@@ -988,7 +991,7 @@ function SnapMarker() {
     // Scaled with distance so it holds roughly one size on screen: at the far
     // end of the zoom range a fixed-radius blob is a single pixel, and this is
     // the only sign the user gets that a snap fired at all.
-    mesh.scale.setScalar(clamp(camera.position.distanceTo(hit.point) * 0.016, 0.02, 0.22))
+    mesh.scale.setScalar(clamp(camera.position.distanceTo(hit.point) * 0.016, 0.002, 1.4))
     ;(mesh.material as MeshBasicMaterial).color.set(SNAP_COLORS[hit.target.kind])
   })
 
@@ -1024,17 +1027,47 @@ function Scene({
       {/* Grid colours are lifted well clear of the #0e1013 background: at the
           original values the ground read as empty space. Major lines carry a
           cool cast so they separate from the warm-grey solids, and the fade is
-          gentler so the plane still reads out toward the horizon. */}
+          gentler so the plane still reads out toward the horizon.
+
+          TWO grids, each divided ten ways, because one cannot serve a world
+          that runs from a millimetre to five metres. A single grid fine enough
+          to count centimetres against turns to moire the moment you pull back
+          far enough to see a whole wall; one coarse enough to survive that has
+          nothing to say when you are shaping a 5 mm boss.
+
+          So the near grid rules centimetres into decimetres and fades out at
+          about a metre and a half, and the far one takes over ruling
+          decimetres into metres. Zoom in and the ground gets finer; zoom out
+          and it gets coarser, and at every zoom a major square is a round
+          number you can count in.
+
+          The fine grid sits a hair ABOVE the coarse one so that where their
+          lines coincide -- every 1 unit, which is a section of one and a cell
+          of the other -- the finer of the two wins outright rather than the
+          pair z-fighting along every decimetre. */}
+      <Grid
+        position={[0, GRID_Y + 0.0005, 0]}
+        args={[24, 24]}
+        cellSize={0.1}
+        cellThickness={0.6}
+        cellColor="#394454"
+        sectionSize={1}
+        sectionThickness={1.2}
+        sectionColor="#6d829b"
+        fadeDistance={14}
+        fadeStrength={1}
+        infiniteGrid
+      />
       <Grid
         position={[0, GRID_Y, 0]}
         args={[24, 24]}
-        cellSize={0.5}
-        cellThickness={0.7}
+        cellSize={1}
+        cellThickness={0.6}
         cellColor="#394454"
-        sectionSize={2.5}
+        sectionSize={10}
         sectionThickness={1.4}
         sectionColor="#6d829b"
-        fadeDistance={34}
+        fadeDistance={300}
         fadeStrength={0.8}
         infiniteGrid
       />
@@ -1059,8 +1092,11 @@ function Scene({
         enabled={!dragging}
         enableDamping
         dampingFactor={0.12}
-        minDistance={1.5}
-        maxDistance={24}
+        // 114 is what it takes to frame the largest solid `dimensions.ts`
+        // allows; 200 leaves room to stand off a scene of them. The near end
+        // drops far enough to put a millimetre feature on screen.
+        minDistance={0.02}
+        maxDistance={200}
       />
     </>
   )
@@ -1387,7 +1423,14 @@ export function Viewport() {
     // pointer-UP -- by which time the pointer has usually left the arrow.
     <div className="viewport" onContextMenu={(e) => e.preventDefault()}>
       <Canvas
-        camera={{ position: [6.2, 4.6, 6.2], fov: 45, near: 0.1, far: 200 }}
+        camera={{ position: [6.2, 4.6, 6.2], fov: 45, near: 0.005, far: 1000 }}
+        // A five-metre solid needs the camera 113 units out to frame it; a
+        // millimetre one fills the view from 0.023 units away, which was INSIDE
+        // the old near plane -- the app simply could not draw a part that small.
+        // Both ends had to move, and a 200,000:1 frustum is far past what a
+        // 24-bit depth buffer resolves, so the log buffer is not an
+        // optimisation here but the thing that keeps faces from tearing.
+        gl={{ logarithmicDepthBuffer: true }}
         dpr={[1, 2]}
         // The left button is the marquee's, and it clears the selection itself
         // on a press that drew no box -- so only the other buttons are answered
@@ -1398,6 +1441,7 @@ export function Viewport() {
       >
         <Scene controlsRef={controlsRef} meshes={meshes} />
       </Canvas>
+      <ToolIsland />
       <AxisCompass />
       <SelectionHud />
       <MarqueeRect />

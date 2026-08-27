@@ -19,13 +19,47 @@ export type Axis = 0 | 1 | 2
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
-/** Slider bounds. Generous enough to compose a scene, tight enough to aim with. */
-export const MIN_DIMENSION = 0.1
-export const MAX_SIZE = 8
-export const MAX_RADIUS = 4
+/**
+ * Slider bounds, in scene units -- and ONE SCENE UNIT IS TEN CENTIMETRES.
+ *
+ * That mapping is the reason these numbers are what they are. A five-metre
+ * object is fifty units, not five hundred, and fifty is a magnitude float32
+ * still resolves finely: the weld tolerance in `brep.ts` has to clear the
+ * float32 step at the largest coordinate in the scene, and that step grows with
+ * the coordinate. Ten centimetres to the unit buys a room-sized envelope
+ * without ever leaving the range the B-rep layer can weld.
+ *
+ * The floor is a millimetre, which is what makes the range 5000:1 -- wide
+ * enough that the weld tolerance can no longer be one number for every model.
+ * See `weldToleranceFor` in `brep.ts`.
+ */
+export const MIN_DIMENSION = 0.01
+export const MAX_SIZE = 50
+export const MAX_RADIUS = 25
 
-/** Sketches are detail work and go far smaller than a solid ever does. */
-export const MIN_SHAPE = 0.02
+/**
+ * How far a created face may slide within its own plane.
+ *
+ * Lives here rather than in either of its two users -- the Inspector's slider
+ * and the viewport's drag -- because the two MUST agree: a drag allowed to
+ * out-run the panel leaves a slider pinned at its end while the face keeps
+ * moving. It was the same literal written down in both files, kept in step by
+ * hand.
+ */
+export const MAX_FACE_OFFSET = 10
+
+/**
+ * Sketches are detail work and go far smaller than a solid ever does.
+ *
+ * Half a millimetre, and it is a WELD floor rather than a taste one. A circular
+ * outline is 48 segments (`outline.ts`), so its chord is `2r sin(pi/48)` --
+ * about 0.131 of the radius. Let the radius reach 0.002 and that chord is
+ * 2.6e-4, against a weld tolerance of 1.2e-4 at the far corner of the world:
+ * near enough that two neighbouring points on the circle would collapse into
+ * one, and the sketch would arrive in the STEP file as a polygon with corners
+ * missing. At 0.005 the chord clears the weld five times over.
+ */
+export const MIN_SHAPE = 0.005
 
 /**
  * Sensible upper bound for a sketch on a given solid, so it cannot be grown

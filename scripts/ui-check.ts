@@ -65,7 +65,15 @@ import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { Console } from '../src/console/Console'
 import { SelectionHud } from '../src/viewport/SelectionHud'
-import { SCRUB_SLOP, SCRUB_SPAN, scrubRate, scrubbed } from '../src/console/scrub'
+import { ToolIsland } from '../src/viewport/ToolIsland'
+import {
+  SCRUB_SLOP,
+  SCRUB_SPAN,
+  scrubRate,
+  scrubTravel,
+  scrubbed,
+  trackWindow,
+} from '../src/console/scrub'
 import { ColorPanel } from '../src/console/ColorPanel'
 import type { Hsv } from '../src/color'
 import { hexToHsv, hsvToHex, hueAt, lighten, parseHex, wheelHue } from '../src/color'
@@ -76,8 +84,11 @@ import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
 import { SolidList, SolidPalette } from '../src/console/SolidPalette'
 import { NGON_LABEL } from '../src/console/ngon'
 import { SOLID_TEMPLATES } from '../src/console/solidIcons'
+import { UNIT_MODES, fromDisplay, resolveUnit, stepIn, toDisplay } from '../src/units'
 import {
+  MAX_FACE_OFFSET,
   MAX_SIZE,
+  MIN_DIMENSION,
   maxShapeSize,
   resizeAlongAxis,
   scaleShape,
@@ -117,11 +128,41 @@ import { useEvalStatus } from '../src/store/evalStore'
 import { useLibrary } from '../src/store/libraryStore'
 import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
 import {
+  CUT_POSITION_LIMIT,
   CUT_SIZE_MAX,
+  ISLAND_MARGIN,
+  ISLAND_SNAP,
   RECENT_COLOR_SLOTS,
   cutPlaneNormal,
+  dockIsland,
   useTools,
 } from '../src/store/toolStore'
+
+/**
+ * Panels render lengths in whatever unit the tool island is set to, so the
+ * markup checks below pin one. `cm` rather than the shipped `auto`, because
+ * `auto` picks per value and an assertion would have to re-derive the choice to
+ * state its own expectation -- at which point it is testing the derivation
+ * against itself. `auto` gets its own section, further down, where the choosing
+ * IS the subject.
+ */
+useTools.setState({ displayUnit: 'cm' })
+const SHOWN = 'cm' as const
+const inShown = (u: number) => toDisplay(u, SHOWN)
+
+/** The attribute run every position box renders. Built from the constant the
+ *  panel itself reads and converted the way the panel converts, so these checks
+ *  keep testing the real bound instead of a number the app stopped using. */
+const posBounds = `min="-${inShown(MAX_SIZE)}" max="${inShown(MAX_SIZE)}" step="${stepIn(0.05, SHOWN)}"`
+
+/** The attribute run a windowed TRACK renders for a value, in scene units in
+ *  and display units out. Computed with the same function the component uses,
+ *  so the check states the rule rather than a transcript of one result. */
+function trackOf(value: number, limit = MAX_SIZE, sceneStep = 0.05): string {
+  const step = stepIn(sceneStep, SHOWN)
+  const w = trackWindow(inShown(value), inShown(-limit), inShown(limit), step)
+  return `min="${w.lo}" max="${w.hi}" step="${step}" value="${inShown(value)}"`
+}
 
 let failures = 0
 function check(label: string, ok: boolean, detail = '') {
@@ -342,8 +383,16 @@ doc().selectObject(pyramidId)
   // The drop position, read back through the number boxes: 2.5 / 0.9 / -1.25.
   const placed = markupOf('PlacementPanel', PlacementPanel)
   shows('Position is shown', placed, '>Position<')
-  shows('the X box carries the drop position', placed, 'min="-8" max="8" step="0.05" value="2.5"')
-  shows('and the Z box the other axis', placed, 'min="-8" max="8" step="0.05" value="-1.25"')
+  // Bounds INTERPOLATED, never spelled out: these are the panel's own limits,
+  // and a literal here silently stops testing the thing it names the moment
+  // the envelope moves.
+  // The TRACK shows a window around the value now, not the whole range -- a
+  // hundred units across 130 pixels was eight centimetres a pixel. The window
+  // is what these pin; the box beside it still offers the full range, checked
+  // just below.
+  shows('the X track is windowed on the drop position', placed, trackOf(2.5))
+  shows('and the Z track on the other axis', placed, trackOf(-1.25))
+  shows('while the box still reaches the whole range', placed, `type="number" ${posBounds}`)
   shows('Rotation is shown', placed, '>Rotation<')
   // Placement is ONE panel for both things that have one. With nothing armed it
   // is describing the object.
@@ -404,13 +453,17 @@ doc().selectObject(pyramidId)
 }
 
 {
-  // The tools live in the bar across the top, not in the console: they are how
-  // you work rather than what you have built, and the two are kept apart.
+  // The tools live outside the console: they are how you work rather than what
+  // you have built. Which of the two surfaces a tool sits on is decided by what
+  // it is aimed at -- the scene, or the whole document.
   const bar = markupOf('NavBar', NavBar)
-  shows('the bar carries the snap tool', bar, '>Snap<')
-  shows('and the cut tool', bar, '>Cut<')
-  shows('and the export tool', bar, '>Export<')
+  shows('the bar carries the export tool', bar, '>Export<')
   shows('and the help button', bar, '>Help<')
+  // Snap and Cut are aimed at a solid you are looking at, so they went out of
+  // the bar and onto the scene. Asserted as an absence here, because a control
+  // in two places is a control with two states to keep in step.
+  hides('but not the snap tool', bar, '>Snap<')
+  hides('nor the cut tool', bar, '>Cut<')
   // Export is docked at the right, with the two other acts on the whole
   // document -- and its formats are behind its menu rather than spread across
   // the bar. Checked on the bar itself, since where a control SITS is the half
@@ -447,9 +500,69 @@ doc().selectObject(pyramidId)
   // nothing at all is exactly the claim here, and it is a stronger one than
   // "the markup happens not to contain a button".
   check(
-    'and the bar carries no cut actions until it is armed',
+    'and carries no cut actions until it is armed',
     renderToStaticMarkup(createElement(CutActions)) === '',
     'disarmed CutActions renders nothing'
+  )
+
+  // The island over the scene: the two tools, and the strip that shuts it.
+  const island = markupOf('ToolIsland', ToolIsland)
+  shows('the island carries the snap tool', island, '>Snap<')
+  shows('and the cut tool', island, '>Cut<')
+  shows('under a title that names it', island, 'Tools</button>')
+  shows('and it stands open at rest', island, 'aria-expanded="true"')
+
+  tools().setIslandCollapsed(true)
+  const shut = markupOf('ToolIsland (collapsed)', ToolIsland)
+  // Collapsed is the strip and nothing else: the tools are not merely hidden
+  // by CSS, they are off the page, so nothing in there is left in the tab order
+  // over a scene that is now showing none of it.
+  hides('collapsed, the tools go with the body', shut, '>Snap<')
+  hides('the cut tool with them', shut, '>Cut<')
+  shows('leaving the strip that opens it again', shut, 'Tools</button>')
+  shows('which says it is shut', shut, 'aria-expanded="false"')
+  tools().setIslandCollapsed(false)
+
+  // WHERE it sits is inline, from two of the four insets rather than a
+  // left/top pair, and the corner it is on is a class the panels inside read to
+  // decide which way to open.
+  shows('it opens in the top-left corner', island, 'style="left:12px;top:12px"')
+  shows('and says which corner that is', island, 'tool-island-left tool-island-top')
+
+  // The drag itself is this one pure solve -- the component reads the pointer
+  // and hands the answer to the store -- so it is checked as arithmetic.
+  const size = { width: 176, height: 90 }
+  const bounds = { width: 1000, height: 700 }
+  const spanX = bounds.width - size.width
+  const spanY = bounds.height - size.height
+  const at = (x: number, y: number) => JSON.stringify(dockIsland(x, y, size, bounds))
+  const placed = (hx: string, x: number, hy: string, y: number) =>
+    JSON.stringify({ hx, x, hy, y })
+
+  check('dropped mid-scene it stays where it was put', at(300, 200) === placed('left', 300, 'top', 200), at(300, 200))
+  check('near an edge it snaps flush to it', at(5, 200) === placed('left', ISLAND_MARGIN, 'top', 200), at(5, 200))
+  check(
+    'and the gap is measured from the edge it is nearest',
+    at(spanX - 6, 200) === placed('right', ISLAND_MARGIN, 'top', 200),
+    at(spanX - 6, 200)
+  )
+  // A corner is not a case of its own: it is both axes snapping at once, which
+  // is why edges and corners feel like one behaviour rather than two.
+  check(
+    'two edges at once is a corner',
+    at(spanX - 8, spanY - 8) === placed('right', ISLAND_MARGIN, 'bottom', ISLAND_MARGIN),
+    at(spanX - 8, spanY - 8)
+  )
+  // Dragged clean off the scene, it comes back to the corner it left by rather
+  // than to wherever the pointer went.
+  check('dragged past a corner it lands in it', at(-400, -400) === placed('left', ISLAND_MARGIN, 'top', ISLAND_MARGIN), at(-400, -400))
+  check('and past the far one, in that one', at(4000, 4000) === placed('right', ISLAND_MARGIN, 'bottom', ISLAND_MARGIN), at(4000, 4000))
+  // The catch has an outside, or the middle of the scene would be unreachable.
+  const clear = ISLAND_MARGIN + ISLAND_SNAP + 1
+  check(
+    'outside the catch it keeps the gap it was given',
+    at(clear, 200) === placed('left', clear, 'top', 200),
+    at(clear, 200)
   )
 }
 
@@ -640,7 +753,11 @@ const slid = measure(cubeId)
   near('sliding shears the pillar rather than growing it', slid.volume, baseline.volume, 1e-6)
 
   const panel = markupOf('Inspector (slid)', Inspector)
-  shows('the panel reads back the slide it applied', panel, 'min="-1.5" max="1.5" step="0.01" value="0.8"')
+  shows(
+    'the panel reads back the slide it applied',
+    panel,
+    trackOf(0.8, MAX_FACE_OFFSET, 0.01)
+  )
 }
 
 {
@@ -736,8 +853,8 @@ tools().setCutActive(true)
 // The prism is 1.8 tall and rests on the grid, so this plane is halfway up it.
 tools().setCutPlane({ position: [-3, 0.9, 0], rotation: [0, 0, 0] })
 {
-  // Arming puts the two ACTIONS in the bar, a short travel from the gizmo that
-  // just aimed the plane. The plane's numbers stay in the console.
+  // Arming puts the two ACTIONS on the island, a short travel from the gizmo
+  // that just aimed the plane. The plane's numbers stay in the console.
   const panel = markupOf('CutActions (armed)', CutActions)
   hides('the actions carry no placement of their own', panel, '>Position<')
   // The guide square is sized by the gizmo's ring alone now; it was the last
@@ -753,13 +870,17 @@ tools().setCutPlane({ position: [-3, 0.9, 0], rotation: [0, 0, 0] })
   shows('and its tilt, named as a tilt', placed, '>Tilt<')
   hides('rather than as a rotation', placed, '>Rotation<')
   // The plane's own range, not the object's: one panel, two sets of bounds.
-  shows('with the plane range, not the object one', placed, 'min="-6" max="6" step="0.05" value="-3"')
+  shows(
+    'with the plane range, not the object one',
+    placed,
+    trackOf(-3, CUT_POSITION_LIMIT)
+  )
   shows('it says what it will cut', panel, 'Cuts the selected object')
   shows('and offers the button', panel, '>Apply cut</button>')
   shows('and the one that re-aims the plane', panel, '>Reset plane</button>')
 
   // Deselect and the button says out loud that it is about to cut everything.
-  // On a 46px bar the target sentence lives in a title; the COUNT does not,
+  // On a 176px island the target sentence lives in a title; the COUNT does not,
   // because "this will cut all of them" is the half that must not be missed.
   doc().selectObject(null)
   const wide = markupOf('CutActions (nothing selected)', CutActions)
@@ -1000,7 +1121,11 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   // The ceiling the gizmo clamps to is the one the panel draws, because both
   // read it from geometry/dimensions rather than each keeping its own copy.
   doc().selectObject(gizmoCube)
-  shows('the panel offers that same ceiling', markupOf('ObjectPanel (bounds)', ObjectPanel), `max="${MAX_SIZE}"`)
+  shows(
+    'the panel offers that same ceiling',
+    markupOf('ObjectPanel (bounds)', ObjectPanel),
+    `max="${inShown(MAX_SIZE)}"`
+  )
 }
 
 {
@@ -2182,8 +2307,15 @@ console.log('\nExtrude is one control that crosses zero')
 
     // The whole point of collapsing the two modes: one slider, and its range
     // straddles zero rather than starting there.
-    shows('the slider reaches below zero', flat, 'type="range" min="-3"')
-    shows('and above it, further', flat, 'max="4"')
+    // Windowed like every other track, so what is pinned is that the window
+    // sits inside the asymmetric depth limits rather than that it equals them.
+    const depthWindow = trackWindow(inShown(depth()), inShown(-3), inShown(4), stepIn(0.01, SHOWN))
+    shows('the depth slider is windowed inside its limits', flat, `type="range" min="${depthWindow.lo}"`)
+    check(
+      'and the window stays within the asymmetric bounds',
+      depthWindow.lo >= inShown(-3) - 1e-9 && depthWindow.hi <= inShown(4) + 1e-9,
+      `${depthWindow.lo} .. ${depthWindow.hi}`
+    )
 
     doc().setDepth(id, fid, 0.3)
     near('a positive depth is a boss', depth(), 0.3, 1e-12)
@@ -2579,14 +2711,36 @@ console.log('\nThe colour picker, and the selection it paints')
 // --- dragging a number box --------------------------------------------------
 console.log('\nA number box is dragged sideways, and typed into on a double click')
 {
-  // What a pixel is worth. Never less than one step -- the smallest change the
-  // control can make at all -- and otherwise the range over the span, so a
-  // finely-stepped field does not need a drag across two monitors.
-  near('a position moves a step a pixel', scrubRate(-8, 8, 0.05), 0.05, 1e-12)
-  near('and a rotation a degree', scrubRate(-180, 180, 1), 1, 1e-12)
-  // A dimension is stepped in hundredths over eight units, which at a step a
-  // pixel would be an 800px drag. Here the range decides instead.
-  near('a wide, finely-stepped range spreads over the span', scrubRate(0.1, 8, 0.01), 7.9 / SCRUB_SPAN, 1e-12)
+  // The FINE end: what the first pixel of a drag is worth. One step, always --
+  // the smallest change the control can make, so a first pixel worth less would
+  // move nothing and one worth more would put reachable values out of reach.
+  near('a position starts at a step a pixel', scrubRate(-50, 50, 0.05), 0.05, 1e-12)
+  near('and a rotation at a tenth of a degree', scrubRate(-180, 180, 0.1), 0.1, 1e-12)
+  near('the first pixel of a drag is that step', scrubTravel(1, -50, 50, 0.05), 0.05, 1e-3)
+
+  // The COARSE end: the same gesture, kept going, still crosses the whole range
+  // in the span. This is what a flat rate could not do at both ends at once --
+  // a position range of 100 in steps of 0.05 is 2000 steps, and a flat rate
+  // fine enough for one step is 2000 pixels wide.
+  near('and the span still crosses the range', scrubTravel(SCRUB_SPAN, -50, 50, 0.05), 100, 1e-9)
+  near('however wide and fine the range is', scrubTravel(SCRUB_SPAN, 0.01, 50, 0.01), 49.99, 1e-9)
+
+  // ODD in dx, which is what lets a drag run past a limit and come back to
+  // exactly where it left rather than a little short.
+  for (const d of [1, 37, 250, SCRUB_SPAN]) {
+    near(`a drag of ${d} mirrors backwards`, scrubTravel(-d, -50, 50, 0.05), -scrubTravel(d, -50, 50, 0.05), 1e-12)
+  }
+  // And monotonic, so a pointer moving one way never sends the value the other.
+  let climbing = true
+  for (let d = 1; d <= SCRUB_SPAN; d += 7) {
+    if (scrubTravel(d, -50, 50, 0.05) <= scrubTravel(d - 1, -50, 50, 0.05)) climbing = false
+  }
+  check('and never doubles back on itself', climbing)
+
+  // A range narrow enough that a step a pixel already crosses it needs no ramp,
+  // and must not get one: this is the flat behaviour it always had.
+  near('a narrow range stays flat', scrubTravel(100, -180, 180, 1), 100, 1e-12)
+
   check('and the span is longer than the slider beside it', SCRUB_SPAN > 130, `${SCRUB_SPAN}`)
   check('while the slop is a few pixels at most', SCRUB_SLOP > 0 && SCRUB_SLOP <= 5, `${SCRUB_SLOP}`)
 
@@ -2595,6 +2749,23 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   near('twenty pixels is a unit of position', scrubbed(1, 20, -8, 8, 0.05), 2, 1e-12)
   near('and it runs backwards too', scrubbed(1, -20, -8, 8, 0.05), 0, 1e-12)
   near('ninety pixels is a right angle', scrubbed(0, 90, -180, 180, 1), 90, 1e-12)
+
+  // The track shows a window, and it never runs off either end of the range.
+  for (const at of [-50, -12.5, 0, 3.7, 50]) {
+    const w = trackWindow(at, -50, 50, 0.05)
+    check(
+      `the track window holds ${at} inside the range`,
+      w.lo >= -50 - 1e-9 && w.hi <= 50 + 1e-9 && at >= w.lo - 1e-9 && at <= w.hi + 1e-9,
+      `${w.lo} .. ${w.hi}`
+    )
+  }
+  const mid = trackWindow(0, -50, 50, 0.05)
+  check('and it is finer than the whole range', mid.hi - mid.lo < 100, `${mid.hi - mid.lo}`)
+  const narrow = trackWindow(0, -1, 1, 0.5)
+  check(
+    'while a range small next to its step keeps the full track',
+    narrow.lo === -1 && narrow.hi === 1
+  )
 
   // Snapped to the step, so a dragged number is one that could have been typed.
   const landed = scrubbed(0, 7, -8, 8, 0.05)
@@ -2635,7 +2806,7 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   shows('and says so on hover', hud, 'title="Drag to change, double-click to type"')
   // The attributes the sliders and the checks above both read are untouched by
   // any of it.
-  shows('while keeping the bounds it always carried', hud, 'min="-8" max="8" step="0.05"')
+  shows('while keeping the bounds it always carried', hud, posBounds)
   doc().removeObject(id)
 }
 
@@ -2822,6 +2993,68 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
 
   for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
   void eraser
+}
+
+// --- units on screen --------------------------------------------------------
+{
+  // The conversion has to be exactly reversible, because every edit makes the
+  // round trip: the panel shows a scene length in millimetres, the user drags
+  // it, and what comes back has to be a scene length again. A conversion that
+  // lost a hair each way would let a value drift every time it was looked at.
+  for (const mode of ['mm', 'cm', 'm'] as const) {
+    for (const v of [0, 0.005, 0.01, 2, 37.5, 50]) {
+      const back = fromDisplay(toDisplay(v, mode), mode)
+      near(`${mode} survives the round trip at ${v}`, back, v, 1e-12)
+    }
+  }
+
+  // One unit is ten centimetres. Everything else in `units.ts` follows from it,
+  // so it is worth one check that says so in plain numbers.
+  near('one unit is 100 mm', toDisplay(1, 'mm'), 100, 1e-12)
+  near('and 10 cm', toDisplay(1, 'cm'), 10, 1e-12)
+  near('and a tenth of a metre', toDisplay(1, 'm'), 0.1, 1e-12)
+  near('the smallest solid is a millimetre', toDisplay(MIN_DIMENSION, 'mm'), 1, 1e-12)
+  near('and the largest is five metres', toDisplay(MAX_SIZE, 'm'), 5, 1e-12)
+
+  // `auto` switches on round numbers in the unit it is LEAVING, so the figure
+  // on screen stays readable rather than sliding into zeroes or long tails.
+  check('auto shows a millimetre feature in mm', resolveUnit(0.01, 'auto') === 'mm')
+  check('and holds mm right up to 10', resolveUnit(0.099, 'auto') === 'mm')
+  check('then takes centimetres', resolveUnit(0.1, 'auto') === 'cm')
+  check('and keeps them to a metre', resolveUnit(9.99, 'auto') === 'cm')
+  check('then metres', resolveUnit(10, 'auto') === 'm')
+  check('a five-metre solid reads in metres', resolveUnit(MAX_SIZE, 'auto') === 'm')
+  check('zero stays in mm rather than 0.000 m', resolveUnit(0, 'auto') === 'mm')
+  check('and sign does not change the choice', resolveUnit(-4, 'auto') === resolveUnit(4, 'auto'))
+  check('a fixed mode ignores magnitude', resolveUnit(50, 'mm') === 'mm')
+
+  // The whole point of converting bounds and step together: a pixel of drag
+  // must be worth the same distance in the WORLD whichever unit is on screen,
+  // or switching units would silently change how the controls feel.
+  const perPixel = (['mm', 'cm', 'm'] as const).map((mode) =>
+    fromDisplay(
+      scrubTravel(1, toDisplay(-MAX_SIZE, mode), toDisplay(MAX_SIZE, mode), stepIn(0.05, mode)),
+      mode
+    )
+  )
+  near('a pixel is worth the same in cm as in mm', perPixel[1], perPixel[0], 1e-12)
+  near('and the same again in metres', perPixel[2], perPixel[0], 1e-12)
+  // The first pixel is the step plus the very start of the ramp, so this is
+  // 'about a step' rather than exactly one. The equality that matters -- that
+  // all three units agree -- is asserted exactly, just above.
+  near('at about the step the control is written in', perPixel[0], 0.05, 1e-3)
+
+  // And the selector itself.
+  useTools.setState({ openPanel: 'units' })
+  const island = markupOf('ToolIsland (units)', ToolIsland)
+  for (const mode of UNIT_MODES) shows(`the island offers ${mode}`, island, `>${mode}<`)
+  shows('with the current one marked', island, 'seg-btn seg-active')
+
+  // Collapsing the island takes the panel with it. This was a check for the
+  // snap panel by name, so units would have sprung back open on its own.
+  useTools.getState().setIslandCollapsed(true)
+  check('collapsing the island shuts the units panel', useTools.getState().openPanel === null)
+  useTools.setState({ islandCollapsed: false, displayUnit: 'cm' })
 }
 
 console.log(

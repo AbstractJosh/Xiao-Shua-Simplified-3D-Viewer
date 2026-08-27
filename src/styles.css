@@ -114,19 +114,16 @@ body {
   }
 }
 
+/* Scoped to the bar, which is the only thing that runs out of room: the island
+   is a fixed 176px over a viewport that keeps its width, so its labels stay
+   whatever the window does. */
 @media (max-width: 1040px) {
-  .nav-label {
+  .topbar .nav-label {
     display: none;
   }
 
-  .nav-btn {
+  .topbar .nav-btn {
     padding: 5px 8px;
-  }
-
-  /* The cut actions are words, not icons, so they tighten rather than vanish:
-     a nameless button that severs the scene is not an improvement. */
-  .nav-action {
-    padding: 4px 7px;
   }
 }
 
@@ -153,23 +150,13 @@ body {
   white-space: nowrap;
 }
 
-/* --- tool bar --- */
+/* --- tools ---------------------------------------------------------------
 
-/* Centre group. `flex: 0 0 auto` because these are the controls the window is
-   FOR: the brand truncates and the stats disappear before a tool button does. */
-.navbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-
-.nav-sep {
-  width: 1px;
-  height: 20px;
-  margin: 0 4px;
-  background: var(--border);
-}
+   Everything from here to the tool panels is shared by the two places a tool
+   button appears: the island over the scene, which holds Snap and Cut, and the
+   right end of the bar, which holds Export and Help. One definition of what a
+   tool button looks like; where it SITS is decided by the container, and the
+   island's own overrides are down with the rest of the viewport overlays. */
 
 /* Anchor for both the panel and the hover bubble. */
 .nav-tool {
@@ -1984,6 +1971,158 @@ body {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+/* --- tool island --- */
+
+/* Snap, Cut, and the two actions an armed cut plane brings with it, floating
+   over the top-left of the scene.
+
+   They were in the bar across the top. Both are aimed at the SCENE -- snapping
+   is watched at the corner of a solid being dragged, a cut is fired at a plane
+   standing in the middle of the viewport -- so reaching them meant the hand at
+   the top edge of the window and the eye on the model, and the panel hanging
+   off the button came down over the thing it was aimed at.
+
+   Top-left is the corner nothing else claims: the compass has the top-right,
+   the selection panels the bottom-right, the drag hint the bottom centre. Above
+   both of the others in the stack, because its panel opens sideways across the
+   scene -- and, like them, sealed under the top bar by `.viewport`'s own
+   stacking context however high the number here goes.
+
+   A FIXED width, not one that fits its contents: the widest thing in here is a
+   button that exists only while the cut is armed, and an island that changed
+   width when a tool was switched on would move the next button out from under
+   the pointer. */
+.tool-island {
+  position: absolute;
+  /* WHICH two of top/right/bottom/left are set is decided by the drag and
+     written inline -- see `IslandPlacement`. Naming any of them here would
+     fight the pair the island was left on. */
+  z-index: 24;
+  width: 176px;
+  background: rgba(20, 23, 29, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Shut, it is a strip with a word on it, so it gives the width back to the
+   scene. The button that reopens it does not move while it does -- the island
+   is anchored at its top-left corner, which is the corner the button is in. */
+.tool-island-shut {
+  width: auto;
+}
+
+/* The title strip, and the whole of the island once it is shut. Typed like a
+   console section heading, and carrying the same collapse button, so there is
+   one collapse idiom in the app rather than one per surface. */
+.island-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: grab;
+  /* The strip is a drag handle, so the browser must not read a drag across it
+     as a scroll or as a text selection instead. */
+  touch-action: none;
+  user-select: none;
+}
+
+/* `:active` holds for as long as the button is down on the strip, which is
+   exactly the length of the drag, so the cursor follows the gesture without any
+   state of its own to keep in step. */
+.island-head:active {
+  cursor: grabbing;
+}
+
+/* Says the strip can be taken hold of, at the end furthest from the button so
+   it reads as the handle rather than as part of the title. Inert: the whole
+   strip is the handle, and a grip that had to be hit would be a smaller target
+   than the one it advertises. */
+.island-grip {
+  display: flex;
+  margin-left: auto;
+  color: #4d5665;
+  pointer-events: none;
+}
+
+.island-grip svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* The rule belongs to the body rather than to the strip above it: shut, the
+   strip is the island, and a border along its bottom would be an edge with
+   nothing under it. */
+.island-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 9px 9px;
+  border-top: 1px solid var(--border);
+}
+
+/* A column, where the bar laid the same buttons in a row. The island is narrow
+   by choice -- every pixel of it is scene that cannot be dragged to orbit -- so
+   the labels stack down the edge of the viewport instead of running across it,
+   and each button takes the full width so the carets line up. */
+.tool-island .nav-tool {
+  width: 100%;
+}
+
+.tool-island .nav-group {
+  flex: 1;
+}
+
+.tool-island .nav-btn {
+  flex: 1;
+}
+
+.tool-island .nav-cut {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-left: 0;
+}
+
+/* Panels open ACROSS the scene rather than down it. Hanging below its button
+   the way it did in the bar, a 268px panel would cover whatever is under it in
+   the column -- which, once the cut is armed, is the button that fires it. */
+.tool-island .nav-panel {
+  top: 0;
+  left: calc(100% + 8px);
+}
+
+/* And they open away from the edge the island is nearest, which is the edge
+   they have no room on. The island carries the answer as a class rather than
+   each panel working it out, because the whole point of measuring the placement
+   from the near edge is that it is already known -- see `IslandPlacement`.
+
+   Dropped in the top-right corner without these, the snap panel opens past the
+   window and the cut's receipt takes its 340px off the same edge. */
+.tool-island-right .nav-panel {
+  left: auto;
+  right: calc(100% + 8px);
+}
+
+.tool-island-bottom .nav-panel {
+  top: auto;
+  bottom: 0;
+}
+
+.tool-island-right .nav-flyout {
+  left: auto;
+  right: 0;
+}
+
+.tool-island-bottom .nav-flyout {
+  top: auto;
+  bottom: calc(100% + 7px);
+}
+
 /* --- axis compass --- */
 
 /* The corner compass: a second canvas, laid over the top-right of the scene.
@@ -2653,4 +2792,18 @@ body {
   background: transparent;
   border-style: dashed;
   cursor: default;
+}
+
+/* The unit a length is shown in, beside the number rather than inside it.
+   Outside the box on purpose: the box is an input[type=number] and anything
+   put in it would have to be parsed back out again on every keystroke. Muted
+   and narrow, because it is the same word down the whole panel and the eye
+   should be able to skip it. */
+.field-unit,
+.vec3-unit {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 18px;
+  text-align: left;
+  user-select: none;
 }

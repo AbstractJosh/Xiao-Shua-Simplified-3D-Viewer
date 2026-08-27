@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { APP_NAME, APP_TAGLINE } from '../appInfo'
 import { useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
-import { CutActions, CutTool, HelpTool, SnapTool } from './NavTools'
+import { HelpTool } from './NavTools'
 
 /**
  * Object count belongs next to the triangle count, not in the scene tree: it is
@@ -24,13 +24,14 @@ function Stats() {
 }
 
 /**
- * The top bar: identity, the tools you work *with*, and the state of the
- * document. What you build stays in the console on the right.
+ * The top bar: identity, what leaves the app, and the state of the document.
+ * What you build stays in the console on the right.
  *
- * Snap, Cut and Export moved up here because none of them describe the scene.
- * They are modes and actions that apply to whatever is selected, and while they
- * lived in the console they pushed the panels that do describe the scene -- the
- * object, its sketch, the tree -- below the fold on a laptop.
+ * What is left here is what is aimed at the WHOLE DOCUMENT -- export, undo,
+ * redo, the counts -- plus the gesture list. Snap and Cut went the other way,
+ * out of the bar and onto the scene itself (see `ToolIsland`): they are modes
+ * aimed at a solid you are looking at, and reaching them at the top edge of the
+ * window meant the hand and the eye in two different places.
  */
 export function NavBar() {
   const undo = useDoc((s) => s.undo)
@@ -41,8 +42,12 @@ export function NavBar() {
   const openPanel = useTools((s) => s.openPanel)
   const setOpenPanel = useTools((s) => s.setOpenPanel)
 
-  const barRef = useRef<HTMLElement>(null)
-
+  // Escape and click-outside for EVERY tool panel, mounted once here because
+  // `openPanel` is one field for all of them. The bar is not the only thing
+  // they hang off any more -- Snap's opens from the island over the scene -- so
+  // what counts as "inside" is named by container rather than held as a ref to
+  // this element. A ref would have closed the snap panel on the first click
+  // landing in the panel itself.
   useEffect(() => {
     if (openPanel === null) return
 
@@ -56,7 +61,8 @@ export function NavBar() {
     }
 
     const onDown = (e: PointerEvent) => {
-      if (barRef.current?.contains(e.target as Node)) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest?.('.topbar, .tool-island')) return
       setOpenPanel(null)
     }
 
@@ -69,25 +75,17 @@ export function NavBar() {
   }, [openPanel, setOpenPanel])
 
   return (
-    <header className="topbar" ref={barRef}>
+    <header className="topbar">
       <div className="brand">
         <span className="brand-mark">{APP_NAME}</span>
         <span className="brand-sub">{APP_TAGLINE}</span>
       </div>
 
-      <nav className="navbar" aria-label="Tools">
-        <SnapTool />
-        <CutTool />
-        {/* Only on screen while the plane is armed, so the bar is no wider than
-            before for anyone not cutting. */}
-        <CutActions />
-      </nav>
-
       <div className="topbar-right">
-        {/* With undo and redo rather than with the tools: Snap and Cut are
-            modes aimed at whatever is selected, while these three are acts on
-            the whole document -- and the two that step through its history are
-            the ones an export belongs beside. */}
+        {/* With undo and redo rather than with the tools on the island: Snap
+            and Cut are modes aimed at whatever is selected, while these three
+            are acts on the whole document -- and the two that step through its
+            history are the ones an export belongs beside. */}
         <ExportTools />
         <div className="seg">
           <button

@@ -1,6 +1,7 @@
 import { BufferAttribute, BufferGeometry, Euler, Vector3 } from 'three'
 import type { ProjectedPoint, SurfaceDef } from './surfaces'
 import { anchorIsCurved, tangentBasis } from './surfaces'
+import { MAX_SIZE } from './dimensions'
 import { sampleOutline } from './outline'
 import { sweepOp } from './types'
 import type { Feature, SurfaceAnchor } from './types'
@@ -82,7 +83,11 @@ type EndPlaneSpec = Pick<Feature, 'depth' | 'tilt' | 'faceOffset'>
  */
 const MIN_END_COS = 0.15
 const MIN_END_T = 1e-4
-const MAX_END_T = 64
+/** Eight times `MAX_SIZE`, which is what it has always been -- a sweep may run
+ *  well past the solid it starts from, but not to infinity. DERIVED, because
+ *  as a literal it was a silent ceiling: raise the envelope and deep features
+ *  on large solids start refusing to build for no reason the user can see. */
+const MAX_END_T = MAX_SIZE * 8
 
 /** Below this squared length a projected axis carries no usable direction. */
 const MIN_AXIS_LEN_SQ = 1e-8

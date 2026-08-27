@@ -25,7 +25,7 @@ const FORMAT_BLURB: Record<ExportFormat, string> = {
   glb: 'One binary file. Opens in Blender, Windows 3D Viewer, and most engines.',
   obj: 'Plain text geometry. Universally readable, larger, no materials.',
   stl: 'The 3D printing standard. Binary, triangles only, no units and no colour.',
-  step: 'CAD interchange. A real solid -- flat faces, shared edges -- that SolidWorks, Fusion or FreeCAD can measure and cut. Curves arrive faceted, and one scene unit is one millimetre.',
+  step: 'CAD interchange. A real solid -- flat faces, shared edges -- that SolidWorks, Fusion or FreeCAD can measure and cut. Curves arrive faceted, and the body measures in millimetres.',
 }
 
 /**

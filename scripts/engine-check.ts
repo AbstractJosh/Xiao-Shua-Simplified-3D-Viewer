@@ -780,7 +780,11 @@ console.log('\n11. Resizing along an axis moves that surface, on every primitive
   // would stop growing there and keep fattening on the other two, so scaling up
   // and back down would not return the shape you started with.
   const slab: BaseSolid = { kind: 'box', size: [6, 1, 1] }
-  const big = scaleUniform(slab, 4)
+  // The factor only has to overshoot: the longest side is 6, so anything past
+  // MAX_SIZE / 6 drives it through the ceiling. DERIVED, not inlined -- this
+  // was a literal 4, which stopped clamping the moment MAX_SIZE rose past 24,
+  // and the check would have gone on passing while testing nothing at all.
+  const big = scaleUniform(slab, (MAX_SIZE / 6) * 2)
   near('the ring stops at the tightest bound', dimOf(big, 'x'), MAX_SIZE, 1e-9)
   near('and the other sides stop with it', dimOf(big, 'y'), MAX_SIZE / 6, 1e-9)
   check(

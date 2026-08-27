@@ -3,6 +3,72 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Vec2, Vec3 } from '../geometry/types'
 import { SCRUB_SLOP, scrubbed } from './scrub'
 import { Tip } from './Tip'
+import { trackWindow } from './scrub'
+import { useTools } from '../store/toolStore'
+import type { Unit } from '../units'
+import { decimalsOf, fromDisplay, resolveUnit, stepIn, suffixOf, toDisplay } from '../units'
+
+/**
+ * The stretch of range a slider track shows, held steady while it is dragged.
+ *
+ * The window follows the value, so without the hold it would follow the value
+ * being dragged -- recentring under the thumb every frame, which is a thumb
+ * that can never reach the edge of its own track. Frozen at the press, the
+ * track behaves like a track for the whole gesture and recentres once, on
+ * release.
+ *
+ * The same rule as `useHeldUnit`, and as `scrubbed`, and as the gizmo: a
+ * gesture is measured from the press, never accumulated as it goes.
+ */
+function useHeldWindow(value: number, min: number, max: number, step: number) {
+  const held = useRef<{ lo: number; hi: number } | null>(null)
+  // Only to force the recentre on release; the window itself lives in the ref
+  // so that freezing it costs no render in the middle of a drag.
+  const [, settle] = useState(0)
+  const window = held.current ?? trackWindow(value, min, max, step)
+  return {
+    lo: window.lo,
+    hi: window.hi,
+    grab: () => {
+      held.current = window
+    },
+    drop: () => {
+      if (!held.current) return
+      held.current = null
+      settle((n) => n + 1)
+    },
+  }
+}
+
+/**
+ * The unit a length field should show itself in, held steady across a scrub.
+ *
+ * `auto` picks per value, so without the hold a drag could change the unit
+ * under its own feet. The held value is a ref rather than state on purpose:
+ * setting it must not itself cause a render, and every render that matters --
+ * the ones the drag is already causing -- reads it on the way through. Exactly
+ * the rule the gizmo and `scrub.ts` follow, where a gesture is measured from
+ * the press rather than accumulated frame by frame.
+ */
+function useHeldUnit(sceneValue: number, active: boolean): {
+  unit: Unit | null
+  hold: () => void
+  release: () => void
+} {
+  const mode = useTools((s) => s.displayUnit)
+  const held = useRef<Unit | null>(null)
+  if (!active) return { unit: null, hold: () => {}, release: () => {} }
+  const unit = held.current ?? resolveUnit(sceneValue, mode)
+  return {
+    unit,
+    hold: () => {
+      held.current = unit
+    },
+    release: () => {
+      held.current = null
+    },
+  }
+}
 
 /**
  * The number box every field in the app is edited through: drag it sideways to
@@ -42,6 +108,8 @@ function ScrubNumber({
   step,
   decimals,
   onChange,
+  onPressStart,
+  onPressEnd,
 }: {
   className: string
   value: number
@@ -50,6 +118,12 @@ function ScrubNumber({
   step: number
   decimals: number
   onChange: (v: number) => void
+  /** Told when a scrub begins and ends, so an owner converting units can HOLD
+   *  the unit for the gesture. Without it a drag that crosses 10 mm would
+   *  re-resolve to centimetres mid-flight, and `from` -- captured in the old
+   *  unit -- would send the value somewhere the pointer never went. */
+  onPressStart?: () => void
+  onPressEnd?: () => void
 }) {
   const box = useRef<HTMLInputElement>(null)
   const [editing, setEditing] = useState(false)
@@ -79,6 +153,7 @@ function ScrubNumber({
   const down = (e: ReactPointerEvent<HTMLInputElement>) => {
     if (editing || e.button !== 0) return
     press.current = { x: e.clientX, from: value, live: false }
+    onPressStart?.()
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
@@ -97,6 +172,7 @@ function ScrubNumber({
       e.currentTarget.releasePointerCapture(e.pointerId)
     }
     press.current = null
+    onPressEnd?.()
   }
 
   return (
@@ -153,6 +229,17 @@ type NumberFieldProps = {
   tip?: ReactNode
   /** Shows a reset control beside the label. Omitted leaves the field as it was. */
   resetTo?: number
+  /**
+   * This value is a LENGTH in scene units: show it in whatever unit the tool
+   * island is set to, and convert back on the way in.
+   *
+   * `min`, `max` and `step` stay in SCENE units here -- the opposite of the
+   * `degrees` convention on `Vec3Field`, and deliberately. A rotation's unit is
+   * fixed, so a caller can express its bounds in degrees; a length's unit is
+   * not, because `auto` chooses it per value, and a caller cannot write bounds
+   * in a unit it has no way of knowing.
+   */
+  unit?: boolean
   onChange: (v: number) => void
 }
 
@@ -166,9 +253,23 @@ export function NumberField({
   decimals = 2,
   tip,
   resetTo,
+  unit = false,
   onChange,
 }: NumberFieldProps) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
+  const { unit: shown, hold, release } = useHeldUnit(value, unit)
+
+  // Everything the control shows moves together -- value, both bounds and the
+  // step. That is what keeps the FEEL identical across units: `scrubTravel` is
+  // built from the step and the range, so scaling all three by the same factor
+  // scales the travel with them and a pixel is worth the same distance in the
+  // WORLD whichever unit is written on screen.
+  const ui = (v: number) => (shown ? toDisplay(v, shown) : v)
+  const raw = (v: number) => (shown ? fromDisplay(v, shown) : v)
+  const uiStep = shown ? stepIn(step, shown) : step
+  const uiPlaces = shown ? decimalsOf(shown) : decimals
+  const track = useHeldWindow(ui(value), ui(min), ui(max), uiStep)
+
   return (
     <div className="field">
       <div className="field-head">
@@ -183,22 +284,28 @@ export function NumberField({
         )}
         <ScrubNumber
           className="field-num"
-          value={value}
-          min={min}
-          max={max}
-          step={step}
-          decimals={decimals}
-          onChange={(v) => onChange(clamp(v))}
+          value={ui(value)}
+          min={ui(min)}
+          max={ui(max)}
+          step={uiStep}
+          decimals={uiPlaces}
+          onPressStart={hold}
+          onPressEnd={release}
+          onChange={(v) => onChange(clamp(raw(v)))}
         />
+        {shown && <span className="field-unit">{suffixOf(shown)}</span>}
       </div>
       <input
         className="field-range"
         type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(clamp(Number(e.target.value)))}
+        min={track.lo}
+        max={track.hi}
+        step={uiStep}
+        value={ui(value)}
+        onPointerDown={track.grab}
+        onPointerUp={track.drop}
+        onPointerCancel={track.drop}
+        onChange={(e) => onChange(clamp(raw(Number(e.target.value))))}
       />
     </div>
   )
@@ -335,6 +442,9 @@ function AxisRow({
   step,
   decimals,
   resetTo,
+  suffix,
+  onPressStart,
+  onPressEnd,
   onChange,
 }: {
   axis: string
@@ -346,18 +456,25 @@ function AxisRow({
   decimals: number
   /** Shows a reset control for this axis alone. Omitted leaves the row as it was. */
   resetTo?: number
+  suffix?: string
+  onPressStart?: () => void
+  onPressEnd?: () => void
   onChange: (v: number) => void
 }) {
+  const track = useHeldWindow(value, min, max, step)
   return (
     <div className={`vec3-row${resetTo === undefined ? '' : ' vec3-row-resettable'}`}>
       <span className={`vec3-axis vec3-axis-${tint}`}>{axis}</span>
       <input
         className="field-range"
         type="range"
-        min={min}
-        max={max}
+        min={track.lo}
+        max={track.hi}
         step={step}
         value={value}
+        onPointerDown={track.grab}
+        onPointerUp={track.drop}
+        onPointerCancel={track.drop}
         onChange={(e) => onChange(clampTo(Number(e.target.value), min, max))}
       />
       <ScrubNumber
@@ -367,8 +484,11 @@ function AxisRow({
         max={max}
         step={step}
         decimals={decimals}
+        onPressStart={onPressStart}
+        onPressEnd={onPressEnd}
         onChange={(v) => onChange(clampTo(v, min, max))}
       />
+      {suffix && <span className="vec3-unit">{suffix}</span>}
       {resetTo !== undefined && (
         <ResetButton
           label={`Reset ${axis}`}
@@ -396,6 +516,7 @@ export function Vec3Field({
   step,
   decimals,
   degrees = false,
+  unit = false,
   resetTo,
   onChange,
 }: {
@@ -406,6 +527,10 @@ export function Vec3Field({
   step?: number
   decimals?: number
   degrees?: boolean
+  /** Lengths in scene units, shown in the tool island's unit. `min`/`max`/`step`
+   *  stay in SCENE units -- see the note on `NumberField`. Never with `degrees`:
+   *  a rotation is not a length. */
+  unit?: boolean
   /**
    * Adds a reset control to every axis, and one on the heading that takes all
    * three at once. In the UNIT SHOWN, like min and max -- so a rotation field
@@ -417,8 +542,16 @@ export function Vec3Field({
   // Whole degrees are the useful granularity for a tilt; lengths need hundredths.
   const stepped = step ?? (degrees ? 1 : 0.01)
   const places = decimals ?? (degrees ? 0 : 2)
-  const toUi = (v: number) => (degrees ? (v * 180) / Math.PI : v)
-  const fromUi = (v: number) => (degrees ? (v * Math.PI) / 180 : v)
+  // ONE unit for all three rows, chosen from the largest of them. Resolved per
+  // axis it would be honest but unreadable: a position reads as a triple, and a
+  // triple whose X is in metres and whose Y is in millimetres cannot be
+  // compared down the column, which is the whole point of stacking them.
+  const widest = Math.max(Math.abs(value[0]), Math.abs(value[1]), Math.abs(value[2]))
+  const { unit: shown, hold, release } = useHeldUnit(widest, unit && !degrees)
+  const toUi = (v: number) =>
+    degrees ? (v * 180) / Math.PI : shown ? toDisplay(v, shown) : v
+  const fromUi = (v: number) =>
+    degrees ? (v * Math.PI) / 180 : shown ? fromDisplay(v, shown) : v
 
   const setAxis = (i: number, ui: number) => {
     const next: Vec3 = [value[0], value[1], value[2]]
@@ -450,11 +583,14 @@ export function Vec3Field({
           axis={tint.toUpperCase()}
           tint={tint}
           value={toUi(value[i])}
-          min={min}
-          max={max}
-          step={stepped}
-          decimals={places}
+          min={shown ? toDisplay(min, shown) : min}
+          max={shown ? toDisplay(max, shown) : max}
+          step={shown ? stepIn(stepped, shown) : stepped}
+          decimals={shown ? decimalsOf(shown) : places}
           resetTo={resetTo}
+          suffix={shown ? suffixOf(shown) : undefined}
+          onPressStart={hold}
+          onPressEnd={release}
           onChange={(v) => setAxis(i, v)}
         />
       ))}
@@ -474,6 +610,7 @@ export function Vec2Field({
   min,
   max,
   step = 0.01,
+  unit = false,
   onChange,
 }: {
   label: string
@@ -482,8 +619,17 @@ export function Vec2Field({
   min: number
   max: number
   step?: number
+  /** Lengths in scene units, shown in the island's unit -- as `NumberField`. */
+  unit?: boolean
   onChange: (v: Vec2) => void
 }) {
+  // One unit across the pair, from the larger of them, for the reason
+  // `Vec3Field` uses one across its three.
+  const widest = Math.max(Math.abs(value[0]), Math.abs(value[1]))
+  const { unit: shown, hold, release } = useHeldUnit(widest, unit)
+  const ui = (v: number) => (shown ? toDisplay(v, shown) : v)
+  const raw = (v: number) => (shown ? fromDisplay(v, shown) : v)
+
   return (
     <div className="vec2">
       <div className="subhead">{label}</div>
@@ -492,13 +638,16 @@ export function Vec2Field({
           key={i}
           axis={axis}
           tint={i === 0 ? 'x' : 'y'}
-          value={value[i]}
-          min={min}
-          max={max}
-          step={step}
-          decimals={2}
-          onChange={(v) =>
-            onChange(i === 0 ? [v, value[1]] : [value[0], v])
+          value={ui(value[i])}
+          min={ui(min)}
+          max={ui(max)}
+          step={shown ? stepIn(step, shown) : step}
+          decimals={shown ? decimalsOf(shown) : 2}
+          suffix={shown ? suffixOf(shown) : undefined}
+          onPressStart={hold}
+          onPressEnd={release}
+          onChange={(u) =>
+            onChange(i === 0 ? [raw(u), value[1]] : [value[0], raw(u)])
           }
         />
       ))}

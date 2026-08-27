@@ -89,10 +89,17 @@ const GRAB_TUBE = 0.045
  * At the opening camera this puts the whole gizmo at about three quarters of a
  * world unit -- comfortably inside a default 2-unit cube rather than reaching
  * past its corners, which is what the first pass did.
+ *
+ * The two clamps widened with `dimensions.ts`, at BOTH ends, because the
+ * envelope grew at both: the floor fell tenfold with `MIN_DIMENSION`, so a
+ * millimetre part does not get arrows a centimetre long, and the ceiling rose
+ * with `MAX_SIZE`, so a five-metre part does not get a gizmo it swallows whole.
+ * Both were already pinned at the old zoom limit rather than merely guarding
+ * against it.
  */
 const SCALE_PER_UNIT = 0.07
-const SCALE_MIN = 0.14
-const SCALE_MAX = 1.6
+const SCALE_MIN = 0.014
+const SCALE_MAX = 10
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
 
