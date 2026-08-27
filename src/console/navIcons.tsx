@@ -78,6 +78,24 @@ export function ExportIcon() {
   )
 }
 
+/**
+ * In off the disk: the same tray Export draws, with the arrow the other way up.
+ *
+ * Deliberately a MIRROR rather than a different picture. The two are the only
+ * pair of controls in the app that are one act in two directions, and drawing
+ * them as a pair is what says so at a glance -- a folder or a file glyph here
+ * would have been a second, unrelated metaphor sitting next to the first.
+ */
+export function ImportIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M10 11.4V3.2" {...STROKE} />
+      <path d="M6.9 6.3 10 3.2 13.1 6.3" {...STROKE} />
+      <path d="M4.2 13.4v1.9a1.6 1.6 0 0 0 1.6 1.6h8.4a1.6 1.6 0 0 0 1.6-1.6v-1.9" {...STROKE} />
+    </svg>
+  )
+}
+
 /** Two solids closing into one: the overlap is what merging keeps. */
 export function MergeIcon() {
   return (

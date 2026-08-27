@@ -35,8 +35,13 @@ const CENTRE = 16
  * Even-sided shapes are rotated half a step so they rest on a flat edge, which
  * is how a square and an octagon are read; odd-sided ones keep a vertex at the
  * top, which is how a triangle and a pentagon are read.
+ *
+ * Exported because the Solids palette turns the same polygons on their side and
+ * projects them as the bases of its pyramids and prisms. That is not a
+ * coincidence worth breaking: the two panels place the same n-gon, so they had
+ * better agree on which way up it sits.
  */
-function vertexAngles(sides: number): number[] {
+export function vertexAngles(sides: number): number[] {
   const start = -Math.PI / 2 + (sides % 2 === 0 ? Math.PI / sides : 0)
   return Array.from({ length: sides }, (_, i) => start + (i / sides) * Math.PI * 2)
 }
@@ -81,9 +86,9 @@ export function nextNgonSides(sides: number): number {
  * reproduced exactly rather than approximated. A morph therefore starts and
  * ends on the real shape, and the held polygon needs no separate code path.
  */
-export const MORPH_ANGLES: number[] = (() => {
+export function angleRing(corners: number[]): number[] {
   const wrap = (a: number) => ((a % TWO_PI) + TWO_PI) % TWO_PI
-  const sorted = NGON_SIDES.flatMap(vertexAngles).map(wrap).sort((a, b) => a - b)
+  const sorted = corners.map(wrap).sort((a, b) => a - b)
   const tol = 1e-9
   const ring: number[] = []
   for (const a of sorted) {
@@ -95,25 +100,38 @@ export const MORPH_ANGLES: number[] = (() => {
     ring.push(a)
   }
   return ring
-})()
+}
+
+export const MORPH_ANGLES: number[] = angleRing(NGON_SIDES.flatMap(vertexAngles))
 
 /**
- * How far the polygon's edge is from the centre at each ring angle.
+ * How far a polygon's edge is from the centre at each angle of a ring.
  *
  * A regular polygon is its apothem stretched by how obliquely the ray crosses
  * the edge it hits, so the angle is folded onto a single edge and measured
  * from that edge's midpoint.
+ *
+ * The ring and the polygon's rotation are arguments because the Solids palette
+ * builds its own of both: its polygons are bases seen in perspective, and they
+ * are turned differently from the ones the chip draws face-on. The rule for
+ * making the resampling lossless is the same wherever it is used -- sample at
+ * the union of every corner of every polygon in the family.
  */
-export function ngonRadii(sides: number, r = 12): number[] {
+export function radiiAt(ring: number[], sides: number, r: number, firstCorner: number): number[] {
   const step = TWO_PI / sides
   const half = Math.PI / sides
   const apothem = r * Math.cos(half)
-  const firstMidpoint = vertexAngles(sides)[0] + half
-  return MORPH_ANGLES.map((angle) => {
+  const firstMidpoint = firstCorner + half
+  return ring.map((angle) => {
     const off = angle - firstMidpoint
     const psi = (((off + half) % step) + step) % step - half
     return apothem / Math.cos(psi)
   })
+}
+
+/** The chip's own polygons, on the chip's own ring. */
+export function ngonRadii(sides: number, r = 12): number[] {
+  return radiiAt(MORPH_ANGLES, sides, r, vertexAngles(sides)[0])
 }
 
 /**

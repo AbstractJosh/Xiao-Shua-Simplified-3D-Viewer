@@ -310,6 +310,8 @@ export function HelpTool() {
         <li><b>Snap</b>, <b>Ruler</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene</li>
         <li><b>Drag the island by its title</b> to move it -- it snaps flush to whichever edge or corner you drop it near -- and click the title to collapse it</li>
         <li><b>Orbit</b> with middle-drag, or <b>Alt</b> and left-drag; zoom to scroll</li>
+        <li><b>Drag the corner compass</b> to orbit by hand -- half a turn across the widget, rotation only</li>
+        <li><b>Click</b> one of its balls or cube faces instead to fly square-on to that view</li>
         <li><b>Pan</b> with right-drag on empty space</li>
         <li><b>Delete</b> removes the selected ruler, or the selected sketch, or the object</li>
         <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>

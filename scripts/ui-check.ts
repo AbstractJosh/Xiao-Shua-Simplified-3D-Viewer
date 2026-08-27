@@ -15,8 +15,8 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
-import { Box3, Matrix4, Vector3 } from 'three'
-import type { BufferGeometry } from 'three'
+import { Box3, Matrix4, ShaderLib, Vector3 } from 'three'
+import type { BufferGeometry, WebGLProgramParametersWithUniforms } from 'three'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createElement } from 'react'
@@ -78,12 +78,21 @@ import { ColorPanel } from '../src/console/ColorPanel'
 import type { Hsv } from '../src/color'
 import { hexToHsv, hsvToHex, hueAt, lighten, parseHex, wheelHue } from '../src/color'
 import { assemblyColors } from '../src/geometry/assembly'
-import { bodyPaint, depthBias } from '../src/viewport/SceneObjects'
+import { bodyPaint } from '../src/viewport/SceneObjects'
+import {
+  BIAS_ANCHOR,
+  BIAS_STEP,
+  BIAS_UNIFORM,
+  BiasedStandardMaterial,
+  depthBias,
+  withDepthBias,
+} from '../src/viewport/depthBias'
 import { MarqueeRect } from '../src/viewport/SelectionMarquee'
 import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
 import { SolidList, SolidPalette } from '../src/console/SolidPalette'
 import { NGON_LABEL } from '../src/console/ngon'
-import { SOLID_TEMPLATES } from '../src/console/solidIcons'
+import { SOLID_TEMPLATES, restingSides } from '../src/console/solidIcons'
+import { SOLID_SIDES } from '../src/console/solidMorph'
 import { UNIT_MODES, fromDisplay, resolveUnit, stepIn, toDisplay } from '../src/units'
 import {
   MAX_FACE_OFFSET,
@@ -141,6 +150,12 @@ import {
   useTools,
 } from '../src/store/toolStore'
 import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
+import {
+  GRID_BODY,
+  GRID_CLIP,
+  GRID_MAIN,
+  withLogDepth,
+} from '../src/viewport/GuideGrid'
 import { formatLength } from '../src/units'
 
 /**
@@ -463,6 +478,7 @@ doc().selectObject(pyramidId)
   // it is aimed at -- the scene, or the whole document.
   const bar = markupOf('NavBar', NavBar)
   shows('the bar carries the export tool', bar, '>Export<')
+  shows('and the import tool', bar, '>Import<')
   shows('and the help button', bar, '>Help<')
   // Snap and Cut are aimed at a solid you are looking at, so they went out of
   // the bar and onto the scene. Asserted as an absence here, because a control
@@ -481,6 +497,20 @@ doc().selectObject(pyramidId)
     `${right.indexOf('>Export<')} vs ${right.indexOf('>Undo<')}`
   )
   hides('with the formats behind its menu', bar, '>.glb<')
+
+  // Import went the other way, into the brand slot on the LEFT, where the
+  // tagline used to sit. Everything in the cluster on the right acts on a
+  // document you already have and is inert on the empty scene the app opens
+  // in; this is the one control that is not.
+  const left = bar.slice(0, bar.indexOf('topbar-right'))
+  shows('the wordmark names the app', left, "Xiao Shua&#x27;s 3D Editor")
+  shows('and Import stands beside it', left, '>Import<')
+  hides('where the tagline no longer does', bar, 'brand-sub')
+  // It offers back exactly what Export writes, .stp included -- the same file
+  // under its other extension.
+  for (const ext of ['.glb', '.obj', '.stl', '.step', '.stp']) {
+    shows(`it accepts ${ext}`, left, ext)
+  }
 
   const snap = markupOf('SnapTool', SnapTool)
   shows('snapping is on by default', snap, 'aria-pressed="true"')
@@ -2145,6 +2175,17 @@ for (const { label, base, expect } of SOLIDS) {
   const offered = [...new Set(SOLID_TEMPLATES.flatMap((t) => t.sides ?? []))].sort((a, b) => a - b)
   check('the palette offers side counts at all', offered.length > 0, offered.join(','))
 
+  // A row's icon is its base polygon projected, and it morphs between counts by
+  // resampling every one of them onto a single ring of angles. That ring is
+  // built from a fixed list of counts, so a row offering one that is not on it
+  // would be drawn with its corners rounded off for as long as it sat still.
+  const unsampled = offered.filter((n) => !SOLID_SIDES.includes(n))
+  check(
+    'and every one of them is sampled by the ring the icons morph on',
+    unsampled.length === 0,
+    unsampled.length ? `${unsampled.join(',')} missing from ${SOLID_SIDES.join(',')}` : 'all'
+  )
+
   const id = doc().addObject(defaultBaseFor('prism', 6), [0, 0, 0])
   doc().selectObject(id)
   const panel = markupOf('ObjectPanel (side chips)', ObjectPanel)
@@ -2697,23 +2738,31 @@ console.log('\nThe colour picker, and the selection it paints')
   const bottom = depthBias(2, 3)
   check(
     'the top row is pulled furthest forward',
-    top.polygonOffsetUnits < middle.polygonOffsetUnits &&
-      middle.polygonOffsetUnits < bottom.polygonOffsetUnits,
-    `${top.polygonOffsetUnits}, ${middle.polygonOffsetUnits}, ${bottom.polygonOffsetUnits}`
+    top.depthBias > middle.depthBias && middle.depthBias > bottom.depthBias,
+    `${top.depthBias}, ${middle.depthBias}, ${bottom.depthBias}`
   )
-  check('and the offset is negative -- toward the camera', top.polygonOffsetUnits < 0)
+  // Subtracted from `gl_FragDepth`, so a POSITIVE bias is toward the camera --
+  // the opposite sign from the polygon offset this replaces, which counted in
+  // GL's offset units and was applied by the rasterizer.
+  check('and the bias is positive -- toward the camera', top.depthBias > 0)
   check(
-    'units carries it, since coplanar faces share a slope',
-    Math.abs(top.polygonOffsetUnits) >= 1,
-    `${top.polygonOffsetUnits}`
+    'a step is well clear of the rounding it has to beat',
+    BIAS_STEP > 16 / 2 ** 24,
+    `${BIAS_STEP} vs a 24-bit step of ${1 / 2 ** 24}`
   )
-  check('the bottom row is left exactly alone', bottom.polygonOffsetUnits === 0)
-  check('and does not even turn the offset on', bottom.polygonOffset === false)
+  // At the distance the app opens at, a thousandth of this is still thicker
+  // than the bias -- so an object lifted by it cannot swallow its own outline.
+  check(
+    'and far too small to see',
+    BIAS_STEP < 1e-4,
+    `${BIAS_STEP} of the window depth range`
+  )
+  check('the bottom row is left exactly alone', bottom.depthBias === 0)
   const only = depthBias(0, 1)
   check(
-    'a scene of one object carries the material it always did',
-    only.polygonOffset === false && only.polygonOffsetUnits === 0,
-    `${only.polygonOffsetUnits}`
+    'a scene of one object writes the depth it always did',
+    only.depthBias === 0,
+    `${only.depthBias}`
   )
 
   for (const id of [lower, upper, third]) doc().removeObject(id)
@@ -2938,6 +2987,32 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     occurrences(sphere, 'class="solid-band"') === 0,
     `${occurrences(sphere, 'class="solid-band"')}`
   )
+
+  // A sided row places a FAMILY, so at rest it is named for one -- "Square
+  // pyramid" read as a row that places square pyramids, which is the one thing
+  // it does not do. The member's name is a hover away, on the band that
+  // chooses it, and the accessible name stays specific throughout: it says
+  // what a drag would place, which a plural cannot.
+  shows('a sided row rests under the name of its family', pyramid, '>Pyramids<')
+  shows('while still saying what a drag would place', pyramid, 'aria-label="Square pyramid, drag')
+  shows('and an unsided one is simply itself', sphere, '>Sphere<')
+
+  // The icon is not a picture of a pyramid, it is the pyramid the row would
+  // place -- the base polygon projected, one edge to the apex per corner. That
+  // is what lets it follow the sweep across the bands, and spin through the
+  // family when the row is left alone.
+  const iconOf = (row: string) => row.slice(0, row.indexOf('</svg>'))
+  for (const [row, name, kind] of [
+    [pyramid, 'pyramid', 'pyramid'],
+    [rows.split('<div class="solid-item"').find((r) => r.includes('>Prisms<')) ?? '', 'prism', 'prism'],
+  ] as const) {
+    const corners = restingSides(kind) ?? 0
+    check(
+      `the ${name} row draws the solid it rests on, edge by edge`,
+      occurrences(iconOf(row), '<line') === corners,
+      `${occurrences(iconOf(row), '<line')} edges for ${corners} corners`
+    )
+  }
 
   // Every row carries the grip, sided or not -- a box eraser is the one you
   // reach for most.
@@ -3254,6 +3329,200 @@ console.log('\nThe ruler measures the scene without joining it')
     rulers: [],
     selectedRuler: null,
   })
+}
+
+console.log('\nThe ground grid writes the same depth as everything it is tested against')
+{
+  // This canvas runs with a LOGARITHMIC depth buffer, which every built-in
+  // material answers by writing `gl_FragDepth` itself. drei's Grid is a custom
+  // ShaderMaterial and answers nothing, so its depth used to land on the
+  // hardware's own curve -- not comparable with any solid's, and nowhere near
+  // fine enough to separate two grids half a thousandth of a unit apart. The
+  // patch that fixes it is string surgery on somebody else's shader, so the
+  // first thing checked is that the strings are still there.
+  //
+  // Read from node_modules, the same bargain the axis colours strike with
+  // styles.css: a drei upgrade that reworded any one of these would put the
+  // shimmer back silently, and nothing else in the app would notice.
+  const grid = readFileSync(
+    createRequire(import.meta.url).resolve('@react-three/drei/core/Grid.js'),
+    'utf8'
+  )
+  const occurrences = (needle: string) => grid.split(needle).length - 1
+
+  check('drei still declares the grid shader here', grid.includes('shaderMaterial('))
+  check(
+    'the clip-position line the vertex patch hangs off is still there, once',
+    occurrences(GRID_CLIP) === 1,
+    `${occurrences(GRID_CLIP)} of ${JSON.stringify(GRID_CLIP)}`
+  )
+  check(
+    'and the first line of the fragment body, once',
+    occurrences(GRID_BODY) === 1,
+    `${occurrences(GRID_BODY)} of ${JSON.stringify(GRID_BODY)}`
+  )
+  // Two: one per shader. More would mean the fragment patch could land on the
+  // wrong function, since it takes the first.
+  check(
+    'and one main() in each of the two shaders',
+    occurrences(GRID_MAIN) === 2,
+    `${occurrences(GRID_MAIN)}`
+  )
+  // `getGrid` is declared above main and must not look like one, or the
+  // fragment pars would be spliced into the middle of it.
+  check(
+    'the helper above main is not itself a main()',
+    grid.includes('float getGrid(float size, float thickness) {')
+  )
+  // The whole reason the patch is needed: drei includes tone mapping and colour
+  // space, and no log depth at all.
+  check('drei resolves includes in that shader', grid.includes('#include <tonemapping_fragment>'))
+  check('but includes no log depth of its own', !grid.includes('logdepthbuf'))
+
+  // And that the patch does what it says on a shader carrying those anchors.
+  const patched = {
+    vertexShader: `varying vec4 worldPosition;\n${GRID_MAIN}\n  ${GRID_CLIP}\n}`,
+    fragmentShader: `float getGrid(float s, float t) { return 0.0; }\n${GRID_MAIN}\n      ${GRID_BODY}\n}`,
+  }
+  withLogDepth(patched)
+
+  shows('the vertex shader keeps the varyings', patched.vertexShader, 'varying float vFragDepth')
+  shows('and fills them in after the clip position', patched.vertexShader, 'vFragDepth = 1.0 + gl_Position.w')
+  // `logdepthbuf_vertex` calls `isPerspectiveMatrix`, which lives in <common>
+  // -- and drei's vertex shader includes no chunks at all, so the patch has to
+  // bring it. Without this the shader does not compile and the grid vanishes.
+  shows('with <common> for isPerspectiveMatrix', patched.vertexShader, '#include <common>')
+  check(
+    'and the fill lands AFTER the clip position it reads',
+    patched.vertexShader.indexOf('vFragDepth = 1.0 + gl_Position.w') >
+      patched.vertexShader.indexOf(GRID_CLIP),
+    'the chunk reads gl_Position.w, so it cannot run before it is set'
+  )
+
+  shows('the fragment shader takes the uniform', patched.fragmentShader, 'uniform float logDepthBufFC')
+  shows('and writes the depth itself', patched.fragmentShader, 'gl_FragDepth =')
+  check(
+    'before the body it belongs to',
+    patched.fragmentShader.indexOf('gl_FragDepth =') <
+      patched.fragmentShader.indexOf(GRID_BODY),
+    'three puts the chunk at the top of main'
+  )
+  // The declarations have to be OUTSIDE main, or they are locals and the
+  // fragment stage never sees what the vertex stage wrote.
+  check(
+    'and the varyings are declared outside main, not in it',
+    patched.fragmentShader.indexOf('varying float vFragDepth') <
+      patched.fragmentShader.indexOf(GRID_MAIN)
+  )
+
+  // A shader with none of the anchors is left exactly as it was rather than
+  // half-patched -- which is what lets the component notice and say so.
+  const foreign = { vertexShader: 'void other() {}', fragmentShader: 'void other() {}' }
+  const untouched = foreign.vertexShader + foreign.fragmentShader
+  withLogDepth(foreign)
+  check(
+    'a shader it does not recognise comes back untouched',
+    foreign.vertexShader + foreign.fragmentShader === untouched
+  )
+}
+
+console.log('\nTwo objects sharing one surface are separated by a bias the log buffer can carry')
+{
+  // The tiebreak between coplanar faces of two DIFFERENT objects used to be a
+  // polygon offset, and under this canvas that is dead weight: the log depth
+  // buffer makes every material write `gl_FragDepth` itself, and polygon offset
+  // is applied by the rasterizer to the depth that assignment discards. Merged
+  // solids never showed it -- a union deletes the shared surface outright --
+  // so the tearing only ever came back on objects left separate.
+  //
+  // The premise is checked first. If the canvas ever stops asking for the log
+  // buffer, the bias below is the wrong mechanism and the offset was the right
+  // one; either way that must not be discovered by eye.
+  const source = (name: string) =>
+    readFileSync(new URL(`../src/viewport/${name}`, import.meta.url), 'utf8')
+  check(
+    'the canvas still asks for a logarithmic depth buffer',
+    source('Viewport.tsx').includes('logarithmicDepthBuffer: true'),
+    'without it the tiebreak has to go back to being a polygon offset'
+  )
+  check(
+    'and no solid still carries an offset that cannot reach the buffer',
+    !source('SceneObjects.tsx').includes('polygonOffset')
+  )
+
+  // String surgery on three's own shader, so the anchor is read out of
+  // node_modules the same way the grid's are read out of drei's.
+  const standard = ShaderLib.standard.fragmentShader
+  const occurrences = (needle: string) => standard.split(needle).length - 1
+  check(
+    'three still writes its log depth from that one chunk',
+    occurrences(BIAS_ANCHOR) === 1,
+    `${occurrences(BIAS_ANCHOR)} of ${JSON.stringify(BIAS_ANCHOR)}`
+  )
+
+  const patched = { fragmentShader: standard }
+  withDepthBias(patched)
+  shows('the patch declares its uniform', patched.fragmentShader, `uniform float ${BIAS_UNIFORM};`)
+  shows(
+    'and subtracts it from the depth',
+    patched.fragmentShader,
+    `gl_FragDepth -= ${BIAS_UNIFORM};`
+  )
+  // Outside main(), or it is a local the program has no uniform to upload to.
+  check(
+    'the declaration is outside main(), not in it',
+    patched.fragmentShader.indexOf(`uniform float ${BIAS_UNIFORM};`) <
+      patched.fragmentShader.indexOf('void main() {')
+  )
+  // The whole lesson of the bug: that chunk ASSIGNS gl_FragDepth, so anything
+  // applied before it is thrown away -- which is exactly what happened to the
+  // polygon offset.
+  check(
+    'and the subtraction lands after the chunk that assigns the depth',
+    patched.fragmentShader.indexOf(`gl_FragDepth -= ${BIAS_UNIFORM};`) >
+      patched.fragmentShader.indexOf(BIAS_ANCHOR)
+  )
+  // Guarded on the define the chunk itself is guarded on: with the log buffer
+  // off nothing writes gl_FragDepth, and this must not be the one thing that
+  // starts -- a shader that writes depth gives up early-Z for every solid.
+  shows(
+    'guarded on the define that turns the chunk on',
+    patched.fragmentShader,
+    '#if defined( USE_LOGARITHMIC_DEPTH_BUFFER )'
+  )
+
+  const stranger = { fragmentShader: 'void main() {}' }
+  withDepthBias(stranger)
+  check(
+    'a shader it does not recognise comes back untouched',
+    stranger.fragmentShader === 'void main() {}'
+  )
+
+  // And the material carries the bias as a UNIFORM rather than as shader text:
+  // one compiled program for the whole scene, and moving an object up the tree
+  // changes a number the next frame uploads.
+  const material = new BiasedStandardMaterial()
+  const shader = {
+    fragmentShader: standard,
+    uniforms: {},
+  } as unknown as WebGLProgramParametersWithUniforms
+  material.onBeforeCompile(shader)
+  // Set AFTER compiling, so this passes only if the program holds the same
+  // object the setter writes through.
+  material.depthBias = BIAS_STEP
+  check(
+    'the compiled program holds the bias the material writes through',
+    (shader.uniforms[BIAS_UNIFORM] as { value: number } | undefined)?.value === BIAS_STEP,
+    `${(shader.uniforms[BIAS_UNIFORM] as { value: number } | undefined)?.value}`
+  )
+  check('and the material reads it back', material.depthBias === BIAS_STEP)
+  // Three keys programs by this string, and for a patched material it is the
+  // source text of onBeforeCompile. A method on the prototype is one string for
+  // every instance; a closure per material would recompile once per object.
+  check(
+    'every instance shares one program cache key',
+    material.customProgramCacheKey() === new BiasedStandardMaterial().customProgramCacheKey()
+  )
 }
 
 console.log(

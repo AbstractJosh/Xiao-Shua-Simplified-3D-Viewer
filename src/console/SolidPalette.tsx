@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { BaseSolid } from '../geometry/types'
 import { defaultBaseFor, solidLabel } from '../geometry/types'
 import { surfaceFor } from '../geometry/surfaces'
 import { useDoc } from '../store/docStore'
 import { Section } from './Field'
+import { prefersReducedMotion } from './motion'
 import { EraseIcon } from './navIcons'
-import { SOLID_TEMPLATES } from './solidIcons'
+import { NGON_HOLD_MS, NGON_MORPH_MS } from './ngon'
+import { SOLID_TEMPLATES, SolidFrame, restingSides } from './solidIcons'
 import type { SolidTemplate } from './solidIcons'
+import { iconFrame } from './solidMorph'
+import type { MorphKind } from './solidMorph'
 
 function SolidIcon({ children }: { children: ReactNode }) {
   return (
@@ -26,13 +30,92 @@ function SolidIcon({ children }: { children: ReactNode }) {
 }
 
 /**
- * The side count a row rests on before anyone touches it. Read back out of the
- * geometry layer rather than written down here, so the count that looks active
- * is the one a plain drag would actually produce.
+ * The icon of a row that places a FAMILY of solids rather than one solid.
+ *
+ * It draws the count the row is showing -- the band under the pointer, or the
+ * row's own -- and MORPHS between counts rather than cutting, exactly as the
+ * polygon chip in Shapes does. The two controls are choosing the same polygon,
+ * and a cut here beside a morph there reads as two unrelated widgets.
+ *
+ * Left alone, it also spins through the family on its own. That is the only
+ * sign the row gives, from across the panel, that a pyramid here can be any
+ * pyramid: the ticks say a choice exists, but never what is in it. Under the
+ * pointer it stops -- a hover is a question about one count, and an icon that
+ * kept moving would answer a different one every beat -- and when it starts
+ * again it starts from whatever the row is resting on, so the spin can never
+ * carry the row away from the count the user picked.
+ *
+ * The label and the ticks sit this out. They are the row's promise about what a
+ * drag will place, and a promise that rewrites itself once a second is not one.
  */
-function defaultSidesFor(template: SolidTemplate): number | undefined {
-  const base = defaultBaseFor(template.kind)
-  return 'sides' in base ? base.sides : undefined
+function FamilyIcon({
+  kind,
+  counts,
+  shown,
+  idle,
+}: {
+  kind: MorphKind
+  counts: number[]
+  shown: number
+  idle: boolean
+}) {
+  /** Where the idle spin has got to; only ever the icon's business. */
+  const [spun, setSpun] = useState(shown)
+  const [morph, setMorph] = useState({ from: shown, to: shown, t: 1 })
+  const goal = idle ? spun : shown
+  const still = morph.t >= 1
+
+  // A hover, or a pick, hands the spin a new place to carry on from.
+  useEffect(() => setSpun(shown), [shown])
+
+  useEffect(() => {
+    const reduced = prefersReducedMotion()
+    setMorph((m) =>
+      m.to === goal
+        ? m
+        : reduced
+          ? { from: goal, to: goal, t: 1 }
+          : // A sweep across the bands can interrupt a morph in flight. The rim
+            // is what the eye is following, so the new one sets off from the
+            // count the old one had mostly arrived at rather than from where it
+            // began -- close enough that the outline does not jump.
+            { from: m.t >= 0.5 ? m.to : m.from, to: goal, t: 0 }
+    )
+  }, [goal])
+
+  // One run is one morph. Unlike the polygon chip's single outline, a frame here
+  // adds and removes whole edges -- three verticals are not eight -- so there is
+  // no set of attributes to write straight to the node, and each frame goes
+  // through React. It is a dozen frames on a handful of elements, twice.
+  useEffect(() => {
+    const { from, to } = morph
+    if (from === to) return
+    let frame = 0
+    const begun = performance.now()
+    const draw = (now: number) => {
+      // Clamped both ends: a frame timestamp can predate the call that
+      // scheduled it, and t < 0 would extrapolate past the shape we left.
+      const t = Math.min(1, Math.max(0, (now - begun) / NGON_MORPH_MS))
+      setMorph({ from, to, t })
+      if (t < 1) frame = requestAnimationFrame(draw)
+    }
+    frame = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(frame)
+  }, [morph.from, morph.to])
+
+  // And one run of this is one turn of the spin: hold what has arrived, then
+  // hand the next count to the morph above, which re-runs this when it lands.
+  useEffect(() => {
+    if (!idle || !still || prefersReducedMotion()) return
+    const hold = setTimeout(
+      // An unknown count restarts the family, as the chip's cycle does.
+      () => setSpun(counts[(counts.indexOf(spun) + 1) % counts.length]),
+      NGON_HOLD_MS
+    )
+    return () => clearTimeout(hold)
+  }, [idle, still, spun, counts])
+
+  return <SolidFrame frame={iconFrame(kind, morph.from, morph.to, morph.t)} />
 }
 
 /** Primitives are centred on the local origin, so this is the lift that rests one on the grid. */
@@ -60,6 +143,12 @@ function groundedPosition(base: BaseSolid): [number, number, number] {
  * inside it; ten rows all cycling at once would be a panel nobody could read,
  * so the family is advertised by a row of ticks under the name instead --
  * quiet, and it doubles as the readout for where the sweep has got to.
+ *
+ * Two rows do cycle: the two that place a family, whose icon spins through the
+ * bases it can be built on. That is nothing like ten, and it is confined to the
+ * icon -- the ticks and the name hold still, so the row is still saying one
+ * thing about what a drag will place while the picture beside it shows the
+ * range. See `FamilyIcon`.
  */
 function SolidRow({
   template,
@@ -74,6 +163,8 @@ function SolidRow({
   const addObject = useDoc((s) => s.addObject)
   /** The band under the pointer, which outranks the resting count while it lasts. */
   const [hovered, setHovered] = useState<number | null>(null)
+  /** Anywhere on the row, grip included: enough to call the row's spin off. */
+  const [pointerOn, setPointerOn] = useState(false)
 
   const shown = hovered ?? sides
   const base = defaultBaseFor(template.kind, shown, template.platonic)
@@ -95,7 +186,11 @@ function SolidRow({
       tabIndex={0}
       title={`Drag into the scene to place a ${name.toLowerCase()}`}
       aria-label={`${name}, drag into the scene`}
-      onPointerLeave={() => setHovered(null)}
+      onPointerEnter={() => setPointerOn(true)}
+      onPointerLeave={() => {
+        setPointerOn(false)
+        setHovered(null)
+      }}
       onPointerDown={(e) => place(e, false)}
       onKeyDown={(e) => {
         if (e.key !== 'Enter' && e.key !== ' ') return
@@ -105,8 +200,23 @@ function SolidRow({
         addObject(base, groundedPosition(base))
       }}
     >
-      <SolidIcon>{template.icon}</SolidIcon>
-      <span className="solid-item-label">{name}</span>
+      <SolidIcon>
+        {template.morph && template.sides && shown !== undefined ? (
+          <FamilyIcon
+            kind={template.morph}
+            counts={template.sides}
+            shown={shown}
+            idle={!pointerOn && hovered === null}
+          />
+        ) : (
+          template.icon
+        )}
+      </SolidIcon>
+      {/* A family row rests under the family's name and takes the member's name
+          only under the pointer, where the choice is. The tooltip and the
+          accessible name stay specific either way: they say what a drag would
+          place, which is a question the icon answers and a plural does not. */}
+      <span className="solid-item-label">{hovered === null ? template.label : name}</span>
 
       {template.sides && (
         <span className="solid-item-track" aria-hidden>
@@ -168,7 +278,7 @@ export function SolidList() {
   const [sides, setSides] = useState<Record<string, number>>(() => {
     const seed: Record<string, number> = {}
     for (const t of SOLID_TEMPLATES) {
-      const n = defaultSidesFor(t)
+      const n = restingSides(t.kind)
       if (n !== undefined) seed[t.key] = n
     }
     return seed

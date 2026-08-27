@@ -10,6 +10,7 @@ import {
   SphereGeometry,
   Vector3,
 } from 'three'
+import { meshGeometry } from './meshLibrary'
 import type { Point2 } from './outline'
 import type { FacePatch } from './solids'
 import {
@@ -1213,6 +1214,99 @@ export class DerivedSurface implements SurfaceDef {
   }
 }
 
+// --- Imported model --------------------------------------------------------
+
+/**
+ * A model read out of a file, standing in the place a primitive normally does.
+ *
+ * Almost everything here answers the way `DerivedSurface` answers, and for the
+ * same reason: there is no analytic surface to consult. A cube's face can be
+ * named, parameterised, offset and raycast in closed form; a hundred thousand
+ * imported triangles cannot be, and pretending otherwise would mean guessing
+ * which of them the user meant.
+ *
+ * The two questions it CAN answer are the two that matter for a base solid, and
+ * they are the reason this is a class rather than a `DerivedSurface`:
+ *
+ *   geometry()  the triangles themselves, scaled to `size`
+ *   bounds()    the box they fill, which is exactly `size` by construction
+ *
+ * Sketches still work on one. `anchorFromHit` returns null, so every hit on an
+ * imported model classifies as a DERIVED anchor -- a point and a normal in
+ * object space, treated as locally flat -- which is the same treatment a hit on
+ * a boss the user grew ten edits ago already gets. Push and pull behave there,
+ * so they behave here.
+ *
+ * `kind` carries the model's id, which is what makes swapping the model under
+ * an object drop that object's sketches: they are anchored to points on a
+ * surface that no longer exists. Resizing keeps the id, so they survive it --
+ * the same bargain a box strikes.
+ */
+export class MeshSurface implements SurfaceDef {
+  readonly kind: string
+  constructor(
+    private meshId: string,
+    private size: Vec3
+  ) {
+    this.kind = `mesh-${meshId}`
+  }
+
+  /** Half the diagonal of the box, which is what a tool has to be able to reach. */
+  private span(): number {
+    return Math.hypot(...this.size)
+  }
+
+  geometry(): BufferGeometry {
+    return meshGeometry(this.meshId, this.size)
+  }
+
+  offsetGeometry(): BufferGeometry | null {
+    // No analytic offset exists, and none is ever asked for: an offset shell is
+    // only consulted for a CURVED anchor, and every anchor on a mesh is derived.
+    return null
+  }
+
+  anchorFromHit(): SurfaceAnchor | null {
+    return null
+  }
+
+  frame(anchor: SurfaceAnchor): SurfaceFrame {
+    return derivedFrame(anchor)
+  }
+
+  project(anchor: SurfaceAnchor, u: number, v: number): ProjectedPoint {
+    return flatProject(this.frame(anchor), u, v)
+  }
+
+  clampAnchor(anchor: SurfaceAnchor): SurfaceAnchor {
+    // Nothing to clamp against: the "face" is whatever triangle the pointer
+    // landed on, and a sketch is free to run across as many of them as it likes.
+    return anchor
+  }
+
+  raycast(): SurfaceHit | null {
+    // The evaluated mesh IS the surface here, so `picking.ts` falls through to
+    // raycasting it -- which is the accurate answer rather than the fallback.
+    return null
+  }
+
+  sweep(_anchor: SurfaceAnchor, depth: number, op: FeatureOp): Sweep {
+    // The same reasoning as BoxSurface and DerivedSurface: bury the tool just
+    // enough to avoid a coplanar seam, never far enough to punch out the back.
+    const margin = Math.min(Math.max(0.05, depth * 0.1), this.span() * 0.05)
+    return op === 'extrude' ? { tIn: margin, tOut: depth } : { tIn: depth, tOut: margin }
+  }
+
+  maxDepth(): number {
+    return this.span()
+  }
+
+  bounds(): Box3 {
+    const h = new Vector3(this.size[0] / 2, this.size[1] / 2, this.size[2] / 2)
+    return new Box3(h.clone().negate(), h)
+  }
+}
+
 // --- Factories -------------------------------------------------------------
 
 /**
@@ -1247,6 +1341,8 @@ export function surfaceFor(base: BaseSolid): SurfaceDef {
         `platonic-${base.solid}`,
         platonicFaces(base.solid, base.radius)
       )
+    case 'mesh':
+      return new MeshSurface(base.meshId, base.size)
   }
 }
 

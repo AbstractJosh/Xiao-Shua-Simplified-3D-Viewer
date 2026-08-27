@@ -104,9 +104,21 @@ export const compass: {
   /** A view the user has clicked, waiting to be picked up by the scene, or
    *  null. Consumed rather than read, so one click is one flight. */
   request: Vector3 | null
+  /**
+   * Orbit the user has dragged out of the compass and the scene has not applied
+   * yet, in radians about the camera's pivot.
+   *
+   * ACCUMULATED rather than replaced, which is the one way this differs from
+   * `request`. A click asks for a destination and the last one said wins; a
+   * drag asks for a nudge, and the pointer can move several times between two
+   * frames -- so a turn that overwrote would quietly drop most of a fast
+   * gesture and the camera would lag the hand.
+   */
+  turn: { azimuth: number; polar: number }
 } = {
   facing: new Quaternion(),
   request: null,
+  turn: { azimuth: 0, polar: 0 },
 }
 
 /** Ask the camera to fly to a view. Latest wins: a second click mid-flight
@@ -121,3 +133,80 @@ export function takeRequest(): Vector3 | null {
   compass.request = null
   return asked
 }
+
+/**
+ * How much of a turn a drag across the whole compass is worth: half a circle.
+ *
+ * The widget is about 112 pixels square, an eighth of the window's height, so
+ * the viewport's own pixels-to-degrees would barely move the camera across the
+ * whole of it -- a rate that is right for a gesture with a screen to run in is
+ * wrong for one with a corner. Half a turn puts every view within one grab
+ * without re-seating the hand, and still leaves a degree worth about a third of
+ * a pixel, which is finer than anyone aims by eye.
+ */
+export const TURN_PER_SPAN = Math.PI
+
+/**
+ * A drag, in pixels, as an orbit in radians.
+ *
+ * `span` is the compass's own size on screen, so the rate is a fraction of the
+ * WIDGET rather than a fixed number of degrees per pixel: the constant above
+ * stays true at any size the corner is given.
+ *
+ * The signs mirror OrbitControls exactly, which is what makes the two gestures
+ * feel like one control. Both come out negative, and the reason is the same in
+ * each: the compass is a readout of the world, so a drag that turns the world
+ * one way turns the compass the same way, and the compass follows the hand.
+ * Rightward the scene swings right; downward its top face comes into view,
+ * because pulling the near side of a thing downward tips its top toward you.
+ *
+ * Pure, and given the span rather than reading it, because this is the whole of
+ * what the gesture decides -- the component does nothing but read the pointer
+ * and hand the answer over. Guarded in `interaction-check` for that reason.
+ */
+export function turnFromDrag(
+  dx: number,
+  dy: number,
+  span: number
+): { azimuth: number; polar: number } {
+  // A compass with no size on screen has not been laid out yet; a drag on it
+  // cannot mean anything, and dividing by it would ask for a turn of infinity.
+  if (!(span > 0)) return { azimuth: 0, polar: 0 }
+  return {
+    azimuth: (-TURN_PER_SPAN * dx) / span,
+    polar: (-TURN_PER_SPAN * dy) / span,
+  }
+}
+
+/** Add a drag's worth of orbit to whatever the scene has not picked up yet. */
+export function askForTurn(turn: { azimuth: number; polar: number }): void {
+  compass.turn.azimuth += turn.azimuth
+  compass.turn.polar += turn.polar
+}
+
+/**
+ * Take the accumulated turn and zero it, or null when there is none.
+ *
+ * Null rather than a pair of zeroes so the caller can tell "the user is
+ * dragging" from "the user is not" without comparing floats -- the difference
+ * matters, because a turn arriving is also what tells a flight in progress that
+ * the camera has been taken back by hand.
+ */
+export function takeTurn(): { azimuth: number; polar: number } | null {
+  const { azimuth, polar } = compass.turn
+  if (azimuth === 0 && polar === 0) return null
+  compass.turn.azimuth = 0
+  compass.turn.polar = 0
+  return { azimuth, polar }
+}
+
+/**
+ * How near the poles the camera may be dragged.
+ *
+ * Straight up and straight down are where the orbit stops being defined: the
+ * direction being looked along IS the up vector, so the roll is unconstrained
+ * and the next horizontal drag would spin the scene about an axis nobody chose.
+ * OrbitControls keeps its own version of this bound; a hundredth of a degree is
+ * far below anything the eye separates from the pole itself.
+ */
+export const POLAR_LIMIT = 1e-4

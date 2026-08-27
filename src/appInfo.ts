@@ -10,12 +10,10 @@
  *   - package.json "name", which must be a valid npm identifier
  */
 
-export const APP_NAME = "Xiao Shua's 3D Viewer"
-
-export const APP_TAGLINE = 'drop a shape, push or pull it'
+export const APP_NAME = "Xiao Shua's 3D Editor"
 
 /** Filename-safe form. Also the npm package name. */
-export const APP_SLUG = 'xiao-shuas-3d-viewer'
+export const APP_SLUG = 'xiao-shuas-3d-editor'
 
 /** Short prefix for console output. */
 export const LOG_TAG = 'XiaoShua3D'

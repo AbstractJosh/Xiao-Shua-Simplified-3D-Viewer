@@ -102,7 +102,13 @@ export function ObjectPanel() {
 
   const dimensions = () => {
     switch (base.kind) {
-      case 'box': {
+      // An imported model takes the box's three fields, because it measures the
+      // way a box does: three independent extents about a centred origin. The
+      // base is SPREAD rather than rebuilt so a mesh keeps its ticket and its
+      // label -- writing `{ kind: 'box', size }` here would silently turn the
+      // model into an empty cube.
+      case 'box':
+      case 'mesh': {
         const [x, y, z] = base.size
         return (
           <>
@@ -112,7 +118,7 @@ export function ObjectPanel() {
               value={x}
               min={MIN_DIMENSION}
               max={SIZE_MAX}
-              onChange={(w) => setBase({ kind: 'box', size: [w, y, z] })}
+              onChange={(w) => setBase({ ...base, size: [w, y, z] })}
             />
             <NumberField
               unit
@@ -120,7 +126,7 @@ export function ObjectPanel() {
               value={y}
               min={MIN_DIMENSION}
               max={SIZE_MAX}
-              onChange={(h) => setBase({ kind: 'box', size: [x, h, z] })}
+              onChange={(h) => setBase({ ...base, size: [x, h, z] })}
             />
             <NumberField
               unit
@@ -128,7 +134,7 @@ export function ObjectPanel() {
               value={z}
               min={MIN_DIMENSION}
               max={SIZE_MAX}
-              onChange={(d) => setBase({ kind: 'box', size: [x, y, d] })}
+              onChange={(d) => setBase({ ...base, size: [x, y, d] })}
             />
           </>
         )

@@ -12,13 +12,9 @@ import {
   nextNgonSides,
   ngonPoints,
 } from './ngon'
+import { prefersReducedMotion } from './motion'
 import { useDoc } from '../store/docStore'
 import { Section } from './Field'
-
-/** Motion the user did not ask for and cannot stop; honour the system setting. */
-function prefersReducedMotion() {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-}
 
 function ChipIcon({ children }: { children: React.ReactNode }) {
   return (

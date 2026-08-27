@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { evaluateDoc, mergedGeometry } from '../geometry/evaluate'
 import { FORMAT_INFO, exportSolid } from '../geometry/exporters'
 import type { ExportFormat } from '../geometry/exporters'
@@ -7,15 +7,13 @@ import { useTools } from '../store/toolStore'
 import { APP_SLUG } from '../appInfo'
 import { ExportIcon } from './navIcons'
 import { NavTool } from './NavTool'
+import { ReceiptFlyout, useReceipt } from './Receipt'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
-
-/** How long a finished export keeps its receipt on screen. */
-const RECEIPT_MS = 8000
 
 /**
  * What each format is for, on hover. The buttons are down to their extensions
@@ -59,24 +57,10 @@ const gist = (blurb: string): string => blurb.split('. ')[0]
 export function ExportTools() {
   const setOpenPanel = useTools((s) => s.setOpenPanel)
   const [busy, setBusy] = useState<ExportFormat | null>(null)
-  const [status, setStatus] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  // A receipt is worth reading once. Left up, it becomes a claim about a file
-  // the user exported minutes ago and has probably already opened.
-  useEffect(() => {
-    if (status === null && error === null) return
-    const timer = setTimeout(() => {
-      setStatus(null)
-      setError(null)
-    }, RECEIPT_MS)
-    return () => clearTimeout(timer)
-  }, [status, error])
+  const receipt = useReceipt()
 
   const run = async (format: ExportFormat) => {
     setBusy(format)
-    setError(null)
-    setStatus(null)
     try {
       const doc = useDoc.getState().doc
       // Re-evaluating is free: the prefix cache returns the geometry already on
@@ -90,7 +74,7 @@ export function ExportTools() {
       const baseName = `${APP_SLUG}-${doc.objects.length}obj${features ? `-${features}f` : ''}`
       try {
         const r = await exportSolid(geometry, format, baseName)
-        setStatus(
+        receipt.report(
           `${r.filename} · ${formatBytes(r.bytes)} · ` +
             // A STEP file has no triangles in it -- it has faces -- so it says
             // what it actually built instead of a count that is not in the file.
@@ -101,7 +85,7 @@ export function ExportTools() {
         geometry.dispose()
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed.')
+      receipt.fail(err, 'Export failed.')
     } finally {
       setBusy(null)
       // Whatever came of it, the choice has been made and the menu has nothing
@@ -145,14 +129,7 @@ export function ExportTools() {
         </ul>
       </NavTool>
 
-      {(status !== null || error !== null) && (
-        <div
-          className={`nav-flyout nav-flyout-right${error !== null ? ' nav-flyout-bad' : ''}`}
-          role="status"
-        >
-          {status ?? error}
-        </div>
-      )}
+      <ReceiptFlyout receipt={receipt} align="right" />
     </div>
   )
 }

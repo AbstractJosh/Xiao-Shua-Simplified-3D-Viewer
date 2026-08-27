@@ -1,5 +1,5 @@
 {
-  "name": "xiao-shuas-3d-viewer",
+  "name": "xiao-shuas-3d-editor",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.scripts.json --noEmit",
-    "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/ui-check.ts && tsx scripts/export-check.ts"
+    "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/ui-check.ts && tsx scripts/export-check.ts && tsx scripts/import-check.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
@@ -30,5 +30,5 @@
     "typescript": "^5.9.0",
     "vite": "^8.2.2"
   },
-  "description": "Xiao Shua's 3D Viewer - drop a 2D shape onto a solid and push or pull it perpendicular to the surface."
+  "description": "Xiao Shua's 3D Editor - import a model or drop a 2D shape onto a solid and push or pull it perpendicular to the surface."
 }

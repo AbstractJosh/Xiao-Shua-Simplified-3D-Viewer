@@ -11,6 +11,10 @@ import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
+// Imported for the side effect as much as the function: the module registers
+// `<biasedStandardMaterial>` with the reconciler, which is the element both
+// bodies below are built from.
+import { depthBias } from './depthBias'
 import { FaceHandle } from './FaceHandle'
 import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
@@ -133,55 +137,6 @@ export function bodyPaint(
 }
 
 /**
- * Depth units per step down the scene tree.
- *
- * One is the smallest offset the GL spec guarantees will resolve: the value is
- * multiplied by the implementation's own minimum resolvable depth difference,
- * which is exactly the "just enough to break a tie" this wants. Raise it here,
- * in one place, if a driver ever proves stingier than the guarantee.
- */
-const BIAS_STEP = 1
-
-/**
- * Which of two solids presenting the SAME surface gets drawn.
- *
- * Two objects that overlap and are then severed by one cut plane end up with
- * cut faces that are coplanar AND overlapping. The depth buffer has no tiebreak
- * for that: the shared face tears into a stipple of both colours, differing
- * pixel to pixel on rounding alone. It was always so -- it simply could not be
- * seen while every solid was the same grey.
- *
- * Geometry cannot answer which one ought to win, because both are equally
- * there. The scene tree can: it has always been an order, and this makes the
- * order mean something. Higher in the list wins, by the smallest depth nudge
- * that resolves -- see `moveObject`, which is how the user says so.
- *
- * A NUDGE rather than a draw-order swap on purpose. `renderOrder` decides which
- * mesh is submitted first, and for opaque geometry the depth test then throws
- * that away and the tie comes back. Only a depth offset settles it.
- *
- * The bottom row is left exactly unbiased, so a scene of one object carries the
- * material it always did, and the offsets only ever pull the rows above it
- * forward. Exported for the check suite.
- */
-export function depthBias(
-  rank: number,
-  count: number
-): { polygonOffset: boolean; polygonOffsetFactor: number; polygonOffsetUnits: number } {
-  const lift = Math.max(0, count - 1 - rank) * BIAS_STEP
-  return {
-    polygonOffset: lift > 0,
-    // Units is what actually separates two coplanar faces: it is a flat offset,
-    // and two coplanar polygons share a depth slope, so a slope-scaled factor
-    // alone would shift both by the same amount and settle nothing. The factor
-    // is still worth carrying for the steeply angled case, where interpolation
-    // across a long triangle is the larger error.
-    polygonOffsetFactor: -lift,
-    polygonOffsetUnits: -lift,
-  }
-}
-
-/**
  * The material -- or materials -- a solid's body wears.
  *
  * An unmerged object is one solid and takes one material, which is the whole of
@@ -203,7 +158,7 @@ export function depthBias(
  */
 function EraseBody({ selected, bias }: { selected: boolean; bias: ReturnType<typeof depthBias> }) {
   return (
-    <meshStandardMaterial
+    <biasedStandardMaterial
       color={ERASE_COLOR}
       emissive={ERASE_COLOR}
       emissiveIntensity={selected ? ERASE_EMISSIVE_INTENSITY : 0}
@@ -230,7 +185,7 @@ function Body({
 }) {
   if (paints.length === 1) {
     return (
-      <meshStandardMaterial
+      <biasedStandardMaterial
         {...bodyPaint(colors.get(paints[0]), selected)}
         {...bias}
         metalness={0.15}
@@ -245,7 +200,7 @@ function Body({
   return (
     <>
       {paints.map((paint, i) => (
-        <meshStandardMaterial
+        <biasedStandardMaterial
           key={paint}
           attach={`material-${i}`}
           {...bodyPaint(colors.get(paint), selected)}
