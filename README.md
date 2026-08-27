@@ -5,6 +5,9 @@ A 3D editor built around one gesture: **drop a 2D shape onto a solid, then push 
 Existing 3D editors demand a lot of tool-specific knowledge before you can make a single change. This one starts you with an empty grid, a palette of ten primitives and a palette of 2D shapes. Drag a cube into the scene, drop a circle onto it, slide it around, set a depth, and it becomes a boss or a pocket. No modes, no sketch-plane ceremony.
 
 ---
+Deployed at:
+https://xiaoshua3d.vercel.app
+---
 
 ## What it does
 
