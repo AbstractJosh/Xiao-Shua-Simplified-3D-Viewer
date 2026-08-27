@@ -62,8 +62,32 @@ export type BaseSolid =
   | { kind: 'pyramid'; radius: number; height: number; sides: number }
   | { kind: 'prism'; radius: number; height: number; sides: number }
   | { kind: 'platonic'; solid: PlatonicKind; radius: number }
+  /**
+   * A model read out of a file. `meshId` tickets the triangles, which live in
+   * `meshLibrary` -- see the note there for why they are not in the document.
+   *
+   * `size` is the box the model fills, and it works exactly like a box's: the
+   * stored triangles are normalised to a unit box, so this multiplies straight
+   * through. An import is the one primitive whose three extents are genuinely
+   * independent of each other, which is what a box already is -- so the gizmo
+   * arrows, the Width/Height/Depth fields and the uniform-scale ring all treat
+   * the two the same way, and none of them needed a case for this.
+   *
+   * `label` rides along rather than being looked up, so `solidLabel` stays a
+   * pure function of the document and this file goes on importing nothing.
+   */
+  | { kind: 'mesh'; meshId: string; label: string; size: Vec3 }
 
 export type SolidKind = BaseSolid['kind']
+
+/**
+ * The kinds the palette can build from nothing but a size.
+ *
+ * Everything except an import, which needs a file: `defaultBaseFor` can answer
+ * for any of these and cannot answer for a mesh, and saying so in the type is
+ * what keeps a row for it from ever appearing in the catalogue.
+ */
+export type PaletteKind = Exclude<SolidKind, 'mesh'>
 
 /**
  * WHERE a sketch sits, stored in the surface's own parameter space rather than
@@ -373,7 +397,7 @@ export function makeObject(base: BaseSolid, position: Vec3): SceneObject {
  * name but everybody could see.
  */
 export function defaultBaseFor(
-  kind: SolidKind,
+  kind: PaletteKind,
   sides?: number,
   platonic?: PlatonicKind
 ): BaseSolid {
@@ -449,5 +473,9 @@ export function solidLabel(base: BaseSolid): string {
       return `${polygonPrefix(base.sides)} prism`
     case 'platonic':
       return PLATONIC_LABEL[base.solid]
+    // Whatever the file called itself. An imported model has no shape name --
+    // it is not a member of a family -- so the only honest label is its own.
+    case 'mesh':
+      return base.label
   }
 }

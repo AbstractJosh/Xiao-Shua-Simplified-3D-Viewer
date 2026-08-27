@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { Grid, OrbitControls } from '@react-three/drei'
+import { OrbitControls } from '@react-three/drei'
 import { MOUSE, Mesh, Raycaster, Vector3 } from 'three'
 import type { Camera, MeshBasicMaterial } from 'three'
 import {
@@ -31,6 +31,7 @@ import {
   useTools,
 } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
+import { GuideGrid } from './GuideGrid'
 import { RulerReadouts, Rulers } from './Rulers'
 import {
   pickAnchorAcrossObjects,
@@ -110,6 +111,20 @@ const FACE_OFFSET_LIMIT = MAX_FACE_OFFSET
  * coplanar with a box's bottom face it z-fights across the whole footprint.
  */
 const GRID_Y = -0.002
+
+/**
+ * The two grids draw before every other transparent thing in the scene, coarse
+ * first and fine over it.
+ *
+ * Stated rather than left to the sort, which is the whole of what stopped the
+ * grid shimmering: they are centred on the same point half a thousandth of a
+ * unit apart, so three had nothing to separate them by and the order flipped as
+ * the camera came round. Negative, because the ground goes under the gizmo, the
+ * rulers, the cut plane and the snap marker without any of them having to say
+ * so. See `GuideGrid`.
+ */
+const GRID_ORDER_COARSE = -2
+const GRID_ORDER_FINE = -1
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
 
@@ -1231,11 +1246,15 @@ function Scene({
           and it gets coarser, and at every zoom a major square is a round
           number you can count in.
 
-          The fine grid sits a hair ABOVE the coarse one so that where their
-          lines coincide -- every 1 unit, which is a section of one and a cell
-          of the other -- the finer of the two wins outright rather than the
-          pair z-fighting along every decimetre. */}
-      <Grid
+          The fine grid sits a hair ABOVE the coarse one, and draws after it,
+          so that where their lines coincide -- every 1 unit, which is a section
+          of one and a cell of the other -- the finer of the two wins outright.
+          The ORDER is what decides that now rather than the height: neither
+          grid writes depth any more, because two nearly coplanar depth-writing
+          grids is exactly the fight that had the ground shimmering through
+          every camera move. See `GuideGrid` for the whole of it. */}
+      <GuideGrid
+        renderOrder={GRID_ORDER_FINE}
         position={[0, GRID_Y + 0.0005, 0]}
         args={[24, 24]}
         cellSize={0.1}
@@ -1248,7 +1267,8 @@ function Scene({
         fadeStrength={1}
         infiniteGrid
       />
-      <Grid
+      <GuideGrid
+        renderOrder={GRID_ORDER_COARSE}
         position={[0, GRID_Y, 0]}
         args={[24, 24]}
         cellSize={1}

@@ -155,15 +155,22 @@ function hexPrism(r: number, sides: number, h: number): number {
 /** Dimension readers for the assertions below. A `BaseSolid` is a union, and
  *  narrowing it inline at every call would bury the claim being made. */
 function dimOf(base: BaseSolid, axis: 'x' | 'y' | 'z'): number {
-  if (base.kind !== 'box') throw new Error('not a box')
+  if (base.kind !== 'box' && base.kind !== 'mesh') throw new Error('not a box')
   return base.size[axis === 'x' ? 0 : axis === 'y' ? 1 : 2]
 }
 function radiusOf(base: BaseSolid): number {
-  if (base.kind === 'box') throw new Error('a box has no radius')
+  // A box is three sides and an imported model is three extents; neither has a
+  // radius, and both are measured with `dimOf` instead.
+  if (base.kind === 'box' || base.kind === 'mesh') throw new Error('no radius')
   return base.radius
 }
 function heightOf(base: BaseSolid): number {
-  if (base.kind === 'box' || base.kind === 'sphere' || base.kind === 'platonic') {
+  if (
+    base.kind === 'box' ||
+    base.kind === 'mesh' ||
+    base.kind === 'sphere' ||
+    base.kind === 'platonic'
+  ) {
     throw new Error('no height')
   }
   return base.height

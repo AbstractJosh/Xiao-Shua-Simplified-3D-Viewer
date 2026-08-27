@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
-import { APP_NAME, APP_TAGLINE } from '../appInfo'
+import { APP_NAME } from '../appInfo'
 import { useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
+import { ImportTools } from './ImportTools'
 import { HelpTool, UnitsTool } from './NavTools'
 
 /**
@@ -24,7 +25,8 @@ function Stats() {
 }
 
 /**
- * The top bar: identity, what leaves the app, and the state of the document.
+ * The top bar: identity, what comes in and what goes out, and the state of the
+ * document.
  * What you build stays in the console on the right.
  *
  * What is left here is what is aimed at the WHOLE DOCUMENT -- export, the unit
@@ -79,7 +81,13 @@ export function NavBar() {
     <header className="topbar">
       <div className="brand">
         <span className="brand-mark">{APP_NAME}</span>
-        <span className="brand-sub">{APP_TAGLINE}</span>
+        {/* Beside the name rather than in the cluster on the right, because it
+            is the one control here that is about the document ARRIVING. Export,
+            Units, Undo and Redo are all things you do to a document you already
+            have, and every one of them is inert on the empty scene the app
+            opens in; this is what fills that scene. The tagline used to sit in
+            this spot and said less. */}
+        <ImportTools />
       </div>
 
       <div className="topbar-right">

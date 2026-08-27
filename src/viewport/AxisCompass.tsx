@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { RefObject } from 'react'
+import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import type { ThreeEvent } from '@react-three/fiber'
 import {
@@ -9,16 +9,21 @@ import {
   Group,
   Quaternion,
   SRGBColorSpace,
+  Spherical,
   Vector3,
 } from 'three'
 import type { Object3D, OrthographicCamera } from 'three'
 import { AXIS_COLORS } from './axisColors'
 import {
   COMPASS_VIEWS,
+  POLAR_LIMIT,
+  askForTurn,
   askForView,
   compass,
   orbitPosition,
   takeRequest,
+  takeTurn,
+  turnFromDrag,
   viewQuaternion,
 } from './compassViews'
 import type { CompassView } from './compassViews'
@@ -375,6 +380,20 @@ const TURN_RATE = 2 * Math.PI
 /** Near enough to be there. */
 const ARRIVED = 1e-3
 
+/**
+ * Scratch for the orbit arithmetic, reused rather than allocated.
+ *
+ * Safe as module state because the frame loop below is the only reader and it
+ * runs to completion before anything else can touch them -- the same bargain
+ * `picking.ts` strikes with its own. A drag writes these on every frame of the
+ * gesture, so allocating would mean a pair of throwaway objects sixty times a
+ * second for arithmetic that fits in two.
+ */
+const SPHERICAL = new Spherical()
+const OFFSET = new Vector3()
+/** The pivot when there are no controls to ask, which is only ever a test. */
+const ORIGIN = new Vector3()
+
 type Orbit = {
   enabled: boolean
   /** The point the camera orbits, which panning moves. */
@@ -420,6 +439,35 @@ export function CompassControl({ controlsRef }: { controlsRef: RefObject<Orbit> 
     compass.facing.copy(camera.quaternion)
 
     const controls = controlsRef.current
+
+    // A drag on the compass, applied before anything else this frame: it is the
+    // user's hand on the camera, and it outranks a flight the way a press in
+    // the viewport already does. The flight is dropped rather than blended
+    // with, or the two would pull against each other for as long as it lasted.
+    const turn = takeTurn()
+    if (turn) {
+      flight.current = null
+      const focus = controls ? controls.target : ORIGIN
+      // Straight spherical arithmetic about the pivot, which is what an orbit
+      // is. Read fresh from the camera's own offset each frame rather than kept
+      // alongside it: OrbitControls derives its state from the position too, so
+      // one of the two would be stale the moment anything else moved the camera
+      // -- a flight, a compass click, a pan.
+      const spin = SPHERICAL.setFromVector3(OFFSET.copy(camera.position).sub(focus))
+      spin.theta += turn.azimuth
+      // Clamped rather than wrapped: past the pole the world would be upside
+      // down and `camera.up` would be fighting the very drag that got it there.
+      spin.phi = Math.max(POLAR_LIMIT, Math.min(Math.PI - POLAR_LIMIT, spin.phi + turn.polar))
+
+      camera.position.copy(focus).add(OFFSET.setFromSpherical(spin))
+      // Level, always. The compass turns the view; it has no roll to offer, and
+      // OrbitControls orbits ABOUT this vector -- left tipped by an earlier
+      // flight over the pole, the next drag would spin the scene about Z.
+      camera.up.set(0, 1, 0)
+      camera.lookAt(focus)
+      controls?.update()
+    }
+
     const asked = takeRequest()
     if (asked) {
       const focus = controls ? controls.target.clone() : new Vector3()
@@ -455,24 +503,125 @@ export function CompassControl({ controlsRef }: { controlsRef: RefObject<Orbit> 
 }
 
 /**
+ * How far the pointer travels before a press on the compass is a drag rather
+ * than a click on the handle under it.
+ *
+ * The compass answers two gestures that start identically -- click a ball to
+ * fly to that view, drag anywhere to orbit by hand -- so they are told apart by
+ * distance, which is the same bargain the tool island's title strip and the
+ * right-click menu already strike. Every part of the widget is grabbable,
+ * handles included: a drag region that was only the margin around the cube
+ * would be a few pixels of an already small corner.
+ */
+const TURN_SLOP = 4
+
+/**
  * The widget itself: a canvas of its own, over the top-right corner of the
  * viewport.
  *
- * The cursor is owned out here rather than inside the canvas, because it
- * belongs to the DOM element -- and because "is the pointer on something" is
- * one answer for the whole compass however many handles have an opinion.
+ * It is a readout and a control at once. Clicking any part of it flies the
+ * camera to that view; DRAGGING any part of it orbits the camera by hand, at
+ * half a turn across the widget -- see `TURN_PER_SPAN`. Rotation is all it
+ * offers: there is no pan or zoom here, because neither is a thing a compass
+ * has an opinion about, and the wheel and the right button already do both a
+ * few pixels away in the scene itself.
+ *
+ * The drag is read HERE, in the DOM, rather than inside the canvas. Three
+ * reasons, all of them the same reason in different clothes: it has to work on
+ * the empty corners of the widget where there is no object to hit, it wants the
+ * widget's pixel size to set its rate, and it has to go on tracking after the
+ * pointer has left the 112 pixels it started in -- which is most of any real
+ * gesture. What it produces is handed to the scene through `compass`, the same
+ * one mutable object a click already goes through.
+ *
+ * The cursor is owned out here too, because it belongs to the DOM element --
+ * and because "is the pointer on something" is one answer for the whole compass
+ * however many handles have an opinion.
  */
 export function AxisCompass() {
   const [hot, setHot] = useState(false)
+  const [turning, setTurning] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  // Whether the gesture that just ended turned the camera. Read by the click
+  // that follows it, to keep a drag begun on a ball from also flying to that
+  // ball's view when it lands.
+  const dragged = useRef(false)
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    // Left button only. The right one pans the camera everywhere else over the
+    // scene, and a widget that swallowed it would be a hole in that.
+    if (e.button !== 0) return
+    const el = ref.current
+    if (!el) return
+
+    // The widget's own size, measured once at the press: the rate is a fraction
+    // of it, and re-measuring per move would let a window resize mid-drag
+    // change what the gesture already begun is worth.
+    const span = Math.min(el.clientWidth, el.clientHeight)
+    const from = { x: e.clientX, y: e.clientY }
+    let last = from
+    dragged.current = false
+
+    // Tracked on the WINDOW rather than by capturing the pointer, although
+    // capture is the usual way to hold a drag: capture retargets the
+    // compatibility mouse events with it, so the click ending a press on a ball
+    // would arrive at this div instead of at the canvas -- and clicking a view
+    // would silently stop working. The window sees every move either way, which
+    // also lets the gesture carry on well outside the corner it began in.
+    const move = (m: PointerEvent) => {
+      if (!dragged.current) {
+        if (Math.hypot(m.clientX - from.x, m.clientY - from.y) < TURN_SLOP) return
+        dragged.current = true
+        setTurning(true)
+        // Re-seated at the moment the gesture becomes a drag, so the slop is
+        // spent deciding what this is rather than being paid out as a jump the
+        // instant it is decided.
+        last = { x: m.clientX, y: m.clientY }
+        return
+      }
+      askForTurn(turnFromDrag(m.clientX - last.x, m.clientY - last.y, span))
+      last = { x: m.clientX, y: m.clientY }
+    }
+
+    const up = () => {
+      setTurning(false)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
+
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+  }
 
   return (
-    <div className="axis-compass" style={{ cursor: hot ? 'pointer' : 'default' }}>
+    <div
+      className="axis-compass"
+      ref={ref}
+      onPointerDown={onPointerDown}
+      // Capture, so it lands before the canvas's own listener rather than
+      // after it: R3F answers the DOM `click`, and a press that turned into a
+      // drag must not also fly the camera to whichever ball it started on.
+      onClickCapture={(e) => {
+        if (!dragged.current) return
+        e.preventDefault()
+        e.stopPropagation()
+        dragged.current = false
+      }}
+      // Grabbable everywhere, and a pointer over the parts that are also
+      // clickable. Both are true of a ball at once -- it flies on a click and
+      // orbits on a drag -- and the click is the finer claim, so it wins the
+      // cursor.
+      style={{ cursor: turning ? 'grabbing' : hot ? 'pointer' : 'grab' }}
+    >
       <Canvas
         orthographic
         camera={{ position: [0, 0, 10], near: 0.1, far: 100 }}
         dpr={[1, 2]}
         // A press that lands on none of the handles leaves the compass as it
-        // was, cursor included: nothing out there is grabbable.
+        // was, cursor included: nothing out there is CLICKABLE. It is still
+        // grabbable, which the div above answers for.
         onPointerMissed={() => setHot(false)}
       >
         <FitCompass />

@@ -3,7 +3,7 @@ import { baseParams, scaleLimits, scaleUniform } from './dimensions'
 import type { Axis } from './dimensions'
 import { conform, surfaceFor } from './surfaces'
 import { objectMatrix, toWorldDir, toWorldPoint } from './transform'
-import type { SceneObject, Vec3 } from './types'
+import type { Doc, SceneObject, Vec3 } from './types'
 
 /**
  * A merged object, read as ONE thing.
@@ -253,4 +253,25 @@ export function scaleAssembly(obj: SceneObject, factor: number): SceneObject {
       position: [x + shift.x, y + shift.y, z + shift.z],
     },
   }
+}
+
+/**
+ * The box every object in the document fills, in WORLD space.
+ *
+ * Measured analytically, off the base primitives, exactly the way
+ * `assemblyBounds` is -- so it costs no boolean and can be asked at any moment.
+ * It under-reports a solid whose features stand proud of its primitive, which
+ * makes it wrong for anything that has to decide whether two solids touch (see
+ * `worldBounds`, which pays for a full replay to answer that honestly) and
+ * exactly right for what it is used for: finding a clear patch of ground to set
+ * something new down on.
+ *
+ * Empty for an empty document, which reads as "anywhere will do".
+ */
+export function sceneBounds(doc: Doc): Box3 {
+  const box = new Box3()
+  for (const obj of doc.objects) {
+    box.union(assemblyBounds(obj).applyMatrix4(objectMatrix(obj.transform)))
+  }
+  return box
 }

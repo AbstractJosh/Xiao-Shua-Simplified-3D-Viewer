@@ -59,13 +59,14 @@ const ngonChip = (id: string, initial: number) => `
 
 /**
  * One Solids row, matching SolidPalette's DOM. The icons come out of the real
- * component through the server renderer rather than being redrawn here, and the
- * row's name comes from `solidLabel` -- so a prism row says "Hexagonal prism"
- * because that is what the geometry layer would name the object it drops.
+ * component through the server renderer rather than being redrawn here, and a
+ * row wears its own label at rest -- which for the two rows that place a family
+ * is the family, plural. The name of the member a drag would actually place
+ * comes from `solidLabel`, and stays on the tooltip, as it does in the app.
  */
 const solidRows = SOLID_TEMPLATES.map((t) => {
   // The resting side count is read back out of the geometry layer, exactly as
-  // SolidPalette's own `defaultSidesFor` does, so the lit chip is the one a
+  // `restingSides` does for the palette itself, so the lit chip is the one a
   // plain drag would actually produce.
   const plain = defaultBaseFor(t.kind)
   const sides = 'sides' in plain ? plain.sides : undefined
@@ -82,7 +83,7 @@ const solidRows = SOLID_TEMPLATES.map((t) => {
   return `
     <div class="solid-item" role="button" tabindex="0" title="Drag into the scene to place a ${name}">
       <svg viewBox="0 0 32 32" class="solid-item-icon" aria-hidden><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">${glyphs}</g></svg>
-      <span class="solid-item-label">${name}</span>
+      <span class="solid-item-label">${t.label}</span>
       ${chips}
     </div>`
 }).join('')

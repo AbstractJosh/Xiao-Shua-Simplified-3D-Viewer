@@ -73,6 +73,11 @@ export const MIN_SHAPE = 0.005
 export function maxShapeSize(base: BaseSolid): number {
   switch (base.kind) {
     case 'box':
+    // An imported model measures like a box and bounds a sketch like one. It is
+    // the loosest of the eight bounds -- a mesh's actual surface wanders about
+    // inside its box rather than filling it -- but a sketch on one lands on a
+    // DERIVED anchor, which has no face to be clamped to in the first place.
+    case 'mesh':
       return Math.min(...base.size) / 2
     case 'sphere':
     case 'platonic':
@@ -188,6 +193,9 @@ export type AxisDimension = {
 export function axisDimension(base: BaseSolid, axis: Axis): AxisDimension | null {
   switch (base.kind) {
     case 'box':
+    // Three independent extents about a centred origin, which is what a box is
+    // and what an imported model is. Same field, same arithmetic, same arrows.
+    case 'mesh':
       return {
         field: 'size',
         index: axis,
@@ -238,16 +246,24 @@ export function axisDimension(base: BaseSolid, axis: Axis): AxisDimension | null
 function withDimension(base: BaseSolid, dim: AxisDimension, value: number): BaseSolid {
   const next = clamp(value, dim.min, dim.max)
   if (dim.field === 'size') {
-    if (base.kind !== 'box') return base
+    if (base.kind !== 'box' && base.kind !== 'mesh') return base
     const size: Vec3 = [base.size[0], base.size[1], base.size[2]]
     size[dim.index ?? 0] = next
-    return { kind: 'box', size }
+    // Spread rather than rebuilt, so a mesh keeps its ticket and its label.
+    return { ...base, size }
   }
   if (dim.field === 'radius') {
-    if (base.kind === 'box') return base
+    if (base.kind === 'box' || base.kind === 'mesh') return base
     return { ...base, radius: next }
   }
-  if (base.kind === 'box' || base.kind === 'sphere' || base.kind === 'platonic') return base
+  if (
+    base.kind === 'box' ||
+    base.kind === 'mesh' ||
+    base.kind === 'sphere' ||
+    base.kind === 'platonic'
+  ) {
+    return base
+  }
   return { ...base, height: next }
 }
 
@@ -270,6 +286,7 @@ export function resizeAlongAxis(base: BaseSolid, axis: Axis, travel: number): Ba
 function dimensionsOf(base: BaseSolid): { value: number; min: number; max: number }[] {
   switch (base.kind) {
     case 'box':
+    case 'mesh':
       return base.size.map((value) => ({ value, min: MIN_DIMENSION, max: MAX_SIZE }))
     case 'sphere':
     case 'platonic':
@@ -327,7 +344,8 @@ export function scaleUniform(base: BaseSolid, factor: number): BaseSolid {
 
   switch (base.kind) {
     case 'box':
-      return { kind: 'box', size: [base.size[0] * f, base.size[1] * f, base.size[2] * f] }
+    case 'mesh':
+      return { ...base, size: [base.size[0] * f, base.size[1] * f, base.size[2] * f] }
     case 'sphere':
     case 'platonic':
       return { ...base, radius: base.radius * f }

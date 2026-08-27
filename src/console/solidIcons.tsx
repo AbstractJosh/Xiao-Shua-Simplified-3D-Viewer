@@ -1,16 +1,32 @@
 import type { ReactNode } from 'react'
-import type { PlatonicKind, SolidKind } from '../geometry/types'
+import { defaultBaseFor } from '../geometry/types'
+import type { PaletteKind, PlatonicKind } from '../geometry/types'
+import { SOLID_SIDES, iconFrame } from './solidMorph'
+import type { IconFrame, MorphKind } from './solidMorph'
 
 export type SolidTemplate = {
   key: string
+  /**
+   * What the row calls itself at rest. For most rows that is simply the solid
+   * they place; for the two that place a FAMILY it is the family, plural, and
+   * the member's own name appears under the pointer instead.
+   */
   label: string
-  kind: SolidKind
+  kind: PaletteKind
   /** Base-polygon choices offered inline on the row; absent means the row has none. */
   sides?: number[]
   platonic?: PlatonicKind
+  /**
+   * Rows whose solid is built on a base polygon, and whose icon is therefore
+   * drawn rather than written down: it morphs between the counts in `sides`,
+   * and spins through them while the row is left alone.
+   */
+  morph?: MorphKind
   /** Children of a 32x32 viewBox svg; the palette supplies stroke, fill and weight. */
   icon: ReactNode
 }
+
+const HIDDEN_OPACITY = 0.34
 
 /**
  * Back edges at reduced opacity. Ten flat silhouettes in a column all read as the
@@ -18,7 +34,59 @@ export type SolidTemplate = {
  * without reading its label, so it is drawn wherever it disambiguates the solid.
  */
 function Hidden({ children }: { children: ReactNode }) {
-  return <g opacity="0.34">{children}</g>
+  return <g opacity={HIDDEN_OPACITY}>{children}</g>
+}
+
+/**
+ * One instant of a projected solid, drawn from the numbers `solidMorph` works
+ * out. The still icon in the catalogue below and the animated one in the
+ * palette both go through here, so a row mid-morph is the same drawing as the
+ * row at rest rather than a second version of it that has to be kept in step.
+ *
+ * The far rim is a closed faint outline with its near half laid solid on top:
+ * one path that morphs cleanly, instead of two arcs that would have to agree
+ * about where the horizon is while the shape underneath them is still moving.
+ */
+export function SolidFrame({ frame }: { frame: IconFrame }) {
+  return (
+    <>
+      {frame.cap && <polygon points={frame.cap} />}
+      <Hidden>
+        <polygon points={frame.base} />
+      </Hidden>
+      <polyline points={frame.baseNear} />
+      {frame.sets.map((set) => (
+        <g key={set.sides} opacity={set.weight}>
+          {set.edges.map((e, i) => (
+            <line
+              key={i}
+              x1={e.x1}
+              y1={e.y1}
+              x2={e.x2}
+              y2={e.y2}
+              opacity={e.hidden ? HIDDEN_OPACITY : 1}
+            />
+          ))}
+        </g>
+      ))}
+    </>
+  )
+}
+
+/** The still icon for a family row: the solid it places when nothing is hovered. */
+export function solidFrameIcon(kind: MorphKind, sides: number): ReactNode {
+  return <SolidFrame frame={iconFrame(kind, sides, sides, 0)} />
+}
+
+/**
+ * The side count a kind rests on before anyone touches it, read back out of the
+ * geometry layer rather than written down here -- so the icon a row shows at
+ * rest, and the count its ticks light, are the ones a plain drag would actually
+ * produce. Kinds with no base polygon have none.
+ */
+export function restingSides(kind: PaletteKind): number | undefined {
+  const base = defaultBaseFor(kind)
+  return 'sides' in base ? base.sides : undefined
 }
 
 /**
@@ -78,40 +146,19 @@ const ConeIcon = (
 )
 
 /**
- * Square base turned 30 degrees off axis. Facing a base vertex straight at the
- * viewer would put the near and far apex edges on the same screen line, which
- * reads as a triangle with a stray tick rather than as a pyramid.
+ * The two family rows are the only ones NOT written down as coordinates: a
+ * pyramid and a prism are whatever polygon they are built on, and the row lets
+ * you choose. Both are projected from that polygon on demand -- see
+ * `solidMorph` -- and these are just the counts the rows rest on.
+ *
+ * They are drawn taller and narrower than the cube and the tetrahedron below,
+ * which is what keeps a 4-sided prism from being a second cube icon and a
+ * 3-sided pyramid from being a second tetrahedron.
  */
-const PyramidIcon = (
-  <>
-    <polyline points="6.5,21.3 16,4.5 25.5,25.7" />
-    <line x1="16" y1="4.5" x2="10.5" y2="27.3" />
-    <polyline points="6.5,21.3 10.5,27.3 25.5,25.7" />
-    <Hidden>
-      <line x1="16" y1="4.5" x2="21.5" y2="19.7" />
-      <polyline points="25.5,25.7 21.5,19.7 6.5,21.3" />
-    </Hidden>
-  </>
-)
-
-/**
- * Hexagonal, matching the row's default side count. Only the far half of the
- * bottom rim is drawn faint: the two back verticals would land on top of the
- * front ones at this scale and just thicken them.
- */
-const PrismIcon = (
-  <>
-    <polygon points="25,9.5 20.5,13.1 11.5,13.1 7,9.5 11.5,5.9 20.5,5.9" />
-    <line x1="7" y1="9.5" x2="7" y2="22.5" />
-    <line x1="11.5" y1="13.1" x2="11.5" y2="26.1" />
-    <line x1="20.5" y1="13.1" x2="20.5" y2="26.1" />
-    <line x1="25" y1="9.5" x2="25" y2="22.5" />
-    <polyline points="7,22.5 11.5,26.1 20.5,26.1 25,22.5" />
-    <Hidden>
-      <polyline points="25,22.5 20.5,19.4 11.5,19.4 7,22.5" />
-    </Hidden>
-  </>
-)
+// Both kinds carry a base polygon, so the fallbacks below only exist to satisfy
+// the union `restingSides` reads from.
+const PyramidIcon = solidFrameIcon('pyramid', restingSides('pyramid') ?? 4)
+const PrismIcon = solidFrameIcon('prism', restingSides('prism') ?? 6)
 
 /**
  * Both ends domed -- that is the only thing separating the bean from the
@@ -185,8 +232,26 @@ export const SOLID_TEMPLATES: SolidTemplate[] = [
   { key: 'sphere', label: 'Sphere', kind: 'sphere', icon: SphereIcon },
   { key: 'cylinder', label: 'Cylinder', kind: 'cylinder', icon: CylinderIcon },
   { key: 'cone', label: 'Cone', kind: 'cone', icon: ConeIcon },
-  { key: 'pyramid', label: 'Pyramid', kind: 'pyramid', sides: [3, 4, 5, 6, 8], icon: PyramidIcon },
-  { key: 'prism', label: 'Prism', kind: 'prism', sides: [3, 4, 5, 6, 8], icon: PrismIcon },
+  // Plural, and the two rows in the list that are named that way: these place a
+  // family of solids rather than one, and a row resting under "Square pyramid"
+  // read as the row that places square pyramids. The member's own name is one
+  // hover away, which is also where the choice is.
+  {
+    key: 'pyramid',
+    label: 'Pyramids',
+    kind: 'pyramid',
+    sides: SOLID_SIDES,
+    morph: 'pyramid',
+    icon: PyramidIcon,
+  },
+  {
+    key: 'prism',
+    label: 'Prisms',
+    kind: 'prism',
+    sides: SOLID_SIDES,
+    morph: 'prism',
+    icon: PrismIcon,
+  },
   { key: 'bean', label: 'Bean', kind: 'capsule', icon: BeanIcon },
   {
     key: 'tetrahedron',

@@ -85,7 +85,9 @@ body {
 
 .brand {
   display: flex;
-  align-items: baseline;
+  /* Centred, not baselined: what sits beside the name is a button now, and a
+     button aligned on the text baseline inside it hangs low by its own padding. */
+  align-items: center;
   gap: 10px;
   min-width: 0;
   /* The name is the only thing here that may shrink, and only after the tools
@@ -105,16 +107,14 @@ body {
   white-space: nowrap;
 }
 
-/* What goes as the window narrows, in the order it goes. The tools are last:
-   the tagline is decoration, the stats are a readout, and the tool labels have
-   icons standing behind them -- but a missing button is a missing feature. The
-   name itself must never be the part that truncates. */
-@media (max-width: 1320px) {
-  .brand-sub {
-    display: none;
-  }
-}
+/* What goes as the window narrows, in the order it goes. The stats are a
+   readout and go first; the tool labels have icons standing behind them and go
+   second -- but a missing BUTTON is a missing feature, so nothing here ever
+   removes one. The name itself must never be the part that truncates.
 
+   The tagline used to go first of all, at 1320px, being the only thing in the
+   bar that was pure decoration. Import stands in its place now and stays: it is
+   the one control that does something the app has no other way to do. */
 @media (max-width: 1180px) {
   .stats {
     display: none;
@@ -132,14 +132,6 @@ body {
   .topbar .nav-btn {
     padding: 5px 8px;
   }
-}
-
-.brand-sub {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .topbar-right {
@@ -367,13 +359,33 @@ body {
   line-height: 1.45;
 }
 
-/* --- export in the bar --- */
+/* --- import and export in the bar --- */
 
-.nav-export {
+/* Both are an anchor for a receipt that hangs below them, and the receipt has
+   to hang off the WRAPPER: it outlives the panel or the file dialog that
+   produced it, and by the time it has anything to say that panel has closed. */
+.nav-export,
+.nav-import {
   position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* The file input. Reachable by the dialog it opens and by nothing else: it is
+   driven entirely by the button beside it, which is the accessible control.
+   Laid out at 1px rather than `display: none`, because a browser will refuse to
+   open a file dialog from an element that was never laid out at all. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* The receipt. Hangs below the tool and clears itself; see RECEIPT_MS. */
@@ -2169,6 +2181,13 @@ body {
   width: 112px;
   height: 112px;
   z-index: 20;
+  /* The whole widget is a drag handle, so the browser must not read a drag
+     across it as a scroll or a pinch instead -- and a drag that started on a
+     lettered ball must not turn into a text selection halfway across the
+     window. The same pair the tool island's title strip carries, for the same
+     two reasons. */
+  touch-action: none;
+  user-select: none;
 }
 
 /* --- selection HUD --- */

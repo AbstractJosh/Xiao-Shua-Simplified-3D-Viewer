@@ -58,7 +58,7 @@ export type StepResult = {
  * multiplied by this on the way out. Directions are not: they are normalised,
  * and a scaled unit vector is no longer a unit vector.
  */
-const MM_PER_UNIT = 100
+export const MM_PER_UNIT = 100
 
 
 const cross = (a: Vec3, b: Vec3): Vec3 => [

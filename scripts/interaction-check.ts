@@ -31,9 +31,14 @@ import { pickAnchorAcrossObjects, pickAnchorOnObject } from '../src/viewport/pic
 import { publishScene, resolveSolidDrop } from '../src/viewport/snapping'
 import {
   COMPASS_VIEWS,
+  POLAR_LIMIT,
+  TURN_PER_SPAN,
+  askForTurn,
   askForView,
   orbitPosition,
   takeRequest,
+  takeTurn,
+  turnFromDrag,
   viewQuaternion,
   viewUp,
 } from '../src/viewport/compassViews'
@@ -62,6 +67,8 @@ import {
   ngonRadii,
   nextNgonSides,
 } from '../src/console/ngon'
+import { iconFrame } from '../src/console/solidMorph'
+import type { IconFrame } from '../src/console/solidMorph'
 import { IDENTITY_TRANSFORM } from '../src/geometry/types'
 import type {
   BaseSolid,
@@ -415,6 +422,119 @@ console.log('6. Polygon chip: band order and icon geometry')
       atTop === (sides % 2 === 0 ? 2 : 1),
       `${atTop} vertices at the top edge`
     )
+  }
+
+  // --- and the two solids that stand on those polygons ---------------------
+  //
+  // The Solids list has the same family problem the chip has, one dimension up:
+  // a pyramid is whatever polygon it is built on. Its icon is that polygon
+  // projected, so it inherits the ring, the resampling and the morph -- and the
+  // same obligation to land exactly on the real solid at both ends.
+  {
+    const SOLID_SIDES = [3, 4, 5, 6, 8]
+    const points = (s: string) => s.split(' ').map((p) => p.split(',').map(Number))
+    const corners = (f: IconFrame) => [
+      ...points(f.base),
+      ...(f.cap ? points(f.cap) : []),
+      ...f.sets.flatMap((s) => s.edges.flatMap((e) => [[e.x1, e.y1], [e.x2, e.y2]])),
+    ]
+    const span = (f: IconFrame) => {
+      const xs = corners(f).map(([x]) => x)
+      const ys = corners(f).map(([, y]) => y)
+      return {
+        w: Math.max(...xs) - Math.min(...xs),
+        h: Math.max(...ys) - Math.min(...ys),
+        top: Math.min(...ys),
+        bottom: Math.max(...ys),
+      }
+    }
+
+    for (const kind of ['pyramid', 'prism'] as const) {
+      const widths = new Set<string>()
+      for (const n of SOLID_SIDES) {
+        const frame = iconFrame(kind, n, n, 0)
+        const edges = frame.sets[0].edges
+        const box = span(frame)
+        widths.add(box.w.toFixed(3))
+
+        check(`a ${n}-sided ${kind} draws one edge per corner`, edges.length === n, `${edges.length}`)
+        // The widest corner is the silhouette however far back it sits, so it
+        // is always drawn solid. A count that had none would be a solid with
+        // nothing but faint edges holding its outline up.
+        check(
+          `and stands its silhouette in full strength`,
+          edges.some((e) => !e.hidden),
+          `${edges.filter((e) => !e.hidden).length} of ${n} solid`
+        )
+        check(
+          `a ${n}-sided ${kind} fits the icon canvas`,
+          box.top > 2 && box.bottom < 30,
+          `y ${box.top.toFixed(1)}..${box.bottom.toFixed(1)}`
+        )
+        // The whole reason these two rows can share the list with a cube and a
+        // tetrahedron -- which ARE a 4-sided prism and a 3-sided pyramid -- is
+        // that they are drawn as columns and spires rather than as blocks.
+        check(
+          `and is drawn taller than it is wide`,
+          box.h / box.w > 1.3,
+          `${(box.h / box.w).toFixed(2)}:1`
+        )
+        // The rim is resampled onto a ring shared by every count so that any
+        // two can be interpolated. That is only lossless if the ring carries
+        // every corner of every base -- and a corner it missed would be a
+        // corner rounded off for as long as the icon sat still. The edges are
+        // built from the REAL corners, so a rim that reproduces all of them is
+        // a rim that lost nothing.
+        const rim = points(frame.base)
+        check(
+          `and loses no corner to the ring it is sampled on`,
+          edges.every((e) => rim.some(([x, y]) => Math.hypot(x - e.x2, y - e.y2) < 0.02)),
+          `${n} corners in ${rim.length} samples`
+        )
+      }
+      // A cycle that swelled and shrank as it ran would read as the icon
+      // zooming rather than as the solid changing.
+      check(
+        `every ${kind} in the family is drawn to one width`,
+        widths.size === 1,
+        `${[...widths].join(', ')}`
+      )
+    }
+
+    for (const kind of ['pyramid', 'prism'] as const) {
+      for (const [from, to] of [[3, 4], [4, 5], [5, 6], [6, 8], [8, 3]] as const) {
+        check(
+          `a ${kind} morphing ${from} -> ${to} starts on the real ${from}-sided one`,
+          iconFrame(kind, from, to, 0).base === iconFrame(kind, from, from, 0).base,
+          't=0'
+        )
+        check(
+          `and ends on the real ${to}-sided one`,
+          iconFrame(kind, from, to, 1).base === iconFrame(kind, to, to, 0).base,
+          't=1'
+        )
+        // Rims flow; edges cannot, so they cross over instead. The pair has to
+        // hold full strength between them, or the solid thins out mid-morph.
+        const mid = iconFrame(kind, from, to, 0.5)
+        check(
+          `and hands its edges over on the way across`,
+          mid.sets.length === 2 &&
+            Math.abs(mid.sets[0].weight + mid.sets[1].weight - 1) < 1e-9 &&
+            mid.sets[0].edges.length === from &&
+            mid.sets[1].edges.length === to,
+          mid.sets.map((s) => `${s.edges.length}@${s.weight.toFixed(2)}`).join(' + ')
+        )
+        // Both sets stand on the rim as it is at that INSTANT, not on the rim
+        // they were drawn for -- otherwise half the edges detach and hang in
+        // the air for as long as the morph lasts. The rim is written to two
+        // decimals, so that is the tolerance.
+        const rim = points(mid.base)
+        const welded = mid.sets.every((s) =>
+          s.edges.every((e) => rim.some(([x, y]) => Math.hypot(x - e.x2, y - e.y2) < 0.02))
+        )
+        check(`with every edge still welded to it`, welded, `${rim.length} rim samples`)
+      }
+    }
   }
 }
 
@@ -1103,6 +1223,83 @@ console.log('\nThe gizmo trades its ring for three planes')
     JSON.stringify(home) === JSON.stringify([1, 1, 1]),
     `${home}`
   )
+}
+
+console.log('\nThe compass is dragged as well as clicked')
+{
+  const SPAN = 112
+
+  // The rate is a fraction of the WIDGET, not a fixed number of degrees per
+  // pixel, so the constant holds at whatever size the corner is given.
+  const across = turnFromDrag(SPAN, 0, SPAN)
+  near('a drag across the whole compass is half a turn', Math.abs(across.azimuth), TURN_PER_SPAN, 1e-12)
+  const half = turnFromDrag(SPAN / 2, 0, SPAN)
+  near('and half of it is half of that', Math.abs(half.azimuth), TURN_PER_SPAN / 2, 1e-12)
+  const bigger = turnFromDrag(SPAN, 0, SPAN * 2)
+  near(
+    'the same pixels on a wider compass turn less',
+    Math.abs(bigger.azimuth),
+    TURN_PER_SPAN / 2,
+    1e-12
+  )
+
+  // THE SIGNS. Both negative, and both for the same reason: the compass is a
+  // readout of the world, so it follows the hand. These are the deltas added to
+  // a spherical about the pivot -- theta the azimuth, phi measured from +Y --
+  // and they mirror what OrbitControls does with the very same drag, which is
+  // what makes the two gestures feel like one control rather than two.
+  check('dragging right swings the scene right', turnFromDrag(10, 0, SPAN).azimuth < 0)
+  check('and left, left', turnFromDrag(-10, 0, SPAN).azimuth > 0)
+  // Down decreases phi, which raises the camera -- pulling the near side of a
+  // thing downward tips its top toward you, so the top face comes into view.
+  check('dragging down brings the top into view', turnFromDrag(0, 10, SPAN).polar < 0)
+  check('and up, the bottom', turnFromDrag(0, -10, SPAN).polar > 0)
+
+  // The two axes are independent: a purely horizontal drag must not tip the
+  // camera, or a gesture meant to spin the model would walk it toward a pole.
+  check('a level drag stays level', turnFromDrag(40, 0, SPAN).polar === 0)
+  check('and a vertical one does not spin', turnFromDrag(0, 40, SPAN).azimuth === 0)
+
+  // A compass that has not been laid out yet has no size to be a fraction of,
+  // and dividing by it would ask the camera for a turn of infinity.
+  const unlaid = turnFromDrag(10, 10, 0)
+  check(
+    'an unmeasured compass asks for nothing',
+    unlaid.azimuth === 0 && unlaid.polar === 0,
+    JSON.stringify(unlaid)
+  )
+
+  // ACCUMULATED, where a click is replaced. The pointer can move several times
+  // between two frames, and a turn that overwrote would drop most of a fast
+  // gesture -- the camera would visibly lag the hand.
+  check('nothing pending at rest', takeTurn() === null)
+  askForTurn({ azimuth: 0.1, polar: 0.2 })
+  askForTurn({ azimuth: 0.3, polar: -0.1 })
+  const drained = takeTurn()
+  check('two moves in one frame both count', drained !== null)
+  if (drained) {
+    near('their spins add', drained.azimuth, 0.4, 1e-12)
+    near('and so do their tilts', drained.polar, 0.1, 1e-12)
+  }
+  check('and draining it leaves nothing behind', takeTurn() === null)
+
+  // The pole clamp. Straight up and straight down are where an orbit stops
+  // being defined -- the direction looked along IS the up vector -- so the drag
+  // stops short of them rather than tipping the world over.
+  const clamped = (phi: number) =>
+    Math.max(POLAR_LIMIT, Math.min(Math.PI - POLAR_LIMIT, phi))
+  check('a drag cannot reach straight up', clamped(-5) > 0)
+  check('nor straight down', clamped(5) < Math.PI)
+  near('and in between it is left alone', clamped(1), 1, 1e-12)
+
+  // A turn and a flight are answered by one frame loop, and a drag is the user
+  // taking the camera back by hand -- so the two channels stay separate all the
+  // way through, and draining one must not disturb the other.
+  askForView(new Vector3(0, 1, 0))
+  askForTurn({ azimuth: 0.5, polar: 0 })
+  const stillAsked = takeRequest()
+  check('a drag mid-flight does not swallow the request', stillAsked !== null)
+  check('and the request does not swallow the drag', takeTurn() !== null)
 }
 
 console.log(
