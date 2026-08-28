@@ -14,7 +14,7 @@ import {
 import type { BaseSolid, Feature, SceneObject } from '../geometry/types'
 import { shapeRadius } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
-import { COLORS } from './SketchLayer'
+import { useSceneColors } from './useSceneColors'
 
 /** Lift off the created face; enough to clear z-fighting with the solid's cap. */
 const HANDLE_LIFT = 0.004
@@ -89,6 +89,8 @@ export function FaceHandle({
   controlsRef: RefObject<{ enabled: boolean } | null>
 }) {
   const startMovingFace = useDoc((s) => s.startMovingFace)
+  // Before the `!handle` return below: hooks cannot sit behind a condition.
+  const scene = useSceneColors()
   const active = useDoc(
     (s) =>
       primarySelection(s) === object.id &&
@@ -129,7 +131,7 @@ export function FaceHandle({
       {handle.fill && (
         <mesh geometry={handle.fill} onPointerDown={grab}>
           <meshBasicMaterial
-            color={COLORS.selected}
+            color={scene.accent}
             transparent
             opacity={0.26}
             side={DoubleSide}
@@ -141,7 +143,7 @@ export function FaceHandle({
 
       <Line
         points={handle.outline}
-        color={COLORS.selected}
+        color={scene.accent}
         lineWidth={2.5}
         transparent
         depthTest={false}
@@ -154,7 +156,7 @@ export function FaceHandle({
       <mesh position={handle.centre} quaternion={handle.orientation} onPointerDown={grab}>
         <circleGeometry args={[handle.discRadius, DISC_SEGMENTS]} />
         <meshBasicMaterial
-          color={COLORS.selected}
+          color={scene.accent}
           transparent
           opacity={0.9}
           side={DoubleSide}

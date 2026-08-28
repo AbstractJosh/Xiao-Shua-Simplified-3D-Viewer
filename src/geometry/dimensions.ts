@@ -282,6 +282,38 @@ export function resizeAlongAxis(base: BaseSolid, axis: Axis, travel: number): Ba
   return withDimension(base, dim, dim.value + travel / dim.perUnit)
 }
 
+/**
+ * How far each of the object's OWN AXES stretched when a base was resized: the
+ * diagonal of the scale that carries the old primitive's skin onto the new
+ * one.
+ *
+ * Read off the same `axisDimension` the arrows and the panel fields drive, so
+ * it answers for all eight kinds without writing any of them down twice -- a
+ * box's three sides, a cylinder's radius twice and its height once, a sphere's
+ * radius three times over.
+ *
+ * It exists because a resize has to carry more than the surface. Anything the
+ * document stores as a LENGTH in this object's frame -- an erode dab's centre,
+ * and how far it reached -- has to travel with the skin it was aimed at, or the
+ * mark is left melting a face that has moved out from under it. Anchors need
+ * none of this: they are held in their surface's own parameter space, which is
+ * what `conform` reseats.
+ *
+ * A change of KIND is not a stretch of anything -- a box is not a wide sphere
+ * -- so it has no factors and this answers ones, which the caller can apply
+ * unconditionally. That is the same point at which the features are dropped.
+ */
+export function resizeFactors(from: BaseSolid, to: BaseSolid): Vec3 {
+  const along = (axis: Axis): number => {
+    if (from.kind !== to.kind) return 1
+    const was = axisDimension(from, axis)
+    const now = axisDimension(to, axis)
+    if (!was || !now || !(was.value > 0) || !(now.value > 0)) return 1
+    return now.value / was.value
+  }
+  return [along(0), along(1), along(2)]
+}
+
 /** Every dimension a solid has, for the uniform-scale ring. */
 function dimensionsOf(base: BaseSolid): { value: number; min: number; max: number }[] {
   switch (base.kind) {

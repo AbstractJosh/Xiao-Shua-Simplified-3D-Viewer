@@ -1,6 +1,15 @@
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
-import { CutActions, CutTool, MoveTool, RotateTool, RulerTool, ScaleTool } from '../console/NavTools'
+import {
+  CutActions,
+  CutTool,
+  ErodeTool,
+  MoveTool,
+  RotateTool,
+  RulerTool,
+  ScaleTool,
+  SculptTool,
+} from '../console/NavTools'
 import { dockIsland, useTools } from '../store/toolStore'
 
 /**
@@ -237,6 +246,14 @@ export function ToolIsland() {
               the document-wide controls rather than over the model. */}
           <RulerTool />
           <CutTool />
+          {/* The two brushes, last and together. Beside Cut because the torch
+              is the third tool that takes material away, and beside each other
+              because they are one brush with a sign in front of it -- a user
+              who has found either has found the pair, and swapping between
+              them is the commonest thing anyone does with them. Torch first,
+              since it is the one that was here already. */}
+          <ErodeTool />
+          <SculptTool />
           {/* Only on screen while the plane is armed, so the island is no
               taller than its five switches for anyone not cutting. */}
           <CutActions />

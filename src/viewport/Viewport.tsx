@@ -28,12 +28,17 @@ import {
   CUT_POSITION_LIMIT,
   CUT_SIZE_MAX,
   CUT_SIZE_MIN,
+  DAB_SPACING,
+  armedBrush,
   useTools,
 } from '../store/toolStore'
 import type { TransformMode } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
+import { BrushScopePanel } from './BrushScopePanel'
+import { brushAllows } from './brushTarget'
 import { GuideGrid } from './GuideGrid'
 import { RulerReadouts, Rulers } from './Rulers'
+import type { ObjectHit } from './picking'
 import {
   pickAnchorAcrossObjects,
   pickAnchorOnObject,
@@ -50,6 +55,7 @@ import { SelectionHud } from './SelectionHud'
 import { ToolIsland } from './ToolIsland'
 import { RotationDial } from './RotationDial'
 import { SceneObjects } from './SceneObjects'
+import { useSceneColors } from './useSceneColors'
 import { MarqueeControl, MarqueeRect } from './SelectionMarquee'
 import { MARQUEE_SLOP, boxSpan, useMarquee } from './marquee'
 import { PlacingPreview } from './SketchLayer'
@@ -629,15 +635,28 @@ const RING_EDGE_ON = 0.05
 /**
  * The keys that pick a gizmo, and the whole of what they are.
  *
- * R and S are where every 3D application in the world puts these two, and
- * neither was spoken for here -- the app's other shortcuts are all held behind
- * Control. Bare, therefore: a mode you reach for between every other gesture is
- * not worth a chord.
+ * M, R and S are where every 3D application in the world puts these three, and
+ * none of them was spoken for here -- the app's other shortcuts are all held
+ * behind Control. Bare, therefore: a mode you reach for between every other
+ * gesture is not worth a chord.
  *
- * There is no key for Move, because there is no need of one: pressing the tool
- * you are already in puts it away, and what it puts you back to is Move.
+ * M is the odd one, since Move is where the gizmo rests and the other two
+ * already fall back to it. It earns its key anyway: that fallback is reached by
+ * pressing the tool you are IN, so leaving Move nameless made it the one mode
+ * you could not ask for -- from Rotate the way back was R, which is not the key
+ * for the thing you want.
+ *
+ * M pressed while already in Move takes the handles OFF the object, the same
+ * thing the lit Move button does -- so the key is a full toggle rather than a
+ * no-op, and a gizmo standing over the surface you are brushing can be put down
+ * without reaching for the island. See `pressTransformMode`, which is where
+ * what a press means actually lives.
  */
-export const MODE_KEYS: Record<string, TransformMode> = { r: 'rotate', s: 'scale' }
+export const MODE_KEYS: Record<string, TransformMode> = {
+  m: 'move',
+  r: 'rotate',
+  s: 'scale',
+}
 
 /**
  * Slide or resize an object with its gizmo.
@@ -1188,6 +1207,149 @@ function dragRulerGizmo(drag: DragOf<'ruler-gizmo'>, raycaster: Raycaster): void
 }
 
 /**
+ * Where the last dab of the stroke in flight landed, in its object's own space.
+ *
+ * The stroke's only piece of memory, and it exists to space the dabs out: the
+ * pointer reports many times per brush width, and laying a dab on every one of
+ * them would make how fast you drag the thing that decides how deep the groove
+ * goes. See `DAB_SPACING`.
+ *
+ * A module-level ref rather than drag state because it changes several times a
+ * second and never needs to be rendered -- the same reason the gizmo grabs and
+ * the snap indicator live out here. Dropped the instant the gesture is not a
+ * stroke, so the next press starts by laying one down rather than measuring
+ * against wherever the last stroke happened to end.
+ */
+let lastDab: Vector3 | null = null
+
+/** The scope question, asked of a hit. See `brushAllows` for the rule itself. */
+function brushTarget(s: Store, hit: ObjectHit | null): string | null {
+  if (!hit) return null
+  const scope = useTools.getState().brushScope
+  return brushAllows(s.doc, s.selectedObjectIds, scope, hit.objectId)
+    ? hit.objectId
+    : null
+}
+
+/**
+ * Hold the armed brush against whatever is under the pointer.
+ *
+ * The dab lands where the RAY HITS, which is the surface as it stands this
+ * frame rather than the shape the object started as -- so the brush follows the
+ * material as it moves, down under the torch and up under the sculpt tool, and
+ * a stroke held in one place goes on working instead of being left hovering
+ * over its own crater or buried under its own bead.
+ *
+ * It is stored in the object's LOCAL space, like every other coordinate in the
+ * document, so a groove survives the object being moved and turned afterwards.
+ *
+ * A pointer that wanders off the object mid-stroke simply lays nothing down.
+ * The gesture stays alive, because the alternative -- ending the stroke -- would
+ * make a drag across a gap into two undo steps.
+ */
+function dragErode(
+  s: Store,
+  drag: DragOf<'erode'>,
+  raycaster: Raycaster,
+  meshes: Map<string, Mesh>
+): void {
+  const object = s.doc.objects.find((o) => o.id === drag.objectId)
+  if (!object) return
+
+  // Across every object, then filtered to the one the stroke started on. Asking
+  // only about that object would let the brush reach through a solid standing in
+  // front of it and melt the far one, which is not what the user is looking at.
+  const hit = pickAnchorAcrossObjects(raycaster, s.doc, meshes)
+  if (!hit || hit.objectId !== drag.objectId) return
+
+  const local = toLocalPoint(object.transform, hit.point)
+  // Whichever brush is up, and its own three numbers -- see `armedBrush`. The
+  // direction the dab is written with is the DRAG's, not this one's, so a
+  // stroke stays one kind of mark end to end.
+  const brush = armedBrush(useTools.getState())
+  if (!brush) return
+  const spacing = brush.radius * DAB_SPACING
+  if (lastDab && lastDab.distanceTo(local) < spacing) return
+
+  lastDab = local.clone()
+  s.erodeAt([local.x, local.y, local.z], brush.radius, brush.force, brush.smooth)
+}
+
+/**
+ * The armed brush, drawn where it would bite: a sphere the size of the tool.
+ *
+ * ITS COLOUR IS WHICH BRUSH IT IS, and it is the app's existing pair rather
+ * than a new one: red for material going away, which is what the eraser ghost
+ * and the scope panel's tint already mean, and green for material arriving,
+ * which is what a pushed-out face already means. A user does not have to learn
+ * a second vocabulary to tell the two brushes apart mid-stroke, and the corner
+ * panel is tinted to match, so the two things on screen that say what is armed
+ * say it the same way. Read from the theme rather than written out here,
+ * because the scene has one set of colours per theme and a literal in a
+ * viewport component is exactly the drift `sceneColors.ts` exists to stop.
+ *
+ * Translucent, and drawn through whatever is in front of it, so you can see how
+ * far into the solid the sphere reaches rather than only the cap facing you:
+ * how much of the surface it works is the thing the size control is actually
+ * setting.
+ *
+ * IT GOES AWAY THE MOMENT THE STROKE STARTS. While a brush is being held
+ * against something, the only thing worth looking at is the surface changing,
+ * and a ball sitting on top of exactly the spot being worked hides it. The
+ * pointer stays, which is all the aiming a gesture already in progress needs.
+ *
+ * It also goes away over anything the scope will not let the brush touch, so
+ * "Selected only" is legible before a press rather than after one that did
+ * nothing.
+ */
+function BrushGhost({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
+  const scene = useSceneColors()
+  const tool = useTools((s) => s.brushTool)
+  const erodeRadius = useTools((s) => s.erodeRadius)
+  const sculptRadius = useTools((s) => s.sculptRadius)
+  const radius = tool === 'sculpt' ? sculptRadius : erodeRadius
+  const { camera, gl } = useThree()
+  const raycaster = useMemo(() => new Raycaster(), [])
+  const ghost = useRef<Mesh>(null)
+
+  useFrame(() => {
+    const mesh = ghost.current
+    if (!mesh) return
+    const s = useDoc.getState()
+    if (!tool || s.drag.kind === 'erode') {
+      mesh.visible = false
+      return
+    }
+    const ndc = pointerNdc(gl.domElement)
+    if (!ndc) {
+      mesh.visible = false
+      return
+    }
+    raycaster.setFromCamera(ndc, camera)
+    const hit = pickAnchorAcrossObjects(raycaster, s.doc, meshes.current)
+    const target = brushTarget(s, hit)
+    mesh.visible = target !== null
+    if (!hit || target === null) return
+    mesh.position.copy(hit.point)
+    mesh.scale.setScalar(radius)
+  })
+
+  return (
+    <mesh ref={ghost} visible={false} renderOrder={19}>
+      <sphereGeometry args={[1, 24, 16]} />
+      <meshBasicMaterial
+        color={tool === 'sculpt' ? scene.out : scene.in}
+        transparent
+        opacity={0.28}
+        depthTest={false}
+        depthWrite={false}
+        toneMapped={false}
+      />
+    </mesh>
+  )
+}
+
+/**
  * Drives all five drag gestures from a single per-frame raycast.
  *
  * Reads the store imperatively rather than by subscription: this runs every
@@ -1213,6 +1375,7 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
     // the per-gesture caches are dropped -- before the early returns below,
     // which a released drag takes on its way out.
     clearGrabs(drag.kind)
+    if (drag.kind !== 'erode') lastDab = null
     if (drag.kind !== 'placing-solid') releaseDropCache()
     if (drag.kind === 'idle') {
       snapIndicator.hit = null
@@ -1258,20 +1421,27 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
       case 'ruler-gizmo':
         dragRulerGizmo(drag, raycaster)
         return
+      case 'erode':
+        dragErode(s, drag, raycaster, meshes.current)
+        return
     }
   })
 
   return null
 }
 
-const SNAP_COLORS: Record<SnapTarget['kind'], string> = {
-  vertex: '#5fd68a',
-  edge: '#59a5ff',
-  face: '#f0a848',
-}
-
 /** Where the current drag has caught, drawn through everything in front of it. */
 function SnapMarker() {
+  const scene = useSceneColors()
+  // Built per render rather than at module scope, because it is per theme now.
+  // A vertex snap is an addition and a face snap should look like the sketch it
+  // is about to become, which is why these are --out and the sketch colour
+  // rather than three shades chosen for this marker alone.
+  const snapColors: Record<SnapTarget['kind'], string> = {
+    vertex: scene.out,
+    edge: scene.accent,
+    face: scene.sketchIdle,
+  }
   const marker = useRef<Mesh>(null)
 
   useFrame(({ camera }) => {
@@ -1289,14 +1459,14 @@ function SnapMarker() {
     // end of the zoom range a fixed-radius blob is a single pixel, and this is
     // the only sign the user gets that a snap fired at all.
     mesh.scale.setScalar(clamp(camera.position.distanceTo(hit.point) * 0.016, 0.002, 1.4))
-    ;(mesh.material as MeshBasicMaterial).color.set(SNAP_COLORS[hit.target.kind])
+    ;(mesh.material as MeshBasicMaterial).color.set(snapColors[hit.target.kind])
   })
 
   return (
     <mesh ref={marker} visible={false} renderOrder={20}>
       <sphereGeometry args={[1, 12, 8]} />
       <meshBasicMaterial
-        color={SNAP_COLORS.vertex}
+        color={snapColors.vertex}
         depthTest={false}
         depthWrite={false}
         toneMapped={false}
@@ -1313,18 +1483,26 @@ function Scene({
   meshes: RefObject<Map<string, Mesh>>
 }) {
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
+  const scene = useSceneColors()
 
   return (
     <>
-      <color attach="background" args={['#0e1013']} />
+      <color attach="background" args={[scene.bg]} />
       <ambientLight intensity={0.55} />
       <directionalLight position={[6, 9, 5]} intensity={2.1} />
-      <directionalLight position={[-6, 3, -5]} intensity={0.7} color="#8fb4ff" />
+      {/* The cool fill opposite the key, and the one place a theme's hue reaches
+          the solids themselves -- everything else it repaints is chrome. */}
+      <directionalLight position={[-6, 3, -5]} intensity={0.7} color={scene.fillLight} />
 
-      {/* Grid colours are lifted well clear of the #0e1013 background: at the
-          original values the ground read as empty space. Major lines carry a
-          cool cast so they separate from the warm-grey solids, and the fade is
-          gentler so the plane still reads out toward the horizon.
+      {/* Grid colours are lifted well clear of whatever ground the theme paints:
+          at the original values the ground read as empty space. Major lines
+          carry a cast that separates them from the warm-grey solids, and the
+          fade is gentler so the plane still reads out toward the horizon.
+
+          Both pairs come from `sceneColors` per theme rather than being tinted
+          from one set: "clear of the background" means lighter than it on a dark
+          theme and darker than it on a light one, which no single adjustment
+          gives you.
 
           TWO grids, each divided ten ways, because one cannot serve a world
           that runs from a millimetre to five metres. A single grid fine enough
@@ -1351,10 +1529,10 @@ function Scene({
         args={[24, 24]}
         cellSize={0.1}
         cellThickness={0.6}
-        cellColor="#394454"
+        cellColor={scene.gridCell}
         sectionSize={1}
         sectionThickness={1.2}
-        sectionColor="#6d829b"
+        sectionColor={scene.gridSection}
         fadeDistance={14}
         fadeStrength={1}
         infiniteGrid
@@ -1365,10 +1543,10 @@ function Scene({
         args={[24, 24]}
         cellSize={1}
         cellThickness={0.6}
-        cellColor="#394454"
+        cellColor={scene.gridCell}
         sectionSize={10}
         sectionThickness={1.4}
-        sectionColor="#6d829b"
+        sectionColor={scene.gridSection}
         fadeDistance={300}
         fadeStrength={0.8}
         infiniteGrid
@@ -1384,6 +1562,7 @@ function Scene({
       {/* Inside the canvas because it is the camera it reports on and flies.
           What it draws is a canvas of its own, outside -- see `AxisCompass`. */}
       <CompassControl controlsRef={controlsRef} />
+      <BrushGhost meshes={meshes} />
       <Interaction meshes={meshes} />
       {/* Inside the canvas because it projects each object's gizmo through the
           camera to decide what the box caught. What it draws is outside. */}
@@ -1409,7 +1588,9 @@ function hintFor(
   kind: Drag['kind'],
   valid: boolean,
   solid: string,
-  handle: GizmoHandle | null
+  handle: GizmoHandle | null,
+  /** Which brush is mid-stroke, for the one kind that has two of them. */
+  raise: boolean
 ): string {
   switch (kind) {
     case 'idle':
@@ -1424,6 +1605,10 @@ function hintFor(
       return 'Moving the object -- hold Shift to move it vertically'
     case 'moving-face':
       return 'Sliding the created face'
+    case 'erode':
+      return raise
+        ? 'Drawing material onto the surface -- go over it again to build it up'
+        : 'Melting the surface -- go over it again to sink it further'
     case 'gizmo':
     case 'cut-gizmo':
       return gizmoHint(handle)
@@ -1568,6 +1753,9 @@ function DragHint() {
     if (s.drag.kind === 'sketch-gizmo') return s.drag.handle
     return null
   })
+  // Read off the DRAG rather than off the armed tool, so the line describes the
+  // stroke in flight -- see the `erode` drag's `raise`.
+  const raise = useDoc((s) => s.drag.kind === 'erode' && s.drag.raise)
   // The marquee is not one of the document's drags -- drawing a box edits
   // nothing -- so it is asked about separately. Both selectors collapse to a
   // value that changes a handful of times per gesture rather than per move.
@@ -1615,7 +1803,7 @@ function DragHint() {
 
   return (
     <div className={`viewport-hint${valid ? '' : ' viewport-hint-bad'}`}>
-      {hintFor(kind, valid, solid, handle)}
+      {hintFor(kind, valid, solid, handle, raise)}
       <span className="snap-readout" ref={readout} />
     </div>
   )
@@ -1625,6 +1813,10 @@ export function Viewport() {
   const controlsRef = useRef<Controls>(null)
   const meshes = useRef<Map<string, Mesh>>(new Map())
   const selectObject = useDoc((s) => s.selectObject)
+  // Subscribed rather than read imperatively, because it changes the CURSOR --
+  // a React-rendered attribute, so it has to come through a render.
+  // Either brush: the crosshair is about a brush being aimed, not about which.
+  const brushArmed = useTools((s) => s.brushTool !== null)
 
   // The gesture ends wherever the pointer happens to be -- including outside
   // the window -- so completion is owned by a global listener, not the canvas.
@@ -1749,12 +1941,11 @@ export function Viewport() {
         // the resize would carry on, invisibly, until the button came up.
         if (s.drag.kind !== 'idle') return
         const wanted = MODE_KEYS[e.key.toLowerCase()]
-        const { transformMode, setTransformMode } = useTools.getState()
-        // A toggle, matching the buttons: the tool you are already in puts
-        // itself away, and what it puts away TO is Move. That is also what
-        // keeps the two mutually exclusive without a rule saying so -- one
-        // field cannot hold both.
-        setTransformMode(transformMode === wanted ? 'move' : wanted)
+        const { pressTransformMode } = useTools.getState()
+        // Deferred whole to the store, which is the only place that knows
+        // what a press means -- the buttons on the island call the same action,
+        // so the key and the click cannot drift apart.
+        pressTransformMode(wanted)
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) s.redo()
@@ -1802,7 +1993,13 @@ export function Viewport() {
     // mid-drag would take the pointer away from it. Suppressed on the whole
     // viewport rather than on the handles alone, because the menu opens on
     // pointer-UP -- by which time the pointer has usually left the arrow.
-    <div className="viewport" onContextMenu={(e) => e.preventDefault()}>
+    // The crosshair is the whole of what the pointer looks like with the torch
+    // armed, and it stays through the stroke -- while the brush is in use the
+    // ghost stands down and the cursor is all the aiming there is.
+    <div
+      className={`viewport${brushArmed ? ' viewport-brush' : ''}`}
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <Canvas
         // Four units out -- 40 cm -- which frames the 10 cm solid the palette
         // drops with a comfortable margin of ground around it, rather than the
@@ -1832,6 +2029,7 @@ export function Viewport() {
         <Scene controlsRef={controlsRef} meshes={meshes} />
       </Canvas>
       <ToolIsland />
+      <BrushScopePanel />
       <AxisCompass />
       <SelectionHud />
       <MarqueeRect />

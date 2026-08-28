@@ -33,6 +33,22 @@ function action(f: Feature): { text: string; tone: string } {
   }
 }
 
+/**
+ * The features an object still has HANDLES for.
+ *
+ * A confirmed sketch is signed off: it goes on building the solid and stops
+ * being a row you can select, suppress or delete. So it leaves this list, and
+ * with it the nested tree and the count beside the object's name.
+ *
+ * The tree is the document rather than a log of what was done to it, and this
+ * is the one place that claim needs qualifying: a confirmed feature is still in
+ * the document, it has simply stopped being separable from the shape. Undo is
+ * what takes it back to being a sketch. See `Feature.confirmed`.
+ */
+function live(o: SceneObject): Feature[] {
+  return o.features.filter((f) => !f.confirmed)
+}
+
 /** A renamed object answers to its own name; an unnamed one to its solid. */
 function objectLabel(o: SceneObject): string {
   return o.name.trim() || solidLabel(o.base)
@@ -197,12 +213,17 @@ export function SceneTree() {
                   {i + 1}
                 </span>
                 <span className="tree-object-name">{objectLabel(o)}</span>
-                {o.features.length > 0 && (
+                {/* Counts what the list below it will SHOW. A badge reading
+                    "3f" over an empty list is a worse answer than no badge:
+                    confirmed features are baked into the solid and have no row,
+                    so they are no longer things this object has -- they are
+                    part of its shape. */}
+                {live(o).length > 0 && (
                   <span
                     className="section-hint tree-count"
-                    title={`${o.features.length} feature${o.features.length === 1 ? '' : 's'}`}
+                    title={`${live(o).length} feature${live(o).length === 1 ? '' : 's'}`}
                   >
-                    {o.features.length}f
+                    {live(o).length}f
                   </span>
                 )}
                 {/* A merged object is ONE row, because it is one object. The
@@ -263,9 +284,9 @@ export function SceneTree() {
                   {'×'}
                 </button>
               </div>
-              {o.features.length > 0 && (
+              {live(o).length > 0 && (
                 <ul className="tree-features">
-                  {o.features.map((f, j) => (
+                  {live(o).map((f, j) => (
                     <li
                       key={f.id}
                       // Feature ids come from one global counter, so a match

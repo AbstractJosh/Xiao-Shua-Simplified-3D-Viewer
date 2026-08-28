@@ -9,6 +9,7 @@ import type { GizmoAxis, GizmoHandle } from '../store/docStore'
 import type { Vec3 } from '../geometry/types'
 import { AXIS_COLORS } from './axisColors'
 import { useTools } from '../store/toolStore'
+import { useSceneColors } from './useSceneColors'
 import type { TransformMode } from '../store/toolStore'
 
 /**
@@ -154,7 +155,10 @@ export function gizmoParts(mode: TransformMode): GizmoParts {
   }
 }
 
-const RING_COLOR = '#eceff4'
+/* The ring's colour is per theme and lives in `sceneColors` as `gizmoRing`. It
+   is the widget that inverts hardest after the compass: the brightest thing in
+   the scene on a dark theme, and one of the darkest on a light one, because what
+   it has to do is stand off the ground rather than be any particular colour. */
 
 /** The turn that stands a +Y primitive up along each axis. Cylinders and cones
  *  are both built along +Y, so one Euler does for the shaft, the head and the
@@ -770,6 +774,7 @@ export function TransformGizmo({
   const ringBand = useRef<Mesh>(null)
   const ringGrab = useRef<Mesh>(null)
   const [ringHovered, setRingHovered] = useState(false)
+  const ringColor = useSceneColors().gizmoRing
 
   // The app-wide mode, unless this gizmo pins its own. Subscribed rather than
   // read, because a change of mode changes what is drawn -- which is the one
@@ -900,7 +905,7 @@ export function TransformGizmo({
           <mesh ref={ringBand} renderOrder={DRAW_ON_TOP} raycast={noRaycast}>
             <torusGeometry args={[RING_RADIUS, RING_TUBE, 8, 48]} />
             <meshBasicMaterial
-              color={ringHovered ? lit(RING_COLOR) : RING_COLOR}
+              color={ringHovered ? lit(ringColor) : ringColor}
               transparent
               opacity={ringHovered ? 1 : 0.8}
               depthTest={false}

@@ -1,4 +1,5 @@
 import { Box3, Matrix4, Vector3 } from 'three'
+import { carryErosion } from './erode'
 import { baseParams, scaleLimits, scaleUniform } from './dimensions'
 import type { Axis } from './dimensions'
 import { conform, surfaceFor } from './surfaces'
@@ -216,6 +217,13 @@ function scaleSolids(obj: SceneObject, f: number): SceneObject {
     // Left alone it would stay the size it was while the object grew around it,
     // which is the one thing a user resizing a drilled block never means.
     ...(obj.erased ? { erased: obj.erased.map(scaleNested(f)) } : {}),
+    // The torch marks travel with the skin they were burnt into, for the same
+    // reason the cut origins above do: a dab is a place in this object's space,
+    // not an anchor, so a surface that grew past it would leave it melting thin
+    // air. `f` is not read here -- the factors come from what the base actually
+    // took, so a solid that clamped at its limit carries its marks exactly as
+    // far as its skin moved.
+    ...(obj.erosion ? { erosion: carryErosion(obj.erosion, obj.base, base) } : {}),
   }
 }
 

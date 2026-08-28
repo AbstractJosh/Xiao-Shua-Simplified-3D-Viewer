@@ -5,7 +5,7 @@ import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
 import { ImportTools } from './ImportTools'
-import { HelpTool, SnapTool, UnitsTool } from './NavTools'
+import { HelpTool, SettingsTool, SnapTool } from './NavTools'
 
 /**
  * Object count belongs next to the triangle count, not in the scene tree: it is
@@ -65,7 +65,10 @@ export function NavBar() {
 
     const onDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement | null
-      if (target?.closest?.('.topbar, .tool-island')) return
+      // `.help-screen` is the CARD, deliberately not the backdrop behind it:
+      // a press on the dark surround finds no card above it, falls through to
+      // this, and closes the screen -- which is what a modal surround is for.
+      if (target?.closest?.('.topbar, .tool-island, .help-screen')) return
       setOpenPanel(null)
     }
 
@@ -96,13 +99,7 @@ export function NavBar() {
             are acts on the whole document -- and the two that step through its
             history are the ones an export belongs beside. */}
         <ExportTools />
-        {/* Beside Export because the two answer the same question -- what are
-            these numbers in -- one on screen and one in the file. It came off
-            the island for the same reason the rest of this cluster is here:
-            it is not a mode aimed at a solid, it is a reading of every length
-            in the app at once. */}
-        <UnitsTool />
-        {/* And Snap beside it, for the same reason and one more. Snapping is
+        {/* Snap, for the same reason and one more. Snapping is
             not a mode aimed at the solid under the pointer -- it draws nothing,
             it changes no handle, and it has no gesture of its own: it is a rule
             EVERY drag in the app obeys, whichever gizmo is up, which is what
@@ -131,6 +128,13 @@ export function NavBar() {
           </button>
         </div>
         <HelpTool />
+        {/* Last, because it is the only thing in the bar that is not about this
+            document. Export, Undo, Redo and Snap all act on what is open; Help
+            explains it; the cog holds what stays true of the next one you open.
+            The unit selector moved in here from its own button beside Export --
+            it never touched the document either, which is the whole argument
+            for the panel it now shares with the theme. */}
+        <SettingsTool />
         <Stats />
       </div>
     </header>

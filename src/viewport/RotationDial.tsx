@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { CircleGeometry, DoubleSide, Group, Mesh } from 'three'
 import type { Object3D } from 'three'
+import { useSceneColors } from './useSceneColors'
 import { rotationIndicator } from './rotationIndicator'
 
 /**
@@ -18,9 +19,6 @@ import { rotationIndicator } from './rotationIndicator'
  * sixty times a second to rebuild a geometry that has twelve vertices.
  */
 
-/** styles.css --accent. A three material cannot read a CSS custom property. */
-const DIAL_COLOR = '#59a5ff'
-
 /** Sized against the ring it replaces, a shade smaller so it sits inside it. */
 const DIAL_RADIUS = 0.23
 const SEGMENTS = 64
@@ -33,6 +31,9 @@ const MAX_SWEEP = Math.PI * 2
 const noRaycast: Object3D['raycast'] = () => {}
 
 export function RotationDial() {
+  // styles.css --accent, per theme, mirrored in `sceneColors` and guarded by
+  // `ui-check` -- a three material cannot read a CSS custom property.
+  const scene = useSceneColors()
   const root = useRef<Group>(null)
   const wedge = useRef<Mesh>(null)
   const drawn = useRef(0)
@@ -84,7 +85,7 @@ export function RotationDial() {
       <mesh ref={wedge} renderOrder={31} raycast={noRaycast}>
         <circleGeometry args={[DIAL_RADIUS, SEGMENTS, 0, 0]} />
         <meshBasicMaterial
-          color={DIAL_COLOR}
+          color={scene.accent}
           transparent
           opacity={0.45}
           side={DoubleSide}

@@ -1271,12 +1271,35 @@ console.log('\nEach mode draws the handles for its own job')
     check(`${mode} never draws both kinds of ring`, !(parts.ring && parts.rings))
   }
 
-  // The keys, which are the same two switches reached without leaving the
-  // model. Nothing binds Move: pressing the tool you are in puts it away, and
-  // what it puts you back to is Move.
+  // The keys, which are the same three switches reached without leaving the
+  // model. M is bound like the other two, so Move can be asked for by name
+  // rather than only arrived at by pressing whichever tool you are in.
+  check('M picks Move', MODE_KEYS.m === 'move')
   check('R picks Rotate', MODE_KEYS.r === 'rotate')
   check('S picks Scale', MODE_KEYS.s === 'scale')
-  check('and nothing else is bound', Object.keys(MODE_KEYS).sort().join() === 'r,s')
+  check(
+    'and nothing else is bound',
+    Object.keys(MODE_KEYS).sort().join() === 'm,r,s',
+  )
+
+  // WHAT A KEY DOES is the store'"'"'s answer, not the key handler'"'"'s. The island'"'"'s
+  // three buttons call the same action, so a press and a keystroke cannot mean
+  // different things -- which is the whole reason the rule moved out of the
+  // handler. M pressed twice therefore ends with no gizmo at all, exactly as
+  // pressing the lit Move button does.
+  {
+    const tools = useTools.getState()
+    tools.setTransformMode('move')
+    tools.setGizmoHidden(false)
+    useTools.getState().pressTransformMode(MODE_KEYS.m)
+    check('M on Move takes the handles off', useTools.getState().gizmoHidden === true, 'hidden')
+    useTools.getState().pressTransformMode(MODE_KEYS.r)
+    check('R brings them back as Rotate', useTools.getState().transformMode === 'rotate' && !useTools.getState().gizmoHidden, useTools.getState().transformMode)
+    useTools.getState().pressTransformMode(MODE_KEYS.r)
+    check('and R again falls back to Move rather than to nothing', useTools.getState().transformMode === 'move' && !useTools.getState().gizmoHidden, useTools.getState().transformMode)
+    useTools.getState().setGizmoHidden(false)
+    useTools.getState().setTransformMode('move')
+  }
 
   // A window that loses focus never sees the keyup, so the flag is dropped
   // rather than left to send the next object drag vertical out of nowhere.

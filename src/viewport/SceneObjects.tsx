@@ -20,13 +20,19 @@ import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
 import { publishScene } from './snapping'
 import { isRightClick, noteRightPress, useObjectMenu } from './ObjectMenu'
+import { brushAllows } from './brushTarget'
 import { useMarquee } from './marquee'
+import type { SceneColors } from './sceneColors'
+import { useSceneColors } from './useSceneColors'
 import { TransformGizmo, gizmoParts } from './TransformGizmo'
 
-/** Selection is carried by the object's own material and outline, which is why
- *  there is no separate highlight pass to keep in sync with the scene. */
-const EDGE_IDLE = '#2b3442'
-const EDGE_SELECTED = '#7cc0ff'
+/* Selection is carried by the object's own material and outline, which is why
+   there is no separate highlight pass to keep in sync with the scene.
+
+   The edge colours themselves are per theme and live in `sceneColors`:
+   `edgeIdle` has to sit BETWEEN the solid and the ground, and which direction
+   that is flips between a dark theme and a light one, so it is re-decided per
+   palette rather than tinted. */
 
 /**
  * An ERASER: a solid placed to take material away, drawn as a red ghost and
@@ -41,8 +47,6 @@ const EDGE_SELECTED = '#7cc0ff'
  * It still writes depth. A ghost that did not would show through the very solid
  * it is buried in, and "am I far enough in" is the one question aiming it asks.
  */
-const ERASE_COLOR = '#ff7a66'
-const ERASE_EDGE = '#ff9d8e'
 const ERASE_OPACITY = 0.42
 const ERASE_EMISSIVE_INTENSITY = 0.3
 /** Selected, it brightens rather than turning blue -- the same rule a coloured
@@ -71,8 +75,6 @@ const SOLID_COLOR = DEFAULT_OBJECT_COLOR
  * lighting: a face in shadow would barely change, which is exactly the face a
  * user is squinting at when they cannot tell what is selected.
  */
-const SELECTED_COLOR = '#b9c9e6'
-const SELECTED_EMISSIVE = '#2a5c96'
 const SELECTED_EMISSIVE_INTENSITY = 0.55
 
 /** The same glow for a solid emitting its OWN colour, which is a far stronger
@@ -123,13 +125,18 @@ function lifted(color: string): string {
  */
 export function bodyPaint(
   color: string | undefined,
-  selected: boolean
+  selected: boolean,
+  /** The palette of the theme that is on. Required rather than defaulted to the
+   *  dark one: a default here would let a caller forget the theme and get the
+   *  wrong shade with nothing failing, which is the exact bug this parameter
+   *  exists to make impossible. */
+  scene: SceneColors
 ): { color: string; emissive: string; emissiveIntensity: number } {
   if (!selected) return { color: color ?? SOLID_COLOR, emissive: '#000000', emissiveIntensity: 0 }
   if (color === undefined) {
     return {
-      color: SELECTED_COLOR,
-      emissive: SELECTED_EMISSIVE,
+      color: scene.selected,
+      emissive: scene.selectedEmissive,
       emissiveIntensity: SELECTED_EMISSIVE_INTENSITY,
     }
   }
@@ -157,10 +164,11 @@ export function bodyPaint(
  * and never coloured, so there is only ever the one surface to describe.
  */
 function EraseBody({ selected, bias }: { selected: boolean; bias: ReturnType<typeof depthBias> }) {
+  const scene = useSceneColors()
   return (
     <biasedStandardMaterial
-      color={ERASE_COLOR}
-      emissive={ERASE_COLOR}
+      color={scene.in}
+      emissive={scene.in}
       emissiveIntensity={selected ? ERASE_EMISSIVE_INTENSITY : 0}
       transparent
       opacity={selected ? ERASE_SELECTED_OPACITY : ERASE_OPACITY}
@@ -183,10 +191,11 @@ function Body({
   /** The object's place in the scene tree, as a depth offset. See `depthBias`. */
   bias: ReturnType<typeof depthBias>
 }) {
+  const scene = useSceneColors()
   if (paints.length === 1) {
     return (
       <biasedStandardMaterial
-        {...bodyPaint(colors.get(paints[0]), selected)}
+        {...bodyPaint(colors.get(paints[0]), selected, scene)}
         {...bias}
         metalness={0.15}
         roughness={0.55}
@@ -203,7 +212,7 @@ function Body({
         <biasedStandardMaterial
           key={paint}
           attach={`material-${i}`}
-          {...bodyPaint(colors.get(paint), selected)}
+          {...bodyPaint(colors.get(paint), selected, scene)}
           {...bias}
           metalness={0.15}
           roughness={0.55}
@@ -219,10 +228,85 @@ type Props = {
 }
 
 /**
+ * Everything that can take the handles off the selected object.
+ *
+ * A record rather than six arguments, because six booleans in a row is six
+ * chances to pass them in the wrong order and no way to notice.
+ */
+export type GizmoClaims = {
+  /** Something is selected to put handles ON. */
+  selected: boolean
+  /** The user pressed the lit Move button. See `gizmoHidden`. */
+  hidden: boolean
+  cutActive: boolean
+  /** Either brush is up. Which one is not a question the handles care about. */
+  brushArmed: boolean
+  rulerSelected: boolean
+  sketchSelected: boolean
+  marqueeing: boolean
+}
+
+/**
+ * Whether the selection wears a gizmo at all.
+ *
+ * Lifted out of the JSX because it is a SIX-WAY rule and the sixth was added
+ * recently: a condition that long, inlined, is one nobody re-reads, and the
+ * cost of getting it wrong is a set of arrows lying over the surface a brush is
+ * trying to work on. Pure and exported, so `ui-check` can state each claim
+ * rather than trust the reading of a boolean chain.
+ *
+ * Five of the six are OTHER CLAIMS on the handles -- another tool's gizmo, a
+ * finer selection, a gesture still in flight. The sixth, `hidden`, is the user
+ * saying so outright, which is why it is not a guess and cannot be overridden.
+ */
+/**
+ * Whether a press on an object's BODY may drag it across the scene.
+ *
+ * The body is the second way to move a solid, and it is invisible: the arrows
+ * announce themselves, the body just sits there being the object. So taking the
+ * handles away and leaving it draggable produced exactly the wrong result --
+ * the picker said the object was not being transformed, and it moved anyway the
+ * first time anybody pressed it.
+ *
+ * TWO of the six claims in `selectionWearsGizmo` reach this far, and only two,
+ * because the other four are answered inside the press itself:
+ *
+ *  - a selected SKETCH or RULER stands the object's gizmo down, but pressing
+ *    the body is precisely how you hand the gizmo BACK -- the handler clears
+ *    the finer selection and the arrows return, so the press ends with the
+ *    object wearing handles and a drag is honest;
+ *  - a MARQUEE in flight cannot be the thing you just pressed an object with;
+ *  - an armed CUT PLANE owns the gizmo but has never owned the object. Moving
+ *    a solid into the blade is a normal way to aim a cut, and taking that away
+ *    would be answering a question nobody asked.
+ *
+ * What is left is the two that mean the object genuinely is not being
+ * transformed right now: the user put the handles down, or a brush is up.
+ */
+export function bodyCanBeDragged(
+  claims: Pick<GizmoClaims, 'hidden' | 'brushArmed'>
+): boolean {
+  return !claims.hidden && !claims.brushArmed
+}
+
+export function selectionWearsGizmo(claims: GizmoClaims): boolean {
+  return (
+    claims.selected &&
+    !claims.hidden &&
+    !claims.cutActive &&
+    !claims.brushArmed &&
+    !claims.rulerSelected &&
+    !claims.sketchSelected &&
+    !claims.marqueeing
+  )
+}
+
+/**
  * The whole scene: one group per object, carrying that object's evaluated mesh,
  * its sketches and -- for the selected feature -- its end-face handle.
  */
 export function SceneObjects({ meshes, controlsRef }: Props) {
+  const scene = useSceneColors()
   const doc = useDoc((s) => s.doc)
   const selectedObjectId = useDoc(primarySelection)
   const selectedObjectIds = useDoc((s) => s.selectedObjectIds)
@@ -232,6 +316,16 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
   // tell apart mid-drag, so the plane -- the thing being actively aimed -- takes
   // the gizmo for as long as the tool is armed, and the selection gives it up.
   const cutActive = useTools((s) => s.cutActive)
+  // An armed brush -- either of them -- stands the handles down for the same
+  // reason an armed cut plane does, only more so: a brush is used ON the
+  // surface, and the arrows and plane quads sit over exactly the part of it you
+  // are trying to work, where they would take the press instead of the stroke.
+  // The cut plane keeps its own gizmo through this; a brush has none to keep.
+  const brushArmed = useTools((s) => s.brushTool !== null)
+  // And the user can put them down by hand, whatever tool is up. See
+  // `gizmoHidden`.
+  const gizmoHidden = useTools((s) => s.gizmoHidden)
+  const showOutlines = useTools((s) => s.showOutlines)
   // And a selected ruler is the same claim: its own end carries arrows, and one
   // set at a time is the rule the whole viewport keeps. Deselecting the ruler --
   // Escape, or a click on empty space -- hands the gizmo straight back.
@@ -347,6 +441,36 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
       return
     }
 
+    // AN ARMED BRUSH OUTRANKS BOTH SELECTING AND MOVING. A plain left press on
+    // a solid the brush may touch is a stroke: without this the commonest thing
+    // anyone would try -- press on the model and drag -- would walk the object
+    // across the scene instead of working it.
+    //
+    // It is placed after the right-button and Shift branches on purpose, so
+    // those two go on selecting exactly as they always did. That is what keeps
+    // "Selected only" usable: with a brush armed and everything in scope, a
+    // plain press can no longer pick anything up, and right-click stays the way
+    // to choose what the brush is then allowed to touch.
+    //
+    // A press on an object OUT of scope falls through to ordinary selection
+    // rather than doing nothing, which is how you pick the objects that
+    // "Selected only" is about to let you work on.
+    const tools = useTools.getState()
+    if (
+      tools.brushTool &&
+      brushAllows(s.doc, s.selectedObjectIds, tools.brushScope, id)
+    ) {
+      // OrbitControls listens on the canvas directly, so a React-level
+      // stopPropagation never reaches it; without this the camera orbits while
+      // the brush is being dragged across the surface.
+      if (controlsRef.current) controlsRef.current.enabled = false
+      // WHICH brush is fixed here, at the press, and carried by the drag --
+      // see the `erode` drag's `raise`. Reading it per dab instead would let a
+      // stroke change kind halfway along.
+      s.startErode(id, tools.brushTool === 'sculpt')
+      return
+    }
+
     if (primarySelection(s) !== id) {
       // The first press only selects, so an object cannot be shoved across the
       // scene by a click that was only meant to pick it. The press is spent
@@ -359,9 +483,18 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     // Pressing the bare solid steps the selection back up from any sketch on
     // it. Without this the sketch gizmo, which outranks the object's, could
     // never be dismissed: sketches are deselected by selecting something else,
-    // and the obvious something else is the solid they sit on. Done in the same
-    // gesture rather than costing a click, since the press is a move anyway.
+    // and the obvious something else is the solid they sit on. Done here rather
+    // than costing a click, and it happens whether or not the press goes on to
+    // become a drag -- putting the sketch down is the half of it that is about
+    // the selection.
     if (s.selectedFeatureId !== null) s.selectFeature(id, null)
+
+    // NO HANDLES, NO DRAG. The body is the invisible second way to move a
+    // solid, and leaving it live while the picker sat dark meant the object
+    // still moved the first time anyone pressed it -- which is the opposite of
+    // what turning the tool off says. The press is spent on the selection and
+    // the camera is left alone, since nothing is about to be dragged.
+    if (!bodyCanBeDragged({ hidden: gizmoHidden, brushArmed })) return
 
     // OrbitControls listens on the canvas directly, so a React-level
     // stopPropagation never reaches it. Disable it synchronously or the camera
@@ -389,11 +522,20 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           object was touched would read as the selection being lost.
 
           Exactly one gizmo is ever on screen. This is the selected object's,
-          and it stands down for the four things that outrank it: an armed cut
-          plane, whose own arrows would otherwise be one of two sets to tell
-          apart, a selected ruler, which is the same claim made by a different
-          tool, a selected sketch, which gets the finer gizmo of the two, and a
-          marquee in flight, whose selection is still being drawn.
+          and it stands down for six things that outrank it.
+
+          FIVE ARE OTHER CLAIMS ON THE HANDLES: an armed cut plane, whose own
+          arrows would otherwise be one of two sets to tell apart; an armed
+          torch, which has no gizmo of its own but is used ON the surface, so
+          arrows and plane quads lying over the very spot being melted would
+          take the press instead of the stroke; a selected ruler, which is the
+          same claim made by a different tool; a selected sketch, which gets the
+          finer gizmo of the two; and a marquee in flight, whose selection is
+          still being drawn.
+
+          THE SIXTH IS THE USER SAYING SO. `gizmoHidden` is the lit Move button
+          pressed a second time, and it outranks everything here because it is
+          not a guess about what someone is doing -- it is the answer.
 
           It sits at the object's ASSEMBLY ANCHOR, not at its transform: merging
           two solids leaves one gizmo, and it belongs midway between the two that
@@ -416,16 +558,25 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           object's OWN three dimensions, and there is no such thing as a box
           that is wider along world X. So in Scale the arrows ride the object,
           each one pointing down the side it grows. */}
-      {selected && !cutActive && !rulerSelected && !sketchSelected && !marqueeing && (
-        <TransformGizmo
-          position={assemblyAnchor(selected)}
-          rotation={
-            gizmoParts(transformMode).local ? selected.transform.rotation : undefined
-          }
-          controlsRef={controlsRef}
-          onGrab={(handle) => startGizmo(selected.id, handle)}
-        />
-      )}
+      {selectionWearsGizmo({
+        selected: selected !== null,
+        hidden: gizmoHidden,
+        cutActive,
+        brushArmed,
+        rulerSelected,
+        sketchSelected,
+        marqueeing,
+      }) &&
+        selected && (
+          <TransformGizmo
+            position={assemblyAnchor(selected)}
+            rotation={
+              gizmoParts(transformMode).local ? selected.transform.rotation : undefined
+            }
+            controlsRef={controlsRef}
+            onGrab={(handle) => startGizmo(selected.id, handle)}
+          />
+        )}
 
       {doc.objects.map((object, rank) => {
         const geometry = geometries.get(object.id)
@@ -486,12 +637,21 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
               )}
               {/* Edge outlines read as CAD, but rebuilding them every frame
                   competes with the boolean solve, so they are dropped for the
-                  duration of a drag. */}
-              {!dragging && (
+                  duration of a drag.
+
+                  And they are a preference: Settings can put them away for
+                  good, selected objects included. Nothing is lost by that --
+                  a chosen solid is lit by its own material as well as ringed,
+                  so selection still reads with every line in the scene gone. */}
+              {showOutlines && !dragging && (
                 <Edges
                   threshold={18}
                   color={
-                    object.erase ? ERASE_EDGE : isSelected ? EDGE_SELECTED : EDGE_IDLE
+                    object.erase
+                      ? scene.eraseEdge
+                      : isSelected
+                        ? scene.edgeSelected
+                        : scene.edgeIdle
                   }
                   lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
                 />
@@ -506,7 +666,11 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                     frame are stored in. Safe to nest, unlike the object gizmo:
                     an ObjectTransform is rigid, so there is no parent scale
                     here to multiply with the gizmo's own. */}
-                {!cutActive && (
+                {/* Stood down by exactly what stands the object's gizmo down:
+                    the picker governs both, and a torch held against a solid is
+                    no more able to work around a sketch's arrows than around an
+                    object's. */}
+                {!cutActive && !brushArmed && !gizmoHidden && (
                   <SketchGizmo
                     object={object}
                     feature={feature}
