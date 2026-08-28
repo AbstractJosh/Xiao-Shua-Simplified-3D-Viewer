@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { CUT_POSITION_LIMIT, useTools } from '../store/toolStore'
 import type { EraseScope } from '../store/toolStore'
 import { MAX_SIZE } from '../geometry/dimensions'
-import type { SceneObject, Vec3 } from '../geometry/types'
-import { selectedObject, useDoc } from '../store/docStore'
-import { EraseIcon } from './navIcons'
+import type { Feature, SceneObject, Vec3 } from '../geometry/types'
+import { sweepOp } from '../geometry/types'
+import { selectedFeature, selectedObject, useDoc } from '../store/docStore'
+import { EraseIcon, SketchIcon } from './navIcons'
 import { Section, Vec3Field } from './Field'
 
 /**
@@ -136,6 +137,66 @@ function EraseActions({ eraser }: { eraser: SceneObject }) {
   )
 }
 
+/**
+ * Signing a sketch off, at the top of the panel that aims the solid under it.
+ *
+ * THE PROBLEM IT SOLVES. A sketch is a handle, and it never stopped being one.
+ * You drop a circle on a face, pull it into a boss, and the orange ring stays
+ * on the surface for the rest of the document's life -- over a boss that is
+ * finished, catching clicks meant for the solid, drawn in the one colour in the
+ * scene that means "not settled yet". The only way to be rid of it was to
+ * delete the feature, which takes the boss with it. So the app could build the
+ * shape and could not say the shape was done.
+ *
+ * WHY IT IS THE ERASER'S PANEL, almost exactly. The two are the same act: a
+ * thing placed and aimed, then committed, after which the handle is gone and
+ * the geometry stays. Borrowing the block wholesale means the second commit in
+ * the app reads like the first one -- same corner, same boxed tint, same
+ * one-way warning -- rather than being a new idea a user has to learn. It wears
+ * the sketch's own orange where the eraser wears red, because a block that
+ * retires a ring should be the colour of the ring it retires.
+ *
+ * DISABLED AT ZERO DEPTH, not hidden. A fresh sketch is a projection that
+ * builds nothing, and confirming one would bake nothing and hide the only
+ * handle it has. Showing the button anyway -- greyed, saying why -- is what
+ * teaches the workflow to somebody who has just watched an outline appear and
+ * is wondering what to do about it. Hiding it would answer that question with
+ * silence, which is what the app was doing before this panel existed.
+ */
+function SketchActions({ object, feature }: { object: SceneObject; feature: Feature }) {
+  const confirmFeature = useDoc((s) => s.confirmFeature)
+
+  // The word the row in the scene tree already uses for this feature, so the
+  // button names the act the user just performed rather than a category.
+  const shaped = feature.depth !== 0
+  const verb = sweepOp(feature.depth) === 'intrude' ? 'intrusion' : 'extrusion'
+
+  return (
+    <div className="sketch-actions">
+      <div className="sketch-head">
+        <span className="sketch-mark" aria-hidden>
+          <SketchIcon />
+        </span>
+        <span className="sketch-title">Sketch</span>
+      </div>
+
+      <button
+        type="button"
+        className="btn btn-primary sketch-confirm"
+        disabled={!shaped}
+        title={
+          shaped
+            ? `Keeps the ${verb} and puts the sketch away: the outline stops being drawn, in the scene and in the tree. Undo brings it back.`
+            : 'Pull the sketch out of the face first -- there is nothing to confirm while it is flat against the surface.'
+        }
+        onClick={() => confirmFeature(object.id, feature.id)}
+      >
+        {shaped ? `Confirm ${verb}` : 'Nothing to confirm yet'}
+      </button>
+    </div>
+  )
+}
+
 /** Bounds and wording differ per target; the rows do not. */
 type Placement = {
   /** Shown beside the heading, so it is never ambiguous what is being moved. */
@@ -162,6 +223,7 @@ const OBJECT_POSITION_LIMIT = MAX_SIZE
 
 export function PlacementPanel() {
   const object = useDoc(selectedObject)
+  const feature = useDoc(selectedFeature)
   const setObjectTransform = useDoc((s) => s.setObjectTransform)
 
   // An armed cut plane outranks the selection, the same way it outranks it for
@@ -221,6 +283,13 @@ export function PlacementPanel() {
           appears while an eraser is the thing being aimed -- the cut plane
           outranks the selection, so it cannot be showing for both. */}
       {!cutActive && object?.erase && <EraseActions eraser={object} />}
+      {/* Above the rows for the reason the eraser's block is: a sketch is aimed
+          and THEN signed off, so the panel reads in the order the gesture runs.
+          Never alongside the eraser's -- an eraser has no sketches selected on
+          it -- and never while the cut plane outranks the selection. */}
+      {!cutActive && object && !object.erase && feature && !feature.confirmed && (
+        <SketchActions object={object} feature={feature} />
+      )}
       <Vec3Field
         unit
         label="Position"

@@ -28,7 +28,25 @@ export type Unit = 'mm' | 'cm' | 'm'
  */
 export type UnitMode = Unit | 'auto'
 
-export const UNIT_MODES: UnitMode[] = ['mm', 'cm', 'auto']
+/**
+ * The units a person may pick by name, in the order every picker shows them.
+ *
+ * Not all three of `Unit`: metres are somewhere `auto` can arrive at on its own
+ * -- a five-metre envelope has to read as 5 m rather than 5000 mm -- but nobody
+ * has ever been able to ASK for them, because at the sizes this app is worked
+ * at a chosen metre is three leading zeroes.
+ *
+ * Its own list rather than `UNIT_MODES` minus a string, because `auto` is not a
+ * unit and there are now two pickers that must offer only real ones -- the
+ * app-wide mode below, and a field pinned to a unit of its own. See `ownUnit`
+ * in `Field.tsx`.
+ */
+export const UNITS: Unit[] = ['mm', 'cm']
+
+/** The app-wide picker: the same units, plus the rule that chooses between
+ *  them. Built from `UNITS` so a unit can never appear in one and not the
+ *  other. */
+export const UNIT_MODES: UnitMode[] = [...UNITS, 'auto']
 
 /** How many of each unit make one scene unit. */
 const PER_UNIT: Record<Unit, number> = { mm: 100, cm: 10, m: 0.1 }

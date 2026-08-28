@@ -9,6 +9,7 @@ import { useDoc } from '../store/docStore'
 import { rulerLength, useTools } from '../store/toolStore'
 import type { Ruler, RulerEnd } from '../store/toolStore'
 import { formatLength } from '../units'
+import { useSceneColors } from './useSceneColors'
 import { TransformGizmo, biasedRaycast } from './TransformGizmo'
 
 /**
@@ -31,24 +32,11 @@ import { TransformGizmo, biasedRaycast } from './TransformGizmo'
  * any angle.
  */
 
-/** styles.css --ruler. A three material cannot read a CSS custom property. */
-const RULER_COLOR = '#ffd60a'
-
-/**
- * The dark half of the stripes on a selected ruler.
- *
- * Not pure black. Over a solid the difference hardly shows, but over the
- * scene's own near-black background pure black would read as a gap and the
- * stripes as a dashed line -- which is the one reading that could be confused
- * with the thin passive form. Lifted a little, it holds as a band with yellow
- * marks ON it whatever it happens to be crossing.
- */
-const RULER_STRIPE = '#20252e'
-
-/** The knob under the pointer, lifted toward white the way a hovered gizmo
- *  handle is. A literal rather than a lerp: there is exactly one colour here to
- *  light up, where the gizmo has three plus a ring. */
-const RULER_LIT = '#fff3a3'
+/* The ruler's three colours -- the line, the dark half of its stripes, and the
+   knob under the pointer -- are per theme and live in `sceneColors`, which also
+   carries the reasoning that used to sit here. The line mirrors styles.css
+   --ruler and is guarded by `ui-check` in every theme; the other two have no
+   console counterpart. */
 
 const IDLE_WIDTH = 1.6
 const SELECTED_WIDTH = 5
@@ -188,6 +176,7 @@ function RulerBody({
   const tube = useRef<Mesh>(null)
   const [hovered, setHovered] = useState<RulerEnd | null>(null)
   const selectRuler = useTools((s) => s.selectRuler)
+  const scene = useSceneColors()
 
   const [a, b] = ruler.ends
   const from = new Vector3(a[0], a[1], a[2])
@@ -264,7 +253,7 @@ function RulerBody({
         {active !== null && (
           <Line
             points={SEGMENT}
-            color={RULER_STRIPE}
+            color={scene.rulerStripe}
             lineWidth={SELECTED_WIDTH}
             transparent
             depthTest={false}
@@ -276,7 +265,7 @@ function RulerBody({
 
         <Line
           points={SEGMENT}
-          color={RULER_COLOR}
+          color={scene.ruler}
           lineWidth={active !== null ? SELECTED_WIDTH : IDLE_WIDTH}
           dashed={active !== null}
           dashSize={dash}
@@ -323,7 +312,7 @@ function RulerBody({
             >
               <sphereGeometry args={[grabbable ? KNOB_RADIUS : DOT_RADIUS, 12, 8]} />
               <meshBasicMaterial
-                color={grabbable && hovered === end ? RULER_LIT : RULER_COLOR}
+                color={grabbable && hovered === end ? scene.rulerLit : scene.ruler}
                 transparent
                 depthTest={false}
                 depthWrite={false}

@@ -119,6 +119,75 @@ export function CutIcon() {
   )
 }
 
+/**
+ * The torch's business end: a live flame standing on the nozzle it comes out of.
+ *
+ * THE FLAME IS THE WHOLE ICON and the nozzle is there to say what kind. The old
+ * glyph was a plain teardrop over a dish it had melted, and the dish was doing
+ * the naming -- "Erode" said nothing about heat, so a symmetric drop of flame
+ * could as easily have read as weld, or as water. The label an inch away now
+ * says blowtorch, which frees the picture to be one thing drawn properly.
+ *
+ * So the flame CURLS. A teardrop is a drop; what makes a shape read as fire at
+ * eighteen pixels is the notch where the tip folds back over itself, and it is
+ * the first thing to go if this is ever redrawn smaller. The nozzle FLARES
+ * toward its base, which is what keeps the pair from reading as a candle -- a
+ * candle is a straight column, and a torch is a jet held in something.
+ *
+ * Everything else here is axis-aligned or a plain diagonal, so this glyph is
+ * the busiest in the set by some way. That is affordable for exactly one of
+ * them and this is the one worth spending it on: it is the only tool in the bar
+ * that changes the surface irreversibly under a moving pointer.
+ */
+export function BlowtorchIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The flame. Written out at its final size rather than a scaled copy of
+          a larger one: a `scale` on the group would thin the stroke with it,
+          and the one thing every glyph here shares is its weight. */}
+      <path
+        d="M11.1 1.7c.36 1.73 0 2.88-1.08 3.53-1.08.65-1.22 1.44-.43 2.3-1.01 0-1.73-.43-2.16-1.3-.58.72-.86 1.51-.86 2.3 0 1.8 1.44 3.1 3.46 3.1s3.46-1.3 3.46-3.1c0-2.45-.79-4.75-2.38-6.84Z"
+        {...STROKE}
+      />
+      {/* The nozzle, wider at the foot than at the mouth. */}
+      <path d="M8.6 12 7.2 17.9h5.6L11.4 12Z" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * The sculpt tool: a stylus held over a surface that has swelled under it.
+ *
+ * THE MOUND IS THE VERB. The blowtorch's glyph is a flame, and the flame is
+ * what names it -- but "a flame, upside down" names nothing, so this is not
+ * drawn as that icon mirrored. What the two tools share is not a picture, it is
+ * a surface being changed, and the honest way to say "the other direction" is
+ * to show the surface bulging where the torch's dish would dip.
+ *
+ * The line is flat at both ends and swells only in the middle, which is the
+ * falloff the brush actually has -- see `falloff` in `erode.ts`. A bump that
+ * met the baseline with a corner would be drawing the one thing this tool never
+ * leaves behind.
+ *
+ * The STYLUS is what stops the mound reading as an extrusion. An arrow over a
+ * line is what push-pull does to a sketch, and this app has that gesture
+ * already; a tool held against the surface says a brush instead, which is the
+ * gesture this one is. Angled from the top right, so it lands on the peak
+ * rather than crossing it, with a collar across the shaft -- the one detail
+ * that makes a diagonal line read as an instrument rather than a stroke.
+ */
+export function SculptIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The surface, swelling under the tool. */}
+      <path d="M2.4 15.4C5.6 15.4 6.1 10.4 10 10.4s4.4 5 7.6 5" {...STROKE} />
+      {/* The stylus, and the collar that names it one. */}
+      <path d="M16.9 2.6 11.6 7.9" {...STROKE} />
+      <path d="M14.4 3.2 16.3 5.1" {...STROKE} />
+    </svg>
+  )
+}
+
 /** Out of the app and onto the disk. */
 export function ExportIcon() {
   return (
@@ -176,12 +245,51 @@ export function EraseIcon() {
   )
 }
 
+/**
+ * A sketch: the outline lying on the face it was dropped on.
+ *
+ * The ellipse rather than a circle, and a line under it rather than a box: what
+ * distinguishes a sketch from any other round glyph in this set is that it is
+ * lying ON something, and foreshortening is the only thing at 15px that says so.
+ */
+export function SketchIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M2.6 14.2h14.8" {...STROKE} />
+      <ellipse cx="10" cy="8.6" rx="5.4" ry="3.1" {...STROKE} />
+    </svg>
+  )
+}
+
 export function HelpIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden>
       <circle cx="10" cy="10" r="7.2" {...STROKE} />
       <path d="M7.9 8a2.1 2.1 0 1 1 2.9 1.95c-.5.23-.8.7-.8 1.25v.4" {...STROKE} />
       <circle cx="10" cy="14" r="0.95" fill="currentColor" />
+    </svg>
+  )
+}
+/**
+ * A cog: the one stock metaphor in this set, and worth it.
+ *
+ * Every other glyph here draws what its tool does, because every other button
+ * is a tool. This one is not -- it holds the preferences that are true of the
+ * whole app rather than of anything you can point at -- and there is no shape
+ * that says "settings" better than the one every application has agreed on.
+ * Inventing one here would cost recognition and buy nothing.
+ *
+ * Six teeth rather than the usual eight: the button renders it at 15px, and at
+ * that size eight teeth close up into a ring with a texture rather than a gear.
+ */
+export function SettingsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path
+        d="M8.2 2.21L11.8 2.21L12.11 4.49L13.71 5.41L15.85 4.54L17.65 7.66L15.83 9.08L15.83 10.92L17.65 12.34L15.85 15.46L13.71 14.59L12.11 15.51L11.8 17.79L8.2 17.79L7.89 15.51L6.29 14.59L4.15 15.46L2.35 12.34L4.17 10.92L4.17 9.08L2.35 7.66L4.15 4.54L6.29 5.41L7.89 4.49Z"
+        {...STROKE}
+      />
+      <circle cx="10" cy="10" r="2.6" {...STROKE} />
     </svg>
   )
 }

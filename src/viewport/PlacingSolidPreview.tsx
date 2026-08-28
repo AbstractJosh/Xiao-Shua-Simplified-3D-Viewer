@@ -1,7 +1,7 @@
 import { DoubleSide, type Object3D } from 'three'
 import { useDoc } from '../store/docStore'
 import { peekDropCache } from './dropCache'
-import { COLORS } from './SketchLayer'
+import { useSceneColors } from './useSceneColors'
 
 /**
  * Decoration only: the ghost tracks the pointer, so it is always the frontmost
@@ -27,6 +27,8 @@ const noRaycast: Object3D['raycast'] = () => {}
  */
 export function PlacingSolidPreview() {
   const drag = useDoc((s) => s.drag)
+  // Before the early returns below, or the hook order changes with the drag.
+  const scene = useSceneColors()
   if (drag.kind !== 'placing-solid' || !drag.position) return null
 
   const cache = peekDropCache()
@@ -45,7 +47,7 @@ export function PlacingSolidPreview() {
     <group position={drag.position}>
       <mesh geometry={cache.geometry} raycast={noRaycast}>
         <meshBasicMaterial
-          color={COLORS.placing}
+          color={scene.out}
           transparent
           opacity={0.24}
           side={DoubleSide}
@@ -56,7 +58,7 @@ export function PlacingSolidPreview() {
           what makes a bean distinguishable from a cylinder mid-drag. */}
       <mesh geometry={cache.geometry} raycast={noRaycast}>
         <meshBasicMaterial
-          color={COLORS.placing}
+          color={scene.out}
           wireframe
           transparent
           opacity={0.5}

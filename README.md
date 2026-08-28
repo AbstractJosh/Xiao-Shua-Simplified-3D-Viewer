@@ -2,6 +2,8 @@
 
 A 3D editor built around one gesture: **drop a 2D shape onto a solid, then push or pull it perpendicular to the surface.**
 
+![Sixteen merged solids extruded into lettering on the grid, with the Tools island over the top-left of the scene and the Clipboard, Solids, Shapes and Colour console down the right](docs/screenshot.png)
+
 Existing 3D editors demand a lot of tool-specific knowledge before you can make a single change. This one starts you with an empty grid, a palette of ten primitives and a palette of 2D shapes. Drag a cube into the scene, drop a circle onto it, slide it around, set a depth, and it becomes a boss or a pocket. No modes, no sketch-plane ceremony.
 
 ---
@@ -23,6 +25,8 @@ https://xiaoshua3d.vercel.app
 - **Lean** the created end face: tilt its plane on XYZ and slide it within that plane. The base of the extrusion stays welded to the host and the pillar follows.
 - **Measure** with rulers: a 50 mm line with a moveable end at each side, and the distance it spans printed on the middle of it. The ends snap to corners, edges and faces like anything else you drag, so corner-to-corner is exact rather than nearly. Lay down as many as you like -- the selected one wears yellow-and-black stripes and carries the arrows, the rest stay thin yellow lines.
 - **Cut** with a plane you place with that same gizmo and tilt by XYZ. Each half stays a live parametric object, base and features intact.
+- **Melt** with the **blowtorch**: drag it across a solid and the surface under the brush sinks *and flows*, so edges round off and the mark blends into the face rather than being a bite out of it. Not a boolean -- subtracting a sphere leaves a drill hole with a crisp rim, and this leaves a dish. Brush size, Heat and Smoothing are behind its caret; a red ghost sphere shows where it would land.
+- **Sculpt** with the same brush pointed the other way: drag and the surface *rises*, drawing material onto the object along the line you pull. It is the blowtorch with one sign flipped -- at the same three settings a bead stands exactly as proud as the torch's dish sinks -- and it wears green, the app's colour for material arriving. Arming either puts the other down. Neither brush sharpens: on a sharp tip or a sharp inside corner, Smoothing rounds the feature off faster than either can push it.
 - **Stack** features - sketch on a face an earlier feature created
 - **Orient** yourself with the compass in the top-right corner: the world's three axes as the camera sees them, with a labelled cube standing in the middle. Click any ball, stalk or face and the camera flies round to look from there, keeping the distance and the point it was orbiting. Or **drag** any part of it to orbit by hand -- half a turn across the widget, rotation only.
 - **Select** several at once with a box: left-drag from empty space and everything whose gizmo falls inside is picked up as the box grows. Hold Shift to add its catch to what is already selected.

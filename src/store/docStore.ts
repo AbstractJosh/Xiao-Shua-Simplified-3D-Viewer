@@ -22,6 +22,7 @@ import {
 import { clampDepth, conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
 import { assemblyBounds, assemblyParams, scaleAssembly } from '../geometry/assembly'
 import { baseParams } from '../geometry/dimensions'
+import { carryErosion } from '../geometry/erode'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject, removesMaterial, worldBounds } from '../geometry/evaluate'
 import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
@@ -104,6 +105,20 @@ export type Drag =
    * land in undo history. What it shares with the object gizmo is the gesture,
    * which is why the handle type is the same one.
    */
+  /**
+   * A brush is down and working. `objectId` is whatever it landed on, fixed
+   * for the length of the stroke: a brush that changed target halfway through a
+   * drag because the pointer crossed an edge would put half a groove on a solid
+   * the user never aimed at.
+   *
+   * `raise` is which brush it is -- the sculpt tool rather than the torch --
+   * and it is fixed at the press for the same reason the target is. It is what
+   * the readout along the bottom of the viewport reads to say which of the two
+   * is happening, and holding it here rather than looking at the armed tool
+   * means a stroke describes itself: nothing a panel does mid-drag can turn a
+   * groove being cut into a bead being drawn.
+   */
+  | { kind: 'erode'; objectId: string; raise: boolean; snapshot: boolean }
   | { kind: 'cut-gizmo'; handle: GizmoHandle }
   /**
    * One end of a ruler being dragged, by the gizmo standing on it.
@@ -358,6 +373,15 @@ type State = {
   depthTo: (depth: number) => void
   removeFeature: (objectId: string, featureId: string) => void
   toggleFeature: (objectId: string, featureId: string) => void
+  /**
+   * Sign a sketch off: keep what it built, retire the handle that built it.
+   *
+   * Deselects it as it goes, because the thing that was selected no longer has
+   * anything on screen to be selected -- leaving the id set would hold the
+   * sketch panel and the face handle up over a feature with no outline under
+   * them. See `Feature.confirmed`.
+   */
+  confirmFeature: (objectId: string, featureId: string) => void
 
   /** Returns how many objects the plane genuinely severed. */
   applyCut: (originWorld: Vec3, normalWorld: Vec3, targetObjectIds: string[]) => number
@@ -378,6 +402,18 @@ type State = {
    * Returns how many objects genuinely lost material.
    */
   applyErase: (eraserId: string, targetObjectIds: string[]) => number
+
+  /** Put a brush down on an object and start a stroke. `raise` picks which
+   *  brush: the sculpt tool draws material on, the torch takes it away. */
+  startErode: (objectId: string, raise: boolean) => void
+  /**
+   * Lay one dab down, in the object's LOCAL space.
+   *
+   * One undo step for the whole stroke, like every other drag here: the history
+   * entry is taken on the first dab and the rest fold into it, so a groove is
+   * one press of undo rather than one per dab the pointer happened to lay down.
+   */
+  erodeAt: (at: Vec3, radius: number, heat: number, smooth: number) => void
 
   undo: () => void
   redo: () => void
@@ -759,7 +795,18 @@ export const useDoc = create<State>((set, get) => {
           // otherwise float beside the solid with no way to grab them.
           const kept =
             surfaceFor(o.base).kind === surfaceFor(next.base).kind ? next.features : []
-          return { ...next, features: kept.map((f) => conform(next.base, f)) }
+          return {
+            ...next,
+            features: kept.map((f) => conform(next.base, f)),
+            // The torch marks are lengths in this object's own space rather
+            // than anchors, so they are carried by the amount each axis
+            // stretched instead of being reseated. They survive a change of
+            // kind that the sketches do not: a dab is a place, and a place is
+            // still a place on a solid with two more sides.
+            ...(next.erosion
+              ? { erosion: carryErosion(next.erosion, o.base, next.base) }
+              : {}),
+          }
         })
       ),
 
@@ -844,6 +891,37 @@ export const useDoc = create<State>((set, get) => {
     },
 
     endDrag: () => set({ drag: { kind: 'idle' } }),
+
+    // The stroke does NOT take the selection. A brush is aimed by pointing it,
+    // and a torch that also selected what it touched would move the gizmo onto
+    // whatever the user happened to melt -- so putting the brush down and
+    // picking a thing up stay two different gestures.
+    startErode: (objectId, raise) =>
+      set({ drag: { kind: 'erode', objectId, raise, snapshot: false } }),
+
+    erodeAt: (at, radius, heat, smooth) => {
+      const { drag, doc } = get()
+      if (drag.kind !== 'erode') return
+      const object = doc.objects.find((o) => o.id === drag.objectId)
+      if (!object) return
+
+      snapshotOnce()
+      silent(
+        mapObject(drag.objectId, (o) => ({
+          ...o,
+          // Which way this dab pushes comes from the GESTURE rather than from
+          // the tool panel, so a stroke is all one kind of mark however long it
+          // is held. And it is written only when it is true: an ordinary torch
+          // dab stays the four fields it has always been, which keeps the
+          // evaluator's cache key -- this array, stringified -- identical for
+          // every object anybody has already melted. See `ErodeDab.raise`.
+          erosion: [
+            ...(o.erosion ?? []),
+            { at, radius, heat, smooth, ...(drag.raise ? { raise: true } : {}) },
+          ],
+        }))
+      )
+    },
 
     startMovingObject: (objectId) =>
       set((s) => ({
@@ -972,7 +1050,18 @@ export const useDoc = create<State>((set, get) => {
       // than the solid now is stands down -- rather than the drag quietly
       // leaving the feature list describing geometry that is no longer there.
       // The base KIND never changes here, so the features always survive.
-      const next = { ...object, base, features: object.features.map((f) => conform(base, f)) }
+      // The erode strokes are carried the way `scaleAssembly` carries them,
+      // and for the same reason a shrinking face drags its sketches back: a
+      // dab is a place in this object's space, so a skin pulled out from under
+      // one leaves it melting where the solid no longer is.
+      const next = {
+        ...object,
+        base,
+        features: object.features.map((f) => conform(base, f)),
+        ...(object.erosion
+          ? { erosion: carryErosion(object.erosion, object.base, base) }
+          : {}),
+      }
       if (sameBase(object.base, base)) return
 
       snapshotOnce()
@@ -1058,6 +1147,16 @@ export const useDoc = create<State>((set, get) => {
 
     toggleFeature: (objectId, featureId) =>
       commit(mapFeature(objectId, featureId, (f) => ({ ...f, enabled: !f.enabled }))),
+
+    confirmFeature: (objectId, featureId) => {
+      commit(mapFeature(objectId, featureId, (f) => ({ ...f, confirmed: true })))
+      // Cleared unconditionally rather than only when it matches: confirming
+      // reaches exactly one feature, and it is the one being aimed. Guarding on
+      // the id would be guarding against a call this panel cannot make.
+      set((s) => ({
+        selectedFeatureId: s.selectedFeatureId === featureId ? null : s.selectedFeatureId,
+      }))
+    },
 
     /**
      * Sever every targeted object the plane genuinely passes through, replacing

@@ -13,6 +13,7 @@ import {
   paintsOf,
 } from './brush'
 import { applyCuts } from './cut'
+import { erodeGeometry } from './erode'
 import { buildSweptPrism, endPlaneFor, outlineOnSurface } from './prism'
 import { anchorIsCurved, hostSurfaceFor, surfaceFor } from './surfaces'
 import { objectMatrix } from './transform'
@@ -188,6 +189,11 @@ function slotKeys(obj: SceneObject): string[] {
   // And the erased solids hang off the end of THAT, because they are the last
   // thing applied: a hole is not something a later feature may fill back in.
   keys.push(`${keys[keys.length - 1]}|erased:${structureOf(obj.erased ?? [])}`)
+  // The torch is last of all, and it is the one stage that is not a boolean --
+  // see `applyErosion`. Its own slot, so a stroke in flight replays the melting
+  // and nothing else: every boolean the object is built from stays cached
+  // through a drag that adds a dab on every frame.
+  keys.push(`${keys[keys.length - 1]}|erosion:${JSON.stringify(obj.erosion ?? [])}`)
   return keys
 }
 
@@ -363,6 +369,44 @@ function applyErased(obj: SceneObject, prev: Brush): Step {
   return { brush: current, owned, failed }
 }
 
+/**
+ * Melt the surface wherever the torch has been.
+ *
+ * The LAST stage of the chain, after even the erasers, because a melt is a fact
+ * about the FINISHED surface: a boss grown afterwards would be grown out of a
+ * face that had not been melted yet, and a hole opened afterwards would cut
+ * through a wall the torch had already thinned.
+ *
+ * The one stage here that is NOT a boolean. It moves the vertices of the
+ * geometry it is handed rather than cutting a tool out of it -- see `erode.ts`
+ * for why a sphere subtraction is the wrong shape of answer for a blowtorch.
+ * The result is wrapped back into a brush anyway, so this slot looks like every
+ * other slot to the cache and to `paintsOf`; the paints come across untouched,
+ * since melting never changes which solid a triangle belongs to, only where it
+ * is.
+ *
+ * An object nobody has torched returns the brush it was given, unowned, and
+ * pays nothing at all -- not even a copy.
+ */
+function applyErosion(obj: SceneObject, prev: Brush): Step {
+  const dabs = obj.erosion ?? []
+  if (dabs.length === 0) return { brush: prev, owned: false, failed: [] }
+
+  try {
+    const melted = erodeGeometry(prev.geometry, dabs)
+    // Null means there was nothing to melt -- an object that evaluated to no
+    // triangles at all. Keep what we have rather than reporting a failure the
+    // user can do nothing about.
+    if (!melted) return { brush: prev, owned: false, failed: [] }
+    return { brush: makeBrush(melted, paintsOf(prev)), owned: true, failed: [] }
+  } catch (err) {
+    // Same bargain the features strike: a stroke that cannot be applied must
+    // not take the object down with it. Keep the unmelted solid and flag it.
+    console.warn(`[${LOG_TAG}] erosion on object ${obj.id} failed`, err)
+    return { brush: prev, owned: false, failed: [obj.id] }
+  }
+}
+
 function applyObjectCuts(obj: SceneObject, prev: Brush): Step {
   try {
     // Each half-space sizes itself from the solid it is actually cutting, so it
@@ -418,7 +462,12 @@ function evaluateCached(obj: SceneObject): ObjectEval {
 
   if (slots.length === obj.features.length + 2) {
     const prev = slots[slots.length - 1].brush
-    slots.push({ key: keys[keys.length - 1], ...applyErased(obj, prev) })
+    slots.push({ key: keys[obj.features.length + 2], ...applyErased(obj, prev) })
+  }
+
+  if (slots.length === obj.features.length + 3) {
+    const prev = slots[slots.length - 1].brush
+    slots.push({ key: keys[keys.length - 1], ...applyErosion(obj, prev) })
   }
 
   const failed: string[] = []
@@ -501,6 +550,13 @@ export function evaluateObject(obj: SceneObject): {
   if (holes.owned) {
     disposeBrush(current)
     current = holes.brush
+  }
+
+  const melted = applyErosion(obj, current)
+  failed.push(...melted.failed)
+  if (melted.owned) {
+    disposeBrush(current)
+    current = melted.brush
   }
 
   return { geometry: current.geometry, paints: paintsOf(current), failed }

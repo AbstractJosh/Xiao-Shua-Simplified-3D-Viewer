@@ -14,6 +14,8 @@ import {
 } from 'three'
 import type { Object3D, OrthographicCamera } from 'three'
 import { AXIS_COLORS } from './axisColors'
+import { COMPASS_FACE_SHADE } from './sceneColors'
+import { useSceneColors } from './useSceneColors'
 import {
   COMPASS_VIEWS,
   POLAR_LIMIT,
@@ -101,28 +103,26 @@ const HOVER_GROW = 1.18
 
 const STALK_RADIUS = 0.035
 
-/**
- * The cube's faces, lit as the scene's own key light would light them -- from
- * above, in front, and to the right.
- *
- * Constant per face rather than computed from a lamp, because the cube turns
- * WITH the world: a fixed brightness per face is exactly what a fixed light in
- * the world looks like. It costs no lights, no normals and no second guess
- * about tone mapping. In `BoxGeometry`'s material order: +X, -X, +Y, -Y, +Z, -Z.
- */
-const FACE_SHADE = [0.8, 0.5, 1.0, 0.44, 0.72, 0.5]
-const FACE_BASE = '#e6ecf5'
-const FACE_TEXT = '#11151b'
-/** styles.css --accent, which a material cannot read for itself. */
-const FACE_HOT = '#59a5ff'
-const EDGE_COLOR = '#0e1013'
+/* The per-face shading moved to `sceneColors` as COMPASS_FACE_SHADE, where the
+   check suite can read it without importing a renderer -- the darkest face is
+   the worst case for reading a label, and that is now pinned per theme. */
+/* The compass's own colours are per theme and live in `sceneColors`. It is the
+   widget that flips hardest between them: `compassFace` is near-white on the
+   dark theme and near-black on the light one, because on a pale scene a pale
+   cube is a smudge rather than an object.
 
-/** Letters are cut out of the ball in the app's own background colour rather
- *  than laid on in white: the three axis colours are fully saturated, and a
- *  white glyph on the green one is barely a glyph at all. */
-const HEAD_TEXT = '#0e1013'
+   `compassInk` is the ground colour, and letters are CUT OUT of a ball in it
+   rather than laid on in white -- the three axis colours are fully saturated,
+   and a white glyph on the green one is barely a glyph at all. */
 
-const TEXTURE_PX = 128
+/* 256, not the 128 this was. The cube is drawn small -- the whole compass is
+   112px and the cube a fraction of that -- but a texture is not sampled at the
+   size it is drawn: it is minified through a perspective camera onto a turning
+   face, and at 128 the lettering arrived soft, which reads as THIN however heavy
+   the weight is set. Nine textures of 256 square is a couple of megabytes and
+   they are built once and kept. Everything drawn into them is sized as a
+   fraction of this, so raising it changes sharpness and nothing else. */
+const TEXTURE_PX = 256
 
 /**
  * One canvas per distinct ball and face, drawn on first use and kept.
@@ -160,8 +160,17 @@ function drawnTexture(
 
 /** A ball: a filled disc in the axis colour with its letter cut out of it, or,
  *  for a negative direction, a dim ring. */
-function headTexture(color: string, letter: string | null): CanvasTexture {
-  return drawnTexture(`head|${color}|${letter ?? ''}`, (ctx, px) => {
+function headTexture(
+  color: string,
+  letter: string | null,
+  /** The ground colour a letter is cut out in, and the near-opaque wash behind a
+   *  negative direction's ring. Both are per theme, so both are part of the
+   *  cache key -- a texture built under one theme must not be handed back under
+   *  another, which is exactly what a key of colour-and-letter alone would do. */
+  ink: string,
+  dim: string
+): CanvasTexture {
+  return drawnTexture(`head|${color}|${letter ?? ''}|${ink}|${dim}`, (ctx, px) => {
     const mid = px / 2
     ctx.beginPath()
     ctx.arc(mid, mid, letter ? mid - 6 : mid - 14, 0, Math.PI * 2)
@@ -171,12 +180,12 @@ function headTexture(color: string, letter: string | null): CanvasTexture {
       ctx.font = `600 ${px * 0.5}px system-ui, sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = HEAD_TEXT
+      ctx.fillStyle = ink
       ctx.fillText(letter, mid, mid + px * 0.03)
     } else {
       // Filled as well as stroked, faintly. A bare outline reads as a hole cut
       // in the scene behind it; a dim fill reads as the far end of an axis.
-      ctx.fillStyle = 'rgba(14, 16, 19, 0.72)'
+      ctx.fillStyle = dim
       ctx.fill()
       ctx.lineWidth = px * 0.09
       ctx.strokeStyle = color
@@ -185,18 +194,78 @@ function headTexture(color: string, letter: string | null): CanvasTexture {
   })
 }
 
+/** As heavy as the face offers. A system stack rarely ships a true 900, and the
+ *  browser picks the nearest weight it has, which is the heaviest one. */
+const FACE_TEXT_WEIGHT = 900
+const FACE_TEXT_FONT = 'system-ui, sans-serif'
+/** The share of the face's width a label spans, corner to corner. */
+const FACE_TEXT_FIT = 0.92
+/** The tallest a label may be set, as a fraction of the face. Short labels reach
+ *  this and stop -- it is what keeps "Top" off the cube's own edges. */
+const FACE_TEXT_MAX = 0.52
+/** And the shortest. Below this a label is CONDENSED rather than shrunk any
+ *  further: six characters across a square face cannot be set at a readable
+ *  height any other way, and a narrow "Bottom" beats a tiny one. */
+const FACE_TEXT_MIN = 0.38
+
+/**
+ * How big one label is set, and the width it may not spill past.
+ *
+ * PER LABEL, and that is the point of it: every face is set as large as that
+ * face can carry, so "Top" is genuinely bigger than "Front" and "Front" than
+ * "Bottom". One shared size set by the longest label -- which is what this was
+ * -- means every face on the cube is as small as the worst one, and the worst
+ * one is a six-letter word.
+ *
+ * Measured rather than computed from a constant, because a font's advance
+ * widths are the browser's business and nothing hard-coded here would survive a
+ * different system font. Measured at `px` and scaled, so it is one measurement
+ * per label rather than a search.
+ *
+ * The floor is what makes the long labels work. Fitting purely to width puts
+ * "Bottom" at a quarter of the face and there is no arrangement of six glyphs
+ * that does better -- so below the floor the size stops falling and the width
+ * cap handed to `fillText` squeezes the glyphs instead. Condensed heavy type is
+ * a CAD idiom rather than a compromise; it is what the app's own cyberpunk face
+ * does by design.
+ */
+function faceType(
+  ctx: CanvasRenderingContext2D,
+  px: number,
+  label: string
+): { size: number; room: number } {
+  const room = px * FACE_TEXT_FIT
+  ctx.font = `${FACE_TEXT_WEIGHT} ${px}px ${FACE_TEXT_FONT}`
+  const perPx = ctx.measureText(label).width / px
+  const wanted = perPx > 0 ? room / perPx : px * FACE_TEXT_MAX
+  return {
+    size: Math.min(px * FACE_TEXT_MAX, Math.max(px * FACE_TEXT_MIN, wanted)),
+    room,
+  }
+}
+
 /** A face: its name, on the shade of grey that face stands at. */
-function faceTexture(label: string, shade: number): CanvasTexture {
-  return drawnTexture(`face|${label}|${shade}`, (ctx, px) => {
+function faceTexture(
+  label: string,
+  shade: number,
+  /** Per theme, and therefore part of the key -- see `headTexture`. */
+  base: string,
+  text: string
+): CanvasTexture {
+  return drawnTexture(`face|${label}|${shade}|${base}|${text}`, (ctx, px) => {
     // Dimmed in three's working space rather than by scaling the hex digits, so
     // the steps between faces read as even light rather than as even numbers.
-    ctx.fillStyle = new Color(FACE_BASE).multiplyScalar(shade).getStyle()
+    ctx.fillStyle = new Color(base).multiplyScalar(shade).getStyle()
     ctx.fillRect(0, 0, px, px)
-    ctx.font = `500 ${px * 0.2}px system-ui, sans-serif`
+    const { size, room } = faceType(ctx, px, label)
+    ctx.font = `${FACE_TEXT_WEIGHT} ${size}px ${FACE_TEXT_FONT}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.fillStyle = FACE_TEXT
-    ctx.fillText(label, px / 2, px / 2)
+    ctx.fillStyle = text
+    // The third argument is a maximum WIDTH: canvas condenses the glyphs to fit
+    // it and leaves them alone if they already do. Only the labels that hit the
+    // size floor above are ever touched by it.
+    ctx.fillText(label, px / 2, px / 2, room)
   })
 }
 
@@ -214,23 +283,9 @@ const noRaycast: Object3D['raycast'] = () => {}
  * index IS the view.
  */
 function ViewCube({ onHot }: { onHot: (hot: boolean) => void }) {
-  const [face, setFace] = useState<number | null>(null)
+  const scene = useSceneColors()
   const geometry = useMemo(() => new BoxGeometry(CUBE, CUBE, CUBE), [])
   useEffect(() => () => geometry.dispose(), [geometry])
-
-  // Tracked on move rather than on over, because the pointer can cross from
-  // one face to the next without ever leaving the mesh.
-  const over = (e: ThreeEvent<PointerEvent>) => {
-    const index = e.face?.materialIndex
-    if (index === undefined) return
-    setFace(index)
-    onHot(true)
-  }
-
-  const out = () => {
-    setFace(null)
-    onHot(false)
-  }
 
   const press = (e: ThreeEvent<MouseEvent>) => {
     const index = e.face?.materialIndex
@@ -240,13 +295,17 @@ function ViewCube({ onHot }: { onHot: (hot: boolean) => void }) {
 
   return (
     <group position={CUBE_AT}>
-      <mesh geometry={geometry} onPointerMove={over} onPointerOut={out} onClick={press}>
+      <mesh
+        geometry={geometry}
+        onPointerOver={() => onHot(true)}
+        onPointerOut={() => onHot(false)}
+        onClick={press}
+      >
         {COMPASS_VIEWS.map((view, index) => (
           <meshBasicMaterial
             key={view.key}
             attach={`material-${index}`}
-            map={faceTexture(view.label, FACE_SHADE[index] ?? 1)}
-            color={face === index ? FACE_HOT : '#ffffff'}
+            map={faceTexture(view.label, COMPASS_FACE_SHADE[index] ?? 1, scene.compassFace, scene.compassText)}
             toneMapped={false}
           />
         ))}
@@ -255,7 +314,7 @@ function ViewCube({ onHot }: { onHot: (hot: boolean) => void }) {
       {/* The corners, so the cube keeps its shape against a dark scene. */}
       <lineSegments raycast={noRaycast}>
         <edgesGeometry args={[geometry]} />
-        <lineBasicMaterial color={EDGE_COLOR} toneMapped={false} />
+        <lineBasicMaterial color={scene.compassInk} toneMapped={false} />
       </lineSegments>
     </group>
   )
@@ -265,11 +324,12 @@ function ViewCube({ onHot }: { onHot: (hot: boolean) => void }) {
  *  stands on. Both answer the same press -- they are one handle drawn in two
  *  parts, and the group carrying the events is what makes them behave as one. */
 function AxisHandle({ view, onHot }: { view: CompassView; onHot: (hot: boolean) => void }) {
+  const scene = useSceneColors()
   const [hovered, setHovered] = useState(false)
   const color = AXIS_COLORS[view.axis]
   const positive = view.sign > 0
 
-  const map = headTexture(color, positive ? view.letter : null)
+  const map = headTexture(color, positive ? view.letter : null, scene.compassInk, scene.compassDim)
   const at = useMemo(() => view.dir.clone().multiplyScalar(HEAD_AT), [view.dir])
   // Stood on end along its own axis, running from the cube's corner -- which is
   // the middle of the compass -- out to the back of the ball. All three start

@@ -6,16 +6,18 @@ import { hostSurfaceFor } from '../geometry/surfaces'
 import { buildCapGeometry, outlineOnSurface, outlinePolyline } from '../geometry/prism'
 import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
+import { useSceneColors } from './useSceneColors'
 
 /** Lift of the projection above the solid; enough to clear z-fighting. */
 const DECAL_LIFT = 0.005
 
-export const COLORS = {
-  idle: '#f0a848',
-  selected: '#59a5ff',
-  placing: '#5fd68a',
-  invalid: '#ff7a66',
-}
+/* The four colours a sketch is drawn in used to be an exported table here, and
+   three other files imported it. They come off `useSceneColors` now, at each
+   point of use, because they are per-theme: a module constant is read once when
+   the file loads, so the sketches kept whichever palette the app started in
+   while the console around them changed.
+
+   idle -> sketchIdle, selected -> accent, placing -> out, invalid -> in. */
 
 type DecalProps = {
   base: BaseSolid
@@ -103,11 +105,15 @@ export function ObjectSketches({
 }) {
   const selectedObjectId = useDoc(primarySelection)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
+  const scene = useSceneColors()
   const startMoving = useDoc((s) => s.startMoving)
 
   return (
     <>
-      {object.features.map((f) => {
+      {/* A confirmed sketch is not drawn at all. It still builds -- the solid
+          under it is unchanged -- but the ring was a handle, and the handle has
+          been put down. See `Feature.confirmed`. */}
+      {object.features.filter((f) => !f.confirmed).map((f) => {
         // A feature id only identifies a sketch alongside its object: two
         // objects can each hold a selection-shaped id, and matching on the
         // feature alone would light up a sketch on the wrong solid.
@@ -121,7 +127,7 @@ export function ObjectSketches({
             shape={f.shape}
             rotation={f.rotation}
             color={
-              !f.enabled ? '#5a6172' : isSelected ? COLORS.selected : COLORS.idle
+              !f.enabled ? scene.sketchDisabled : isSelected ? scene.accent : scene.sketchIdle
             }
             filled={isSelected}
             onTop={isSelected}
@@ -153,6 +159,8 @@ export function ObjectSketches({
 export function PlacingPreview() {
   const drag = useDoc((s) => s.drag)
   const objects = useDoc((s) => s.doc.objects)
+  // Before the early returns below, or the hook order changes with the drag.
+  const scene = useSceneColors()
 
   if (drag.kind !== 'placing' || drag.anchor === null) return null
   const object = objects.find((o) => o.id === drag.objectId)
@@ -167,7 +175,7 @@ export function PlacingPreview() {
         anchor={drag.anchor}
         shape={drag.shape}
         rotation={0}
-        color={COLORS.placing}
+        color={scene.out}
         filled
         onTop
       />

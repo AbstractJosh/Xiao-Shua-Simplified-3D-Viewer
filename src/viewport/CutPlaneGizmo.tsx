@@ -4,6 +4,7 @@ import { Line } from '@react-three/drei'
 import { DoubleSide, Vector3, type Object3D } from 'three'
 import { useDoc } from '../store/docStore'
 import { useTools } from '../store/toolStore'
+import { useSceneColors } from './useSceneColors'
 import { TransformGizmo } from './TransformGizmo'
 
 /**
@@ -12,9 +13,6 @@ import { TransformGizmo } from './TransformGizmo'
  * cutting therefore cannot drift apart: both sides of that agreement come from
  * the one function, which is why it lives with the tool state rather than here.
  */
-
-/** styles.css --danger. A three material cannot read a CSS custom property. */
-const CUT_COLOR = '#e0574a'
 
 /**
  * Decoration only. Without this the translucent quad sits between the pointer
@@ -38,6 +36,9 @@ export function CutPlaneGizmo({
 }: {
   controlsRef: RefObject<{ enabled: boolean } | null>
 }) {
+  // styles.css --danger, per theme, mirrored in `sceneColors` and guarded by
+  // `ui-check` -- a three material cannot read a CSS custom property.
+  const CUT_COLOR = useSceneColors().danger
   const cutActive = useTools((s) => s.cutActive)
   const plane = useTools((s) => s.cutPlane)
   const startCutGizmo = useDoc((s) => s.startCutGizmo)

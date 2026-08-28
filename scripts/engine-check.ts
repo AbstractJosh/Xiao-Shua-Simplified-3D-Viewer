@@ -66,6 +66,7 @@ import type {
   BaseSolid,
   CutPlane,
   Doc,
+  ErodeDab,
   Feature,
   SceneObject,
   SurfaceAnchor,
@@ -1892,6 +1893,934 @@ console.log('\n20. Erasing takes material away, and keeps it away')
     })
     near('an eraser that misses removes nothing', signedVolume(missed.geometry), 8, 1e-6)
     missed.geometry.dispose()
+  }
+}
+
+
+/**
+ * Triangles turned inside out, on a body of revolution about Y.
+ *
+ * The one measurement that catches a folded mesh, and folding is what the
+ * failures on a cone and a cylinder actually WERE -- not a shading problem or
+ * a hole, but patches of surface pushed through themselves into spikes. On a
+ * solid of revolution an outward face has a normal with a positive radial
+ * component, so a negative one is a fold and needs no reference mesh to spot.
+ *
+ * At module scope because BOTH brushes are measured with it and a second copy
+ * written for the second tool is a second thing to get subtly wrong. The two
+ * fold in different places -- the torch on a ruled flank, the sculpt tool on a
+ * convex tip -- which is exactly why one detector has to answer for both.
+ */
+const folded = (geom: BufferGeometry): number => {
+  const pos = geom.getAttribute('position')
+  const index = geom.getIndex()
+  const corners = index ? index.count : pos.count
+  const at = (c: number) => {
+    const i = index ? index.getX(c) : c
+    return new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))
+  }
+  let count = 0
+  for (let t = 0; t < corners / 3; t++) {
+    const a = at(t * 3)
+    const b = at(t * 3 + 1)
+    const c = at(t * 3 + 2)
+    const normal = b.clone().sub(a).cross(c.clone().sub(a))
+    const mid = a.clone().add(b).add(c).multiplyScalar(1 / 3)
+    const radial = new Vector3(mid.x, 0, mid.z)
+    // CLEARLY inward, not merely negative. A flat cap's normal runs down the
+    // axis and is exactly perpendicular to the radius, so its dot product is
+    // zero and its SIGN is rounding noise -- every triangle on the underside
+    // of a cone would otherwise report itself folded half the time.
+    const scale = normal.length() * radial.length()
+    if (scale > 1e-9 && normal.dot(radial) / scale < -0.1) count++
+  }
+  return count
+}
+
+// --- The torch --------------------------------------------------------------
+console.log('\nThe erode brush melts the surface rather than biting it')
+{
+  resetEvaluator()
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  /** A dab on the middle of the +Y face, which stands at y = 1. */
+  const onTop = (over: Partial<ErodeDab> = {}): ErodeDab => ({
+    at: [0, 1, 0],
+    radius: 0.5,
+    heat: 1,
+    smooth: 0.7,
+    ...over,
+  })
+  const torched = (dabs: ErodeDab[], id = 'torch') =>
+    evaluateObject({ ...object(cube, [], [], id), erosion: dabs })
+
+  // AN OBJECT NOBODY HAS TOUCHED PAYS NOTHING. The stage is skipped on an
+  // identity test, so a scene without the tool is the scene it was before the
+  // tool existed -- not a re-welded, re-emitted copy of it.
+  {
+    const plain = evaluateObject(object(cube, [], [], 'plain'))
+    const empty = evaluateObject({ ...object(cube, [], [], 'plain2'), erosion: [] })
+    check(
+      'no dabs leaves the geometry exactly as the booleans built it',
+      triangleCount(plain.geometry) === triangleCount(empty.geometry),
+      `${triangleCount(plain.geometry)} vs ${triangleCount(empty.geometry)}`
+    )
+    near('and the same volume', signedVolume(empty.geometry), 8, 1e-9)
+  }
+
+  // ONE DAB TAKES MATERIAL AWAY, and takes it from where it was pointed.
+  {
+    const melted = torched([onTop()])
+    check('a dab does not produce a NaN', !hasNaN(melted.geometry), '')
+    const volume = signedVolume(melted.geometry)
+    check('one dab removes material', volume < 8, `${volume.toFixed(5)} from 8`)
+    check('and not very much of it', volume > 7.9, `${volume.toFixed(5)}`)
+
+    // The dish. Read down the middle of the face the brush was held against.
+    const pos = melted.geometry.getAttribute('position')
+    let lowest = Infinity
+    let farthest = -Infinity
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i)
+      const y = pos.getY(i)
+      const z = pos.getZ(i)
+      if (Math.abs(x) < 0.05 && Math.abs(z) < 0.05) lowest = Math.min(lowest, y)
+      // The FAR face, which the brush never came near.
+      if (y < -0.9) farthest = Math.max(farthest, y)
+    }
+    check('the surface sinks under the brush', lowest < 1, `y ${lowest.toFixed(4)} from 1`)
+    // Everything the brush did not reach is untouched to the LAST BIT, not
+    // merely to a tolerance. That is the whole bargain of moving vertices
+    // instead of re-meshing: a torched cube is still exactly a cube everywhere
+    // the flame was not.
+    check(
+      'and the far face is bit-for-bit where it was',
+      farthest === -1,
+      `${farthest}`
+    )
+  }
+
+  // A DISH, NOT A BITE. A sphere subtraction would leave the rim a hard circle
+  // at exactly the brush radius; melting tapers to nothing, so the surface
+  // between the middle of the dab and its rim is a curve. Sampled as three
+  // depths at three radii: each nearer ring must be strictly deeper.
+  {
+    const melted = torched([onTop({ radius: 0.6 })], 'dish')
+    const pos = melted.geometry.getAttribute('position')
+    // Bands wide enough that WHERE the refinement happens to put its vertices
+    // cannot empty one. A narrow ring is a check that passes or fails on the
+    // tessellation rather than on the shape, and it duly broke the first time
+    // the refinement pattern moved.
+    const deepestWithin = (lo: number, hi: number) => {
+      let y = Infinity
+      let found = 0
+      for (let i = 0; i < pos.count; i++) {
+        const r = Math.hypot(pos.getX(i), pos.getZ(i))
+        if (r >= lo && r < hi) {
+          y = Math.min(y, pos.getY(i))
+          found++
+        }
+      }
+      return { y, found }
+    }
+    const middle = deepestWithin(0, 0.18)
+    const halfway = deepestWithin(0.2, 0.42)
+    const rim = deepestWithin(0.5, 0.66)
+    check(
+      'the dish is sampled at three radii',
+      middle.found > 0 && halfway.found > 0 && rim.found > 0,
+      `${middle.found} / ${halfway.found} / ${rim.found} vertices`
+    )
+    check(
+      'the dish is deepest in the middle',
+      middle.y < halfway.y && halfway.y < rim.y,
+      `${middle.y.toFixed(4)} < ${halfway.y.toFixed(4)} < ${rim.y.toFixed(4)}`
+    )
+    // PAST the rim, not near it: the falloff lands tangent, so the surface just
+    // outside the brush is not merely almost unmoved but bit-for-bit the face
+    // the evaluator built. Stated as equality, which is the actual promise --
+    // "almost" would pass on a brush that had quietly dished the whole panel.
+    const outside = deepestWithin(0.63, 0.95)
+    check(
+      'and past the rim the face is untouched to the last bit',
+      outside.found > 0 && outside.y === 1,
+      `${outside.found} vertices, deepest ${outside.y}`
+    )
+  }
+
+  // GOING OVER IT AGAIN SINKS IT FURTHER, which is the whole of how depth is
+  // controlled: one pass is a fixed bite and the user repeats it. A brush that
+  // reached equilibrium after a few dabs would leave no way to dig at all.
+  {
+    const depth = (n: number) => {
+      const dabs: ErodeDab[] = []
+      for (let i = 0; i < n; i++) dabs.push(onTop())
+      const pos = torched(dabs, `dig${n}`).geometry.getAttribute('position')
+      let lowest = Infinity
+      for (let i = 0; i < pos.count; i++) {
+        if (Math.abs(pos.getX(i)) < 0.05 && Math.abs(pos.getZ(i)) < 0.05) {
+          lowest = Math.min(lowest, pos.getY(i))
+        }
+      }
+      return 1 - lowest
+    }
+    const one = depth(1)
+    const five = depth(5)
+    const twenty = depth(20)
+    check(
+      'a second pass goes deeper than the first',
+      five > one * 1.5,
+      `${one.toFixed(4)} -> ${five.toFixed(4)}`
+    )
+    check(
+      'and a twentieth deeper still',
+      twenty > five,
+      `${five.toFixed(4)} -> ${twenty.toFixed(4)}`
+    )
+    // But it does converge, which is what keeps a stroke from turning the
+    // surface inside out when someone leans on it.
+    check(
+      'while staying inside the solid',
+      twenty < 2,
+      `${twenty.toFixed(4)} deep in a 2-unit cube`
+    )
+  }
+
+  // HEAT and SMOOTHING are two different knobs, and each has to do its own
+  // thing. Heat is how far it sinks; smoothing is how much it flows -- so a
+  // dab with no heat at all still rounds a corner over.
+  {
+    const cold = signedVolume(torched([onTop({ heat: 0 })], 'cold').geometry)
+    const warm = signedVolume(torched([onTop({ heat: 0.5 })], 'warm').geometry)
+    const hot = signedVolume(torched([onTop({ heat: 1 })], 'hot').geometry)
+    check('more heat takes more material', hot < warm && warm < cold, `${hot.toFixed(5)} < ${warm.toFixed(5)} < ${cold.toFixed(5)}`)
+
+    // Held against a CORNER with the heat off: nothing is being burned away, so
+    // any material lost is the corner flowing off itself. That is the melt,
+    // isolated from the erosion.
+    const corner = (smooth: number) =>
+      signedVolume(
+        evaluateObject({
+          ...object(cube, [], [], `corner${smooth}`),
+          erosion: [{ at: [1, 1, 1], radius: 0.8, heat: 0, smooth }],
+        }).geometry
+      )
+    const sharp = corner(0)
+    const molten = corner(1)
+    check(
+      'smoothing rounds a corner off with no heat at all',
+      molten < sharp,
+      `${molten.toFixed(5)} vs ${sharp.toFixed(5)} unsmoothed`
+    )
+  }
+
+  // THE SAME DOCUMENT MUST PRODUCE THE SAME MESH. Erosion is replayed from the
+  // dabs on every evaluation, so anything order-dependent inside it would make
+  // an object change shape when an unrelated edit forced a rebuild.
+  {
+    const dabs = [onTop({ at: [-0.3, 1, 0] }), onTop({ at: [0.3, 1, 0] }), onTop()]
+    const a = torched(dabs, 'det-a').geometry.getAttribute('position').array
+    const b = torched(dabs, 'det-b').geometry.getAttribute('position').array
+    let same = a.length === b.length
+    for (let i = 0; same && i < a.length; i++) if (a[i] !== b[i]) same = false
+    check('replaying the same dabs gives the same mesh', same, `${a.length} floats`)
+  }
+
+  // ORDER MATTERS, because the dabs are a stroke rather than a set: the second
+  // one melts the surface the first one left. Stated so the day someone sorts
+  // or dedupes the list, this fails.
+  {
+    const forward = signedVolume(
+      torched([onTop({ at: [-0.2, 1, 0], heat: 1 }), onTop({ at: [0.2, 1, 0], heat: 0.2 })], 'fwd')
+        .geometry
+    )
+    const backward = signedVolume(
+      torched([onTop({ at: [0.2, 1, 0], heat: 0.2 }), onTop({ at: [-0.2, 1, 0], heat: 1 })], 'bwd')
+        .geometry
+    )
+    check('the dabs are a stroke, not a set', forward !== backward, `${forward.toFixed(7)} vs ${backward.toFixed(7)}`)
+  }
+
+  // THE TORCH RUNS LAST, after the cuts and the erasers. A melt is a fact about
+  // the finished surface: run it earlier and a cut would slice through a face
+  // that had already flowed, which is a different solid.
+  {
+    const half: CutPlane = { id: 'c1', origin: [0, 0, 0], normal: [0, 1, 0], side: -1 }
+    const cut = evaluateObject({
+      ...object(cube, [], [half], 'order'),
+      // On the cut face, which only exists AFTER the cut has run. If erosion
+      // came first there would be nothing here to melt.
+      erosion: [{ at: [0, 0, 0], radius: 0.5, heat: 1, smooth: 0.7 }],
+    })
+    const volume = signedVolume(cut.geometry)
+    check(
+      'the torch melts the face a cut just made',
+      volume < 4 && volume > 3.8,
+      `${volume.toFixed(5)} from a 4-unit half`
+    )
+  }
+
+  // A MERGED ASSEMBLY KEEPS ITS COLOURS. The mesh is grouped by the solid each
+  // triangle came from, and a tool that dropped the groups would repaint a
+  // two-colour merge in one colour the first time it was touched.
+  {
+    const host = object(cube, [], [], 'host')
+    const part: SceneObject = {
+      ...object({ kind: 'sphere', radius: 0.7 }, [], [], 'part'),
+      transform: { position: [1, 0, 0], rotation: [0, 0, 0] },
+    }
+    const merged = evaluateObject({
+      ...host,
+      parts: [part],
+      erosion: [{ at: [0, 1, 0], radius: 0.5, heat: 1, smooth: 0.7 }],
+    })
+    check(
+      'a torched merge still wears both paints',
+      merged.paints.length === 2,
+      merged.paints.join(',')
+    )
+    check(
+      'and its mesh still carries a group per paint',
+      merged.geometry.groups.length >= 2,
+      `${merged.geometry.groups.length} groups`
+    )
+  }
+
+  // The stroke is stored, not baked: the object is still a parametric solid, so
+  // resizing the base after torching it rebuilds and re-melts rather than
+  // dragging a frozen mesh about.
+  {
+    const small = evaluateObject({
+      ...object({ kind: 'box', size: [2, 2, 2] }, [], [], 'resize'),
+      erosion: [onTop()],
+    })
+    const grown = evaluateObject({
+      ...object({ kind: 'box', size: [4, 2, 2] }, [], [], 'resize2'),
+      erosion: [onTop()],
+    })
+    check(
+      'the base can still be resized under a stroke',
+      signedVolume(grown.geometry) > signedVolume(small.geometry) * 1.9,
+      `${signedVolume(small.geometry).toFixed(4)} -> ${signedVolume(grown.geometry).toFixed(4)}`
+    )
+  }
+}
+
+
+// --- The sculpt tool --------------------------------------------------------
+console.log('\nThe sculpt brush is the torch with one sign flipped')
+{
+  resetEvaluator()
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const onTop = (over: Partial<ErodeDab> = {}): ErodeDab => ({
+    at: [0, 1, 0],
+    radius: 0.5,
+    heat: 1,
+    smooth: 0.7,
+    ...over,
+  })
+  const brushed = (dabs: ErodeDab[], id: string) =>
+    evaluateObject({ ...object(cube, [], [], id), erosion: dabs })
+  const many = (n: number, d: ErodeDab): ErodeDab[] =>
+    Array.from({ length: n }, () => ({ ...d }))
+  /** How far the middle of the +Y face has moved, signed: up is positive. */
+  const middle = (geom: BufferGeometry): number => {
+    const pos = geom.getAttribute('position')
+    let lowest = Infinity
+    let highest = -Infinity
+    for (let i = 0; i < pos.count; i++) {
+      if (Math.abs(pos.getX(i)) > 0.05 || Math.abs(pos.getZ(i)) > 0.05) continue
+      if (pos.getY(i) < 0) continue
+      lowest = Math.min(lowest, pos.getY(i))
+      highest = Math.max(highest, pos.getY(i))
+    }
+    return highest - 1 > 1 - lowest ? highest - 1 : lowest - 1
+  }
+
+  // ONE DAB ADDS MATERIAL, and adds it where it was pointed -- the exact
+  // opposite of the check the torch answers a hundred lines above.
+  {
+    const raised = brushed([onTop({ raise: true })], 'raise-one')
+    check('a raised dab does not produce a NaN', !hasNaN(raised.geometry), '')
+    const volume = signedVolume(raised.geometry)
+    check('one dab adds material', volume > 8, `${volume.toFixed(5)} from 8`)
+    check('and not very much of it', volume < 8.1, `${volume.toFixed(5)}`)
+    check('the surface rises under the brush', middle(raised.geometry) > 0, `${middle(raised.geometry).toFixed(4)}`)
+
+    // Everything the brush did not reach is untouched to the LAST BIT, which is
+    // the same bargain the torch strikes and the reason either tool can be run
+    // over a finished model at all.
+    const pos = raised.geometry.getAttribute('position')
+    let farthest = -Infinity
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) < -0.9) farthest = Math.max(farthest, pos.getY(i))
+    }
+    check('and the far face is bit-for-bit where it was', farthest === -1, `${farthest}`)
+  }
+
+  // THE TWO ARE MIRROR IMAGES, and this is the check that says so in one line.
+  // A bead raised at some setting stands as far proud of the surface as the
+  // dish sunk at the same setting lies below it. That is not decoration: it is
+  // what makes the sculpt tool learnable from the torch, and it is the thing
+  // that breaks the moment the flow asymmetry stops being measured against the
+  // dab's own direction. Hard-coding the torch's `into > 0` -- the obvious way
+  // to write it -- flattens a bead as fast as it is drawn, and this comes back
+  // 0.17 against 0.35 at full smoothing. See RELAX_FILL.
+  for (const smooth of [0.15, 0.5, 1]) {
+    const tag = `${smooth}`
+    const dish = middle(brushed(many(20, onTop({ smooth })), `mirror-dish-${tag}`).geometry)
+    const bead = middle(brushed(many(20, onTop({ smooth, raise: true })), `mirror-bead-${tag}`).geometry)
+    check(`at smoothing ${tag} the torch sinks`, dish < 0, `${dish.toFixed(4)}`)
+    near(`and the sculpt tool raises exactly as far`, bead, -dish, 1e-4)
+  }
+
+  // GOING OVER IT AGAIN BUILDS IT UP, the mirror of the torch's dig: the flow
+  // that would flatten a bead is held back the way the flow that would fill a
+  // dish is, so a stroke held in one place keeps working rather than reaching
+  // equilibrium and stopping.
+  {
+    let last = 0
+    for (const n of [1, 5, 20]) {
+      const height = middle(brushed(many(n, onTop({ raise: true })), `build${n}`).geometry)
+      check(`${n} dab(s) stand higher than ${n - 1}`, height > last, `${height.toFixed(4)}`)
+      last = height
+    }
+  }
+
+  // ORDER MATTERS ACROSS THE TWO BRUSHES, which is the whole reason they share
+  // one list rather than having one each. A groove cut across a bead is not the
+  // surface a bead drawn across a groove is, and nothing but the order says so.
+  {
+    const carve = onTop({ heat: 1 })
+    const raise = onTop({ heat: 1, raise: true })
+    const first = signedVolume(brushed([...many(6, carve), ...many(6, raise)], 'carve-then-raise').geometry)
+    const second = signedVolume(brushed([...many(6, raise), ...many(6, carve)], 'raise-then-carve').geometry)
+    check(
+      'carving over a bead is not drawing a bead over a groove',
+      Math.abs(first - second) > 1e-4,
+      `${first.toFixed(6)} vs ${second.toFixed(6)}`
+    )
+  }
+
+  // IT ADDS MATERIAL ON AN ORDINARY CURVED SURFACE, which is the claim the
+  // apex block below deliberately does NOT make -- so it is made here first,
+  // and at every smoothing, or the exception would read as the rule.
+  {
+    const cone: BaseSolid = { kind: 'cone', radius: 1, height: 2 }
+    const bare = signedVolume(evaluateObject(object(cone, [], [], 'flank-bare')).geometry)
+    for (const smooth of [0.15, 0.7, 1]) {
+      const flank = evaluateObject({
+        ...object(cone, [], [], `flank-${smooth}`),
+        erosion: many(20, { at: [0.5, 0, 0], radius: 0.3, heat: 1, smooth, raise: true }),
+      })
+      check(
+        `a bead on the cone's flank adds material at smoothing ${smooth}`,
+        signedVolume(flank.geometry) > bare + 0.01,
+        `${signedVolume(flank.geometry).toFixed(4)} from ${bare.toFixed(4)}`
+      )
+      flank.geometry.dispose()
+    }
+  }
+
+  // A SHARP CONVEX POINT IS THE HARD CASE, and it is the mirror of the one the
+  // torch's flow floor exists for. Raising a cone's tip drives the ring around
+  // it outward faster than the tip climbs, and the fan between them stretches
+  // into slivers that turn inside out -- the raised twin of the needle the
+  // torch used to grow. What holds it is the edge-length limit working in BOTH
+  // directions: nothing may lengthen faster than the flow can pull it back
+  // either. Take the opening half away and this block reports sixteen folded
+  // triangles at twelve dabs and twenty-six at forty. See DAB_CLOSE.
+  //
+  // WHAT IS NOT CLAIMED HERE is that the tip gets TALLER, and the reason is
+  // worth writing down because the check that asserted it looked obviously
+  // right and was not. NEITHER BRUSH SHARPENS. Flow rounds a sharp feature off
+  // faster than the bite can push it either way, so the sculpt tool blunts a
+  // cone's tip while it packs material around it -- and, measured, the shipped
+  // torch aimed into the sharp point of a cone-shaped cavity FILLS IT IN rather
+  // than deepening it, by +0.008 of volume at mid smoothing. That is one
+  // property of the brush seen from two sides, not a fault in the newer tool,
+  // and holding the sculpt tool to a bar the torch has never met would be
+  // encoding a wish rather than a promise.
+  //
+  // What IS claimed is the part that does survive at a point: the brush that
+  // adds material leaves more of the tip standing than the brush that takes it
+  // away, at the same settings.
+  {
+    const cone: BaseSolid = { kind: 'cone', radius: 1, height: 2 }
+    // The tip of a `cone` of height 2 stands at y = 1.
+    const apex = (over: Partial<ErodeDab> = {}): ErodeDab => ({
+      at: [0, 1, 0],
+      radius: 0.5,
+      heat: 1,
+      smooth: 0.7,
+      ...over,
+    })
+    /** The highest point near the axis: the tip, or a spur standing above it. */
+    const tip = (geom: BufferGeometry): number => {
+      const pos = geom.getAttribute('position')
+      let highest = -Infinity
+      for (let i = 0; i < pos.count; i++) {
+        if (Math.hypot(pos.getX(i), pos.getZ(i)) > 0.3) continue
+        highest = Math.max(highest, pos.getY(i))
+      }
+      return highest
+    }
+    for (const n of [12, 40]) {
+      const point = evaluateObject({
+        ...object(cone, [], [], `apex-raise-${n}`),
+        erosion: many(n, apex({ raise: true })),
+      })
+      const burnt = evaluateObject({
+        ...object(cone, [], [], `apex-torch-${n}`),
+        erosion: many(n, apex()),
+      })
+      // Said first, so the fold count below cannot pass by the brush having
+      // done nothing at all: a check that a mesh nobody touched is unfolded is
+      // a check that can never fail.
+      check(
+        `${n} dabs on a cone's tip actually work it`,
+        tip(point.geometry) < 0.95,
+        `tip at ${tip(point.geometry).toFixed(4)} from 1`
+      )
+      check(
+        `and the sculpt tool leaves more of the tip than the torch does`,
+        tip(point.geometry) > tip(burnt.geometry) + 0.1,
+        `${tip(point.geometry).toFixed(4)} against ${tip(burnt.geometry).toFixed(4)}`
+      )
+      check(
+        `raising a cone's tip ${n} times folds nothing`,
+        folded(point.geometry) === 0,
+        `${folded(point.geometry)} folded triangles`
+      )
+      check('and leaves no NaN behind it', !hasNaN(point.geometry), '')
+      point.geometry.dispose()
+      burnt.geometry.dispose()
+    }
+  }
+}
+
+// --- The torch on curved and merged solids ----------------------------------
+console.log('\nThe erode brush survives curved surfaces and merged assemblies')
+{
+  resetEvaluator()
+
+
+  /**
+   * The shortest edge anywhere in the mesh, ignoring the ones that were already
+   * zero.
+   *
+   * `CapsuleGeometry` arrives with forty-eight degenerate triangles at its
+   * poles -- an edge of 3e-18 -- and that is three.js's business, not the
+   * torch's. What is being asserted is that erosion does not CLOSE a mesh up,
+   * so the measurement has to start from the mesh as it was handed over.
+   */
+  const shortestEdge = (geom: BufferGeometry): number => {
+    const pos = geom.getAttribute('position')
+    const index = geom.getIndex()
+    const corners = index ? index.count : pos.count
+    const at = (c: number) => {
+      const i = index ? index.getX(c) : c
+      return new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))
+    }
+    let shortest = Infinity
+    for (let t = 0; t < corners / 3; t++) {
+      const v = [at(t * 3), at(t * 3 + 1), at(t * 3 + 2)]
+      for (let e = 0; e < 3; e++) {
+        const length = v[e].distanceTo(v[(e + 1) % 3])
+        if (length > 0) shortest = Math.min(shortest, length)
+      }
+    }
+    return shortest
+  }
+
+  const stroke = (at: Vec3, radius: number, smooth: number, n: number): ErodeDab[] =>
+    Array.from({ length: n }, () => ({ at, radius, heat: 0.8, smooth }))
+
+  // A RULED SURFACE IS THE HARD CASE, and it is the one that broke. A cone's
+  // flank and a cylinder's side arrive as triangles many times taller than they
+  // are wide -- one segment up the axis, dozens around it -- and on a mesh that
+  // lopsided the two bugs below both showed as spikes rather than dents.
+  const curved: [string, BaseSolid, Vec3, number][] = [
+    ["the cone's flank", { kind: 'cone', radius: 0.5, height: 1 }, [0.3, -0.1, 0], 0.28],
+    ["the cylinder's side", { kind: 'cylinder', radius: 0.4, height: 0.9 }, [0.4, 0, 0], 0.25],
+    ["the bean's straight middle", { kind: 'capsule', radius: 0.4, height: 0.7 }, [0.4, 0, 0], 0.25],
+  ]
+
+  for (const [label, base, at, radius] of curved) {
+    const subject = object(base, [], [], `curve-${label.length}-${radius}`)
+    // Both ends of the Smoothing range. Zero is asked for deliberately: the
+    // control no longer offers it, but a dab can arrive from an older document
+    // or a headless caller carrying anything at all, and the geometry is where
+    // that has to be survivable -- see BRUSH_SMOOTH_MIN.
+    for (const smooth of [0, 0.7]) {
+      const melted = evaluateObject({ ...subject, erosion: stroke(at, radius, smooth, 8) })
+      check(
+        `${label} at smoothing ${smooth}: nothing is turned inside out`,
+        folded(melted.geometry) === 0,
+        `${folded(melted.geometry)} folded`
+      )
+      // A sink along the normals of a CONVEX surface converges the vertices on
+      // it, the way offsetting a circle inward shortens its circumference. Left
+      // to itself that closes the triangles up until they invert, so the mesh
+      // not collapsing is the thing being asserted here, not merely the absence
+      // of folds this time. Measured against the solid AS HANDED OVER, since
+      // some primitives arrive with degenerate triangles of their own.
+      const plain = evaluateObject(subject)
+      const floor = shortestEdge(plain.geometry) / 50
+      check(
+        `${label} at smoothing ${smooth}: the mesh does not collapse under it`,
+        shortestEdge(melted.geometry) > floor,
+        `shortest edge ${shortestEdge(melted.geometry).toExponential(1)}, floor ${floor.toExponential(1)}`
+      )
+      plain.geometry.dispose()
+      melted.geometry.dispose()
+    }
+  }
+
+  // A POINT MELTS DOWN. Near a cone's apex the solid is thinner than any brush
+  // -- it converges to nothing -- so the ring around the tip is pulled inward
+  // faster than the tip descends. With too little flow to spread it again that
+  // ring collapses onto the axis and crosses to the far side; the fan turns
+  // inside out, the normal derived from it points inward, and sinking then
+  // drives the tip back OUT. Twelve dabs used to leave a needle standing ABOVE
+  // where the cone started, on a surface that had melted away beneath it.
+  //
+  // Stated as the thing a user would see rather than as a triangle count, and
+  // asked at Smoothing ZERO, which is below what the control now offers and
+  // therefore the case the geometry itself has to hold.
+  {
+    const tip = object({ kind: 'cone', radius: 0.5, height: 1 }, [], [], 'apex')
+    const melted = evaluateObject({
+      ...tip,
+      erosion: stroke([0, 0.5, 0], 0.12, 0, 12),
+    })
+    const pos = melted.geometry.getAttribute('position')
+    let summit = -Infinity
+    let around = -Infinity
+    for (let i = 0; i < pos.count; i++) {
+      summit = Math.max(summit, pos.getY(i))
+      const r = Math.hypot(pos.getX(i), pos.getZ(i))
+      if (r > 0.04 && r < 0.09) around = Math.max(around, pos.getY(i))
+    }
+    check(
+      'torching a point brings it down rather than up',
+      summit < 0.5,
+      `summit ${summit.toFixed(4)} from 0.5`
+    )
+    check(
+      'and leaves it level with the surface around it',
+      summit - around < 0.02,
+      `summit ${summit.toFixed(4)}, surface ${around.toFixed(4)}`
+    )
+    check(
+      'with no spike left standing in it',
+      folded(melted.geometry) === 0,
+      `${folded(melted.geometry)} folded`
+    )
+    melted.geometry.dispose()
+  }
+
+  // A BRIDGE BETWEEN TWO PITS, which is the shape that broke.
+  //
+  // Melt two dishes a brush-width apart and the tool leaves a ridge standing
+  // between them; melt THAT and the ridge is squeezed from both sides at once,
+  // because sinking runs along each vertex's own normal and the two flanks of a
+  // ridge point away from each other. Faster than the flow could slide them
+  // apart, the mesh bunched at the brush's own rim, stood the bunching up into
+  // a cliff, and finally pushed one wall through the other -- a visible tear in
+  // a surface the user was in the middle of smoothing.
+  //
+  // THE STROKE HAS TO FOLLOW THE SURFACE DOWN or none of it happens. A dab
+  // stacked at a fixed point converges after a dozen presses and the artifact
+  // never appears; it is the brush descending with the floor it is cutting,
+  // exactly as `dragErode` lays dabs on the ray hit, that walks the sphere's
+  // rim down the wall and stands the cliff up. So this replays the real
+  // gesture: evaluate, find where the surface is now, put the next dab there.
+  {
+    /** Every crossing of the vertical line through (x, z), top first. */
+    const column = (geom: BufferGeometry, x: number, z: number): number[] => {
+      const pos = geom.getAttribute('position')
+      const index = geom.getIndex()
+      const corners = index ? index.count : pos.count
+      const at = (c: number, out: Vector3) => {
+        const i = index ? index.getX(c) : c
+        return out.set(pos.getX(i), pos.getY(i), pos.getZ(i))
+      }
+      const a = new Vector3()
+      const b = new Vector3()
+      const c = new Vector3()
+      const ys: number[] = []
+      for (let t = 0; t < corners / 3; t++) {
+        at(t * 3, a)
+        at(t * 3 + 1, b)
+        at(t * 3 + 2, c)
+        // Barycentric, in the XZ shadow of the triangle.
+        const d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z)
+        if (Math.abs(d) < 1e-14) continue
+        const u = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / d
+        const v = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / d
+        const w = 1 - u - v
+        if (u < 0 || v < 0 || w < 0) continue
+        ys.push(u * a.y + v * b.y + w * c.y)
+      }
+      return ys.sort((p, q) => q - p)
+    }
+
+    /** Triangles on the melted side that face DOWNWARD: the surface has curled
+     *  back over itself, which is the lip a tear grows out of. */
+    const overhanging = (geom: BufferGeometry): number => {
+      const pos = geom.getAttribute('position')
+      let count = 0
+      for (let t = 0; t < pos.count / 3; t++) {
+        const a = new Vector3().fromBufferAttribute(pos, t * 3)
+        const b = new Vector3().fromBufferAttribute(pos, t * 3 + 1)
+        const c = new Vector3().fromBufferAttribute(pos, t * 3 + 2)
+        // The top half only: the cube's own underside faces down by rights.
+        if ((a.y + b.y + c.y) / 3 < 0) continue
+        const normal = b.clone().sub(a).cross(c.clone().sub(a))
+        if (normal.length() < 1e-14) continue
+        if (normal.normalize().y < -0.05) count++
+      }
+      return count
+    }
+
+    const radius = 0.3
+    const cube2: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+    let generation = 0
+    const melt = (dabs: ErodeDab[]) => {
+      resetEvaluator()
+      return evaluateObject({
+        ...object(cube2, [], [], `bridge${generation++}`),
+        erosion: dabs,
+      })
+    }
+
+    const dabs: ErodeDab[] = []
+    /** One press, landing where the surface stands right now. */
+    const press = (x: number) => {
+      const surface = column(melt(dabs).geometry, x, 0)
+      if (surface.length === 0) return
+      dabs.push({ at: [x, surface[0], 0], radius, heat: 1, smooth: 0.4 })
+    }
+    for (const x of [-0.35, 0.35]) for (let i = 0; i < 14; i++) press(x)
+    for (let i = 0; i < 32; i++) press(0)
+
+    const melted = melt(dabs).geometry
+    check(
+      'melting the bridge between two pits leaves no overhang',
+      overhanging(melted) === 0,
+      `${overhanging(melted)} triangles face down`
+    )
+    // The stronger statement, and the one a user would recognise: the melted
+    // face is still a SURFACE. Dropped anywhere over the trough, a line goes in
+    // once and comes out once. Three crossings is a flap of mesh hanging in the
+    // air over the dish, which is what the tear looked like.
+    let worst = 2
+    let worstAt = ''
+    for (let i = -10; i <= 10; i++) {
+      for (let j = -6; j <= 6; j++) {
+        // Off the symmetry planes, where a line grazes shared edges and every
+        // triangle along it reports a crossing of its own.
+        const x = (i / 10) * 0.7 + 0.00137
+        const z = (j / 6) * 0.24 + 0.00091
+        const hits = column(melted, x, z).length
+        if (hits > worst) {
+          worst = hits
+          worstAt = `${x.toFixed(2)}, ${z.toFixed(2)}`
+        }
+      }
+    }
+    check(
+      'and the melted face is still a surface, not a fold',
+      worst === 2,
+      worst === 2 ? 'two crossings everywhere' : `${worst} crossings at ${worstAt}`
+    )
+    // And it did the job it was asked to do, rather than passing by refusing to
+    // melt anything: the ridge has to be gone.
+    const trough = column(melted, 0.00137, 0.00091)[0]
+    const pit = column(melted, -0.35, 0.00091)[0]
+    check(
+      'while actually taking the bridge down to the pits',
+      trough < pit + 0.1,
+      `trough at ${trough.toFixed(3)}, pit floor at ${pit.toFixed(3)}`
+    )
+    melted.dispose()
+  }
+
+  // A MERGED ASSEMBLY'S GROUPS. A group is a pair of offsets into the vertex
+  // buffer, and the torch rebuilds them -- so they have to come back in the
+  // units the renderer reads them in. They did not: the second group of a
+  // two-paint mesh pointed three times too far along the buffer and past the
+  // end of it, which drew a cube merged with a sphere as garbage the moment it
+  // was torched. One paint hid it, because the first group starts at zero
+  // whatever the units.
+  {
+    const host = object({ kind: 'box', size: [1, 1, 1] }, [], [], 'merge-host')
+    const part: SceneObject = {
+      ...object({ kind: 'sphere', radius: 0.5 }, [], [], 'merge-part'),
+      transform: { position: [0.7, 0, 0], rotation: [0, 0, 0] },
+    }
+    const merged = evaluateObject({
+      ...host,
+      parts: [part],
+      erosion: stroke([0, 0.5, 0], 0.25, 0.7, 6),
+    })
+    const vertices = merged.geometry.getAttribute('position').count
+    const groups = merged.geometry.groups
+
+    check('a torched merge carries a group per paint', groups.length >= 2, `${groups.length}`)
+    check(
+      'every group lies inside the buffer it indexes',
+      groups.every((g) => g.start >= 0 && g.start + g.count <= vertices),
+      groups.map((g) => `${g.start}+${g.count}`).join(' ') + ` of ${vertices}`
+    )
+    check(
+      'and together they cover it exactly once',
+      groups.reduce((n, g) => n + g.count, 0) === vertices,
+      `${groups.reduce((n, g) => n + g.count, 0)} vs ${vertices}`
+    )
+    // The runs must also be contiguous and in order, which is what makes them
+    // one run per paint rather than a paint scattered through the buffer.
+    let cursor = 0
+    const contiguous = groups.every((g) => {
+      const ok = g.start === cursor
+      cursor += g.count
+      return ok
+    })
+    check('as one unbroken run each', contiguous, groups.map((g) => g.start).join(','))
+    merged.geometry.dispose()
+  }
+
+  // A COMPOSITE SOLID DOES NOT TEAR, which is the one thing a tool that only
+  // ever moves vertices has to be able to promise.
+  //
+  // A boolean cuts the same seam into both solids and triangulates each side by
+  // itself, so the two sides agree on where the seam runs and disagree on where
+  // to put points along it: one face carries a single long edge, the face
+  // against it carries two shorter ones meeting partway along. That draws
+  // perfectly -- the stray point sits exactly ON the long edge -- and it stays
+  // invisible right up until something moves. Torching a cube with a notch
+  // subtracted out of it used to open holes clean through the surface, because
+  // the moment the long edge's ends moved, the point they were covering stopped
+  // being covered. See `stitch`.
+  //
+  // Measured as UNSHARED EDGES rather than as a picture: every edge of a closed
+  // surface belongs to two triangles, and each edge that belongs to one is a
+  // hole you can see through. Asked of the melted mesh, which is the one the
+  // renderer gets -- the boolean's own output has plenty of them, and is
+  // entitled to, since nothing has moved yet.
+  {
+    /** Edges used by exactly one triangle, after welding by position. */
+    const unshared = (geom: BufferGeometry): number => {
+      const pos = geom.getAttribute('position')
+      const index = geom.getIndex()
+      const corners = index ? index.count : pos.count
+      geom.computeBoundingBox()
+      const box = geom.boundingBox
+      const extent = box
+        ? Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z)
+        : 1
+      // Deliberately looser than the torch's own weld: a crack this misses is
+      // one no renderer could show either.
+      const grid = Math.max(extent, 1e-6) * 1e-5
+      const id = new Map<string, number>()
+      const vertex: number[] = []
+      for (let c = 0; c < corners; c++) {
+        const i = index ? index.getX(c) : c
+        const key =
+          `${Math.round(pos.getX(i) / grid)},` +
+          `${Math.round(pos.getY(i) / grid)},` +
+          `${Math.round(pos.getZ(i) / grid)}`
+        let at = id.get(key)
+        if (at === undefined) {
+          at = id.size
+          id.set(key, at)
+        }
+        vertex.push(at)
+      }
+      const uses = new Map<string, number>()
+      for (let t = 0; t < corners / 3; t++) {
+        for (let e = 0; e < 3; e++) {
+          const a = vertex[t * 3 + e]
+          const b = vertex[t * 3 + ((e + 1) % 3)]
+          if (a === b) continue
+          const key = a < b ? `${a}|${b}` : `${b}|${a}`
+          uses.set(key, (uses.get(key) ?? 0) + 1)
+        }
+      }
+      let open = 0
+      for (const n of uses.values()) if (n === 1) open++
+      return open
+    }
+
+    const notch: SceneObject = {
+      ...object({ kind: 'box', size: [1, 1, 1] }, [], [], 'notch'),
+      erased: [
+        {
+          ...object({ kind: 'box', size: [0.6, 0.6, 0.6] }, [], [], 'bite'),
+          transform: { position: [0.35, 0.35, 0.35], rotation: [0, 0, 0] },
+        },
+      ],
+    }
+
+    const plain = evaluateObject(notch)
+    check(
+      'the notch itself leaves the seam unsewn, as booleans do',
+      unshared(plain.geometry) > 0,
+      `${unshared(plain.geometry)} unshared edges out of the boolean`
+    )
+
+    // Held against the top face, right over the seam the notch cut into it.
+    const torched = evaluateObject({
+      ...notch,
+      id: 'notch-torched',
+      erosion: stroke([0.05, 0.5, 0.05], 0.2, 0.7, 8),
+    })
+    check(
+      'but melting a subtracted solid opens no holes in it',
+      unshared(torched.geometry) === 0,
+      `${unshared(torched.geometry)} unshared edges after the torch`
+    )
+    // And it passes by melting, not by declining to.
+    check(
+      'while still taking material off it',
+      signedVolume(torched.geometry) < signedVolume(plain.geometry) - 1e-4,
+      `${signedVolume(torched.geometry).toFixed(5)} from ${signedVolume(plain.geometry).toFixed(5)}`
+    )
+
+    // The other half of the report: a MERGED assembly, whose seam is a curve
+    // rather than a straight edge.
+    const welded: SceneObject = {
+      ...object({ kind: 'box', size: [1, 1, 1] }, [], [], 'weldhost'),
+      parts: [
+        {
+          ...object({ kind: 'sphere', radius: 0.35 }, [], [], 'weldball'),
+          transform: { position: [0.5, 0, 0], rotation: [0, 0, 0] },
+        },
+      ],
+    }
+    const meltedMerge = evaluateObject({
+      ...welded,
+      id: 'weld-torched',
+      erosion: stroke([0, 0.5, 0], 0.2, 0.7, 8),
+    })
+    // Not zero, and stated as a RATIO for that reason: a union of a tessellated
+    // sphere with a flat face leaves a handful of places where the two
+    // triangulations of the seam curve cannot be reconciled by splitting an
+    // edge, and `stitch` leaves those alone rather than inventing geometry to
+    // cover them. What has to be true is that the seam is essentially sewn --
+    // hundreds of unshared edges down to single figures -- not that a boolean
+    // this file does not control came out perfect.
+    const before = unshared(evaluateObject(welded).geometry)
+    const after = unshared(meltedMerge.geometry)
+    check(
+      'and melting a merged assembly sews up the seam it came with',
+      before > 20 && after * 10 < before,
+      `${after} unshared after the torch, from ${before} out of the boolean`
+    )
+
+    plain.geometry.dispose()
+    torched.geometry.dispose()
+    meltedMerge.geometry.dispose()
   }
 }
 

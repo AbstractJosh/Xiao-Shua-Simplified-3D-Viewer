@@ -155,6 +155,30 @@ export type Feature = {
    * of the extrusion stays put; the pillar leans to follow.
    */
   faceOffset: Vec2
+  /**
+   * Whether the sketch has been SIGNED OFF, and is no longer a live handle.
+   *
+   * A feature stays editable forever: the outline sits on the surface in orange,
+   * draggable, resizable, its depth still on a slider. That is right while you
+   * are shaping it and wrong the moment you are done -- the ring goes on being
+   * drawn over a boss that is finished, and there was no way to say so short of
+   * deleting the feature, which takes the geometry with it.
+   *
+   * Confirming keeps the solid and retires the handle. The feature still builds,
+   * exactly as before -- `evaluate.ts` never reads this field, and it must not:
+   * the geometry a document describes cannot depend on whether somebody has
+   * ticked it off. What changes is only what is DRAWN: no outline in the
+   * viewport, no row in the scene tree.
+   *
+   * ONE WAY, like the eraser it borrows its panel from, and undone the same way
+   * -- by undo. See `confirmFeature`.
+   *
+   * OPTIONAL, and absent means unconfirmed. A required field would have to be
+   * written into every feature literal in five check scripts to say the thing
+   * that is true of a feature by default; `erased` on SceneObject is optional
+   * for the same reason.
+   */
+  confirmed?: boolean
 }
 
 /** Rotation is Euler XYZ radians. No scale: a scaled anchor is a lying anchor. */
@@ -173,6 +197,54 @@ export const IDENTITY_TRANSFORM: ObjectTransform = {
  * lets a severed half stay a live parametric object: its features keep editing.
  */
 export type CutPlane = { id: string; origin: Vec3; normal: Vec3; side: 1 | -1 }
+
+/**
+ * One instant of a brush held against a surface: a sphere of influence in
+ * OBJECT-LOCAL space.
+ *
+ * A stroke is a RUN of these, laid down along the drag, rather than one swept
+ * shape -- which is what makes the tool a brush. Each is a complete description
+ * of what it does, so the document says what the surface should look like
+ * without anyone having to remember what the tool was set to at the time. Turn
+ * the heat up and the dabs already laid down do not change; that is the same
+ * bargain a feature's own stored depth strikes.
+ *
+ * No id. A dab is not a thing the user can select, rename, reorder or delete on
+ * its own -- there is only the whole stroke, and undo is what takes one back --
+ * so an id would be a field nothing ever reads.
+ */
+export type ErodeDab = {
+  /** Centre of the brush, in the object's local space. */
+  at: Vec3
+  /** Sphere radius: how much of the surface this instant reaches. */
+  radius: number
+  /** How hard it bites, 0..1. */
+  heat: number
+  /** How much it flows rather than merely sinking, 0..1. */
+  smooth: number
+  /**
+   * This dab RAISES the surface instead of sinking it: the sculpt tool.
+   *
+   * ONE FIELD RATHER THAN A SECOND LIST, because the two brushes share a
+   * surface and the ORDER they were used in is the whole of what the result
+   * means. Carve a groove and then draw a bead across it and you get a bead
+   * lying over a groove; do it the other way and the groove cuts the bead. Two
+   * arrays, each replayed in its own order, cannot say which happened -- so
+   * they would have to be interleaved by a timestamp nobody stores, or the tool
+   * would quietly reorder the user's own strokes.
+   *
+   * It is also the honest shape of the geometry: a raise is the torch's
+   * arithmetic with one sign flipped -- see `erode.ts` -- so a dab that carries
+   * its direction is a dab the whole pipeline can go on treating as one thing.
+   *
+   * Absent rather than false on a torch dab, so a document nobody has sculpted
+   * is exactly the document it was before the tool existed -- which matters
+   * here more than elsewhere, because the evaluator's cache key is this array
+   * stringified, and a `false` written into every old dab would invalidate the
+   * mesh of every torched object in the scene.
+   */
+  raise?: boolean
+}
 
 /**
  * The colour a solid wears until one is chosen for it: the warm grey the whole
@@ -259,6 +331,30 @@ export type SceneObject = {
    * sketches and its cuts along with its editability.
    */
   erased?: SceneObject[]
+  /**
+   * Where the brushes have been: every dab of the blowtorch and the sculpt
+   * tool, in the order it was laid down, in this object's local space.
+   *
+   * ONE LIST FOR BOTH, in stroke order, because which came first is what the
+   * surface means -- see `ErodeDab.raise`.
+   *
+   * The LAST thing applied, after the features, the cuts and the erasers, and
+   * for the same reason those run in that order -- a melt is a fact about the
+   * finished surface, and a boss grown afterwards would be grown out of a face
+   * that had not been melted yet.
+   *
+   * Stored as strokes rather than as the melted mesh, which is the same bargain
+   * `erased` strikes one line above: freezing the result would leave a base
+   * solid that is a bag of triangles, and the object would lose its Size field,
+   * its sketches and its cuts along with its editability. What this costs is
+   * that the mesh is REPLAYED from the dabs on every evaluation; what it buys is
+   * that a torched object is still a document.
+   *
+   * Absent rather than empty on an untouched solid, so a scene nobody has
+   * torched is exactly the document it was before the tool existed -- and the
+   * evaluator can skip the whole stage on an identity test.
+   */
+  erosion?: ErodeDab[]
 }
 
 export type Doc = { objects: SceneObject[] }

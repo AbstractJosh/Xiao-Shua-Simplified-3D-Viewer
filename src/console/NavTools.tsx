@@ -8,8 +8,20 @@ import {
   selectedObjectId as primarySelection,
   useDoc,
 } from '../store/docStore'
-import { RULER_LENGTH, cutPlaneNormal, rulerLength, useTools } from '../store/toolStore'
-import type { RulerFrame, TransformMode } from '../store/toolStore'
+import {
+  BRUSH_RADIUS_MAX,
+  BRUSH_RADIUS_MIN,
+  BRUSH_SMOOTH_MIN,
+  CUT_POSITION_LIMIT,
+  CUT_SIZE_MAX,
+  CUT_SIZE_MIN,
+  DEFAULT_CUT_PLANE,
+  RULER_LENGTH,
+  cutPlaneNormal,
+  rulerLength,
+  useTools,
+} from '../store/toolStore'
+import type { CutPlaneState, RulerFrame, TransformMode } from '../store/toolStore'
 // The camera, read the way the corner compass reads it. This file is where the
 // island's tools are defined; the island itself is a viewport component, and
 // `compassViews` is plain arithmetic with no React and no renderer in it.
@@ -18,15 +30,18 @@ import { NumberField } from './Field'
 import { NavTool } from './NavTool'
 import {
   CutIcon,
+  BlowtorchIcon,
   HelpIcon,
   MoveIcon,
   RotateIcon,
   RulerIcon,
   ScaleIcon,
+  SculptIcon,
+  SettingsIcon,
   SnapIcon,
-  UnitsIcon,
 } from './navIcons'
 import { UNIT_MODES, formatLength, fromDisplay } from '../units'
+import { THEMES, THEME_LABELS } from '../theme'
 
 /**
  * The three tools that change what the gizmo IS, as a row of three.
@@ -39,9 +54,19 @@ import { UNIT_MODES, formatLength, fromDisplay } from '../units'
  * screen without the user deducing it.
  *
  * Exactly one can be on, and no code enforces it: the store holds ONE mode, so
- * choosing any of them is choosing against the other two. Pressing the one you
- * are already in leaves you there -- both arms of the toggle below land on the
- * same value for Move, and for the other two "off" means Move.
+ * choosing any of them is choosing against the other two.
+ *
+ * NONE of them can be on either, which is the one state the row could not show
+ * until recently. Pressing the lit Move button takes the handles off the object
+ * altogether and leaves the whole row dark -- because a gizmo you did not ask
+ * for gets in the way of the tools that work ON the surface rather than on the
+ * object, and deselecting the solid is not an acceptable way to put it down.
+ * See `gizmoHidden`. Rotate and Scale still put away to Move, so the ladder
+ * from any tool to nothing is two presses.
+ *
+ * What a press MEANS is `pressTransformMode`, in the store, rather than worked
+ * out here: the keyboard shortcuts do exactly the same thing, and the two would
+ * drift the first time one was edited.
  *
  * Written once and used three times, because they differ in two words each.
  */
@@ -55,17 +80,19 @@ function ModeTool({
   icon: ReactNode
 }) {
   const current = useTools((s) => s.transformMode)
-  const setTransformMode = useTools((s) => s.setTransformMode)
+  const gizmoHidden = useTools((s) => s.gizmoHidden)
+  const pressTransformMode = useTools((s) => s.pressTransformMode)
 
   return (
     <NavTool
       label={label}
       icon={icon}
-      active={current === mode}
-      // Off lands on Move rather than on nothing: every target has somewhere to
-      // be moved to, so there is always a gizmo, and the one that comes back is
-      // the arrows and the plane quads.
-      onToggle={(on) => setTransformMode(on ? mode : 'move')}
+      // Dark while the handles are down, all three of them, which is what says
+      // the object is wearing no gizmo rather than wearing this one.
+      active={!gizmoHidden && current === mode}
+      // The argument is ignored: which way the press goes is the store's to
+      // decide, and it depends on more than this button's own state.
+      onToggle={() => pressTransformMode(mode)}
       // No hover bubble, which is the island's own rule and the same one Snap
       // and Cut follow: these are pressed constantly, and a paragraph that
       // appears every time the pointer crosses them is noise rather than help.
@@ -134,6 +161,78 @@ export function SnapTool() {
   )
 }
 
+const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
+
+/**
+ * How much wider than the object the guide square comes up, as a fraction.
+ *
+ * A tenth: plainly proud of the thing it is about to sever from every angle,
+ * without the blade being so much bigger than the part that the part is the
+ * small thing in the picture.
+ */
+const CUT_OVERHANG = 1.1
+
+/**
+ * Where an armed blade should appear: through the middle of the selected
+ * object, level, and wide enough to overhang it.
+ *
+ * The plane used to spawn at the world origin every time, which is the same
+ * complaint `rulerFrame` answers for rulers and it is worse here. The scene is
+ * five metres across, so a part built anywhere but the middle of it got a blade
+ * that was off screen -- and the cut is fired from a button, not from the
+ * gizmo, so the user could arm the tool, press Apply cut, and be told the plane
+ * "does not pass all the way through" without ever having seen the plane.
+ * Landing it on the object makes the default cut the one people mean: straight
+ * through the middle of the thing they have selected.
+ *
+ * The object is the PRIMARY selection -- the head of the list, the one wearing
+ * the gizmo, and already the one this tool CUTS. Placing the blade anywhere
+ * else would put it through a solid the Apply button was not going to touch.
+ *
+ * LEVEL, not turned to face anything. Which way the blade lies is the one thing
+ * the user aims by hand, and it is what "Reset plane" has always promised to
+ * put back; only WHERE it starts was the problem being solved. A spawn that
+ * also guessed a tilt would be a second answer to a question nobody asked.
+ *
+ * SIZE is taken off the box's diagonal rather than its width, so the square
+ * still overhangs the object once the user tilts it -- a blade sized to the
+ * footprint shrinks inside the part the moment it turns, and the guide stops
+ * telling you where the cut lands. It never comes up smaller than the default,
+ * which is a size already chosen to be grabbable.
+ *
+ * Measured off `objectBounds`, the same analytic box `rulerFrame` uses: a
+ * feature standing proud of the primitive is not counted. For a spawn point
+ * that is the right trade -- it costs no boolean solve, and the blade is a
+ * thing you immediately drag by its gizmo anyway.
+ *
+ * Pure, and given the object rather than reading it, so `ui-check` can state
+ * the rule without a document in front of it.
+ */
+export function cutPlaneSpawn(object: SceneObject | null): CutPlaneState {
+  const box = object === null ? null : objectBounds(object)
+  // No object, or one with no extent to sever: the middle of the scene, which
+  // is where the blade has always come up.
+  if (box === null || box.isEmpty()) return DEFAULT_CUT_PLANE
+
+  const centre = box.getCenter(new Vector3())
+  const span = box.getSize(new Vector3()).length()
+  return {
+    // Clamped to the same bound the gizmo drags against, so a spawn can never
+    // put the plane somewhere the user is then unable to drag it back from.
+    position: [
+      clamp(centre.x, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+      clamp(centre.y, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+      clamp(centre.z, -CUT_POSITION_LIMIT, CUT_POSITION_LIMIT),
+    ],
+    rotation: [0, 0, 0],
+    size: clamp(
+      Math.max(span * CUT_OVERHANG, DEFAULT_CUT_PLANE.size),
+      CUT_SIZE_MIN,
+      CUT_SIZE_MAX
+    ),
+  }
+}
+
 /**
  * A bare toggle. Everything the cut needs aiming with lives in the console --
  * its placement in Position & Rotation, the rest in the Cut section -- because
@@ -149,8 +248,186 @@ export function CutTool() {
       label="Cut"
       icon={<CutIcon />}
       active={cutActive}
-      onToggle={setCutActive}
+      // Read at the press rather than subscribed to, exactly as the ruler reads
+      // its frame: where the blade lands is only a question at the moment it is
+      // armed, and a hook on the selection would re-render the island on every
+      // click in the scene.
+      onToggle={(on) => setCutActive(on, cutPlaneSpawn(selectedObject(useDoc.getState())))}
     />
+  )
+}
+
+/**
+ * The torch, and the three numbers that describe what it does.
+ *
+ * A tool with both a switch and a panel, the shape the Ruler already has:
+ * pressing the button arms it, which is the frequent act and stays one click,
+ * and the caret opens the settings, which are the rare act. Nobody should have
+ * to open a panel to start melting something.
+ *
+ * The three numbers are genuinely three different questions and none of them
+ * can stand in for another. SIZE is how much of the model the brush covers --
+ * the thing you change constantly, between a corner and a whole face. HEAT is
+ * how fast one pass bites, which is the difference between a scorch you can
+ * feather and a gouge you commit to. SMOOTHING is what KIND of mark it leaves:
+ * at zero the brush sinks the surface and leaves it as faceted as it found it,
+ * which reads as sandblasting, and at full it lets the surface flow into
+ * itself, which is the molten look the tool exists for.
+ *
+ * The values are read at the moment each dab is laid down and stored ON the dab
+ * -- see `ErodeDab` -- so turning the heat up does not retroactively deepen the
+ * groove you cut a minute ago.
+ *
+ * Arming it puts the sculpt tool down, and no code here says so: the store
+ * holds ONE brush. See `BrushTool`.
+ */
+export function ErodeTool() {
+  const armed = useTools((s) => s.brushTool === 'torch')
+  const radius = useTools((s) => s.erodeRadius)
+  const sizeUnit = useTools((s) => s.erodeSizeUnit)
+  const heat = useTools((s) => s.erodeHeat)
+  const smooth = useTools((s) => s.erodeSmooth)
+  const setBrushTool = useTools((s) => s.setBrushTool)
+  const setErodeRadius = useTools((s) => s.setErodeRadius)
+  const setErodeSizeUnit = useTools((s) => s.setErodeSizeUnit)
+  const setErodeHeat = useTools((s) => s.setErodeHeat)
+  const setErodeSmooth = useTools((s) => s.setErodeSmooth)
+
+  return (
+    <NavTool
+      id="erode"
+      label="Blowtorch"
+      icon={<BlowtorchIcon />}
+      active={armed}
+      onToggle={(on) => setBrushTool(on ? 'torch' : null)}
+      panelTitle="Blowtorch"
+    >
+      <div className="tool-group">
+        {/* A length, and one of the two in the app that do NOT follow the
+            app-wide unit -- it carries its own picker and starts in
+            centimetres.
+
+            The brush runs from 1 mm to 1.25 m, so under `auto`, which is what
+            the app is set to out of the box, one drag of this slider crosses
+            both of `resolveUnit`'s switching points: the number goes 9.9, then
+            1.00, then 99.9, then 1.00, while the hand never changes direction.
+            That is `auto` doing its job -- it is a rule for READING a length at
+            any magnitude -- and it is the wrong job here, because this control
+            sets one. A scale that renumbers itself under the pointer cannot be
+            aimed. See `erodeSizeUnit`.
+
+            The other two are pure ratios and carry no unit at all, which is why
+            only this one is marked. */}
+        <NumberField
+          ownUnit={{ unit: sizeUnit, onChange: setErodeSizeUnit }}
+          label="Brush size"
+          value={radius}
+          min={BRUSH_RADIUS_MIN}
+          max={BRUSH_RADIUS_MAX}
+          step={0.01}
+          onChange={setErodeRadius}
+        />
+        <NumberField
+          label="Heat"
+          value={heat}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={setErodeHeat}
+        />
+        {/* The floor is not zero, and it is geometry rather than taste: a
+            point melted with no flow at all collapses the ring around it and
+            grows a spur. See BRUSH_SMOOTH_MIN. */}
+        <NumberField
+          label="Smoothing"
+          value={smooth}
+          min={BRUSH_SMOOTH_MIN}
+          max={1}
+          step={0.05}
+          onChange={setErodeSmooth}
+        />
+      </div>
+    </NavTool>
+  )
+}
+
+/**
+ * The sculpt tool: the same brush, drawing material on instead of taking it
+ * away.
+ *
+ * THE TORCH'S PANEL WITH ONE WORD CHANGED, and that is the point rather than an
+ * economy. The two tools are one piece of geometry with a sign in front of it
+ * -- a bead this raises is exactly as tall as the dish the torch sinks at the
+ * same three settings -- so a user who has learned what Size and Smoothing do
+ * to a groove already knows what they do to a ridge, and a second vocabulary
+ * would be teaching them the same thing twice.
+ *
+ * The word that changes is HEAT, which becomes STRENGTH. It is the same number
+ * in the same range and it lands in the same field of the same dab; what it is
+ * not is hot. Naming it Heat here would be the icon problem in words -- a
+ * metaphor carried over from the tool next door into one where it means
+ * nothing.
+ *
+ * SMOOTHING has the same floor, for the mirror of the same reason: a bead
+ * raised with no flow at all pushes the surface out faster than the mesh can
+ * spread to carry it, and what stands up is a spike rather than a ridge. See
+ * BRUSH_SMOOTH_MIN.
+ *
+ * Its own three values rather than the torch's -- see `sculptRadius` -- so
+ * swapping tools does not resize the brush under your hand.
+ */
+export function SculptTool() {
+  const armed = useTools((s) => s.brushTool === 'sculpt')
+  const radius = useTools((s) => s.sculptRadius)
+  const sizeUnit = useTools((s) => s.sculptSizeUnit)
+  const strength = useTools((s) => s.sculptStrength)
+  const smooth = useTools((s) => s.sculptSmooth)
+  const setBrushTool = useTools((s) => s.setBrushTool)
+  const setSculptRadius = useTools((s) => s.setSculptRadius)
+  const setSculptSizeUnit = useTools((s) => s.setSculptSizeUnit)
+  const setSculptStrength = useTools((s) => s.setSculptStrength)
+  const setSculptSmooth = useTools((s) => s.setSculptSmooth)
+
+  return (
+    <NavTool
+      id="sculpt"
+      label="Sculpt"
+      icon={<SculptIcon />}
+      active={armed}
+      onToggle={(on) => setBrushTool(on ? 'sculpt' : null)}
+      panelTitle="Sculpt"
+    >
+      <div className="tool-group">
+        {/* Pinned to its own unit for the reason the torch's is, and pinned
+            separately so the two can be read in whatever suits each. See
+            `erodeSizeUnit`. */}
+        <NumberField
+          ownUnit={{ unit: sizeUnit, onChange: setSculptSizeUnit }}
+          label="Brush size"
+          value={radius}
+          min={BRUSH_RADIUS_MIN}
+          max={BRUSH_RADIUS_MAX}
+          step={0.01}
+          onChange={setSculptRadius}
+        />
+        <NumberField
+          label="Strength"
+          value={strength}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={setSculptStrength}
+        />
+        <NumberField
+          label="Smoothing"
+          value={smooth}
+          min={BRUSH_SMOOTH_MIN}
+          max={1}
+          step={0.05}
+          onChange={setSculptSmooth}
+        />
+      </div>
+    </NavTool>
   )
 }
 
@@ -249,8 +526,16 @@ export function CutActions() {
       <button
         type="button"
         className="nav-action"
-        title="Return the plane to the middle of the scene, level"
-        onClick={resetCutPlane}
+        // Reset means "put it back where arming would drop it", which is the
+        // selected object -- not the world origin. Anything else and the button
+        // that undoes your aiming would carry the blade off the part you were
+        // aiming it at, which is the one place you were sure to want it.
+        title={
+          selectedObjectId === null
+            ? 'Return the plane to the middle of the scene, level'
+            : 'Return the plane to the selected object, level'
+        }
+        onClick={() => resetCutPlane(cutPlaneSpawn(selectedObject(useDoc.getState())))}
       >
         Reset plane
       </button>
@@ -477,120 +762,158 @@ export function RulerTool() {
 }
 
 /**
- * The gesture list, which used to be a permanent section at the bottom of the
- * console. It is read once or twice by a new user and never again, so it earns
- * a button rather than a panel that everything else has to scroll past.
+ * The button that opens the manual.
+ *
+ * Nothing but a button now. It used to be a `NavTool` with sixty sentences
+ * folded into its panel; the sentences moved to `HelpScreen`, which takes the
+ * window rather than a 330px column -- see that file for why a document does
+ * not fit in a dropdown.
+ *
+ * It still goes through `NavTool` and still owns the `help` panel id, and that
+ * is the point rather than a leftover. `NavTool` with no children draws no
+ * panel and the press falls through to `setOpenPanel`, so the screen opens off
+ * the SAME one field every other panel in the bar uses. Escape, click-outside
+ * and the headless drive in `ui-check` all keep working without learning that
+ * one of the panels is now a window.
  */
 export function HelpTool() {
-  return (
-    <NavTool id="help" label="Help" icon={<HelpIcon />} panelTitle="Controls" align="right">
-      <ul className="keys">
-        <li><b>Drag</b> a solid from Solids into the scene to add it</li>
-        <li><b>Sweep across</b> a Solids row to choose how many sides its base has</li>
-        <li><b>Drag the small grip</b> at the right of a Solids row to place the same solid as an <b>eraser</b> -- aim it like anything else, then confirm the subtraction under Position &amp; Rotation</li>
-        <li><b>Drag</b> a 2D shape from Shapes onto any object</li>
-        <li><b>Click</b> an object to select it, then <b>drag</b> it to move it</li>
-        <li><b>Shift-click</b> objects to gather them, then <b>Merge</b> under Scene</li>
-        <li><b>Drag from empty space</b> for a selection box; it takes every object whose gizmo falls inside it</li>
-        <li><b>Shift</b> while dragging the box adds its catch to what is already selected</li>
-        <li>Merged solids become one object with one gizmo; undo takes them apart</li>
-        <li>The <b>Scene</b> list is a priority order -- use a row's arrows to move it, and where two objects share a surface the higher one is drawn</li>
-        <li><b>Export</b> writes the whole scene: .glb, .obj or .stl for a mesh, .step for a CAD solid</li>
-        <li><b>Units</b>, beside Export, chooses what every length is shown in -- mm, cm, or auto per value; the model itself never changes</li>
-        <li><b>Shift</b> while moving an object lifts it instead</li>
-        <li>The gizmo comes in three, chosen at the top of the <b>Tools</b> island: <b>Move</b>, where it rests, <b>Rotate</b> and <b>Scale</b>. Each draws the handles for its own job, and every one of them is a left-drag</li>
-        <li><b>Move</b>: <b>drag</b> an arrow to slide along that axis, snapping as it goes</li>
-        <li>Or <b>drag</b> one of the three plane quads -- XY, XZ, YZ -- to slide within that plane. One seen edge-on stands down, so from straight above only the ground is offered</li>
-        <li><b>Rotate</b> (<b>R</b>): three rings, one per plane. Drag the red, green or blue one to turn about X, Y or Z; the wedge reads the sweep out in degrees and it lands on every 45</li>
-        <li><b>Scale</b> (<b>S</b>): drag the ring to scale every dimension at once, or an arrow to resize the one dimension it points along</li>
-        <li>One of the three is always on: pressing <b>Rotate</b> or <b>Scale</b> again puts you back on <b>Move</b>, which is where the app opens</li>
-        <li>The <b>cut plane</b> carries the same gizmo -- arrows to aim it, rings to tilt it -- and in Scale its ring sizes the guide square</li>
-        <li><b>Apply cut</b> and <b>Reset plane</b> appear on the island once it is armed</li>
-        <li><b>Drag</b> a sketch to slide it across its own surface</li>
-        <li>A selected sketch gets three arrows: two along the outline's own edges, one facing away from the face</li>
-        <li>In <b>Scale</b>, drag either edge arrow to stretch the outline along it</li>
-        <li><b>Drag</b> the arrow facing away to set the depth -- push it back through the face to cut inward instead</li>
-        <li>Its ring scales the outline, the same way an object's scales the solid; in <b>Rotate</b> it gets ONE ring, since a sketch spins in its own face and nowhere else</li>
-        <li><b>Drag</b> the highlighted end face of an extrusion to lean it</li>
-        <li>The <b>Ruler</b> tool lays a 50 mm measuring line across the view, in front of the selected object; its readout rides the middle of it</li>
-        <li><b>Click a ruler</b> to select it -- it thickens into yellow and black stripes and the end you pressed nearest takes the arrows</li>
-        <li><b>Press the knob</b> at the other end to move the arrows there; each end snaps to corners and edges as you drag it</li>
-        <li>A ruler's end is a point, so its gizmo stays on Move whichever tool is up -- there is nothing about a point to turn or to scale</li>
-        <li><b>Delete</b> removes the selected ruler; the <b>caret beside Ruler</b> opens the list, to add more or delete one with its red cross</li>
-        <li><b>Move</b>, <b>Rotate</b>, <b>Scale</b>, <b>Ruler</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene; <b>Snap</b> is in the top bar beside <b>Units</b>, since it is a rule every drag obeys rather than a gizmo</li>
-        <li><b>Drag the island by its title</b> to move it -- it snaps flush to whichever edge or corner you drop it near -- and click the title to collapse it</li>
-        <li><b>Orbit</b> with middle-drag, or <b>Alt</b> and left-drag; zoom to scroll</li>
-        <li><b>Drag the corner compass</b> to orbit by hand -- half a turn across the widget, rotation only</li>
-        <li><b>Click</b> one of its balls or cube faces instead to fly square-on to that view</li>
-        <li><b>Pan</b> with right-drag on empty space</li>
-        <li><b>Delete</b> removes the selected ruler, or the selected sketch, or the object</li>
-        <li><b>Right-click</b> an object for copy, paste, and Save as custom object</li>
-        <li><b>Ctrl+C</b> / <b>Ctrl+V</b> copy the selected object and paste it beside itself</li>
-        <li>The console on the right holds the scene: Clipboard, Solids, Shapes, Colour and Scene</li>
-        <li><b>Colour</b> paints the selected objects: turn the ring for the hue, the slider for brightness, then <b>Apply</b></li>
-        <li>Or type the colour straight into the <b>hex field</b> under Apply -- that is also the way to reach a muted one, since the ring carries hue alone</li>
-        <li>Applied colours land on the <b>shelf</b> below; click one to load it back into the picker</li>
-        <li>Selecting something slides its <b>position, rotation and size</b> into the bottom-right of the viewport; a selected sketch adds its own controls under them</li>
-        <li>Saved objects live in <b>Clipboard</b>, at the top of the console; drag one back in</li>
-        <li>Each tile turns on its own; <b>sweep across one</b> to spin it and look it over</li>
-        <li>Three tiles show models at a time; <b>scroll the row sideways</b> for the rest</li>
-      </ul>
-    </NavTool>
-  )
+  return <NavTool id="help" label="Help" icon={<HelpIcon />} />
 }
 
 /**
- * Which unit lengths are SHOWN in.
+ * The two states of the outline switch, in the order the segment shows them.
+ *
+ * On first, matching every other row in the panel: the segments in here read
+ * left to right from the default outwards, and the default is lines on.
+ *
+ * A list rather than two hand-written buttons, so the row is built by the same
+ * `map` the units and the themes are and cannot drift into a different button.
+ * It stays local -- unlike `THEMES` and `UNIT_MODES`, which are exported
+ * because the geometry and the stylesheet have to agree with them, this is two
+ * labels for one boolean and nothing outside the panel needs them.
+ */
+const OUTLINE_CHOICES = [
+  { on: true, label: 'On', title: 'Draw the edge lines around every solid' },
+  { on: false, label: 'Off', title: 'Hide them and show the surfaces bare' },
+] as const
+
+/**
+ * Everything about how the app is READ rather than what it contains.
  *
  * A panel-only tool, like Help: there is nothing here to switch on or off, so
- * the button opens the choice rather than toggling anything.
+ * the cog opens the choices rather than toggling anything.
  *
- * In the BAR, immediately right of Export, rather than on the island over the
- * scene where it started. The island holds MODES -- Snap, Ruler, Cut -- each
- * aimed at the solid under the pointer and each changing what the next drag
- * does. A unit changes no gesture and no geometry: it re-reads every length in
- * the app at once, which is document-wide, like the three controls it now sits
- * among. Beside Export specifically because the two answer one question from
- * either side of it -- what are these numbers in, on screen and in the file.
+ * WHY THESE TOGETHER. A unit and a theme are the same kind of thing, and it
+ * took having a second one to see it: neither touches the document. The geometry
+ * is scene units whatever is on screen and whatever palette is around it, so a
+ * millimetre and a dark background are both facts about this viewer rather than
+ * about the model -- which is exactly what a preferences menu is for. Units had
+ * been living in the bar as a button of its own, next to Export, on the argument
+ * that the two answer "what are these numbers in" from either side. That is
+ * still true; it is just a weaker claim than being the same kind of setting as
+ * everything else in here, and the bar has one fewer button for it.
  *
- * Being in the bar is also what makes its menu drop DOWN from the button, the
- * way Export's does. On the island it had to open sideways, across the scene,
- * because a panel hanging below would have covered the buttons under it in the
- * column; see the `.tool-island .nav-panel` rules.
+ * Outlines is the third of exactly that kind and the one that proves the rule
+ * was worth writing down: it changes what the scene LOOKS like and changes
+ * nothing about what is in it, so it belongs here rather than on the island
+ * with the tools that act on the model. See `showOutlines`.
  *
- * Discrete buttons rather than a dropdown, reusing the `seg` control the side
- * count already uses: three options, all of them one or two characters, and a
- * select would hide two of the three behind a click to save no space at all.
+ * Last in the row, right of Help. The cluster runs from the most document-
+ * specific to the least -- export it, snap it, undo it, learn it, configure the
+ * app around it -- and settings is the only thing here that is still true of the
+ * next document you open.
  *
- * Nothing in the document changes when this does. The geometry is scene units
- * whatever is on screen; see `units.ts`.
+ * Discrete buttons rather than dropdowns, reusing the `seg` control the side
+ * count already uses: every option in here is one or two words, and a select
+ * would hide all but one of them behind a click to save no space at all.
  */
-export function UnitsTool() {
+export function SettingsTool() {
   const displayUnit = useTools((s) => s.displayUnit)
   const setDisplayUnit = useTools((s) => s.setDisplayUnit)
+  const theme = useTools((s) => s.theme)
+  const setTheme = useTools((s) => s.setTheme)
+  const showOutlines = useTools((s) => s.showOutlines)
+  const setShowOutlines = useTools((s) => s.setShowOutlines)
 
   return (
-    // Opens leftwards like everything else in this cluster: the panel is wider
-    // than the button and there is no room to its right.
-    <NavTool id="units" label="Units" icon={<UnitsIcon />} panelTitle="Units" align="right">
-      {/* Named so the panel can size itself to three two-character buttons
-          rather than to the 268px a snap field or a ruler list wants. The
-          width lives in CSS, keyed off what the panel HOLDS -- the same way
-          Help's is -- so a panel stays a panel and nothing here has to pass a
-          flag about its own layout. */}
-      <div className="tool-group units-modes">
-        <div className="seg">
-          {UNIT_MODES.map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              className={`seg-btn${displayUnit === mode ? ' seg-active' : ''}`}
-              aria-pressed={displayUnit === mode}
-              onClick={() => setDisplayUnit(mode)}
-            >
-              {mode}
-            </button>
-          ))}
+    // Opens leftwards like everything else in this cluster, and more so than
+    // anything else in it: this is the last button in the bar, so a panel
+    // hanging off its left edge is the only one that stays on screen.
+    <NavTool
+      id="settings"
+      label="Settings"
+      icon={<SettingsIcon />}
+      panelTitle="Settings"
+      align="right"
+    >
+      {/* Named so the panel can size itself to two rows of short buttons rather
+          than to the 268px a snap field or a ruler list wants. The width lives
+          in CSS, keyed off what the panel HOLDS -- the same way Help's is -- so
+          a panel stays a panel and nothing here has to pass a flag about its
+          own layout. */}
+      <div className="settings-groups">
+        <div className="tool-group units-modes">
+          <p className="subhead">Units</p>
+          <div className="seg">
+            {UNIT_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`seg-btn${displayUnit === mode ? ' seg-active' : ''}`}
+                aria-pressed={displayUnit === mode}
+                onClick={() => setDisplayUnit(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* One theme today, and it is still drawn as a chooser rather than as a
+            line of text saying "Dark". A control that shows the state it is in
+            is honest at one option and needs no rewriting at two; a label would
+            have to become a control the moment the second palette lands, and
+            until then it would not even say that the choice exists. */}
+        <div className="tool-group theme-modes">
+          <p className="subhead">Theme</p>
+          <div className="seg">
+            {THEMES.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={`seg-btn${theme === name ? ' seg-active' : ''}`}
+                aria-pressed={theme === name}
+                onClick={() => setTheme(name)}
+              >
+                {THEME_LABELS[name]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* A yes-or-no, and still a segment rather than a checkbox or a slider
+            switch. Two reasons, and the second is the one that decided it. It
+            keeps the panel one kind of control, so three rows read as three
+            answers to the same shape of question instead of a menu with a
+            gadget bolted to the bottom. And it names both states: `On | Off`
+            with one lit says what the alternative IS, which a lone tickbox
+            leaves you to infer from an empty square. */}
+        <div className="tool-group outline-modes">
+          <p className="subhead">Outlines</p>
+          <div className="seg">
+            {OUTLINE_CHOICES.map((choice) => (
+              <button
+                key={choice.label}
+                type="button"
+                className={`seg-btn${showOutlines === choice.on ? ' seg-active' : ''}`}
+                aria-pressed={showOutlines === choice.on}
+                title={choice.title}
+                onClick={() => setShowOutlines(choice.on)}
+              >
+                {choice.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </NavTool>

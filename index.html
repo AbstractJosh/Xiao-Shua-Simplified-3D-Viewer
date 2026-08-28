@@ -1,9 +1,26 @@
 <!doctype html>
-<html lang="en">
+<!-- The default theme is written here rather than only by the app, so the
+     first paint is already themed: a script that sets it after mount repaints
+     the whole window, which is the flash a theme system is usually bought to
+     prevent. See src/theme.ts. -->
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- The face the Cyberpunk theme asks for. Preconnected rather than merely
+         linked because it is fetched from another origin, and loaded for every
+         theme rather than injected when that one is picked: a stylesheet that
+         arrives after a theme switch reflows the whole window, and this is one
+         small file. `display=swap` and the fallbacks in --font mean the app is
+         never waiting on it -- offline, the theme simply wears the app's own
+         stack. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap"
+    />
     <title>Xiao Shua's 3D Editor</title>
   </head>
   <body>

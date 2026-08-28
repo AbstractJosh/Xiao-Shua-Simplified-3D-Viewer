@@ -6,7 +6,7 @@ import { Tip } from './Tip'
 import { trackWindow } from './scrub'
 import { useTools } from '../store/toolStore'
 import type { Unit } from '../units'
-import { decimalsOf, fromDisplay, resolveUnit, stepIn, suffixOf, toDisplay } from '../units'
+import { UNITS, decimalsOf, fromDisplay, resolveUnit, stepIn, suffixOf, toDisplay } from '../units'
 
 /**
  * The stretch of range a slider track shows, held steady while it is dragged.
@@ -104,10 +104,16 @@ function useHeldUnit(sceneValue: number, active: boolean): HeldUnit {
  */
 function useFieldUnit(
   sceneValue: number,
-  active: boolean
+  active: boolean,
+  pinned?: Unit
 ): HeldUnit & { labelled: boolean } {
   const scope = useContext(UnitScope)
-  const own = useHeldUnit(sceneValue, active && scope === null)
+  const own = useHeldUnit(sceneValue, active && pinned === undefined && scope === null)
+  // A PIN ANSWERS AHEAD OF BOTH. There is nothing to resolve, so nothing to
+  // hold across a gesture; and the field is not in the section's unit, so the
+  // section cannot take the label off it. Both hooks still run, whatever the
+  // answer, which is what keeps the hook order fixed.
+  if (pinned) return { unit: pinned, hold: () => {}, release: () => {}, labelled: true }
   if (active && scope) return { ...scope, labelled: false }
   return { ...own, labelled: own.unit !== null }
 }
@@ -282,6 +288,18 @@ type NumberFieldProps = {
    * in a unit it has no way of knowing.
    */
   unit?: boolean
+  /**
+   * PIN this field to one unit and let the reader change it, instead of the
+   * app-wide mode choosing one per value. Implies `unit`, and overrides both it
+   * and any `Section` unit the field sits inside; `min`, `max` and `step` stay
+   * in SCENE units exactly as they do above.
+   *
+   * For a control that SETS a length rather than reporting one, where `auto`
+   * renumbering the scale mid-drag makes it unaimable -- see `erodeSizeUnit`.
+   * The suffix becomes the picker, so the unit is chosen where it is read and
+   * the row costs no extra height.
+   */
+  ownUnit?: { unit: Unit; onChange: (unit: Unit) => void }
   onChange: (v: number) => void
 }
 
@@ -296,10 +314,15 @@ export function NumberField({
   tip,
   resetTo,
   unit = false,
+  ownUnit,
   onChange,
 }: NumberFieldProps) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
-  const { unit: shown, labelled, hold, release } = useFieldUnit(value, unit)
+  const { unit: shown, labelled, hold, release } = useFieldUnit(
+    value,
+    unit || ownUnit !== undefined,
+    ownUnit?.unit
+  )
 
   // Everything the control shows moves together -- value, both bounds and the
   // step. That is what keeps the FEEL identical across units: `scrubTravel` is
@@ -335,7 +358,27 @@ export function NumberField({
           onPressEnd={release}
           onChange={(v) => onChange(clamp(raw(v)))}
         />
-        {shown && labelled && <span className="field-unit">{suffixOf(shown)}</span>}
+        {/* Where the bare suffix goes when the field owns its unit. In the same
+            slot on purpose: the unit is changed where it is already being read,
+            and the row does not grow. */}
+        {ownUnit ? (
+          <div className="seg field-units" role="group" aria-label={`${label} unit`}>
+            {UNITS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={`seg-btn${ownUnit.unit === option ? ' seg-active' : ''}`}
+                aria-pressed={ownUnit.unit === option}
+                title={`Read and type ${label.toLowerCase()} in ${option}`}
+                onClick={() => ownUnit.onChange(option)}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        ) : (
+          shown && labelled && <span className="field-unit">{suffixOf(shown)}</span>
+        )}
       </div>
       <input
         className="field-range"

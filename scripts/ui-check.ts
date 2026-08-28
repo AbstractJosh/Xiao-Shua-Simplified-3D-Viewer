@@ -59,11 +59,14 @@ import { NavBar } from '../src/console/NavBar'
 import {
   CutActions,
   CutTool,
+  ErodeTool,
   HelpTool,
   MoveTool,
   RotateTool,
   ScaleTool,
+  SculptTool,
   SnapTool,
+  cutPlaneSpawn,
   rulerFrame,
 } from '../src/console/NavTools'
 import { ClipboardPanel, liveTiles } from '../src/console/ClipboardPanel'
@@ -114,6 +117,11 @@ import {
 } from '../src/geometry/dimensions'
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
 import { AXIS_COLORS, AXIS_CSS_VARS } from '../src/viewport/axisColors'
+import { COMPASS_FACE_SHADE, SCENE_CSS_VARS, SCENE_THEMES } from '../src/viewport/sceneColors'
+import { DEFAULT_THEME, THEMES, THEME_LABELS } from '../src/theme'
+import type { Theme } from '../src/theme'
+import { HelpScreen } from '../src/console/HelpScreen'
+import { DEFAULT_HELP_SECTION, HELP_SECTIONS } from '../src/helpTopics'
 import { objectMatrix } from '../src/geometry/transform'
 import {
   assemblyAnchor,
@@ -131,7 +139,7 @@ import {
   defaultShape,
   makeObject,
 } from '../src/geometry/types'
-import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../src/geometry/types'
+import type { BaseSolid, Doc, SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../src/geometry/types'
 import {
   releaseThumbnail,
   thumbnailCached,
@@ -149,6 +157,13 @@ import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
 import {
   CUT_POSITION_LIMIT,
   CUT_SIZE_MAX,
+  DEFAULT_CUT_PLANE,
+  DEFAULT_BRUSH_FORCE,
+  DEFAULT_BRUSH_RADIUS,
+  DEFAULT_BRUSH_SMOOTH,
+  BRUSH_RADIUS_MAX,
+  BRUSH_RADIUS_MIN,
+  BRUSH_SMOOTH_MIN,
   ISLAND_MARGIN,
   ISLAND_SNAP,
   RECENT_COLOR_SLOTS,
@@ -160,6 +175,9 @@ import {
   useTools,
 } from '../src/store/toolStore'
 import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
+import { BrushScopePanel } from '../src/viewport/BrushScopePanel'
+import { bodyCanBeDragged, selectionWearsGizmo } from '../src/viewport/SceneObjects'
+import { brushAllows } from '../src/viewport/brushTarget'
 import { viewQuaternion } from '../src/viewport/compassViews'
 import {
   GRID_BODY,
@@ -684,10 +702,167 @@ doc().selectObject(pyramidId)
   // already live.
   hides('and carries no hover bubble', rotate, 'nav-tip')
   hides('nor does scale', markupOf('ScaleTool', ScaleTool), 'nav-tip')
+  // --- the help screen -------------------------------------------------------
+  //
+  // Help is no longer a panel hanging off its button: it is a screen over the
+  // whole app, opened by the same `openPanel` field every other panel uses. So
+  // the button must have stopped carrying a dropdown, and the screen must only
+  // exist while that field says so.
+  const helpBtn = markupOf('HelpTool', HelpTool)
+  shows('the help button is in the bar', helpBtn, '<span class="nav-label">Help</span>')
+  hides('and no longer drops a panel of its own', helpBtn, 'nav-panel')
+  check(
+    'the screen renders nothing until it is opened',
+    renderToStaticMarkup(createElement(HelpScreen)) === '',
+    renderToStaticMarkup(createElement(HelpScreen)).slice(0, 40)
+  )
+
   tools().setOpenPanel('help')
-  const help = markupOf('HelpTool (open)', HelpTool)
-  shows('Help names the rotate key', help, '<b>Rotate</b> (<b>R</b>)')
-  shows('and the scale key', help, '<b>Scale</b> (<b>S</b>)')
+  const screen = markupOf('HelpScreen (open)', HelpScreen)
+  // A dialog rather than a region, and said so where a screen reader can hear
+  // it: this covers the app and takes the interaction, which is the whole
+  // difference between a modal and a big panel.
+  shows('it opens as a modal dialog', screen, 'role="dialog"')
+  shows('and says so', screen, 'aria-modal="true"')
+  shows('over a backdrop that can be pressed to dismiss it', screen, 'help-backdrop')
+  shows('with a way out that does not need the keyboard', screen, 'aria-label="Close help"')
+
+  // IT HAS TO LEAVE THE WAY IT ARRIVED. The screen animates in, and for a while
+  // it did not animate out at all -- `openPanel` went null and the card was
+  // simply gone between two frames, which reads as a glitch rather than as
+  // speed. The exit is two halves that only work together: React keeps the
+  // element mounted for the length of the fade, and the stylesheet is told how
+  // long that is. Either half alone is a bug you can see -- a card cut off
+  // mid-fade, or one that has finished fading and is still there.
+  {
+    // Newlines normalised before matching. Line endings vary per file in this
+    // tree, so a needle that spans one is a check that passes or fails on how
+    // the file was last written rather than on what it says.
+    const sheet = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8').replace(
+      /\r\n/g,
+      '\n'
+    )
+    const source = readFileSync(new URL('../src/console/HelpScreen.tsx', import.meta.url), 'utf8')
+    check(
+      'the stylesheet knows how to take the screen away',
+      sheet.includes('.help-leaving') && sheet.includes('@keyframes help-screen-out'),
+      'without it the card vanishes between two frames'
+    )
+    check(
+      'the component holds it on screen long enough to be seen going',
+      source.includes('HELP_EXIT_MS') && source.includes('help-leaving'),
+      'CSS cannot animate a node React has already unmounted'
+    )
+    check(
+      'and the two take their timing from ONE number',
+      sheet.includes('var(--help-exit') && source.includes("'--help-exit'"),
+      'a mirrored duration drifts, and the drift is visible'
+    )
+    // The setting asks for less MOVEMENT, not for jump cuts: the fade stays and
+    // the 6px rise goes, which is the trade `.selection-hud` already makes.
+    check(
+      'a reduced-motion reader still gets the fade, without the movement',
+      sheet.includes('.help-leaving .help-screen {\n    animation-name: help-fade-out;'),
+      'the screen would appear and vanish between two frames'
+    )
+  }
+
+  // The rail is the table of contents, and every section has to be reachable
+  // from it -- a section not offered is a page nobody can open.
+  for (const section of HELP_SECTIONS) {
+    shows(`the rail offers ${section.id}`, screen, `>${section.title}</span>`)
+  }
+  check(
+    'and it opens on the first one',
+    tools().helpSection === DEFAULT_HELP_SECTION && DEFAULT_HELP_SECTION === HELP_SECTIONS[0].id,
+    tools().helpSection
+  )
+  shows('with that page lit in the rail', screen, 'help-rail-btn help-rail-on')
+
+  // WHAT EVERY PAGE OWES. Walked rather than spot-checked: the whole reason the
+  // open section lives in the store is that a check can drive it, and an entry
+  // that renders a heading with nothing under it is the failure mode a help
+  // screen actually has.
+  for (const section of HELP_SECTIONS) {
+    tools().setHelpSection(section.id)
+    const page = markupOf(`HelpScreen (${section.id})`, HelpScreen)
+    shows(`${section.id} heads its page`, page, `<h3 class="help-pane-title">${section.title}</h3>`)
+    shows(`${section.id} says what it covers`, page, section.blurb)
+    check(`${section.id} has entries`, section.entries.length > 0, String(section.entries.length))
+    for (const entry of section.entries) {
+      shows(`${section.id}: ${entry.title} is titled`, page, `${entry.title}`)
+      check(
+        `${section.id}: ${entry.title} has a description under it`,
+        entry.body.length > 0,
+        String(entry.body.length)
+      )
+    }
+  }
+
+  // Section titles have to be distinct, or the rail shows two rows reading the
+  // same word and one of them can never be told from the other.
+  const sectionTitles = HELP_SECTIONS.map((s) => s.title)
+  check(
+    'no two sections share a name',
+    new Set(sectionTitles).size === sectionTitles.length,
+    sectionTitles.join(', ')
+  )
+  // And entry titles have to be distinct WITHIN a section: they are the React
+  // key the list is built on, so a repeat is a dropped entry rather than a
+  // cosmetic clash.
+  for (const section of HELP_SECTIONS) {
+    const titles = section.entries.map((e) => e.title)
+    check(
+      `${section.id}: no two entries share a title`,
+      new Set(titles).size === titles.length,
+      titles.join(', ')
+    )
+  }
+
+  // --- and what the pages still have to SAY -----------------------------------
+  //
+  // The claims worth guarding are the ones a user cannot discover without doing
+  // the thing and being surprised by it. They moved section when the list was
+  // broken up, so each is asserted against the page it moved to -- which is
+  // also what stops a reorganisation quietly losing one.
+  tools().setHelpSection('tools')
+  const toolsPage = markupOf('HelpScreen (tools)', HelpScreen)
+  // The blade's landing place is a promise the tool makes, so Help states it:
+  // it is the difference between "the button did nothing" and "the plane is on
+  // the part I picked".
+  shows(
+    'Help says where an armed blade lands',
+    toolsPage,
+    'through the middle of the selected object'
+  )
+  // The torch's two surprises, both of which a user would otherwise find out by
+  // doing them: a plain click no longer picks anything up, and the tool shapes
+  // a surface rather than opening a hole in it.
+  shows('Help explains the blowtorch', toolsPage, 'Blowtorch')
+  shows('warns that clicking no longer selects', toolsPage, 'no longer picks anything up')
+  shows('and says it will not burn through', toolsPage, 'does not open holes')
+  // And the other brush, whose two surprises are the same shape: it is the
+  // torch backwards, and arming it puts the torch down.
+  shows('Help explains the sculpt tool', toolsPage, 'Sculpt')
+  shows('says which way it works', toolsPage, 'onto')
+  shows('and that the two brushes are exclusive', toolsPage, 'puts the other down')
+
+  // The three gizmo keys, now drawn as chips beside the names rather than
+  // spelled into the sentence -- which is the point of the chip: it is the part
+  // of an entry that is scanned for.
+  tools().setHelpSection('gizmo')
+  const gizmoPage = markupOf('HelpScreen (gizmo)', HelpScreen)
+  shows('Help names the move key', gizmoPage, '<kbd class="help-key">M</kbd>')
+  shows('and the rotate key', gizmoPage, '<kbd class="help-key">R</kbd>')
+  shows('and the scale key', gizmoPage, '<kbd class="help-key">S</kbd>')
+
+  // The outline switch is documented, which is the standing debt every new
+  // preference takes on: a setting nobody can find is a setting nobody has.
+  tools().setHelpSection('files')
+  const filesPage = markupOf('HelpScreen (files)', HelpScreen)
+  shows('Help documents the outline switch', filesPage, 'The edge lines drawn around every solid')
+
+  tools().setHelpSection(DEFAULT_HELP_SECTION)
   tools().setOpenPanel(null)
 
   tools().setTransformMode('rotate')
@@ -723,6 +898,157 @@ doc().selectObject(pyramidId)
     'aria-pressed="false"'
   )
   shows('with Move lit again', markupOf('MoveTool (move)', MoveTool), 'aria-pressed="true"')
+
+  // THE PICKER CAN HOLD NOTHING, which is the state it could not show before.
+  // A gizmo nobody asked for lies over the very surface the torch and the
+  // sketch tools work on, and deselecting the solid is not an acceptable way to
+  // put it down -- so pressing the lit Move button takes the handles off.
+  {
+    const pressed = (mode: 'move' | 'rotate' | 'scale') => tools().pressTransformMode(mode)
+
+    tools().setTransformMode('move')
+    tools().setGizmoHidden(false)
+    pressed('move')
+    check('pressing the lit Move button puts the handles down', tools().gizmoHidden, 'hidden')
+    shows(
+      'and the whole row goes dark',
+      markupOf('MoveTool (handles down)', MoveTool),
+      'aria-pressed="false"'
+    )
+    shows(
+      'rotate included',
+      markupOf('RotateTool (handles down)', RotateTool),
+      'aria-pressed="false"'
+    )
+    shows(
+      'and scale',
+      markupOf('ScaleTool (handles down)', ScaleTool),
+      'aria-pressed="false"'
+    )
+    // The MODE is untouched by hiding: it says what a drag would do, and the
+    // cut plane and a selected sketch still read it for their own handles. A
+    // fourth `none` mode would have disarmed those too.
+    check('while the mode itself is remembered', tools().transformMode === 'move', tools().transformMode)
+
+    // A hidden gizmo must never be a dead picker: reaching for any of the three
+    // brings the handles back, in that mode.
+    pressed('rotate')
+    check('reaching for a tool brings them back', !tools().gizmoHidden, 'shown')
+    check('in the tool that was reached for', tools().transformMode === 'rotate', tools().transformMode)
+
+    // The ladder: your tool puts away to Move, and Move puts away to nothing.
+    // Two presses from anywhere to a bare object.
+    pressed('rotate')
+    check('a lit tool still falls back to Move', tools().transformMode === 'move' && !tools().gizmoHidden, `${tools().transformMode}`)
+    pressed('move')
+    check('and Move then takes the handles off', tools().gizmoHidden, 'hidden')
+
+    // Coming back from hidden straight into Move works too -- the branch above
+    // it must not swallow the case where the wanted mode is the stored one.
+    pressed('move')
+    check('pressing Move while hidden shows it again', !tools().gizmoHidden, 'shown')
+    check('still on Move', tools().transformMode === 'move', tools().transformMode)
+
+    tools().setGizmoHidden(false)
+    tools().setTransformMode('move')
+  }
+
+  // WHAT TAKES THE HANDLES OFF, all six stated one at a time. The rule decides
+  // whether a set of arrows lies over the surface a brush is trying to work on,
+  // and it is too long to be read correctly inline -- which is why it is a
+  // function now rather than a boolean chain in the JSX.
+  {
+    const wearing = {
+      selected: true,
+      hidden: false,
+      cutActive: false,
+      brushArmed: false,
+      rulerSelected: false,
+      sketchSelected: false,
+      marqueeing: false,
+    }
+    check('a selected object wears a gizmo', selectionWearsGizmo(wearing), 'shown')
+    check(
+      'and nothing selected wears nothing',
+      !selectionWearsGizmo({ ...wearing, selected: false }),
+      'hidden'
+    )
+    // Five other claims on the handles.
+    for (const claim of [
+      'cutActive',
+      'brushArmed',
+      'rulerSelected',
+      'sketchSelected',
+      'marqueeing',
+    ] as const) {
+      check(
+        `${claim} stands the object's gizmo down`,
+        !selectionWearsGizmo({ ...wearing, [claim]: true }),
+        'hidden'
+      )
+    }
+    // And the sixth, which is not a guess about what someone is doing but the
+    // answer: the user pressed the lit Move button.
+    check(
+      'and so does the user saying so',
+      !selectionWearsGizmo({ ...wearing, hidden: true }),
+      'hidden'
+    )
+    // A brush in particular, since that is the tool the rule was extended
+    // for: arming one must clear the handles without the user asking twice.
+    check(
+      'an armed brush alone is enough to clear them',
+      !selectionWearsGizmo({ ...wearing, brushArmed: true }) &&
+        selectionWearsGizmo({ ...wearing, brushArmed: false }),
+      'cleared by the brush'
+    )
+  }
+
+  // AND THE BODY GOES WITH THE HANDLES. Taking the arrows away is only half of
+  // turning the tool off: the solid itself is draggable, invisibly, and an
+  // object that still walks across the scene on the first press is the opposite
+  // of what a dark picker says.
+  {
+    check(
+      'an object wearing handles can be dragged by its body',
+      bodyCanBeDragged({ hidden: false, brushArmed: false }),
+      'draggable'
+    )
+    check(
+      'putting the handles down stops that too',
+      !bodyCanBeDragged({ hidden: true, brushArmed: false }),
+      'fixed'
+    )
+    check(
+      'and so does arming a brush',
+      !bodyCanBeDragged({ hidden: false, brushArmed: true }),
+      'fixed'
+    )
+    // The two rules have to agree in the direction that matters: anything that
+    // stops the body being dragged must also have taken the handles away, or
+    // there would be a state offering arrows on an object it refuses to move.
+    for (const hidden of [false, true]) {
+      for (const brushArmed of [false, true]) {
+        const wearing = selectionWearsGizmo({
+          selected: true,
+          hidden,
+          brushArmed,
+          cutActive: false,
+          rulerSelected: false,
+          sketchSelected: false,
+          marqueeing: false,
+        })
+        const draggable = bodyCanBeDragged({ hidden, brushArmed })
+        check(
+          `hidden=${hidden} brush=${brushArmed}: handles and body agree`,
+          wearing === draggable,
+          `${wearing ? 'arrows' : 'none'} / ${draggable ? 'draggable' : 'fixed'}`
+        )
+      }
+    }
+  }
+
+
   shows('under a title that names it', island, 'Tools</button>')
   shows('and it stands open at rest', island, 'aria-expanded="true"')
 
@@ -887,6 +1213,15 @@ check('and it is selected', featureId !== '', featureId)
   shows('the tree nests the sketch under its object', tree, 'Circle r0.15 - ')
   shows('and says it is still flat', tree, 'class="feature-action">projection<')
   shows('and counts it', tree, '>1f<')
+
+  // A flat sketch builds nothing, so there is nothing to sign off yet -- but
+  // the button is SHOWN, greyed and saying why, rather than hidden. It is what
+  // tells somebody who has just watched an orange ring appear that there will
+  // be a way to put it away, which is the question this whole block answers.
+  const aim = markupOf('PlacementPanel (sketch, flat)', PlacementPanel)
+  shows('the sketch block is up while the sketch is flat', aim, 'sketch-actions')
+  shows('and says there is nothing to confirm yet', aim, 'Nothing to confirm yet')
+  shows('with the button out of reach', aim, 'sketch-confirm" disabled')
 }
 
 doc().setDepth(cubeId, featureId, DEFAULT_FEATURE_DEPTH)
@@ -906,6 +1241,81 @@ const docAfterExtrude = doc().doc
 
   const tree = markupOf('SceneTree (extruded)', SceneTree)
   shows('the tree says extrude now', tree, 'feature-action feature-out">extrude 0.15<')
+}
+
+// --- 3b. Signing the sketch off -------------------------------------------
+console.log('\n3b. Confirming an extrusion retires its sketch')
+
+// THE COMPLAINT THIS ANSWERS: the orange outline stayed on the surface for the
+// life of the document -- over a boss that was finished, in the one colour in
+// the scene that means "not settled yet" -- and the only way to be rid of it
+// was to delete the feature, which takes the boss with it. So the app could
+// build the shape and had no way to say the shape was done.
+{
+  const before = markupOf('PlacementPanel (sketch, extruded)', PlacementPanel)
+  shows('an extruded sketch offers a confirm', before, 'sketch-confirm')
+  // It names the direction the feature actually went, rather than a category:
+  // the same word the row in the tree uses for it.
+  shows('and names what it is confirming', before, 'Confirm extrusion')
+  // Above the position rows, where the eraser's block is, so the panel reads in
+  // the order the gesture runs: aim it, then commit it.
+  check(
+    'with the block above the rows it sits over',
+    before.indexOf('sketch-actions') < before.indexOf('vec3-axis'),
+    'the confirm has drifted below the fields'
+  )
+
+  const shaped = measure(cubeId)
+  doc().confirmFeature(cubeId, featureId)
+  const signed = measure(cubeId)
+
+  // THE CLAIM THAT MATTERS. Confirming is about what is DRAWN. A document whose
+  // SHAPE depended on whether somebody had ticked it off would be a different
+  // document, and `evaluate.ts` must never learn this field exists.
+  near('confirming leaves the boss exactly where it was', signed.max[1], shaped.max[1], 1e-9)
+  near('and the solid it grew from', signed.min[1], shaped.min[1], 1e-9)
+  check('and it still builds', signed.failed.length === 0, signed.failed.join(','))
+
+  // Gone from both places a user could see it.
+  const after = markupOf('SceneTree (confirmed)', SceneTree)
+  hides('the tree drops the sketch row', after, 'Circle r0.15 - ')
+  hides('and stops counting it against the object', after, '>1f<')
+  hides(
+    'the panel stops offering to confirm it again',
+    markupOf('PlacementPanel (confirmed)', PlacementPanel),
+    'sketch-actions'
+  )
+  check(
+    'and nothing is left selected to aim',
+    doc().selectedFeatureId === null,
+    `${doc().selectedFeatureId}`
+  )
+
+  // The viewport half is a fibre tree and cannot be mounted here, so the guard
+  // is on the source -- the same shape of guard the outline switch takes.
+  check(
+    'the viewport stops drawing the outline',
+    readFileSync(new URL('../src/viewport/SketchLayer.tsx', import.meta.url), 'utf8').includes(
+      'object.features.filter((f) => !f.confirmed)'
+    ),
+    'the ring would still be drawn over a finished boss'
+  )
+
+  // One way, and undone the one way the eraser is.
+  doc().undo()
+  shows(
+    'undo hands the sketch back',
+    markupOf('SceneTree (unconfirmed)', SceneTree),
+    'Circle r0.15 - '
+  )
+  // And the sections below this one expect it selected, the way commitPlacing
+  // left it: undo restores the document, not the selection.
+  doc().selectFeature(cubeId, featureId)
+  check(
+    'still extruded after the round trip',
+    (doc().doc.objects.find((o) => o.id === cubeId)?.features[0]?.depth ?? 0) > 0,
+    `${doc().doc.objects.find((o) => o.id === cubeId)?.features[0]?.depth}`
+  )
 }
 
 // --- 4. The End face panel reaches the geometry ---------------------------
@@ -1406,6 +1816,178 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
 }
 
 {
+  // The same guard, widened to every other colour the two halves of the window
+  // share.
+  //
+  // The axis triad was the only mirrored pair anyone had written down. It was
+  // not the only one that existed: the scene's background, the accent on a
+  // selected sketch and a snapped edge, the green of an addition and the red of
+  // a subtraction, the cut plane's red and the ruler's yellow were all typed out
+  // again in the viewport, in eight files, none of them naming the token they
+  // were a copy of. That is the difference between an app that HAS a design
+  // language and one whose two halves merely happen to agree today.
+  //
+  // `sceneColors` is now the single scene-side copy, and this walks its own
+  // table rather than a list repeated here -- so a colour added to the module is
+  // guarded from the moment it is added, and cannot be forgotten into drift.
+  //
+  // Across EVERY theme, which is the half that matters now there is more than
+  // one. A theme is two files agreeing: a block of token overrides in the
+  // stylesheet and an entry in `SCENE_THEMES`. Nothing at runtime notices if
+  // they disagree -- the console simply goes light while the viewport stays
+  // black, which is not an error anywhere, just a broken-looking app. Walking
+  // THEMES rather than a list written here means the day a fourth theme is
+  // added it is guarded before it is finished.
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+
+  /**
+   * The declarations inside one theme's block.
+   *
+   * Dark is `:root` itself rather than an override block -- that is deliberate
+   * in the stylesheet, so that the default costs nothing and the app is themed
+   * before any script runs -- so it is looked up by a different selector. The
+   * others are matched with the `[` attached, which is what keeps `:root {` from
+   * matching `:root[data-theme='light'] {`.
+   */
+  const themeBlock = (name: Theme): string | null => {
+    const selector = name === DEFAULT_THEME ? ':root {' : `:root[data-theme='${name}'] {`
+    const at = css.indexOf(selector)
+    if (at < 0) return null
+    const end = css.indexOf('\n}', at)
+    return end < 0 ? null : css.slice(at + selector.length, end)
+  }
+
+  for (const name of THEMES) {
+    const block = themeBlock(name)
+    check(`the stylesheet has a block for ${name}`, block !== null)
+    if (block === null) continue
+
+    const palette = SCENE_THEMES[name]
+    SCENE_CSS_VARS.forEach(([prop, key]) => {
+      // Split rather than match, for the reason the axis check gives: a
+      // declaration carries the colon and a `var(--x)` reference does not.
+      const declared = block.split(`${prop}:`)[1]?.split(';')[0]?.trim()
+      const scene = palette[key]
+      check(
+        `${name}: ${prop} matches what the scene draws with`,
+        declared?.toLowerCase() === scene.toLowerCase(),
+        `${declared} vs ${scene}`
+      )
+    })
+  }
+
+  // And a theme that is merely a copy of another is not a theme. Every palette
+  // has to differ from every other in the ground it paints -- the one value that
+  // decides whether the app reads as light or dark at a glance.
+  const grounds = THEMES.map((name) => SCENE_THEMES[name].bg.toLowerCase())
+  check(
+    'and no two themes share a ground',
+    new Set(grounds).size === THEMES.length,
+    grounds.join(', ')
+  )
+
+  // --- and every theme's text is actually readable on it ---------------------
+  //
+  // The check this file most needed and did not have. The cyberpunk ramp shipped
+  // as four steps of red at descending luminance, which looks like a ramp in a
+  // swatch and is not one: red carries almost no luminance to spend, so the
+  // muted rung -- which is what most of the LABELLING in this app is written in
+  // -- landed at 2.6:1 against a raised control, and the dimmest at 1.6:1.
+  //
+  // Nothing failed. Nothing could fail. It rendered perfectly and could not be
+  // read, and the only way anybody finds that is by looking at it in good light
+  // and saying so. So it is arithmetic now, held against every theme at once,
+  // and a fourth theme cannot ship the same way.
+  //
+  // WCAG 2.1 relative luminance, and the floor each rung is held to is the job
+  // it does rather than one blanket number:
+  //   text-1  7:1   values and figures, set at 10-13px and read one glyph at a
+  //                 time -- the rung worth holding above the AA minimum
+  //   text-2  4.5:1 the secondary voice: AA for normal text, and no higher.
+  //                 Cyberpunk's cyan happens to reach 10.8 here, which is not a
+  //                 reason to hold the other two to a number that is about that
+  //                 one theme rather than about the job the rung does
+  //   text-3  4.5:1 the muted rung: field labels, section headings
+  //   text-4  3:1   carets, grips, dim icons -- marks, not prose
+  //
+  // Measured against the LIGHTEST surface a label can land on in a dark theme
+  // and the darkest in a light one -- --surface-4, the pressed state -- because
+  // the worst case is the only case worth pinning.
+  {
+    const channel = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+    /** A hex decoded to the three LINEAR channels, which is the space a three
+     *  material scales a texture in -- see the compass block below. */
+    const channels = (hex: string) => {
+      const h = hex.replace('#', '')
+      return [0, 2, 4].map((i) => channel(parseInt(h.slice(i, i + 2), 16) / 255))
+    }
+    const lumOf = (lin: number[]) => 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    const luminance = (hex: string) => lumOf(channels(hex))
+    const contrast = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((m, n) => n - m)
+      return (hi + 0.05) / (lo + 0.05)
+    }
+
+    const FLOORS: ReadonlyArray<readonly [string, number]> = [
+      ['--text-1', 7],
+      ['--text-2', 4.5],
+      ['--text-3', 4.5],
+      ['--text-4', 3],
+    ]
+    const SURFACES = ['--surface-1', '--surface-2', '--surface-3', '--surface-4']
+
+    for (const name of THEMES) {
+      const block = themeBlock(name)
+      if (block === null) continue
+      const value = (prop: string) => block.split(`${prop}:`)[1]?.split(';')[0]?.trim()
+      const surfaces = SURFACES.map(value).filter((v): v is string => v?.startsWith('#') ?? false)
+      check(`${name}: every surface in the ramp is a literal to measure`, surfaces.length === SURFACES.length)
+
+      for (const [prop, floor] of FLOORS) {
+        const fg = value(prop)
+        if (fg === undefined || !fg.startsWith('#')) {
+          check(`${name}: ${prop} is a literal to measure`, false, `${fg}`)
+          continue
+        }
+        const worst = Math.min(...surfaces.map((bg) => contrast(fg, bg)))
+        check(
+          `${name}: ${prop} reads at ${floor}:1 on every surface`,
+          worst >= floor,
+          `${worst.toFixed(2)}:1`
+        )
+      }
+    }
+
+    // --- and the label on the corner compass ---------------------------------
+    //
+    // The same arithmetic, one widget further out, because the compass is the
+    // one surface in the app whose background is not a token: each face is the
+    // theme's `compassFace` scaled by its own shade, so a face colour that reads
+    // fine as a swatch can still put an unreadable label on the darkest of six.
+    // The cyberpunk cube is a block of solid accent with black lettering, which
+    // makes it the one most worth holding to a number.
+    //
+    // Three's own maths, exactly: `new Color(hex)` decodes sRGB to linear,
+    // `multiplyScalar` scales there, and the canvas re-encodes on the way out --
+    // so scaling the LINEAR value is what the user actually sees, and doing this
+    // in sRGB would report a face several shades darker than it is.
+    const darkest = Math.min(...COMPASS_FACE_SHADE)
+    for (const name of THEMES) {
+      const { compassFace, compassText } = SCENE_THEMES[name]
+      const faceLin = channels(compassFace).map((c) => c * darkest)
+      const textLum = luminance(compassText)
+      const ratioTo = (lin: number[]) => {
+        const [hi, lo] = [lumOf(lin), textLum].sort((m, n) => n - m)
+        return (hi + 0.05) / (lo + 0.05)
+      }
+
+      const rest = ratioTo(faceLin)
+      check(`${name}: the compass label reads on its darkest face`, rest >= 4.5, `${rest.toFixed(2)}:1`)
+    }
+  }
+}
+
+{
   // The sketch gizmo's arrows go through `moveTo` -- the same action the free
   // sketch drag uses -- and that action guarded on the free-drag kind alone.
   // The object gizmo shipped with exactly this bug: every arrow silently did
@@ -1693,6 +2275,105 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   doc().endDrag()
   tools().setCutActive(false)
   check('leaving the tool rearms the plane', tools().cutPlane.position[1] === 0, `${tools().cutPlane.position[1]}`)
+}
+
+{
+  // WHERE AN ARMED BLADE COMES UP. The plane used to appear at the world origin
+  // whatever was selected, and the scene is five metres across -- so a part
+  // built anywhere else got a blade that was off screen, and the tool could be
+  // armed and fired without the plane ever being seen. It lands on the object
+  // the Apply button is going to cut instead.
+  const cutMe = doc().addObject({ kind: 'box', size: [2, 3, 4] }, [12, 6, -8])
+  const object = doc().doc.objects.find((o) => o.id === cutMe)
+  check('a solid to cut', object !== undefined)
+  if (object) {
+    const box = objectBounds(object)
+    const centre = box.getCenter(new Vector3())
+    const spawn = cutPlaneSpawn(object)
+
+    near('the blade comes up through the middle of the object', spawn.position[0], centre.x, 1e-12)
+    near('on every axis', spawn.position[1], centre.y, 1e-12)
+    near('including the one it is normal to', spawn.position[2], centre.z, 1e-12)
+    // Level, not turned to face anything: which way the blade lies is the one
+    // thing the user aims by hand, and reset has always promised to put it back.
+    check('and level', spawn.rotation.every((r) => r === 0), spawn.rotation.join())
+
+    // The guide has to overhang the solid at ANY tilt, so it is sized off the
+    // box's DIAGONAL -- one sized to the footprint disappears inside the part
+    // the moment the ring is turned, and stops saying where the cut lands.
+    const diagonal = box.getSize(new Vector3()).length()
+    check(
+      'the guide square overhangs the solid from every angle',
+      spawn.size >= diagonal,
+      `${spawn.size.toFixed(4)} vs a ${diagonal.toFixed(4)} diagonal`
+    )
+    check('within the size the ring can reach', spawn.size <= CUT_SIZE_MAX, `${spawn.size}`)
+
+    // The point of all of it: Apply cut, pressed on a freshly armed tool with
+    // nothing else touched, severs the thing you had selected.
+    const before = doc().doc
+    const n = cutPlaneNormal(spawn.rotation)
+    const split = doc().applyCut(spawn.position, [n.x, n.y, n.z], [cutMe])
+    check('so arming and firing splits the selected object', split === 1, `${split}`)
+    doc().undo()
+    check('and the undo puts it back', doc().doc === before)
+  }
+
+  // A blade sized to a 5 mm screw would be a guide you could not see, so the
+  // default size is a floor rather than a starting point.
+  const screw = makeObject({ kind: 'box', size: [0.05, 0.05, 0.05] }, [0, 0, 0])
+  check(
+    'a tiny object still gets a blade you can grab',
+    cutPlaneSpawn(screw).size === DEFAULT_CUT_PLANE.size,
+    `${cutPlaneSpawn(screw).size}`
+  )
+
+  // The scene envelope and the gizmo's drag bound are the same number, so an
+  // object at the very edge of it must not spawn a plane the user then cannot
+  // drag back. Built rather than added: the point is the arithmetic.
+  const far = makeObject({ kind: 'box', size: [1, 1, 1] }, [CUT_POSITION_LIMIT + 20, 0, 0])
+  check(
+    'and one parked past the limit is clamped to it',
+    cutPlaneSpawn(far).position[0] === CUT_POSITION_LIMIT,
+    `${cutPlaneSpawn(far).position[0]}`
+  )
+
+  // Nothing selected: the middle of the scene, which is where the blade has
+  // always come up and the only place it can go with no object to hang it off.
+  check(
+    'with nothing selected it is the default plane',
+    JSON.stringify(cutPlaneSpawn(null)) === JSON.stringify(DEFAULT_CUT_PLANE),
+    JSON.stringify(cutPlaneSpawn(null))
+  )
+
+  // And the store carries it through, which is the half a pure function cannot
+  // state. Standing down goes back to the default rather than to the spawn: the
+  // selection it described will have moved on by the next arming, and arming is
+  // where it gets asked for again.
+  if (object) {
+    const spawn = cutPlaneSpawn(object)
+    tools().setCutActive(true, spawn)
+    check(
+      'arming through the store lands the blade on the object',
+      JSON.stringify(tools().cutPlane.position) === JSON.stringify(spawn.position),
+      tools().cutPlane.position.join()
+    )
+    tools().setCutPlane({ position: [0, 0, 0] })
+    tools().resetCutPlane(spawn)
+    check(
+      'and reset puts it back where arming would drop it now',
+      JSON.stringify(tools().cutPlane.position) === JSON.stringify(spawn.position),
+      tools().cutPlane.position.join()
+    )
+    tools().setCutActive(false)
+    check(
+      'while standing down still rearms to the default',
+      JSON.stringify(tools().cutPlane) === JSON.stringify(DEFAULT_CUT_PLANE),
+      JSON.stringify(tools().cutPlane)
+    )
+  }
+
+  doc().removeObject(cutMe)
 }
 
 // --- 8. Merging, and the selection that chooses it -------------------------
@@ -2694,17 +3375,41 @@ console.log('\nThe colour picker, and the selection it paints')
   }
 
   // 3. The paint the viewport puts on a solid.
-  const grey = bodyPaint(undefined, false)
-  check('an uncoloured solid keeps the scene grey', grey.color === DEFAULT_OBJECT_COLOR, grey.color)
-  check('and glows not at all until it is selected', grey.emissiveIntensity === 0)
-  check(
-    'selected, it takes the hand-picked shade',
-    bodyPaint(undefined, true).color !== DEFAULT_OBJECT_COLOR
-  )
+  //
+  // Every claim below is theme-independent -- an uncoloured solid takes the
+  // scene grey, a coloured one keeps its own hue when selected -- so each is
+  // asserted in EVERY theme rather than in whichever one happens to be default.
+  // That is the guard that matters here: a theme is allowed to change what
+  // `selected` looks like, and is never allowed to repaint a solid the user
+  // coloured. The palette is the thing being varied, so it is the loop variable.
+  for (const name of THEMES) {
+    const palette = SCENE_THEMES[name]
+    const inTheme = (what: string) => `${what} (${name})`
 
-  const red = bodyPaint('#cc2222', false)
+    const grey = bodyPaint(undefined, false, palette)
+    check(inTheme('an uncoloured solid keeps the scene grey'), grey.color === DEFAULT_OBJECT_COLOR, grey.color)
+    check(inTheme('and glows not at all until it is selected'), grey.emissiveIntensity === 0)
+    check(
+      inTheme('selected, it takes the theme’s own shade'),
+      bodyPaint(undefined, true, palette).color !== DEFAULT_OBJECT_COLOR
+    )
+
+    const own = bodyPaint('#cc2222', false, palette)
+    check(inTheme('a coloured solid wears its own colour'), own.color === '#cc2222')
+    const ownLit = bodyPaint('#cc2222', true, palette)
+    const ownHsv = hexToHsv(ownLit.color)
+    check(
+      inTheme('and selecting it does not repaint it the theme colour'),
+      (ownHsv?.s ?? 0) > 0.5,
+      ownLit.color
+    )
+    check(inTheme('its glow stays its own colour'), ownLit.emissive === '#cc2222')
+  }
+
+  const dark = SCENE_THEMES[DEFAULT_THEME]
+  const red = bodyPaint('#cc2222', false, dark)
   check('a coloured solid wears its own colour', red.color === '#cc2222')
-  const redLit = bodyPaint('#cc2222', true)
+  const redLit = bodyPaint('#cc2222', true, dark)
   const litHsv = hexToHsv(redLit.color)
   const restHsv = hexToHsv('#cc2222')
   check('and selecting it does not repaint it grey', (litHsv?.s ?? 0) > 0.5, redLit.color)
@@ -3309,23 +4014,96 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // all three units agree -- is asserted exactly, just above.
   near('at about the step the control is written in', perPixel[0], 0.05, 1e-3)
 
-  // And the selector itself, which lives in the BAR beside Export rather than
-  // on the island: a unit is a reading of the whole document, not a mode aimed
-  // at the solid under the pointer.
-  useTools.setState({ openPanel: 'units' })
-  const bar = markupOf('NavBar (units)', NavBar)
+  // And the selector itself, which lives in the BAR rather than on the island:
+  // a unit is a reading of the whole document, not a mode aimed at the solid
+  // under the pointer. It is inside Settings now -- the cog at the end of the
+  // row -- because it shares that property with the theme and with nothing else
+  // in the bar: neither touches the document.
+  useTools.setState({ openPanel: 'settings' })
+  const bar = markupOf('NavBar (settings)', NavBar)
   for (const mode of UNIT_MODES) shows(`the bar offers ${mode}`, bar, `>${mode}<`)
   shows('with the current one marked', bar, 'seg-btn seg-active')
   // The menu opens the way the rest of that cluster does -- downwards from the
-  // button, right-aligned to it -- which is the class the CSS reads.
+  // button, right-aligned to it -- which is the class the CSS reads. It matters
+  // more here than anywhere else: this is the LAST button in the bar, so a panel
+  // opening rightwards would hang off the window entirely.
   shows('and its menu hangs off the button like Export', bar, 'nav-panel nav-panel-right')
   // The hook the width rule reads. Without the class the menu falls back to the
-  // shared 268px, which for three two-character buttons is mostly empty air.
-  shows('the mode row is marked so the panel can fit it', bar, 'tool-group units-modes')
+  // shared 268px, which for two rows of short buttons is mostly empty air.
+  shows('the groups are marked so the panel can fit them', bar, 'settings-groups')
+  shows('the unit row keeps its own hook', bar, 'tool-group units-modes')
+  shows('and the theme row has one of its own', bar, 'tool-group theme-modes')
+  shows('and so does the outline row', bar, 'tool-group outline-modes')
+  // Both groups are captioned. With two unlabelled rows of short buttons in one
+  // panel, `mm cm auto` over `Dark` is a puzzle rather than a menu -- and the
+  // captions are the only thing naming what either row does now that neither
+  // has a button in the bar carrying its name.
+  shows('the unit group is captioned', bar, '<p class="subhead">Units</p>')
+  shows('and so is the theme group', bar, '<p class="subhead">Theme</p>')
+  shows('and the outline group', bar, '<p class="subhead">Outlines</p>')
+  // Units no longer has a button of its own. The word survives as a caption
+  // INSIDE the panel, so this asks after the thing that would prove a stray
+  // second control -- a nav button carrying the old icon and label.
+  hides('and no longer has a button of its own in the bar', bar, '<span class="nav-label">Units</span>')
+  shows('while the cog does', bar, '<span class="nav-label">Settings</span>')
   hides(
     'the island no longer carries it',
     markupOf('ToolIsland (no units)', ToolIsland),
     '>Units<'
+  )
+
+  // The other half of the panel, and the reason the two are together. One theme
+  // today: the row still has to render as a CHOOSER showing which is on, or the
+  // second palette lands on a label nobody built a control for.
+  for (const name of THEMES) {
+    shows(`the theme row offers ${name}`, bar, `>${THEME_LABELS[name]}<`)
+  }
+  check(
+    'and the app opens in the default one',
+    useTools.getState().theme === DEFAULT_THEME,
+    useTools.getState().theme
+  )
+  // Every theme must be selectable and must stick, so a name added to THEMES
+  // cannot ship as a dead button.
+  for (const name of THEMES) {
+    useTools.getState().setTheme(name)
+    check(`choosing ${name} holds`, useTools.getState().theme === name, useTools.getState().theme)
+  }
+  useTools.getState().setTheme(DEFAULT_THEME)
+
+  // The third row. It is a yes-or-no, and the thing worth guarding is that it is
+  // still drawn as a CHOOSER: both states named, one lit. A tickbox would leave
+  // the off state as an empty square, and the panel would stop being one kind of
+  // control -- which is the whole argument for it sitting in here.
+  shows('the outline row offers On', bar, '>On<')
+  shows('and Off', bar, '>Off<')
+  check(
+    'the app opens with the outlines drawn',
+    useTools.getState().showOutlines === true,
+    String(useTools.getState().showOutlines)
+  )
+  useTools.getState().setShowOutlines(false)
+  check(
+    'switching them off holds',
+    useTools.getState().showOutlines === false,
+    String(useTools.getState().showOutlines)
+  )
+  // And back, because everything after this reads a scene that is meant to be
+  // in its default dress.
+  useTools.getState().setShowOutlines(true)
+  check('and back on again', useTools.getState().showOutlines === true)
+
+  // A preference nothing reads is worse than no preference at all: the switch
+  // would move, hold its state, and change nothing on screen. The edges are
+  // drawn deep inside a fibre tree this headless check cannot mount, so the
+  // guard is on the source -- the `<Edges>` block must be gated on the flag,
+  // alongside the drag gate that was already there.
+  check(
+    'and the scene actually gates its edge lines on the switch',
+    readFileSync(new URL('../src/viewport/SceneObjects.tsx', import.meta.url), 'utf8').includes(
+      '{showOutlines && !dragging && ('
+    ),
+    'the switch would hold a state nothing in the viewport reads'
   )
 
   // It is not an island panel any more, so collapsing the island must leave it
@@ -3333,8 +4111,8 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // where the panels it still owns are -- snap and ruler.
   useTools.getState().setIslandCollapsed(true)
   check(
-    'collapsing the island leaves the units menu open',
-    useTools.getState().openPanel === 'units'
+    'collapsing the island leaves the settings menu open',
+    useTools.getState().openPanel === 'settings'
   )
   // WHAT THE PANEL SAYS IT IS WRITTEN IN has to be what its rows are actually
   // written in, and under `auto` that is a fact about the object rather than
@@ -3873,6 +4651,424 @@ console.log('\nTwo objects sharing one surface are separated by a bias the log b
     'every instance shares one program cache key',
     material.customProgramCacheKey() === new BiasedStandardMaterial().customProgramCacheKey()
   )
+}
+
+
+// --- The torch's controls ---------------------------------------------------
+console.log('\nThe erode tool says what it will melt before it melts it')
+{
+  const erode = markupOf('ErodeTool', ErodeTool)
+  shows('the blowtorch is in the island', erode, 'Blowtorch')
+  shows('and rests disarmed', erode, 'aria-pressed="false"')
+
+  // The three numbers. Size is a LENGTH and carries a unit; the other two are
+  // ratios and must not, or the app would offer to set Heat in millimetres.
+  tools().setOpenPanel('erode')
+  const panel = markupOf('ErodeTool (open)', ErodeTool)
+  shows('its panel offers a brush size', panel, '>Brush size<')
+  shows('a heat', panel, '>Heat<')
+  shows('and a smoothing', panel, '>Smoothing<')
+
+  {
+    // THE BRUSH SIZE OWNS ITS UNIT, and it is the only length in the app that
+    // does. Under `auto` -- the app's own default -- one drag of this slider
+    // crosses both of `resolveUnit`'s switching points, and the number under
+    // the pointer goes 9.9, 1.00, 99.9, 1.00 while the hand travels one way.
+    // That is correct for reading a length and wrong for setting one.
+    tools().setDisplayUnit('auto')
+    const auto = markupOf('ErodeTool (app on auto)', ErodeTool)
+    shows('the brush size carries a unit picker', auto, 'aria-label="Brush size unit"')
+    shows('offering millimetres', auto, '>mm<')
+    shows('and centimetres', auto, '>cm<')
+    // `auto` is a rule for choosing a unit, not a unit. Offered here it would be
+    // the very thing this control exists to keep off the field.
+    hides('and never auto, whatever the app is set to', auto, '>auto<')
+    check(
+      'it opens in centimetres',
+      tools().erodeSizeUnit === 'cm',
+      tools().erodeSizeUnit
+    )
+    // 0.3 scene units is 3 cm. The app-wide mode is `auto`, which at 0.3 units
+    // would resolve to centimetres too -- so the field is driven to a unit auto
+    // would NOT pick, and read back, or the pin proves nothing.
+    tools().setDisplayUnit('mm')
+    const pinned = markupOf('ErodeTool (app on mm)', ErodeTool)
+    shows('and stays there when the app goes to millimetres', pinned, 'value="3"')
+
+    // Picking one changes the SPELLING and not the brush: the radius is held in
+    // scene units and never passes through the picker.
+    const before = tools().erodeRadius
+    tools().setErodeSizeUnit('mm')
+    const asMm = markupOf('ErodeTool (in mm)', ErodeTool)
+    shows('picking millimetres restates the same brush', asMm, 'value="30"')
+    check('and does not resize it', tools().erodeRadius === before, `${tools().erodeRadius}`)
+    tools().setErodeSizeUnit('cm')
+    tools().setDisplayUnit('cm')
+  }
+
+  {
+    // AND THE STYLESHEET LETS IT BE SEEN. The markup above passed for as long
+    // as the panel has existed while nothing was drawn on screen: the island
+    // was on the cut-corner list, and a clip-path clips an element's
+    // DESCENDANTS to its own border box whatever its outline -- so at
+    // `--notch: 0px`, where the polygon is the plain rectangle and the rule
+    // looks inert, the island still cut away every panel that opens sideways
+    // clear of its 176px. The panel measured 268 x 210 at full opacity and was
+    // painted nowhere.
+    //
+    // Pinned as "the island itself is not on the list", because putting it back
+    // is a one-word edit and no render check can see it: the island carries the
+    // shape on `.tool-island::before` instead, which clips only itself.
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    const notched = css.split(/^\.nav-panel,$/m)[1]?.split('{')[0] ?? ''
+    check(
+      'the cut corner is on the island backdrop',
+      notched.includes('.tool-island::before'),
+      notched.trim()
+    )
+    check(
+      'and never on the island, which the panels open outside of',
+      !/^\.tool-island,$/m.test(notched),
+      notched.trim()
+    )
+    const island = css.split('.tool-island {')[1]?.split('}')[0] ?? ''
+    check('so nothing clips the island itself', !island.includes('clip-path'), island.trim())
+  }
+
+  // It hangs off a button INSIDE the island, so shutting the island shuts it
+  // too -- a panel left open behind a body that has gone off screen springs
+  // back the next time the island does, from a click nobody made. The ruler
+  // list has always done this; the torch's numbers arrived in the island after
+  // `ISLAND_PANELS` was written and were missed.
+  tools().setIslandCollapsed(true)
+  check('collapsing the island shuts the erode panel', tools().openPanel === null, `${tools().openPanel}`)
+  tools().setIslandCollapsed(false)
+  check('and it does not spring back when the island reopens', tools().openPanel === null, `${tools().openPanel}`)
+
+  tools().setOpenPanel(null)
+
+  // The scope picker is NOT in that panel. It is over the scene, and only while
+  // a brush is armed -- see `BrushScopePanel` for why a brush cannot afford to
+  // keep its aim inside a popover.
+  hides('the scope is not buried in the panel', panel, 'What the blowtorch melts')
+  // Not `markupOf`, which counts an empty render as a failure: rendering
+  // nothing at all is exactly the claim here, and it is stronger than "the
+  // markup happens not to contain a panel".
+  check(
+    'and the corner is empty with both brushes down',
+    renderToStaticMarkup(createElement(BrushScopePanel)) === '',
+    'disarmed BrushScopePanel renders nothing'
+  )
+
+  tools().setBrushTool('torch')
+  const scope = markupOf('BrushScopePanel (torch)', BrushScopePanel)
+  shows('arming it puts the scope over the scene', scope, 'brush-scope-panel')
+  shows('offering everything', scope, '>Everything<')
+  shows('or the selection alone', scope, '>Selected only<')
+  shows('with everything lit by default', scope, 'aria-pressed="true"')
+  // The corner says WHICH brush it is aiming, in words and in the class the
+  // stylesheet tints from -- the same red-and-green pair the ghost wears.
+  shows('and names the torch', scope, 'Blowtorch melts')
+  shows('wearing the torch tint', scope, 'brush-scope-torch')
+
+  tools().setBrushTool('sculpt')
+  const sculptScope = markupOf('BrushScopePanel (sculpt)', BrushScopePanel)
+  shows('the sculpt tool gets the same corner', sculptScope, 'brush-scope-panel')
+  shows('named for what it does', sculptScope, 'Sculpt raises')
+  shows('and tinted apart from the torch', sculptScope, 'brush-scope-sculpt')
+  hides('with no talk of melting', sculptScope, 'Blowtorch melts')
+  tools().setBrushTool('torch')
+
+  // "Selected only" with nothing selected is a brush that passes over every
+  // solid in the scene, which from the outside is a broken tool. Said out loud.
+  doc().selectObject(null)
+  tools().setBrushScope('selected')
+  shows(
+    'selecting nothing to melt is called out',
+    markupOf('BrushScopePanel (empty selection)', BrushScopePanel),
+    'the torch will pass over everything'
+  )
+
+  const torchable = doc().addObject({ kind: 'box', size: [1, 1, 1] }, [0, 0, 0])
+  doc().selectObject(torchable)
+  hides(
+    'and the warning goes once something is picked',
+    markupOf('BrushScopePanel (with selection)', BrushScopePanel),
+    'the torch will pass over everything'
+  )
+
+  // THE RULE ITSELF, which the ghost, the press and the stroke all read. Three
+  // consumers, so it is stated once here rather than three times by accident.
+  {
+    const other = doc().addObject({ kind: 'sphere', radius: 0.4 }, [3, 0, 0])
+    const scene = doc().doc
+    const picked = [torchable]
+    check(
+      'with everything in scope the brush works what it points at',
+      brushAllows(scene, picked, 'all', other),
+      other
+    )
+    check(
+      'with the selection in scope it works the selected one',
+      brushAllows(scene, picked, 'selected', torchable),
+      torchable
+    )
+    check(
+      'and passes over the rest',
+      !brushAllows(scene, picked, 'selected', other),
+      other
+    )
+    // An eraser is a tool sitting in the scene, not a solid. Melting one would
+    // be melting the knife rather than the bread. Built by hand: `erase` is a
+    // document field the palette sets at creation, not a switch on an object.
+    const eraser: Doc = {
+      objects: [{ ...makeObject({ kind: 'box', size: [1, 1, 1] }, [6, 0, 0]), id: 'ghost', erase: true }],
+    }
+    check(
+      'an eraser is never brushed, whatever the scope says',
+      !brushAllows(eraser, ['ghost'], 'all', 'ghost'),
+      'ghost'
+    )
+    doc().removeObject(other)
+  }
+
+  doc().removeObject(torchable)
+  tools().setBrushScope('all')
+  tools().setBrushTool(null)
+
+  // The bounds are the store's, so a typed value and a scrubbed one cannot
+  // disagree about the limit.
+  tools().setErodeRadius(999)
+  check('the brush size is held to its ceiling', tools().erodeRadius === BRUSH_RADIUS_MAX, `${tools().erodeRadius}`)
+  tools().setErodeRadius(-4)
+  check('and its floor', tools().erodeRadius === BRUSH_RADIUS_MIN, `${tools().erodeRadius}`)
+  tools().setErodeRadius(DEFAULT_BRUSH_RADIUS)
+  tools().setErodeHeat(5)
+  tools().setErodeSmooth(-1)
+  check('heat is a ratio', tools().erodeHeat === 1, `${tools().erodeHeat}`)
+  // Smoothing does NOT bottom out at zero, and the floor is geometry rather
+  // than taste: a point melted with no flow at all collapses the ring around it
+  // and grows a spur where it should have flattened. See BRUSH_SMOOTH_MIN.
+  check(
+    'smoothing bottoms out above zero',
+    tools().erodeSmooth === BRUSH_SMOOTH_MIN,
+    `${tools().erodeSmooth}`
+  )
+  tools().setErodeSmooth(2)
+  check('and tops out at one', tools().erodeSmooth === 1, `${tools().erodeSmooth}`)
+  tools().setErodeHeat(DEFAULT_BRUSH_FORCE)
+  tools().setErodeSmooth(DEFAULT_BRUSH_SMOOTH)
+
+  // THE STROKE AS THE DOCUMENT SEES IT. A drag lays many dabs and must cost one
+  // undo step, the same bargain every other drag in this app strikes -- a groove
+  // that took eighty pointer moves to cut must not take eighty presses of undo
+  // to remove.
+  {
+    const torched = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1.5, 0])
+    const erosionOf = () => doc().doc.objects.find((o) => o.id === torched)?.erosion ?? []
+    const entries = doc().past.length
+
+    doc().startErode(torched, false)
+    check('the torch takes its own drag kind', doc().drag.kind === 'erode', doc().drag.kind)
+    for (let i = 0; i < 6; i++) {
+      doc().erodeAt([-0.5 + i * 0.2, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
+    }
+    check('a stroke lays down a dab per step', erosionOf().length === 6, `${erosionOf().length}`)
+    check(
+      'and costs exactly one undo entry however long it is',
+      doc().past.length === entries + 1,
+      `${doc().past.length - entries}`
+    )
+    doc().endDrag()
+
+    // The dab carries the settings that were live when it landed, so turning
+    // the heat up afterwards does not retroactively deepen a groove already cut.
+    const first = erosionOf()[0]
+    check('a dab records the heat it was cut with', first.heat === 0.6, `${first.heat}`)
+    check('and the smoothing', first.smooth === 0.7, `${first.smooth}`)
+    check('and the brush size', first.radius === DEFAULT_BRUSH_RADIUS, `${first.radius}`)
+    // A torch dab is the four fields it has always been. `raise` is written
+    // only when it is true -- see `ErodeDab.raise` -- so every object anybody
+    // has already melted keeps the evaluator cache key it had.
+    check('a torch dab carries no direction flag', !('raise' in first), JSON.stringify(first))
+
+    // One press of undo takes the whole stroke, not the last dab.
+    doc().undo()
+    check('one undo removes the whole stroke', erosionOf().length === 0, `${erosionOf().length}`)
+    doc().redo()
+    check('and redo brings all of it back', erosionOf().length === 6, `${erosionOf().length}`)
+
+    // LOCAL SPACE, like every other coordinate in the document -- so a groove
+    // stays where it was cut when the object is moved and turned afterwards.
+    const before = JSON.stringify(erosionOf())
+    doc().setObjectTransform(torched, { position: [4, 2, -3], rotation: [0.4, 0.8, 0] })
+    check(
+      'moving the object leaves the stroke exactly where it was cut',
+      JSON.stringify(erosionOf()) === before,
+      'unchanged'
+    )
+
+    // A stroke outside a drag writes nothing: the action is the drag's, and a
+    // stray call must not edit a document nobody is holding a brush against.
+    doc().endDrag()
+    doc().erodeAt([0, 0, 0], DEFAULT_BRUSH_RADIUS, 1, 1)
+    check('no dab lands without a stroke in flight', erosionOf().length === 6, `${erosionOf().length}`)
+
+    // A RESIZE CARRIES THE MARKS, which is the one thing being in local space
+    // does not do for them on its own: a dab is a place and a reach in object
+    // units, not an anchor in a surface's parameter space, so a skin pulled out
+    // from under one leaves it melting where the solid no longer is.
+    {
+      const cut = erosionOf()[0]
+      doc().scaleObject(torched, 2)
+      const scaled = erosionOf()[0]
+      near('the scale ring carries the stroke out with the surface', scaled.at[0], cut.at[0] * 2, 1e-9)
+      near('on every axis', scaled.at[1], cut.at[1] * 2, 1e-9)
+      near('and the brush reach scales with it', scaled.radius, cut.radius * 2, 1e-9)
+      check('every dab of the stroke, not just the first', erosionOf().length === 6, `${erosionOf().length}`)
+      near('including the last', erosionOf()[5].at[0], 0.5 * 2, 1e-9)
+
+      // One axis alone. The centre follows that axis and only that axis; the
+      // reach takes the geometric mean, because a sphere brush has no way to
+      // become an ellipsoid and nowhere to write one down if it had.
+      const wide = erosionOf()[0]
+      doc().patchObject(torched, { base: { kind: 'box', size: [8, 4, 4] } })
+      const pulled = erosionOf()[0]
+      near('a single-axis resize carries the mark along that axis', pulled.at[0], wide.at[0] * 2, 1e-9)
+      near('and leaves the others where they were', pulled.at[1], wide.at[1], 1e-9)
+      near('with the reach taking the geometric mean', pulled.radius, wide.radius * Math.cbrt(2), 1e-9)
+
+      // A resize that changed no dimension must not creep the marks around.
+      const held = JSON.stringify(erosionOf())
+      doc().patchObject(torched, { base: { kind: 'box', size: [8, 4, 4] } })
+      check('a resize to the size it already was moves nothing', JSON.stringify(erosionOf()) === held, 'unchanged')
+    }
+
+    doc().removeObject(torched)
+  }
+}
+
+// --- The sculpt tool --------------------------------------------------------
+console.log('\nThe sculpt tool is the torch backwards, and says so')
+{
+  const sculpt = markupOf('SculptTool', SculptTool)
+  shows('the sculpt tool is in the island', sculpt, 'Sculpt')
+  shows('and rests disarmed', sculpt, 'aria-pressed="false"')
+
+  // The same three questions the torch asks, with the one word that would be a
+  // lie changed. Heat is a metaphor from the tool next door; nothing here is
+  // hot, and the number is the same number in the same range either way.
+  tools().setOpenPanel('sculpt')
+  const panel = markupOf('SculptTool (open)', SculptTool)
+  shows('its panel offers a brush size', panel, '>Brush size<')
+  shows('a strength', panel, '>Strength<')
+  shows('and a smoothing', panel, '>Smoothing<')
+  hides('and never calls it heat', panel, '>Heat<')
+  shows('the size owns its unit, as the torch\'s does', panel, 'aria-label="Brush size unit"')
+  hides('and never offers auto', panel, '>auto<')
+
+  // Its panel hangs off a button INSIDE the island, so the island shutting has
+  // to shut it -- a panel left open behind a body that has gone off screen
+  // springs back the next time the island does, from a click nobody made. This
+  // is exactly what the torch's own panel did before `ISLAND_PANELS` learned
+  // about it, which is why the new one is checked rather than assumed.
+  tools().setIslandCollapsed(true)
+  check('collapsing the island shuts the sculpt panel', tools().openPanel === null, `${tools().openPanel}`)
+  tools().setIslandCollapsed(false)
+  check('and it does not spring back', tools().openPanel === null, `${tools().openPanel}`)
+  tools().setOpenPanel(null)
+
+  // ONE BRUSH AT A TIME, and no code enforces it -- the store holds a single
+  // mode, so arming either is choosing against the other. Both claim the plain
+  // left press on a solid, so "both armed" is a state neither could act on.
+  tools().setBrushTool('torch')
+  tools().setBrushTool('sculpt')
+  check('arming the sculpt tool puts the torch down', tools().brushTool === 'sculpt', `${tools().brushTool}`)
+  shows(
+    'and the island shows only the sculpt tool lit',
+    markupOf('ErodeTool (sculpt armed)', ErodeTool),
+    'aria-pressed="false"'
+  )
+  tools().setBrushTool('torch')
+  shows(
+    'and back again',
+    markupOf('SculptTool (torch armed)', SculptTool),
+    'aria-pressed="false"'
+  )
+  tools().setBrushTool(null)
+
+  // ITS OWN DIALS. Blocking a shape out and carving detail into it are
+  // different brush sizes, and a user who alternates must not have to re-dial
+  // one number back and forth. Same bounds, though: they are the brush's, not
+  // the tool's.
+  tools().setSculptRadius(999)
+  check('the sculpt size is held to the same ceiling', tools().sculptRadius === BRUSH_RADIUS_MAX, `${tools().sculptRadius}`)
+  tools().setSculptRadius(-4)
+  check('and the same floor', tools().sculptRadius === BRUSH_RADIUS_MIN, `${tools().sculptRadius}`)
+  tools().setSculptStrength(5)
+  check('strength is a ratio', tools().sculptStrength === 1, `${tools().sculptStrength}`)
+  tools().setSculptSmooth(-1)
+  // The floor is geometry, not taste, and it is the torch's: a point worked
+  // with no flow at all collapses the ring around it. See BRUSH_SMOOTH_MIN.
+  check(
+    'and smoothing bottoms out where the torch\'s does',
+    tools().sculptSmooth === BRUSH_SMOOTH_MIN,
+    `${tools().sculptSmooth}`
+  )
+  tools().setSculptRadius(0.9)
+  tools().setSculptStrength(0.2)
+  check('the torch keeps its own size through all of that', tools().erodeRadius === DEFAULT_BRUSH_RADIUS, `${tools().erodeRadius}`)
+  check('and its own heat', tools().erodeHeat === DEFAULT_BRUSH_FORCE, `${tools().erodeHeat}`)
+  tools().setSculptRadius(DEFAULT_BRUSH_RADIUS)
+  tools().setSculptStrength(DEFAULT_BRUSH_FORCE)
+  tools().setSculptSmooth(DEFAULT_BRUSH_SMOOTH)
+
+  // THE STROKE AS THE DOCUMENT SEES IT. One list for both brushes, in the order
+  // the marks were made, because a bead over a groove and a groove over a bead
+  // are different surfaces -- see `SceneObject.erosion`.
+  {
+    const clay = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1.5, 0])
+    const marksOf = () => doc().doc.objects.find((o) => o.id === clay)?.erosion ?? []
+    const entries = doc().past.length
+
+    doc().startErode(clay, true)
+    check('a sculpt stroke takes the same drag kind', doc().drag.kind === 'erode', doc().drag.kind)
+    for (let i = 0; i < 4; i++) {
+      doc().erodeAt([-0.3 + i * 0.2, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
+    }
+    doc().endDrag()
+    check('it lays a dab per step', marksOf().length === 4, `${marksOf().length}`)
+    check(
+      'and costs one undo entry, like every other drag',
+      doc().past.length === entries + 1,
+      `${doc().past.length - entries}`
+    )
+    check('every dab of it is marked as raising', marksOf().every((d) => d.raise === true), JSON.stringify(marksOf()[0]))
+
+    // A torch stroke over the top goes in the SAME list, after them. Two lists
+    // could not say which came first, and which came first is the surface.
+    doc().startErode(clay, false)
+    doc().erodeAt([0, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
+    doc().endDrag()
+    const marks = marksOf()
+    check('both brushes write one list', marks.length === 5, `${marks.length}`)
+    check('in the order they were used', marks[4].raise === undefined && marks[0].raise === true, JSON.stringify(marks[4]))
+
+    // The direction is the GESTURE's. Nothing the panel does mid-stroke can
+    // turn a bead being drawn into a groove being cut.
+    doc().startErode(clay, true)
+    tools().setBrushTool('torch')
+    doc().erodeAt([0.4, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
+    doc().endDrag()
+    tools().setBrushTool(null)
+    check(
+      'a stroke keeps the direction it started with',
+      marksOf()[5].raise === true,
+      JSON.stringify(marksOf()[5])
+    )
+
+    doc().removeObject(clay)
+  }
 }
 
 console.log(
