@@ -436,9 +436,16 @@ export function CompassControl({ controlsRef }: { controlsRef: RefObject<Orbit> 
   }, [])
 
   useFrame(({ camera }, delta) => {
-    compass.facing.copy(camera.quaternion)
-
     const controls = controlsRef.current
+
+    // The camera, published for everything outside this canvas: the compass
+    // widget turns by `facing`, and the tool island puts a new ruler in front of
+    // the eye with all three. Written before the flight below moves anything, so
+    // what a reader sees is the camera the frame was drawn with rather than the
+    // one the next frame will draw.
+    compass.facing.copy(camera.quaternion)
+    compass.eye.copy(camera.position)
+    compass.focus.copy(controls ? controls.target : ORIGIN)
 
     // A drag on the compass, applied before anything else this frame: it is the
     // user's hand on the camera, and it outranks a flight the way a press in

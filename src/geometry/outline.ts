@@ -34,9 +34,9 @@ export function sampleOutline(
  * One of the outline's OWN axes, written in the surface's (u, v).
  *
  * The sketch gizmo's two tangent arrows lie along these rather than along the
- * surface's raw u and v, so that a right-drag stretches the dimension the arrow
- * is actually pointing down -- on a rectangle spun 30 degrees, the width axis is
- * spun with it. A slide is stored in (u, v) though, so the travel an arrow reads
+ * surface's raw u and v, so that a stretch in Scale grows the dimension the
+ * arrow is actually pointing down -- on a rectangle spun 30 degrees, the width
+ * axis is spun with it. A slide is stored in (u, v) though, so the travel an arrow reads
  * has to come back here to be written down.
  *
  * Here beside `sampleOutline` because it IS that rotation, applied to the unit

@@ -5,7 +5,7 @@ import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
 import { ImportTools } from './ImportTools'
-import { HelpTool, UnitsTool } from './NavTools'
+import { HelpTool, SnapTool, UnitsTool } from './NavTools'
 
 /**
  * Object count belongs next to the triangle count, not in the scene tree: it is
@@ -29,12 +29,12 @@ function Stats() {
  * document.
  * What you build stays in the console on the right.
  *
- * What is left here is what is aimed at the WHOLE DOCUMENT -- export, the unit
- * every length is read in, undo, redo, the counts -- plus the gesture list.
- * Snap, Ruler and Cut went the other way, out of the bar and onto the scene
- * itself (see `ToolIsland`): they are modes aimed at a solid you are looking
- * at, and reaching them at the top edge of the window meant the hand and the
- * eye in two different places.
+ * What is left here is what applies to the WHOLE DOCUMENT -- export, the unit
+ * every length is read in, the snap rule every drag obeys, undo, redo, the
+ * counts -- plus the gesture list. The gizmo tools, Ruler and Cut went the
+ * other way, out of the bar and onto the scene itself (see `ToolIsland`): they
+ * are aimed at a solid you are looking at, and reaching them at the top edge of
+ * the window meant the hand and the eye in two different places.
  */
 export function NavBar() {
   const undo = useDoc((s) => s.undo)
@@ -102,6 +102,14 @@ export function NavBar() {
             it is not a mode aimed at a solid, it is a reading of every length
             in the app at once. */}
         <UnitsTool />
+        {/* And Snap beside it, for the same reason and one more. Snapping is
+            not a mode aimed at the solid under the pointer -- it draws nothing,
+            it changes no handle, and it has no gesture of its own: it is a rule
+            EVERY drag in the app obeys, whichever gizmo is up, which is what
+            these three switches on the right have in common. It also stops the
+            island reading as a list of unrelated things: what is left there is
+            the gizmo, and the two tools that put something new in the scene. */}
+        <SnapTool />
         <div className="seg">
           <button
             type="button"

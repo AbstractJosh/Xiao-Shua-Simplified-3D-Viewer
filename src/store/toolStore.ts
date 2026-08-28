@@ -30,10 +30,11 @@ export type NavPanel = 'snap' | 'units' | 'ruler' | 'export' | 'help' | null
  * The panels that hang off buttons INSIDE the tool island, which go off screen
  * with it when it is collapsed.
  *
- * `units` is not one of them any more: its button moved to the bar, beside
- * Export, where nothing collapses underneath it.
+ * Down to one. `units` went to the bar first and `snap` followed it, and
+ * neither collapses with anything now -- the bar is always there. The ruler
+ * list is the only panel left over the scene.
  */
-export const ISLAND_PANELS: NavPanel[] = ['snap', 'ruler']
+export const ISLAND_PANELS: NavPanel[] = ['ruler']
 
 /** Position + Euler XYZ rotation of the cut gizmo, and its visual extent. */
 export type CutPlaneState = { position: Vec3; rotation: Vec3; size: number }
@@ -245,19 +246,61 @@ const RULER_LANES = 8
 let rulerCounter = 0
 
 /**
- * Where the next ruler goes: along world X, resting on the grid, stepped
- * sideways from the one before it.
+ * Where a ruler is laid down, and which way it lies: a point, the direction it
+ * runs, and the direction consecutive ones step in.
+ *
+ * A frame rather than a point because a ruler seen END-ON is a ruler that
+ * spawned invisible -- world X is a dot on screen the moment the camera comes
+ * round to look down it -- and because two rulers stepped apart along an axis
+ * the camera happens to be looking down are two rulers on top of each other.
+ * Both directions are unit vectors, and `step` must be perpendicular to the
+ * view for the second reason above; `rulerFrame` in `NavTools` is what builds
+ * one that satisfies both, out of the camera.
+ */
+export type RulerFrame = { anchor: Vec3; along: Vec3; step: Vec3 }
+
+/**
+ * The frame a ruler lands in when nobody has said otherwise: along world X
+ * through the origin, stepping +Z.
+ *
+ * Exactly where rulers landed before there was a camera to consult, which is
+ * what makes it the right answer for a caller that has none -- a check suite,
+ * or any code that reaches `addRuler` without a view in front of it.
+ */
+export const WORLD_SPAWN: RulerFrame = {
+  anchor: [0, 0, 0],
+  along: [1, 0, 0],
+  step: [0, 0, 1],
+}
+
+/**
+ * Where the next ruler goes: centred on the frame's anchor, along its axis,
+ * stepped off it by the lane.
+ *
+ * The frame is the whole of what "near the selected object, facing the user"
+ * means to this function -- it takes three vectors and knows nothing about what
+ * put them there; see `rulerFrame` in `NavTools`, which is the half that reads
+ * the document and the camera. That split is what keeps the tool store free of
+ * both, the way `dropPosition` keeps the placement rule out of `addObject`.
+ *
+ * The step runs one way rather than either side of the anchor, so a lane never
+ * walks back over the anchor -- which is chosen to sit clear of the solid being
+ * measured, and is the one place a ruler must not be.
  *
  * Pure and exported so `ui-check` can state the rule rather than transcribe one
  * result. The lane comes from the id counter rather than from how many rulers
  * currently exist, so deleting one does not drop the next one on top of a
  * survivor.
  */
-export function rulerSpawn(lane: number): [Vec3, Vec3] {
-  const z = (lane % RULER_LANES) * RULER_SPACING
+export function rulerSpawn(lane: number, frame: RulerFrame = WORLD_SPAWN): [Vec3, Vec3] {
+  const [x, y, z] = frame.anchor
+  const [ax, ay, az] = frame.along
+  const [sx, sy, sz] = frame.step
+  const half = RULER_LENGTH / 2
+  const off = (lane % RULER_LANES) * RULER_SPACING
   return [
-    [-RULER_LENGTH / 2, 0, z],
-    [RULER_LENGTH / 2, 0, z],
+    [x - ax * half + sx * off, y - ay * half + sy * off, z - az * half + sz * off],
+    [x + ax * half + sx * off, y + ay * half + sy * off, z + az * half + sz * off],
   ]
 }
 
@@ -267,12 +310,31 @@ export function rulerLength(ruler: Ruler): number {
   return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])
 }
 
-function makeRuler(): Ruler {
+function makeRuler(frame?: RulerFrame): Ruler {
   rulerCounter += 1
-  return { id: `r${rulerCounter}`, ends: rulerSpawn(rulerCounter - 1) }
+  return { id: `r${rulerCounter}`, ends: rulerSpawn(rulerCounter - 1, frame) }
 }
 
+/**
+ * What the gizmo is FOR right now: sliding the target, turning it, or sizing
+ * it.
+ *
+ * One at a time, and one for the whole app -- the object's gizmo, a sketch's
+ * and the cut plane's all read this one field -- because the question it
+ * answers is "what will my next drag do", and an answer that differed by what
+ * happened to be selected would have to be learnt again per selection.
+ *
+ * `move` is the resting state rather than a fourth "no tool": every target has
+ * somewhere to be moved to, and a gizmo with no mode would be a gizmo with no
+ * handles. Turning the active tool off therefore lands here rather than on
+ * nothing, which is also what makes the two tools mutually exclusive without a
+ * rule saying so -- one field cannot hold both.
+ */
+export type TransformMode = 'move' | 'rotate' | 'scale'
+
 export type ToolState = {
+  /** Which gizmo the viewport is showing. See `TransformMode`. */
+  transformMode: TransformMode
   snap: boolean
   snapDistance: number
   /** Which unit lengths are SHOWN in. Purely a display choice: nothing in the
@@ -333,6 +395,7 @@ export type ToolState = {
   /** The one being worked on, and which end holds the gizmo. */
   selectedRuler: RulerSelection
 
+  setTransformMode: (mode: TransformMode) => void
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
   setDisplayUnit: (unit: UnitMode) => void
@@ -343,10 +406,16 @@ export type ToolState = {
   setIslandCollapsed: (collapsed: boolean) => void
   setIslandPlacement: (placement: IslandPlacement) => void
   setEraseScope: (scope: EraseScope) => void
-  /** Engage the tool, laying down a first ruler if there are none. */
-  setRulerActive: (on: boolean) => void
-  /** Lay down another and take it as the selection. */
-  addRuler: () => void
+  /**
+   * Engage the tool, laying down a first ruler if there are none.
+   *
+   * `frame` is where that first one lands and which way it lies -- `WORLD_SPAWN`
+   * when it is left out, which is what a caller with no document and no camera
+   * in front of it wants.
+   */
+  setRulerActive: (on: boolean, frame?: RulerFrame) => void
+  /** Lay down another in `frame` and take it as the selection. */
+  addRuler: (frame?: RulerFrame) => void
   removeRuler: (id: string) => void
   selectRuler: (selection: RulerSelection) => void
   /** Write one end's position, from its gizmo or from anywhere else. */
@@ -357,6 +426,9 @@ export type ToolState = {
 }
 
 export const useTools = create<ToolState>((set) => ({
+  // Move: the arrows and the plane quads, which is the gizmo this app had
+  // before there was a choice to make.
+  transformMode: 'move',
   snap: true,
   snapDistance: DEFAULT_SNAP_DISTANCE,
   // `auto` by default: it reads correctly for a 2 mm boss and a 4 m wall alike,
@@ -385,6 +457,8 @@ export const useTools = create<ToolState>((set) => ({
   rulerActive: false,
   rulers: [],
   selectedRuler: null,
+
+  setTransformMode: (transformMode) => set({ transformMode }),
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
@@ -429,11 +503,11 @@ export const useTools = create<ToolState>((set) => ({
   // switch throwing away work that took two snapped ends to place. The
   // selection goes, though -- a gizmo hanging over a ruler nobody can see
   // would be a handle onto nothing.
-  setRulerActive: (on) =>
+  setRulerActive: (on, frame) =>
     set((s) => {
       if (!on) return { rulerActive: false, selectedRuler: null }
       if (s.rulers.length > 0) return { rulerActive: true }
-      const ruler = makeRuler()
+      const ruler = makeRuler(frame)
       return {
         rulerActive: true,
         rulers: [ruler],
@@ -444,9 +518,9 @@ export const useTools = create<ToolState>((set) => ({
   // Selected as it lands, so the ruler you just asked for is the one carrying
   // the handles -- and armed with it, since adding one from the panel while the
   // tool is off would otherwise put a ruler in a list nothing draws.
-  addRuler: () =>
+  addRuler: (frame) =>
     set((s) => {
-      const ruler = makeRuler()
+      const ruler = makeRuler(frame)
       return {
         rulerActive: true,
         rulers: [...s.rulers, ruler],

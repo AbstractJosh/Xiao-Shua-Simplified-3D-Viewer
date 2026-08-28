@@ -374,17 +374,17 @@ const RULER_GIZMO_SCALE = 0.7
 /**
  * Every ruler in the scene, and the gizmo on the one end that has it.
  *
- * The gizmo is the object gizmo with two things taken away rather than a second
- * one written: no ring, because a ruler end is a POINT -- there is nothing to
- * scale and no frame to turn -- and no right-drag, for the same reason. What is
- * left is three arrows that move a point, which is the whole of what an end
- * does. Both are `TransformGizmo`'s own props, so the ruler adds no case to it.
+ * The gizmo is the object gizmo with things taken away rather than a second one
+ * written: no ring and no resize, because a ruler end is a POINT -- there is
+ * nothing to scale and no frame to turn. What is left is three arrows and three
+ * quads that move a point, which is the whole of what an end does. All of it is
+ * `TransformGizmo`'s own props, so the ruler adds no case to it.
  *
- * Having no ring is also why its three PLANE handles stand permanently rather
- * than behind Control. Everywhere else they are the ring's understudy and only
- * come out while the key is held; here there is nothing for them to be swapped
- * with, and an end you can put anywhere on a face in one gesture is worth more
- * to a ruler than to anything else in the app.
+ * It is also pinned to Move, which is the one thing it does NOT take from the
+ * app-wide mode. Rotate and Scale have no handle to give a point, so following
+ * along would leave a selected ruler wearing nothing at all for as long as
+ * either tool was up -- and the quads, which put an end anywhere on a face in
+ * one gesture, are worth more to a ruler than to anything else in the app.
  */
 export function Rulers({
   controlsRef,
@@ -421,6 +421,12 @@ export function Rulers({
           position={selected.ends[selectedRuler.end]}
           ring={false}
           sizable={false}
+          // Pinned to Move, whatever tool the island has up. An end is a POINT:
+          // there is nothing about it to turn and nothing to make bigger, so
+          // following the mode would leave a selected ruler wearing no gizmo at
+          // all for as long as Rotate or Scale was chosen -- and the arrows are
+          // the only way to place an end by hand.
+          mode="move"
           size={RULER_GIZMO_SCALE}
           controlsRef={controlsRef}
           onGrab={(handle) => startRulerGizmo(selected.id, selectedRuler.end, handle)}

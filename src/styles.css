@@ -661,6 +661,42 @@ body {
   font-weight: 400;
 }
 
+/* The unit every length in the section is written in, said once, in the corner
+   nothing else was using.
+
+   It used to be repeated under every row -- "cm" under X, under Y, under Z,
+   under Width, under Height, under Depth -- and in the viewport panel, where a
+   row is one line of a grid and the suffix had no column of its own, each one
+   wrapped onto a line of its own. Six words nobody reads, and six lines of
+   height for them, in the one panel with none to spare.
+
+   HIGHLIGHTED, and the only thing in a deliberately muted header that is: it is
+   the key to every figure underneath, and a panel of bare numbers that could be
+   millimetres or metres is worse than one that repeats itself. Accent blue
+   rather than a colour of its own, because the app already uses that for "the
+   thing being said"; monospace because it labels monospace figures. */
+.section-unit {
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  user-select: none;
+}
+
+/* Only the FIRST of the trailing items takes the auto margin, or the two would
+   split the free space between them and the hint would drift into the middle.
+   Same rule the hint follows against `right`. */
+.section-hint + .section-unit {
+  margin-left: 0;
+}
+
 .section-title .tip,
 .field-head .tip {
   margin-right: auto;
@@ -2111,6 +2147,28 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* The break between the gizmo pickers and the tools below them.
+   A flat hairline in --muted, edge to edge: solid, and one of the palette's
+   own greys rather than a value invented for this one line. It is deliberately
+   brighter than every other rule in the island -- it started on --border, the
+   token the title strip uses, and at #252b35 over a near-black island it was a
+   line you had to know was there, which is no line at all when being seen is
+   the whole job. --muted is the grey the island's own title is set in, so it
+   sits in the same family as everything around it.
+   Not the accent: in this app accent means a tool is ON -- it is what lights
+   the chosen gizmo two rows above -- so a blue line between two groups of
+   switches would read as one of them being active.
+   And not a fade, which was the first attempt at keeping a bright line from
+   reading as a sixth item in the column. Nothing else in this app draws a
+   gradient; a flat rule at the full width is what the rest of it looks like,
+   and the 6px column gap either side, plus a hair of its own, is what makes it
+   a break rather than an item. */
+.island-rule {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--muted);
+}
+
 /* A column, where the bar laid the same buttons in a row. The island is narrow
    by choice -- every pixel of it is scene that cannot be dragged to orbit -- so
    the labels stack down the edge of the viewport instead of running across it,
@@ -2284,6 +2342,13 @@ body {
 }
 
 .selection-hud .section-hint {
+  font-size: 9px;
+}
+
+/* Not smaller than the hint beside it, though everything else in this panel
+   steps down a size: it is the one word in the header that has to be read. */
+.selection-hud .section-unit {
+  padding: 0 4px;
   font-size: 9px;
 }
 

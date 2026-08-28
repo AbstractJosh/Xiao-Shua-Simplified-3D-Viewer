@@ -87,7 +87,9 @@ export function orbitPosition(facing: Quaternion, focus: Vector3, radius: number
 }
 
 /**
- * The live link between the compass and the scene, in one mutable object.
+ * The live link between the compass and the scene, in one mutable object -- and,
+ * with it, WHERE THE CAMERA IS for everything else that lives outside the
+ * canvas.
  *
  * Module-level for the reason `rotationIndicator` is: the orientation changes
  * on every frame of an orbit, and putting it through a store would re-render
@@ -95,12 +97,34 @@ export function orbitPosition(facing: Quaternion, focus: Vector3, radius: number
  * also a SECOND canvas -- its own renderer, its own frame loop, its own React
  * root inside the same tree -- so the two have no camera in common to read;
  * this object is the whole of what passes between them.
+ *
+ * The compass was the first reader and is still the busiest, which is what it
+ * is named for. The tool island is the second: it is a DOM sibling of the
+ * canvas exactly as the compass is, it has no camera of its own either, and a
+ * ruler it lays down has to land where the user is actually looking. A second
+ * copy of the camera written for that would be one more thing to keep in step
+ * with this one, and the two would drift the first time anything else moved the
+ * view.
+ *
+ * All three are written together, every frame, by `CompassControl`.
  */
 export const compass: {
-  /** The main camera's orientation, written every frame by `CompassControl`.
-   *  The compass draws the world axes turned by its inverse, which is what
-   *  makes it a readout of where the camera is rather than a fixed diagram. */
+  /** The main camera's orientation. The compass draws the world axes turned by
+   *  its inverse, which is what makes it a readout of where the camera is
+   *  rather than a fixed diagram. */
   facing: Quaternion
+  /** Where the camera stands. With `facing`, the whole of what is needed to ask
+   *  how far in front of the eye a point in the scene sits. */
+  eye: Vector3
+  /**
+   * The point the camera orbits, which is the middle of what it can see:
+   * OrbitControls looks AT this, so it projects to the centre of the viewport
+   * whatever the user has done to the view.
+   *
+   * The one place anything can be put with no scene to hang it off and still be
+   * certain it is on screen.
+   */
+  focus: Vector3
   /** A view the user has clicked, waiting to be picked up by the scene, or
    *  null. Consumed rather than read, so one click is one flight. */
   request: Vector3 | null
@@ -117,6 +141,8 @@ export const compass: {
   turn: { azimuth: number; polar: number }
 } = {
   facing: new Quaternion(),
+  eye: new Vector3(),
+  focus: new Vector3(),
   request: null,
   turn: { azimuth: 0, polar: 0 },
 }

@@ -15,7 +15,7 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
-import { Box3, Matrix4, ShaderLib, Vector3 } from 'three'
+import { Box3, Matrix4, Quaternion, ShaderLib, Vector3 } from 'three'
 import type { BufferGeometry, WebGLProgramParametersWithUniforms } from 'three'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -56,7 +56,16 @@ console.warn = (...args: unknown[]) => {
 import { ExportTools } from '../src/console/ExportTools'
 import { Inspector } from '../src/console/Inspector'
 import { NavBar } from '../src/console/NavBar'
-import { CutActions, CutTool, SnapTool } from '../src/console/NavTools'
+import {
+  CutActions,
+  CutTool,
+  HelpTool,
+  MoveTool,
+  RotateTool,
+  ScaleTool,
+  SnapTool,
+  rulerFrame,
+} from '../src/console/NavTools'
 import { ClipboardPanel, liveTiles } from '../src/console/ClipboardPanel'
 import { VIEW, framingDistance } from '../src/console/ObjectThumbnail'
 import { ObjectPanel } from '../src/console/ObjectPanel'
@@ -110,6 +119,7 @@ import {
   assemblyAnchor,
   assemblyCentre,
   assemblyExtent,
+  objectBounds,
 } from '../src/geometry/assembly'
 import { turnedRotation } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
@@ -150,6 +160,7 @@ import {
   useTools,
 } from '../src/store/toolStore'
 import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
+import { viewQuaternion } from '../src/viewport/compassViews'
 import {
   GRID_BODY,
   GRID_CLIP,
@@ -206,6 +217,11 @@ function markupOf(label: string, Panel: ComponentType): string {
     check(`${label} renders`, false, err instanceof Error ? err.message : String(err))
     return ''
   }
+}
+
+/** The unit a rendered panel says it is written in, off its header badge. */
+function badgeIn(markup: string): string {
+  return markup.match(/class="section-unit"[^>]*>([^<]+)</)?.[1] ?? ''
 }
 
 function shows(label: string, markup: string, needle: string) {
@@ -421,6 +437,18 @@ doc().selectObject(pyramidId)
   shows('a pyramid offers a side count', panel, '>Sides<')
   shows('and the current count is the active chip', panel, 'class="seg-btn seg-active">3<')
   shows('the object can be deleted from here', panel, 'Delete object')
+
+  // THE UNIT IS SAID ONCE, in the corner of the header, and no row repeats it.
+  // Under every row it was the same word six times over -- and in the viewport
+  // panel, where a row is one line of a grid and the suffix has no column of
+  // its own, six extra lines of height for it.
+  check('the placement panel wears its unit', badgeIn(placed) === SHOWN, badgeIn(placed))
+  hides('and no axis row repeats it', placed, 'class="vec3-unit"')
+  check('the dimensions panel wears its own', badgeIn(panel) === SHOWN, badgeIn(panel))
+  hides('and no dimension row repeats it', panel, 'class="field-unit"')
+  // A control that is not a length is untouched by any of this: a rotation is
+  // degrees whatever the island is set to, and never wore a unit here anyway.
+  shows('rotation is still in the panel beside them', placed, '>Rotation<')
 }
 
 {
@@ -480,11 +508,14 @@ doc().selectObject(pyramidId)
   shows('the bar carries the export tool', bar, '>Export<')
   shows('and the import tool', bar, '>Import<')
   shows('and the help button', bar, '>Help<')
-  // Snap and Cut are aimed at a solid you are looking at, so they went out of
-  // the bar and onto the scene. Asserted as an absence here, because a control
-  // in two places is a control with two states to keep in step.
-  hides('but not the snap tool', bar, '>Snap<')
-  hides('nor the cut tool', bar, '>Cut<')
+  // Snap is here, beside Units: it draws nothing and changes no handle, it is
+  // a rule EVERY drag obeys, which is what this cluster has in common. Cut is
+  // aimed at a solid you are looking at and went the other way, onto the scene.
+  // Both asserted, because a control in two places is a control with two states
+  // to keep in step.
+  shows('and the snap tool', bar, '>Snap<')
+  hides('but not the cut tool', bar, '>Cut<')
+  hides('nor any of the gizmo tools', bar, '>Rotate<')
   // Export is docked at the right, with the two other acts on the whole
   // document -- and its formats are behind its menu rather than spread across
   // the bar. Checked on the bar itself, since where a control SITS is the half
@@ -495,6 +526,16 @@ doc().selectObject(pyramidId)
     'to the left of undo and redo',
     right.indexOf('>Export<') < right.indexOf('>Undo<'),
     `${right.indexOf('>Export<')} vs ${right.indexOf('>Undo<')}`
+  )
+  // Snap is docked against Units, not merely somewhere in the bar: the two are
+  // the switches that apply to everything rather than to a selection, and a
+  // switch parked between Undo and Help would read as a fourth act on the
+  // document.
+  check(
+    'and snap docks against the unit selector',
+    right.indexOf('>Units<') < right.indexOf('>Snap<') &&
+      right.indexOf('>Snap<') < right.indexOf('>Undo<'),
+    `units ${right.indexOf('>Units<')}, snap ${right.indexOf('>Snap<')}, undo ${right.indexOf('>Undo<')}`
   )
   hides('with the formats behind its menu', bar, '>.glb<')
 
@@ -579,8 +620,109 @@ doc().selectObject(pyramidId)
 
   // The island over the scene: the two tools, and the strip that shuts it.
   const island = markupOf('ToolIsland', ToolIsland)
-  shows('the island carries the snap tool', island, '>Snap<')
-  shows('and the cut tool', island, '>Cut<')
+  shows('the island carries the cut tool', island, '>Cut<')
+  shows('the move tool', island, '>Move<')
+  shows('the rotate tool', island, '>Rotate<')
+  shows('and the scale tool', island, '>Scale<')
+  // And not Snap, which moved to the bar. The pair of assertions is the point:
+  // one control, one home.
+  hides('but not the snap tool, which is in the bar now', island, '>Snap<')
+  // The gizmo tools lead the island: they decide what every drag on a handle
+  // does, which is a different order of thing from the two tools below them.
+  check(
+    'and the gizmo tools come first',
+    island.indexOf('>Move<') < island.indexOf('>Ruler<') &&
+      island.indexOf('>Scale<') < island.indexOf('>Ruler<'),
+    `${island.indexOf('>Move<')}, ${island.indexOf('>Scale<')} vs ${island.indexOf('>Ruler<')}`
+  )
+  // With a rule drawn across the seam between them, which is where the two
+  // kinds of control meet. Its POSITION is the whole of what it says, so that
+  // is what is checked rather than merely that it is somewhere in there.
+  check(
+    'with a rule across the seam between the two groups',
+    island.indexOf('island-rule') > island.indexOf('>Scale<') &&
+      island.indexOf('island-rule') < island.indexOf('>Ruler<'),
+    `scale ${island.indexOf('>Scale<')}, rule ${island.indexOf('island-rule')}, ruler ${island.indexOf('>Ruler<')}`
+  )
+  {
+    // And the stylesheet actually draws it. A div whose whole substance is a
+    // class is invisible if the rule behind it is missing or renamed, and
+    // nothing at runtime would report that -- the markup would go on passing
+    // the check above while the island showed no line at all.
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    const rule = css.split('.island-rule {')[1]?.split('}')[0] ?? ''
+    check('and the stylesheet draws it', rule.includes('background:'), rule.trim())
+    check('as a hairline', rule.includes('height: 1px'), rule.trim())
+    // And a BRIGHT one. It is the only line in the island not on --border,
+    // which is the whole point of it: at #252b35 over a near-black island the
+    // seam was a rule you had to know was there. Pinned as "not the border
+    // token" as well as "the muted one", because reverting it would be a
+    // one-word edit that nothing else would notice.
+    check(
+      'lit, rather than on the token every other line uses',
+      rule.includes('--muted') && !rule.includes('--border'),
+      rule.trim()
+    )
+    // Flat, and pinned as such: a gradient here was tried and rejected --
+    // nothing else in the app draws one, so it read as decoration rather than
+    // as one of its rules.
+    check('and solid, not a gradient', !rule.includes('gradient'), rule.trim())
+  }
+
+  // The two that decide WHICH GIZMO is up. They are switches rather than a
+  // three-way picker because Move is not a thing you choose -- it is where you
+  // are when neither of these is on -- so there is no third button and no
+  // state on screen for it.
+  const rotate = markupOf('RotateTool', RotateTool)
+  shows('the rotate tool rests off', rotate, 'aria-pressed="false"')
+  // One of the three is ALWAYS on, and at rest it is Move -- so "which gizmo
+  // am I in" is read off the panel rather than deduced from two dark buttons.
+  shows('with move lit in its place', markupOf('MoveTool', MoveTool), 'aria-pressed="true"')
+  // No hover bubble, the same rule Snap and Cut follow: these are pressed
+  // constantly, and a paragraph on every pass of the pointer is noise. The keys
+  // that reach them are named in Help instead, where the app's other shortcuts
+  // already live.
+  hides('and carries no hover bubble', rotate, 'nav-tip')
+  hides('nor does scale', markupOf('ScaleTool', ScaleTool), 'nav-tip')
+  tools().setOpenPanel('help')
+  const help = markupOf('HelpTool (open)', HelpTool)
+  shows('Help names the rotate key', help, '<b>Rotate</b> (<b>R</b>)')
+  shows('and the scale key', help, '<b>Scale</b> (<b>S</b>)')
+  tools().setOpenPanel(null)
+
+  tools().setTransformMode('rotate')
+  shows(
+    'choosing rotate lights it',
+    markupOf('RotateTool (on)', RotateTool),
+    'aria-pressed="true"'
+  )
+  // ONE field holds the mode, so choosing either is choosing against the
+  // other. There is no rule keeping the two apart because there is no state in
+  // which both could be on.
+  shows(
+    'and puts scale out',
+    markupOf('ScaleTool (rotate up)', ScaleTool),
+    'aria-pressed="false"'
+  )
+  tools().setTransformMode('scale')
+  shows(
+    'and the same the other way round',
+    markupOf('RotateTool (scale up)', RotateTool),
+    'aria-pressed="false"'
+  )
+  // Choosing either puts Move out, which is the same one field saying so.
+  shows(
+    'and move goes out with it',
+    markupOf('MoveTool (scale up)', MoveTool),
+    'aria-pressed="false"'
+  )
+  tools().setTransformMode('move')
+  shows(
+    'and back on Move the other two are off',
+    markupOf('RotateTool (move)', RotateTool),
+    'aria-pressed="false"'
+  )
+  shows('with Move lit again', markupOf('MoveTool (move)', MoveTool), 'aria-pressed="true"')
   shows('under a title that names it', island, 'Tools</button>')
   shows('and it stands open at rest', island, 'aria-expanded="true"')
 
@@ -589,7 +731,7 @@ doc().selectObject(pyramidId)
   // Collapsed is the strip and nothing else: the tools are not merely hidden
   // by CSS, they are off the page, so nothing in there is left in the tab order
   // over a scene that is now showing none of it.
-  hides('collapsed, the tools go with the body', shut, '>Snap<')
+  hides('collapsed, the tools go with the body', shut, '>Move<')
   hides('the cut tool with them', shut, '>Cut<')
   shows('leaving the strip that opens it again', shut, 'Tools</button>')
   shows('which says it is shut', shut, 'aria-expanded="false"')
@@ -3194,6 +3336,33 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     'collapsing the island leaves the units menu open',
     useTools.getState().openPanel === 'units'
   )
+  // WHAT THE PANEL SAYS IT IS WRITTEN IN has to be what its rows are actually
+  // written in, and under `auto` that is a fact about the object rather than
+  // about the app. One panel, two solids, two answers -- and the rows move with
+  // the badge, which is the whole reason it can be said once at the top.
+  useTools.setState({ displayUnit: 'auto' })
+  const measured = doc().addObject({ kind: 'box', size: [0.02, 0.02, 0.02] }, [0, 0, 0])
+  doc().selectObject(measured)
+  const inMm = markupOf('ObjectPanel (2 mm cube)', ObjectPanel)
+  check('a two-millimetre solid reads in mm', badgeIn(inMm) === 'mm', badgeIn(inMm))
+  shows('and its rows are the millimetres it named', inMm, 'value="2"')
+  hides('with no row saying it again', inMm, 'class="field-unit"')
+
+  doc().patchObject(measured, { base: { kind: 'box', size: [30, 30, 30] } })
+  const inM = markupOf('ObjectPanel (3 m cube)', ObjectPanel)
+  check('a three-metre one reads in metres', badgeIn(inM) === 'm', badgeIn(inM))
+  shows('and its rows follow the header', inM, 'value="3"')
+
+  // ONE unit for the whole panel, taken from the largest of its lengths -- the
+  // rule `Vec3Field` already keeps across its three rows, one level up. A panel
+  // whose rows each chose their own could not be labelled in one word.
+  doc().patchObject(measured, { base: { kind: 'box', size: [30, 0.02, 0.02] } })
+  const mixed = markupOf('ObjectPanel (mixed)', ObjectPanel)
+  check('a panel with a wide range of lengths still says one', badgeIn(mixed) === 'm', badgeIn(mixed))
+  shows('the largest reading in it', mixed, 'value="3"')
+  shows('and the smallest in the same unit', mixed, 'value="0.002"')
+
+  doc().removeObject(measured)
   useTools.setState({ islandCollapsed: false, openPanel: null, displayUnit: 'cm' })
 }
 
@@ -3260,6 +3429,150 @@ console.log('\nThe ruler measures the scene without joining it')
       RULER_LENGTH,
       1e-12
     )
+  }
+
+  // And the lane runs from a FRAME, which is what makes a ruler land next to the
+  // thing being measured AND in front of it. The scene is five metres across, so
+  // a 50 mm line dropped at the origin while the work is in the corner is a
+  // button that looks like it did nothing -- and one dropped behind the solid,
+  // or laid end-on to the camera, looks exactly the same.
+  //
+  // `useDoc` rather than the `doc()` helper: this block declares a `doc` of its
+  // own further down, for the check that measuring never touches the document.
+  const measuredId = useDoc.getState().addObject({ kind: 'box', size: [2, 2, 2] }, [4, 1, -3])
+  const measured = useDoc.getState().doc.objects.find((o) => o.id === measuredId)
+  check('a solid to measure', measured !== undefined)
+  if (measured) {
+    const box = objectBounds(measured)
+    const centre = box.getCenter(new Vector3())
+    const corners: Vector3[] = []
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) corners.push(new Vector3(x, y, z))
+      }
+    }
+
+    /** A camera standing at `from`, looking at `at`. Oriented the way the
+     *  compass orients one, so the check and the app agree on what facing is. */
+    const cameraAt = (from: Vec3, at: Vec3) => {
+      const eye = new Vector3(...from)
+      const focus = new Vector3(...at)
+      return { facing: viewQuaternion(eye.clone().sub(focus)), eye, focus }
+    }
+    /** The direction a camera looks: its own -Z, in world terms. */
+    const seen = (facing: Quaternion) => new Vector3(0, 0, -1).applyQuaternion(facing)
+
+    // Every side of it, including the two a fixed world axis gets wrong: from
+    // behind, a ruler pushed along +Z is inside the solid, and from the right it
+    // is end-on to a camera looking down the axis it lies along.
+    const stations: Array<[string, Vec3]> = [
+      ['from the front', [centre.x, centre.y, centre.z + 6]],
+      ['from behind', [centre.x, centre.y, centre.z - 6]],
+      ['from the right', [centre.x + 6, centre.y, centre.z]],
+      ['from above', [centre.x, centre.y + 6, centre.z]],
+      ['down the corner', [centre.x + 4, centre.y + 3, centre.z + 4]],
+    ]
+
+    for (const [where, from] of stations) {
+      const camera = cameraAt(from, [centre.x, centre.y, centre.z])
+      const view = seen(camera.facing)
+      const depth = (p: Vec3) => new Vector3(...p).sub(camera.eye).dot(view)
+      const frame = rulerFrame(measured, camera)
+      const nearest = Math.min(...corners.map((c) => c.clone().sub(camera.eye).dot(view)))
+
+      // The one that matters: the solid cannot hide it, wherever the eye is.
+      // The last lane as well as the first, since the step must not spend the
+      // clearance the push bought.
+      for (const lane of [0, 7]) {
+        const ends = rulerSpawn(lane, frame)
+        check(
+          `${where}, lane ${lane} stands nearer the eye than the whole solid`,
+          depth(ends[0]) < nearest && depth(ends[1]) < nearest,
+          `${Math.min(depth(ends[0]), depth(ends[1])).toFixed(4)} vs ${nearest.toFixed(4)}`
+        )
+        near(
+          `${where}, lane ${lane} still measures 50 mm`,
+          rulerLength({ id: 'probe', ends }),
+          RULER_LENGTH,
+          1e-12
+        )
+        // Both ends at one depth is "not end-on" said where it bites: a ruler
+        // whose ends sit at different depths is one turned away from the
+        // camera, and at the limit it is a dot.
+        near(`${where}, lane ${lane} lies across the view`, depth(ends[0]), depth(ends[1]), 1e-12)
+      }
+
+      // Consecutive rulers step ACROSS the view, never into it: stepped along
+      // the view axis they would stack in depth and read as one ruler.
+      const first = rulerSpawn(0, frame)
+      const second = rulerSpawn(1, frame)
+      near(`${where}, the next lane keeps its distance`, depth(second[0]), depth(first[0]), 1e-12)
+      check(
+        `${where}, and is somewhere else on screen`,
+        new Vector3(...second[0]).distanceTo(new Vector3(...first[0])) > 1e-6
+      )
+
+      // Sideways it stays over the object: the push is purely along the view,
+      // so what moved is the depth and nothing else.
+      const shift = new Vector3(...frame.anchor).sub(centre)
+      near(
+        `${where}, the ruler lands over the middle of the solid`,
+        shift.clone().addScaledVector(view, -shift.dot(view)).length(),
+        0,
+        1e-12
+      )
+    }
+
+    // Nothing selected: the point the camera orbits, which is the middle of the
+    // viewport whatever the user has done to the view. The origin would be off
+    // screen the moment anyone panned away from it.
+    const panned = cameraAt([20, 20, 20], [12, 1, -3])
+    const loose = rulerFrame(null, panned)
+    check(
+      'with nothing selected a ruler lands where the camera is looking',
+      JSON.stringify(loose.anchor) === JSON.stringify([12, 1, -3]),
+      loose.anchor.join()
+    )
+
+    // And the one case the push cannot satisfy: a camera standing INSIDE what it
+    // is measuring wants the ruler behind its own head. It is held out in front
+    // instead, which is the only place it could be seen from. Built rather than
+    // added to the document -- a solid this size is not a scene anyone has, and
+    // the point is the arithmetic.
+    const giant = makeObject({ kind: 'box', size: [50, 50, 50] }, [0, 25, 0])
+    const inside = cameraAt([0, 25, 1], [0, 25, 0])
+    const held = rulerFrame(giant, inside)
+    const ahead = new Vector3(...held.anchor).sub(inside.eye).dot(seen(inside.facing))
+    check('a camera inside a solid still gets a ruler in front of it', ahead > 0, `${ahead}`)
+    near('held out at the standoff', ahead, RULER_LENGTH, 1e-12)
+
+    // The button carries the frame through to the store, which is the half of
+    // this a pure spawn function cannot state. Which LANE the next ruler takes
+    // is the id counter's business, so what is pinned is the frame: centred on
+    // the anchor's lane line, running along the frame's own axis.
+    const front = cameraAt([centre.x, centre.y, centre.z + 6], [centre.x, centre.y, centre.z])
+    const frame = rulerFrame(measured, front)
+    const along = new Vector3(...frame.along)
+    const step = new Vector3(...frame.step)
+    tools().addRuler(frame)
+    const laid = tools().rulers[tools().rulers.length - 1]
+    const ends = laid.ends.map((e) => new Vector3(...e))
+    const mid = ends[0].clone().add(ends[1]).multiplyScalar(0.5)
+    const off = mid.sub(new Vector3(...frame.anchor))
+    near(
+      'a ruler laid down through the store runs along the frame',
+      ends[1].clone().sub(ends[0]).normalize().dot(along),
+      1,
+      1e-12
+    )
+    near(
+      'and sits on the lane line through its anchor',
+      off.clone().addScaledVector(step, -off.dot(step)).length(),
+      0,
+      1e-12
+    )
+    // Put the count back: the deletion checks below count what is here.
+    tools().removeRuler(laid.id)
   }
 
   // Moving an end moves that end and nothing else -- the invariant behind

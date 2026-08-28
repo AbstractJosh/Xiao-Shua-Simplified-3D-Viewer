@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Vec2, Vec3 } from '../geometry/types'
 import { SCRUB_SLOP, scrubbed } from './scrub'
@@ -41,6 +41,32 @@ function useHeldWindow(value: number, min: number, max: number, step: number) {
 }
 
 /**
+ * A unit something has settled on, and the hold that keeps it settled across a
+ * scrub. `unit` is null for a control that is not a length at all.
+ */
+type HeldUnit = { unit: Unit | null; hold: () => void; release: () => void }
+
+/**
+ * The unit a whole SECTION has settled on, for every length inside it.
+ *
+ * A panel used to write its unit on every row -- "cm" under Position X, under
+ * Y, under Z, under Width, under Height, under Depth -- which is the same word
+ * six times and, in the viewport panel where a row is one line of a grid, six
+ * extra lines of height for it. Said once at the top of the panel it costs one
+ * corner nothing else was using.
+ *
+ * That only works if every row really is in that unit, so the section resolves
+ * ONE and hands it down here: the same bargain `Vec3Field` already strikes
+ * across its three rows, one level up. It also carries the HOLD, so a scrub
+ * that crosses 10 mm cannot change the unit under its own feet -- the freeze
+ * has to sit wherever the choosing does.
+ *
+ * Null for a field outside any such section -- the snap distance in the tool
+ * island -- which goes on choosing and labelling its own.
+ */
+const UnitScope = createContext<HeldUnit | null>(null)
+
+/**
  * The unit a length field should show itself in, held steady across a scrub.
  *
  * `auto` picks per value, so without the hold a drag could change the unit
@@ -50,11 +76,7 @@ function useHeldWindow(value: number, min: number, max: number, step: number) {
  * the rule the gizmo and `scrub.ts` follow, where a gesture is measured from
  * the press rather than accumulated frame by frame.
  */
-function useHeldUnit(sceneValue: number, active: boolean): {
-  unit: Unit | null
-  hold: () => void
-  release: () => void
-} {
+function useHeldUnit(sceneValue: number, active: boolean): HeldUnit {
   const mode = useTools((s) => s.displayUnit)
   const held = useRef<Unit | null>(null)
   if (!active) return { unit: null, hold: () => {}, release: () => {} }
@@ -68,6 +90,26 @@ function useHeldUnit(sceneValue: number, active: boolean): {
       held.current = null
     },
   }
+}
+
+/**
+ * The unit a field shows, and whether the field has to SAY it.
+ *
+ * Inside a section that has settled on one, the section says it -- once, in its
+ * header -- and the row shows the bare number. Outside one the field is on its
+ * own and wears its own suffix, exactly as it always did.
+ *
+ * Both hooks run whatever the answer, which is what keeps the hook order fixed:
+ * the field's own resolution is simply switched off while a scope is in force.
+ */
+function useFieldUnit(
+  sceneValue: number,
+  active: boolean
+): HeldUnit & { labelled: boolean } {
+  const scope = useContext(UnitScope)
+  const own = useHeldUnit(sceneValue, active && scope === null)
+  if (active && scope) return { ...scope, labelled: false }
+  return { ...own, labelled: own.unit !== null }
 }
 
 /**
@@ -257,7 +299,7 @@ export function NumberField({
   onChange,
 }: NumberFieldProps) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
-  const { unit: shown, hold, release } = useHeldUnit(value, unit)
+  const { unit: shown, labelled, hold, release } = useFieldUnit(value, unit)
 
   // Everything the control shows moves together -- value, both bounds and the
   // step. That is what keeps the FEEL identical across units: `scrubTravel` is
@@ -293,7 +335,7 @@ export function NumberField({
           onPressEnd={release}
           onChange={(v) => onChange(clamp(raw(v)))}
         />
-        {shown && <span className="field-unit">{suffixOf(shown)}</span>}
+        {shown && labelled && <span className="field-unit">{suffixOf(shown)}</span>}
       </div>
       <input
         className="field-range"
@@ -319,6 +361,7 @@ export function Section({
   collapsible = false,
   defaultOpen = true,
   right,
+  lengths,
 }: {
   title: string
   /**
@@ -331,8 +374,28 @@ export function Section({
   collapsible?: boolean
   defaultOpen?: boolean
   right?: React.ReactNode
+  /**
+   * THE LENGTHS THIS SECTION SHOWS, in scene units.
+   *
+   * Given them it settles on one unit for all of them -- chosen from the
+   * largest, the way `Vec3Field` chooses across its three rows -- wears it at
+   * its top right, and every length field inside shows itself in that unit
+   * instead of writing it out again per row. See `UnitScope`.
+   *
+   * The VALUES rather than the count, because `auto` picks per magnitude and
+   * the section has to pick the same one its rows would have. Omitted, nothing
+   * changes: the fields choose and label their own, one at a time.
+   */
+  lengths?: number[]
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  // One unit for the whole section, held for as long as anything inside it is
+  // being dragged. `0` for a section with no lengths at all reads as
+  // millimetres and is never shown, since the badge hangs off `lengths`.
+  const unit = useHeldUnit(
+    lengths === undefined ? 0 : Math.max(0, ...lengths.map((n) => Math.abs(n))),
+    lengths !== undefined
+  )
   // Collapsed state is local, so a section that later loses `collapsible` can
   // never stay stuck shut behind a flag nobody can reach any more.
   const shown = collapsible ? open : true
@@ -366,9 +429,22 @@ export function Section({
         )}
         {tip && <Tip>{tip}</Tip>}
         {hint && <span className="section-hint">{hint}</span>}
+        {/* The one loud thing in a muted header, because it is the key to every
+            number under it: take it away and the panel is a column of bare
+            figures that could be millimetres or metres. */}
+        {unit.unit && (
+          <span className="section-unit" title={`Every length here is in ${suffixOf(unit.unit)}`}>
+            {suffixOf(unit.unit)}
+          </span>
+        )}
         {right && <span className="section-right">{right}</span>}
       </h2>
-      {shown && children}
+      {shown &&
+        (unit.unit === null ? (
+          children
+        ) : (
+          <UnitScope.Provider value={unit}>{children}</UnitScope.Provider>
+        ))}
     </section>
   )
 }
@@ -547,7 +623,7 @@ export function Vec3Field({
   // triple whose X is in metres and whose Y is in millimetres cannot be
   // compared down the column, which is the whole point of stacking them.
   const widest = Math.max(Math.abs(value[0]), Math.abs(value[1]), Math.abs(value[2]))
-  const { unit: shown, hold, release } = useHeldUnit(widest, unit && !degrees)
+  const { unit: shown, labelled, hold, release } = useFieldUnit(widest, unit && !degrees)
   const toUi = (v: number) =>
     degrees ? (v * 180) / Math.PI : shown ? toDisplay(v, shown) : v
   const fromUi = (v: number) =>
@@ -588,7 +664,7 @@ export function Vec3Field({
           step={shown ? stepIn(stepped, shown) : stepped}
           decimals={shown ? decimalsOf(shown) : places}
           resetTo={resetTo}
-          suffix={shown ? suffixOf(shown) : undefined}
+          suffix={shown && labelled ? suffixOf(shown) : undefined}
           onPressStart={hold}
           onPressEnd={release}
           onChange={(v) => setAxis(i, v)}
@@ -626,7 +702,7 @@ export function Vec2Field({
   // One unit across the pair, from the larger of them, for the reason
   // `Vec3Field` uses one across its three.
   const widest = Math.max(Math.abs(value[0]), Math.abs(value[1]))
-  const { unit: shown, hold, release } = useHeldUnit(widest, unit)
+  const { unit: shown, labelled, hold, release } = useFieldUnit(widest, unit)
   const ui = (v: number) => (shown ? toDisplay(v, shown) : v)
   const raw = (v: number) => (shown ? fromDisplay(v, shown) : v)
 
@@ -643,7 +719,7 @@ export function Vec2Field({
           max={ui(max)}
           step={shown ? stepIn(step, shown) : step}
           decimals={shown ? decimalsOf(shown) : 2}
-          suffix={shown ? suffixOf(shown) : undefined}
+          suffix={shown && labelled ? suffixOf(shown) : undefined}
           onPressStart={hold}
           onPressEnd={release}
           onChange={(u) =>

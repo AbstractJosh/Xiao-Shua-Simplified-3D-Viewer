@@ -43,7 +43,7 @@ import {
   axisTarget,
   axisTravel,
   beginAxisDrag,
-  nearestLocalAxis,
+  frameAxes,
   nearestViewAxis,
   snapTurn,
   TURN_SNAP,
@@ -1213,36 +1213,39 @@ console.log('\n16. A ring turn runs about one axis, unwraps, and holds at 45 deg
 }
 
 {
-  // Resizing survives the arrows leaving the object's frame. A world arrow is
-  // matched to the local dimension it most nearly runs along, so the side that
-  // grows is the side being pulled.
-  const x = new Vector3(1, 0, 0)
-  const y = new Vector3(0, 1, 0)
-  const z = new Vector3(0, 0, 1)
+  // WHAT "THE OBJECT'S OWN AXES" ARE, which is what a Scale arrow now points
+  // along and what its drag is measured along -- see `local` on `GizmoParts`.
+  // A world arrow used to be matched to whichever of these it most nearly ran
+  // along; ridden to the object there is nothing left to match, so what is
+  // worth pinning is the frame itself.
+  const flat = frameAxes(WORLD_FRAME)
+  near('an unturned object stands in the world', flat[0].x, 1, 1e-9)
+  near('down all three', flat[1].y, 1, 1e-9)
+  near('of them', flat[2].z, 1, 1e-9)
 
-  const flat = nearestLocalAxis(WORLD_FRAME, x)
-  check('an unturned object maps each arrow to itself', flat === 0, `local ${flat}`)
-  const flatZ = nearestLocalAxis(WORLD_FRAME, z)
-  check('and so on down the three', flatZ === 2, `local ${flatZ}`)
-
-  // A quarter turn about Y sends local Z along world +X, so the world X arrow
-  // now resizes the box's DEPTH -- which is the dimension that visibly faces
-  // the arrow being dragged.
+  // A quarter turn about Y lays local X down world -Z. That arrow still resizes
+  // the box's WIDTH -- `size[0]` is measured along local X whatever the box has
+  // since been turned to -- and now it points along the side it grows, which is
+  // the whole of what changed.
   const quarter: Vec3 = [0, Math.PI / 2, 0]
-  const fromX = nearestLocalAxis(quarter, x)
-  check('a quarter turn hands world X to local Z', fromX === 2, `local ${fromX}`)
-  // Unsigned: local X points down world -Z after that turn, and pulling the +Z
-  // arrow outward still widens it. A solid grows both ways about its centre, so
-  // which end of the local axis faces the arrow makes no difference.
-  const fromZ = nearestLocalAxis(quarter, z)
-  check('and world Z to local X, sign and all', fromZ === 0, `local ${fromZ}`)
-  const fromY = nearestLocalAxis(quarter, y)
-  check('while Y, the axis turned about, is untouched', fromY === 1, `local ${fromY}`)
+  const turned = frameAxes(quarter)
+  near('a quarter turn about Y lays local X down world -Z', turned[0].z, -1, 1e-9)
+  near('with nothing left on X', turned[0].x, 0, 1e-9)
+  near('and sends local Z along world +X', turned[2].x, 1, 1e-9)
+  near('while Y, the axis turned about, is untouched', turned[1].y, 1, 1e-9)
 
-  // Between the right angles it is the nearest answer rather than an exact one,
-  // and it must still be one of the three -- never a refusal.
-  const askew = nearestLocalAxis([0.3, 0.4, 0.2], y)
-  check('an askew object still names an axis', [0, 1, 2].includes(askew), `local ${askew}`)
+  // Unit length at any angle at all, which is what lets `axisTravel` read a
+  // pointer's travel along one of them as a distance in the world.
+  for (const axis of frameAxes([0.3, 0.4, 0.2])) {
+    near('an askew frame is still three unit axes', axis.length(), 1, 1e-9)
+  }
+
+  // And still a frame: three axes at right angles, so a drag along one reads
+  // nothing of the other two.
+  const askew = frameAxes([0.3, 0.4, 0.2])
+  near('at right angles to each other', askew[0].dot(askew[1]), 0, 1e-9)
+  near('all three ways', askew[1].dot(askew[2]), 0, 1e-9)
+  near('round', askew[2].dot(askew[0]), 0, 1e-9)
 }
 
 {

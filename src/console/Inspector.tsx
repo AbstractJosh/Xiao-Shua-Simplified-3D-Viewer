@@ -9,6 +9,12 @@ import { Tip } from './Tip'
 
 const FACE_NAMES = ['+X', '-X', '+Y', '-Y', '+Z', '-Z']
 
+/** The lengths a sketch's shape puts on screen -- what the rows show, so the
+ *  unit the panel settles on is the one those rows would have chosen. */
+function shapeLengths(shape: Shape2D): number[] {
+  return shape.type === 'rect' ? [shape.w, shape.h] : [shape.r]
+}
+
 /**
  * Outer stop on the tilt slider, past which the control stops being a useful
  * way to lean a pillar whatever the geometry allows. It is NOT the constraint
@@ -112,7 +118,14 @@ export function Inspector() {
   const skipped = failed.includes(feature.id)
 
   return (
-    <Section title="Sketch" hint={anchorLabel(feature.anchor)}>
+    <Section
+      title="Sketch"
+      hint={anchorLabel(feature.anchor)}
+      // Every length the panel shows: the sketch's own size, how far it is
+      // pushed or pulled, and how far it has been slid across its face. Not the
+      // tilt or the rotation, which are degrees.
+      lengths={[...shapeLengths(feature.shape), depth, ...feature.faceOffset]}
+    >
       {feature.shape.type === 'circle' && (
         <NumberField
           unit

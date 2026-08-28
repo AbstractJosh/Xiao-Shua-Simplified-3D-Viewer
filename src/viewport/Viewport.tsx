@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { MOUSE, Mesh, Raycaster, Vector3 } from 'three'
+import { Euler, MOUSE, Mesh, Quaternion, Raycaster, Vector3 } from 'three'
 import type { Camera, MeshBasicMaterial } from 'three'
 import {
   MAX_FACE_OFFSET,
@@ -30,6 +30,7 @@ import {
   CUT_SIZE_MIN,
   useTools,
 } from '../store/toolStore'
+import type { TransformMode } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
 import { GuideGrid } from './GuideGrid'
 import { RulerReadouts, Rulers } from './Rulers'
@@ -58,7 +59,6 @@ import {
   axisTravel,
   beginAxisDrag,
   beginPlaneDrag,
-  nearestLocalAxis,
   nearestViewAxis,
   planeTarget,
   planeTravel,
@@ -69,7 +69,8 @@ import {
   WORLD_FRAME,
 } from './gizmoDrag'
 import type { AxisGrab, PlaneGrab, TurnGrab } from './gizmoDrag'
-import { clearModifiers, modifiers, planeHandles } from './modifiers'
+import { clearModifiers, modifiers } from './modifiers'
+import { PLANE_ROTATIONS } from './TransformGizmo'
 import { clearRotationIndicator, rotationIndicator } from './rotationIndicator'
 import {
   resolveAxisMove,
@@ -515,12 +516,56 @@ function readTurn(
    * world, so its ring turns about world X, Y or Z, while `rotation` remains
    * the object's own Euler because that is what the turn is composed onto.
    */
-  axisFrame: Vec3 = rotation
+  axisFrame: Vec3 = rotation,
+  /**
+   * WHICH RING was taken hold of, where the gizmo drew three of them.
+   *
+   * It changes the plane the sweep is read in, and that is the whole of the
+   * difference between the two kinds of ring:
+   *
+   *   A NAMED ring lies in a fixed world plane, so the angle is read in that
+   *   plane's own basis. Where the pointer meets the plane IS where the hand is
+   *   on the ring, so the target follows it exactly, and the axis is the ring's
+   *   own normal rather than a guess from where the camera is standing. It also
+   *   comes out right from either side: seen from behind, a drag that looks
+   *   clockwise on screen turns the target clockwise on screen, because the
+   *   measurement never mentions the camera.
+   *
+   *   A BILLBOARDED ring has no plane of its own, so the sweep is read in the
+   *   camera's and snapped to whichever of `axisFrame`'s three axes best faces
+   *   the viewer -- which is the only way to turn a twist of the screen into a
+   *   rotation about something nameable.
+   */
+  about: GizmoAxis | null = null
 ): { grab: TurnGrab; total: number } | null {
-  const facing = camera.quaternion.clone()
+  // The basis the angle is measured in, and the axis it therefore turns about.
+  // `facing` is handed to the dial, which draws its wedge in this same plane.
+  const facing = about === null
+    ? camera.quaternion.clone()
+    : new Quaternion().setFromEuler(new Euler(...PLANE_ROTATIONS[about], 'XYZ'))
   const right = new Vector3(1, 0, 0).applyQuaternion(facing)
   const up = new Vector3(0, 1, 0).applyQuaternion(facing)
-  const normal = camera.getWorldDirection(new Vector3())
+  // The plane's own normal, which for a named ring is the axis of the turn.
+  // Taken as right x up rather than as the world axis the ring is named after:
+  // `PLANE_ROTATIONS` is chosen to put local X and Y on the two POSITIVE world
+  // axes the plane spans, and two of the three come out with their local Z
+  // facing the other way as a result. Deriving the axis from the basis the
+  // angle is read in keeps the two in step whichever way that fell, so a
+  // positive sweep is a positive turn about it every time.
+  const normal =
+    about === null
+      ? camera.getWorldDirection(new Vector3())
+      : right.clone().cross(up).normalize()
+
+  // A ring seen near enough edge-on has no reliable meeting point with the
+  // pointer -- the ray runs along its plane, so a pixel of pointer movement
+  // slides the hit metres across it. The gesture holds where it is rather than
+  // lurching; there is a great deal of ring left to grab elsewhere, and the
+  // camera is one drag away. Only the named rings can get into this state: the
+  // billboarded one faces the viewer by construction.
+  if (about !== null && Math.abs(raycaster.ray.direction.dot(normal)) < RING_EDGE_ON) {
+    return null
+  }
 
   const hit = pickPlanePoint(raycaster, centre, normal)
   if (!hit) return null
@@ -534,7 +579,8 @@ function readTurn(
       // the target would visibly jump onto a different axis part-way through
       // one gesture. (For a world frame the axes hold still and only orbiting
       // could swap them, but the rule costs nothing and covers both cases.)
-      axis: nearestViewAxis(axisFrame, normal).axis,
+      // A named ring has nothing to choose: it IS the axis.
+      axis: about === null ? nearestViewAxis(axisFrame, normal).axis : normal.clone(),
       rotation,
       position,
       lastAngle: angle,
@@ -569,6 +615,31 @@ function ringRadius(
 }
 
 /**
+ * How square-on a rotate ring has to be before its plane can be read.
+ *
+ * About three degrees: far enough from parallel that the meeting point is
+ * stable, and shallow enough that all but the very last sliver of an edge-on
+ * ring is still draggable. The plane quads stand down at a much wider angle
+ * (`PLANE_EDGE_ON`), because a quad seen edge-on is an invisible sliver that
+ * would go on taking presses -- a ring seen edge-on is a line you can plainly
+ * see and deliberately aim at.
+ */
+const RING_EDGE_ON = 0.05
+
+/**
+ * The keys that pick a gizmo, and the whole of what they are.
+ *
+ * R and S are where every 3D application in the world puts these two, and
+ * neither was spoken for here -- the app's other shortcuts are all held behind
+ * Control. Bare, therefore: a mode you reach for between every other gesture is
+ * not worth a chord.
+ *
+ * There is no key for Move, because there is no need of one: pressing the tool
+ * you are already in puts it away, and what it puts you back to is Move.
+ */
+export const MODE_KEYS: Record<string, TransformMode> = { r: 'rotate', s: 'scale' }
+
+/**
  * Slide or resize an object with its gizmo.
  *
  * Every gesture here is measured from the object's ASSEMBLY ANCHOR -- the centre
@@ -597,11 +668,21 @@ function dragGizmo(
   const key = `${drag.objectId}|${drag.handle.mode}|${drag.handle.axis}`
 
   if (drag.handle.mode === 'rotate') {
-    // World axes, matching the arrows: the ring turns about whichever of X, Y
-    // and Z most faces the camera -- equivalently, it turns IN whichever world
-    // plane most faces the camera. An object already turned 30 degrees offers
-    // the same three choices as one straight out of the palette.
-    const turn = readTurn(key, raycaster, camera, centre, rotation, position, WORLD_FRAME)
+    // World axes, matching the arrows: the red ring turns about world X
+    // whatever the object has since been turned to, so an object already at 30
+    // degrees offers the same three rings as one straight out of the palette.
+    // The ring that was grabbed IS the axis; `WORLD_FRAME` is what the fallback
+    // would snap to if one ever arrived without one.
+    const turn = readTurn(
+      key,
+      raycaster,
+      camera,
+      centre,
+      rotation,
+      position,
+      WORLD_FRAME,
+      drag.handle.axis === 'all' ? null : drag.handle.axis
+    )
     if (!turn) return
     s.setObjectTransform(object.id, {
       // About the ring, not about the host's origin: a merged object has to spin
@@ -673,14 +754,23 @@ function dragGizmo(
     return
   }
 
-  // The arrow points along a WORLD axis, so that is the line the pointer is
-  // measured against and the direction a slide runs in.
-  const dir = axisWorld(WORLD_FRAME, drag.handle.axis)
-  // A resize cannot follow it there. A solid's dimensions are its own -- there
-  // is no "wider along world X" for a box standing at an angle -- so the world
-  // arrow is matched to the local axis it most nearly runs along, and that is
-  // the one that grows. See `nearestLocalAxis`.
-  const sizeAxis = nearestLocalAxis(rotation, dir)
+  // WHICH LINE THE POINTER IS MEASURED ALONG is whichever line the arrow was
+  // drawn along, and the two modes draw them differently -- see `local` on
+  // `GizmoParts`. A slide runs along a world axis; a resize runs along the
+  // object's own, because the dimension it grows is the object's own.
+  //
+  // Read off the HANDLE rather than off the live mode. The handle is the
+  // gesture's own record of what it was grabbed to do, so it cannot come to
+  // disagree with the arrow the user actually has hold of -- where the mode is
+  // a live reading that only stays put because the key handler refuses to
+  // change it mid-drag, which is a guard in another file.
+  const sizing = drag.handle.mode === 'size'
+  const dir = axisWorld(sizing ? rotation : WORLD_FRAME, drag.handle.axis)
+  // Which of the object's three dimensions that arrow grows. Now that the arrow
+  // stands in the object's frame it IS the dimension -- the world arrow used to
+  // be matched to whichever local axis it most nearly ran along, which was exact
+  // at right angles and a guess at every angle in between.
+  const sizeAxis = drag.handle.axis
   // `anchor` is read ONLY here, on the frame that starts the gesture. From then
   // on the grab's own origin is the axis, which is what keeps a still pointer
   // from walking the object back and forth -- see gizmoDrag.ts.
@@ -836,7 +926,7 @@ function dragSketchGizmo(
     return
   }
 
-  // Right-drag: stretch the outline along the arrow rather than sliding it.
+  // Scale mode: stretch the outline along the arrow rather than sliding it.
   if (handle.mode === 'size') {
     s.resizeShapeTo(
       resizeShapeAlong(grab.shape, handle.axis, travel, maxShapeSize(object.base))
@@ -914,9 +1004,10 @@ function dragCutGizmo(
     // numbers the Tilt rows do -- one axis at a time, which is exactly the
     // move a blade wants and the hardest one to dial in by typing.
     //
-    // WHICH axis is picked in the world frame, matching the arrows: a blade
-    // already tilted 30 degrees offers the same three choices as a flat one,
-    // rather than three that rode the turn before it.
+    // WHICH axis is the ring that was grabbed, and the three stand in the world
+    // frame, matching the arrows: a blade already tilted 30 degrees offers the
+    // same three rings as a flat one, rather than three that rode the turn
+    // before it.
     const turn = readTurn(
       key,
       raycaster,
@@ -924,7 +1015,8 @@ function dragCutGizmo(
       centre,
       plane.rotation,
       plane.position,
-      WORLD_FRAME
+      WORLD_FRAME,
+      drag.handle.axis === 'all' ? null : drag.handle.axis
     )
     if (!turn) return
     tools.setCutPlane({ rotation: turnedRotation(turn.grab, turn.total) })
@@ -1363,7 +1455,7 @@ function sketchHint(handle: GizmoHandle | null): string {
   }
   const name = handle.axis === 0 ? 'U' : 'V'
   return handle.mode === 'size'
-    ? `Resizing the sketch along ${name} -- right-drag`
+    ? `Resizing the sketch along ${name}`
     : `Sliding the sketch along ${name}`
 }
 
@@ -1395,13 +1487,15 @@ const PLANE_NAMES = ['YZ', 'XZ', 'XY'] as const
 
 function gizmoHint(handle: GizmoHandle | null): string {
   if (!handle) return ''
-  if (handle.mode === 'rotate') return 'Turning about the axis nearest the camera'
+  if (handle.mode === 'rotate') {
+    return handle.axis === 'all'
+      ? 'Turning about the axis nearest the camera'
+      : `Turning about ${AXIS_NAMES[handle.axis]} -- it lands on every 45 degrees`
+  }
   if (handle.mode === 'plane') return `Moving in the ${PLANE_NAMES[handle.axis]} plane`
   if (handle.axis === 'all') return 'Scaling every dimension at once'
   const name = AXIS_NAMES[handle.axis]
-  return handle.mode === 'move'
-    ? `Moving along ${name}`
-    : `Resizing along ${name} -- right-drag`
+  return handle.mode === 'move' ? `Moving along ${name}` : `Resizing along ${name}`
 }
 
 const AXIS_NAMES = ['X', 'Y', 'Z'] as const
@@ -1541,10 +1635,6 @@ export function Viewport() {
       else if (s.drag.kind === 'placing') s.commitPlacing()
       else if (s.drag.kind !== 'idle') s.endDrag()
       snapIndicator.hit = null
-      // The plane handles were latched up for the length of the drag, whatever
-      // Control has been doing meanwhile. This is the one place that sees every
-      // gesture end, so it is where they are let go.
-      planeHandles.held = false
       // The frame loop clears these too, but a press that lands before the next
       // frame would inherit them -- and a grab offset from the previous gesture
       // is exactly the teleport it exists to prevent.
@@ -1553,11 +1643,10 @@ export function Viewport() {
     }
 
     const track = (e: KeyboardEvent | PointerEvent) => {
+      // Read off whatever event is to hand rather than from a keydown alone,
+      // because a window that regains focus with the key already down never
+      // sees the press.
       modifiers.shift = e.shiftKey
-      // Meta counts as Control; see `modifiers`. Read off whatever event is to
-      // hand rather than from a keydown alone, because a window that regains
-      // focus with the key already down never sees the press.
-      modifiers.ctrl = e.ctrlKey || e.metaKey
     }
 
     /**
@@ -1614,7 +1703,6 @@ export function Viewport() {
         }
         s.endDrag()
         clearGrabs()
-        planeHandles.held = false
         useObjectMenu.getState().closeMenu()
         s.selectObject(null)
         // The ruler stays, its handles go. Escape has always meant "put that
@@ -1643,8 +1731,30 @@ export function Viewport() {
         } else if (selected && s.selectedFeatureId) {
           s.removeFeature(selected, s.selectedFeatureId)
         } else if (selected) {
-          s.removeObject(selected)
+          // The WHOLE selection, not just the one wearing the gizmo. A marquee
+          // over six solids is one gesture and reads as one thing; clearing it
+          // with six presses of the same key would be six undo steps for what
+          // the user did once.
+          s.removeObjects(s.selectedObjectIds)
         }
+      } else if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.toLowerCase() in MODE_KEYS
+      ) {
+        // Ignored mid-gesture. The mode decides which handles exist at all, so
+        // switching one out from under a drag in flight would leave the gesture
+        // running against a gizmo that had left the screen -- and the turn or
+        // the resize would carry on, invisibly, until the button came up.
+        if (s.drag.kind !== 'idle') return
+        const wanted = MODE_KEYS[e.key.toLowerCase()]
+        const { transformMode, setTransformMode } = useTools.getState()
+        // A toggle, matching the buttons: the tool you are already in puts
+        // itself away, and what it puts away TO is Move. That is also what
+        // keeps the two mutually exclusive without a rule saying so -- one
+        // field cannot hold both.
+        setTransformMode(transformMode === wanted ? 'move' : wanted)
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) s.redo()
