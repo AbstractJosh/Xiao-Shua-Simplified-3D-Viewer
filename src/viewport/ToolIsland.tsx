@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
-import { CutActions, CutTool, RulerTool, SnapTool } from '../console/NavTools'
+import { CutActions, CutTool, MoveTool, RotateTool, RulerTool, ScaleTool } from '../console/NavTools'
 import { dockIsland, useTools } from '../store/toolStore'
 
 /**
@@ -15,15 +15,20 @@ import { dockIsland, useTools } from '../store/toolStore'
 const GRAB_SLOP = 4
 
 /**
- * The tools you work *with*, as an island floating over the scene: Snap, Cut,
- * and the two actions an armed cut plane brings with it.
+ * The tools you work *with*, as an island floating over the scene: the three
+ * that decide which gizmo is up, Ruler, Cut, and the two actions an armed cut
+ * plane brings with it.
  *
- * They were in the bar across the top. Both are aimed at the SCENE -- snapping
- * is watched at the corner of a solid being dragged, a cut is fired at a plane
- * standing in the middle of the viewport -- so reaching them meant the hand at
- * the top edge of the window and the eye on the model, and the panel hanging
- * off the button came down over the thing it was aimed at. Over the scene, the
- * hand and the eye are in one place.
+ * They were in the bar across the top. Every one of them is aimed at the SCENE
+ * -- a gizmo is dragged on the solid it belongs to, a ruler is laid beside the
+ * thing it measures, a cut is fired at a plane standing in the middle of the
+ * viewport -- so reaching them meant the hand at the top edge of the window and
+ * the eye on the model, and the panel hanging off the button came down over the
+ * thing it was aimed at. Over the scene, the hand and the eye are in one place.
+ *
+ * What is NOT here is the test of that: Snap and Units went back to the bar,
+ * because neither is aimed at anything. One is a rule every drag obeys and the
+ * other is what all the numbers are counted in.
  *
  * It opens at the top-left, the corner nothing else claims: the compass has the
  * top-right, the selection panels the bottom-right, the drag hint the bottom
@@ -34,9 +39,9 @@ const GRAB_SLOP = 4
  * the window resizes; see `IslandPlacement`.
  *
  * The buttons inside are the bar's own components, unchanged -- one definition
- * of what Snap is, rendered somewhere else. What makes them a column, and what
- * turns the panels around when the island is over on the right, is CSS scoped
- * to `.tool-island`.
+ * of what a tool is, rendered somewhere else. What makes them a column, and
+ * what turns the panels around when the island is over on the right, is CSS
+ * scoped to `.tool-island`.
  */
 export function ToolIsland() {
   const collapsed = useTools((s) => s.islandCollapsed)
@@ -211,15 +216,29 @@ export function ToolIsland() {
 
       {!collapsed && (
         <div className="island-body">
-          {/* The three MODES -- what the next drag will do. Units left for the
-              bar: it changes no gesture and no geometry, only what the numbers
-              on screen are counted in, so it belongs with the document-wide
-              controls rather than with the things aimed at a solid. */}
-          <SnapTool />
+          {/* What the GIZMO is, first, and always one of the three: they
+              decide what every drag on a handle does, which makes them the
+              closest thing in the app to a mode. Move leads because it is
+              where the gizmo rests -- see `ModeTool`. */}
+          <MoveTool />
+          <RotateTool />
+          <ScaleTool />
+          {/* The two groups above and below are different kinds of control --
+              one decides what a drag on a HANDLE does, the other puts something
+              new in the scene -- and stacked in one column at one gap they read
+              as a list of five unrelated switches. Inert and hidden from the
+              reader: it separates nothing that is not already two groups in
+              the markup. */}
+          <div className="island-rule" aria-hidden />
+          {/* Then the tools that put something new in the scene. Snap and
+              Units are both left for the bar: neither draws anything or
+              changes what a handle does -- one is a rule every drag obeys, the
+              other is what the numbers are counted in -- so they belong with
+              the document-wide controls rather than over the model. */}
           <RulerTool />
           <CutTool />
-          {/* Only on screen while the plane is armed, so the island is no taller
-              than two buttons for anyone not cutting. */}
+          {/* Only on screen while the plane is armed, so the island is no
+              taller than its five switches for anyone not cutting. */}
           <CutActions />
         </div>
       )}

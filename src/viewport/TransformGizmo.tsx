@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
 import type { ThreeEvent } from '@react-three/fiber'
@@ -8,18 +8,24 @@ import type { Intersection, Object3D, Raycaster } from 'three'
 import type { GizmoAxis, GizmoHandle } from '../store/docStore'
 import type { Vec3 } from '../geometry/types'
 import { AXIS_COLORS } from './axisColors'
-import { rotationIndicator } from './rotationIndicator'
-import { modifiers, planeHandles } from './modifiers'
+import { useTools } from '../store/toolStore'
+import type { TransformMode } from '../store/toolStore'
 
 /**
- * Three arrows and a ring, drawn at a point and turned into that point's own
+ * Arrows, quads and rings, drawn at a point and turned into that point's own
  * frame.
  *
- * One component serves both the selected object and the cut plane because the
- * gesture is identical -- slide along an axis, resize along an axis, scale the
- * lot -- and only the thing on the other end differs. What the caller supplies
- * is where to draw it and what to do when a handle is grabbed; the gizmo itself
- * owns no state and knows nothing about documents or tools.
+ * One component serves the selected object, a selected sketch, the cut plane
+ * and a ruler's end, because the gestures are identical -- slide along an axis,
+ * slide within a plane, turn about an axis, resize along one, scale the lot --
+ * and only the thing on the other end differs. What the caller supplies is
+ * where to draw it, which of those gestures its target actually has, and what
+ * to do when a handle is grabbed.
+ *
+ * WHICH of them is on screen is the app-wide `transformMode`, read here rather
+ * than passed down, so that choosing a tool changes every gizmo at once and no
+ * caller can forget to pass it on. That is the one piece of state this
+ * component knows about; everything else about it is props.
  *
  * WHICH FRAME the arrows stand in is the caller's to decide, and the callers
  * do not all agree, because the thing an arrow means differs:
@@ -31,35 +37,122 @@ import { modifiers, planeHandles } from './modifiers'
  *     X, Y and Z. The tilt still lives on the quad, which is the blade itself.
  *   - A sketch passes a quaternion built from the surface it lies on. Its
  *     arrows are U, V and the normal; there is nowhere else for them to be.
- *   - A selected object passes NOTHING, so the arrows stand in the world. Its
- *     arrows are directions to slide in and a ring to turn by, and those are
- *     worth more as a fixed reference than as a readout of the object's
- *     current angle -- axes that rode the object moved out from under the
- *     second half of every rotation gesture.
- *
- * The object's own frame has not stopped mattering; it has moved to where it
- * is actually needed. A right-drag still resizes one of the object's OWN
- * dimensions -- there is no such thing as a box that is wider along world X --
- * and Viewport's `nearestLocalAxis` maps the world arrow that was grabbed onto
- * the local dimension it most nearly runs along.
+ *   - A selected object passes its own rotation IN SCALE and nothing in the
+ *     other two, so its arrows ride it while they resize and stand in the world
+ *     while they move. That split is `local` on `GizmoParts`, and the reasoning
+ *     is under it.
  */
 
 /**
- * WHAT THE RING GIVES WAY TO. Three arrows move along one axis at a time, and
- * between them they can reach anywhere -- in two or three gestures. The move
- * people actually want is usually across a surface: slide this along the
- * ground, drop that down the face of a wall. That is one gesture in a plane and
- * two or three with arrows, and doing it with arrows means aiming at a
- * direction rather than at the place you are going.
+ * WHAT EACH MODE PUTS ON SCREEN, and the reasoning that decided it.
  *
- * So Control swaps the ring for three quads, one per plane, and a drag on one
- * moves the target within it. The ring rather than a fourth handle standing
- * beside it because there is no room: a billboarded circle crosses all three
- * quads whatever the camera angle, so the two would spend every gesture taking
- * each other's presses. Behind a held key rather than always up for the same
- * reason -- the gizmo is small and already carries four handles, and the ring's
- * two gestures are not worth losing to make permanent room.
+ * The gizmo used to carry every gesture at once: arrows that slid on the left
+ * button and resized on the right, a ring that scaled on the left and turned on
+ * the right, and three plane quads that came out only while Control was held,
+ * because a billboarded circle crosses all three quads whatever the camera
+ * angle and the two would have spent every gesture taking each other's presses.
+ * Six gestures on four handles, two of them behind a mouse button nothing else
+ * in the app uses and one behind a key.
+ *
+ * The modes unpick that. Each one draws the handles for ONE job, so every
+ * handle has exactly one gesture and the left button is the only button:
+ *
+ *   move    the three arrows and all three plane quads, permanently -- the
+ *           quads no longer wait behind Control, because the ring they used to
+ *           fight for space with is not drawn in this mode at all.
+ *   rotate  three rings, one per world plane, each turning about the axis it is
+ *           normal to. No arrows: they point along the axes, and a turn is the
+ *           one gesture that moves those axes, so they would sweep across the
+ *           dial being read.
+ *   scale   the ring, which scales every dimension at once, and the arrows
+ *           again -- here each one resizes the dimension it points along, which
+ *           is what the right button used to do. These arrows stand in the
+ *           OBJECT's frame rather than the world's; see `local`.
+ *
+ * A gizmo shows a handle only where its target actually has that gesture: the
+ * cut plane has no per-axis extent, so Scale gives it the ring alone, and a
+ * ruler's end is a point, so it stays on Move whatever the mode says.
  */
+
+/**
+ * Which handles a mode calls for, before any one gizmo narrows it down.
+ *
+ * Pure, and exported, because this is the whole of what choosing a tool does to
+ * the viewport and there is otherwise no way to state it without a camera, a
+ * pointer and three React trees. What each gizmo then does with the answer
+ * depends on what its target can be asked to do -- see the props.
+ */
+export type GizmoParts = {
+  /** The axis arrows stand. */
+  arrows: boolean
+  /** And a left-drag on one SLIDES rather than resizes. */
+  slide: boolean
+  /** The three plane quads stand. */
+  planes: boolean
+  /** The three axis rings stand. */
+  rings: boolean
+  /** The one billboarded ring stands. */
+  ring: boolean
+  /**
+   * The arrows stand in the TARGET's own frame rather than the world's, for a
+   * target that has one to stand in.
+   *
+   * AN ARROW THAT RESIZES IS ALREADY LOCAL WHATEVER IT IS DRAWN ALONG. A solid's
+   * dimensions are its own -- there is no such thing as a box that is wider
+   * along world X -- so a Scale drag was always going to change one of the
+   * object's three, and a world arrow could only be MATCHED to whichever of them
+   * it most nearly ran along. That match was exact at right angles and a guess
+   * everywhere else: a box standing at 45 degrees offered two arrows that both
+   * pointed between two of its sides, and neither said which one it would grow.
+   * Ridden to the object, an arrow points down the side it resizes, and the
+   * question does not arise.
+   *
+   * MOVE AND ROTATE STAY IN THE WORLD, and it is the same decision in both: a
+   * slide is expressible along any direction at all, and a turn is the one
+   * gesture that MOVES the axes, so handles that rode the object would sweep out
+   * from under the second half of every rotation. Both are worth more as a fixed
+   * reference than as a readout of the object's current angle -- which is what a
+   * Scale arrow, alone among them, has to be.
+   *
+   * Nothing is claimed here about the rings or the quads. The billboarded ring
+   * faces the camera and has no frame to be in; the three rotate rings and the
+   * plane quads are drawn in the world, and this is false in the modes that
+   * carry them.
+   */
+  local: boolean
+}
+
+export function gizmoParts(mode: TransformMode): GizmoParts {
+  switch (mode) {
+    case 'move':
+      return {
+        arrows: true,
+        slide: true,
+        planes: true,
+        rings: false,
+        ring: false,
+        local: false,
+      }
+    case 'rotate':
+      return {
+        arrows: false,
+        slide: false,
+        planes: false,
+        rings: true,
+        ring: false,
+        local: false,
+      }
+    case 'scale':
+      return {
+        arrows: true,
+        slide: false,
+        planes: false,
+        rings: false,
+        ring: true,
+        local: true,
+      }
+  }
+}
 
 const RING_COLOR = '#eceff4'
 
@@ -102,6 +195,28 @@ const GRAB_RADIUS = 0.17
 const RING_RADIUS = 0.27
 const RING_TUBE = 0.015
 const GRAB_TUBE = 0.045
+
+/**
+ * The rotate ball: three rings, well OUTSIDE where the scale ring sits.
+ *
+ * It can be, because nothing else is drawn in this mode -- no arrows to cross,
+ * no quads to overlap -- so the rings take the room the arrows would have had
+ * and end up a target the width of the whole gizmo rather than a circle a
+ * quarter of the way in. That matters more here than anywhere else on the
+ * gizmo: a ring seen near edge-on is a line a few pixels tall, and the bigger
+ * the circle the longer the stretch of it that is still square-on to the
+ * pointer.
+ *
+ * Stopping at 0.62 rather than 1 keeps the ball inside the dial the turn draws
+ * (`RotationDial`, which lands at about nine tenths of this once both apparent
+ * sizes are worked through), so the wedge reads as the ball's own fill rather
+ * than as a disc thrown over the top of it.
+ */
+const BALL_RADIUS = 0.62
+const BALL_TUBE = 0.02
+/** Fatter than it looks, for the same reason the arrows' cylinders are: a
+ *  0.02-tube ring is a two-pixel target at the size this is drawn at. */
+const BALL_GRAB_TUBE = 0.07
 
 /**
  * The three plane handles: small quads standing in the corners between each
@@ -288,29 +403,6 @@ const ringRaycast = biasedRaycast(RING_PRIORITY_SCALE)
  *  there is plenty of quad to grab away from one. */
 const planeRaycast = biasedRaycast(RING_PRIORITY_SCALE)
 
-/**
- * Whether the plane handles are showing, which is also whether the ring is not.
- *
- * A plain function read from frame loops rather than React state, because the
- * key it answers to is held rather than clicked: routing Control through a
- * store would re-render the whole scene twice for every press of it. The
- * gizmo's own loop and each quad's read the same rule, so the ring and the
- * planes cannot both believe they are up.
- *
- * `swaps` is false for a gizmo with no ring to give up -- the ruler's -- where
- * the planes are simply the only handle of their kind and stand permanently.
- *
- * Exported for `interaction-check`, which pins the rule itself: this is the
- * whole of what Control does to the gizmo, and it is not otherwise reachable
- * without a camera and a pointer.
- */
-export function planesUp(swaps: boolean): boolean {
-  if (!swaps) return true
-  // The latch is what keeps a gesture from losing its own handle when a finger
-  // comes off the key part-way through the drag.
-  return modifiers.ctrl || planeHandles.held
-}
-
 /** The drawn parts are decoration; the grab volumes below are what is aimed at.
  *  Leaving these pickable would let a two-pixel shaft steal a click from the
  *  fat cylinder wrapped around it. */
@@ -319,14 +411,19 @@ const noRaycast: Object3D['raycast'] = () => {}
 function Arrow({
   axis,
   color,
-  sizable,
   sizeOnly,
   onGrab,
 }: {
   axis: GizmoAxis
   color: string
-  sizable: boolean
-  /** This arrow has no slide, so both buttons resize along it. See the prop. */
+  /**
+   * This arrow does not slide: it resizes, on either button.
+   *
+   * Two things arrive here. In Scale mode EVERY arrow is one, which is the
+   * mode. And in any mode, an arrow whose target has no slide along it is one
+   * -- the sketch gizmo's normal arrow, which cannot leave the face it is
+   * anchored to but can sweep along it. See `sizeOnlyAxes`.
+   */
   sizeOnly: boolean
   onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
 }) {
@@ -337,16 +434,20 @@ function Arrow({
   const shown = hovered ? lit(color) : color
 
   const press = (e: ThreeEvent<PointerEvent>) => {
-    // Left slides the target along this axis, right resizes it along the same
-    // axis. Two gestures on one handle rather than two sets of arrows: the
-    // second set would double the clutter for an operation that is, spatially,
-    // exactly the same drag.
+    // LEFT does the one thing this arrow is for, which the mode has already
+    // decided: slide along the axis in Move, resize along it in Scale.
     //
-    // A size-only arrow answers both buttons with the same gesture. It is not a
-    // handle that ignores a button -- which reads as broken -- but one where
-    // there is no second thing to do: nothing slides along it.
+    // The right button used to carry the resize, on the same arrow, in every
+    // mode there was -- one handle with two gestures on it, told apart by a
+    // button nothing else in the app uses. Scale mode is where that gesture
+    // lives now, so a right press here is left to the camera instead, which is
+    // what it does everywhere else in the viewport.
+    //
+    // A size-only arrow still answers both, because there is no second thing
+    // for the right button to mean on it and a handle that ignored a button
+    // reads as broken.
     if (e.button === 0) onGrab({ mode: sizeOnly ? 'size' : 'move', axis }, e)
-    else if (e.button === 2 && (sizable || sizeOnly)) onGrab({ mode: 'size', axis }, e)
+    else if (e.button === 2 && sizeOnly) onGrab({ mode: 'size', axis }, e)
   }
 
   return (
@@ -412,22 +513,20 @@ function Arrow({
  * "X", one along it and one across it.
  *
  * It owns its own frame loop rather than being told when to show itself. What
- * it has to answer -- is Control down, and is this plane square-on enough to
- * aim at -- are both things that change without any prop changing, so a parent
- * pushing the answer down would have to re-render three quads on every frame of
- * an orbit.
+ * it has to answer -- is this plane square-on enough to aim at -- changes with
+ * the camera and with no prop at all, so a parent pushing the answer down would
+ * have to re-render three quads on every frame of an orbit. WHETHER the quads
+ * are offered in the first place is the mode's business, and the mode is a
+ * render: this component is not built at all outside Move.
  */
 function PlaneHandle({
   axis,
   color,
-  swaps,
   onGrab,
 }: {
   /** The axis this plane is NORMAL to. See `PLANE_ROTATIONS`. */
   axis: GizmoAxis
   color: string
-  /** Whether this gizmo has a ring for the planes to take the place of. */
-  swaps: boolean
   onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
 }) {
   const root = useRef<Group>(null)
@@ -447,7 +546,7 @@ function PlaneHandle({
     // a whole is standing in.
     const normal = group.getWorldDirection(new Vector3())
     const facing = Math.abs(normal.dot(camera.getWorldDirection(new Vector3())))
-    up.current = planesUp(swaps) && facing > PLANE_EDGE_ON && !rotationIndicator.active
+    up.current = facing > PLANE_EDGE_ON
     group.visible = up.current
     // A quad that went away under the pointer never gets its `pointerout`, so
     // the lift would stay on it and come back lit the next time it appeared.
@@ -469,9 +568,8 @@ function PlaneHandle({
           // returning rather than by stopping it, so it carries on to whatever
           // is genuinely under the pointer.
           if (!up.current) return
-          // Left only. The right button turns and resizes everywhere else on
-          // this gizmo, and a plane has neither -- so it is left to the camera
-          // rather than answered with a third meaning.
+          // Left only, which is now the whole gizmo's rule: one handle, one
+          // gesture, on the button everything else in the viewport uses.
           if (e.button === 0) onGrab({ mode: 'plane', axis }, e)
         }}
         onPointerOver={() => up.current && setHovered(true)}
@@ -506,6 +604,69 @@ function PlaneHandle({
   )
 }
 
+/**
+ * One of the rotate ball's three rings: a circle lying in a world plane, which
+ * turns the target about the axis that plane is normal to.
+ *
+ * It stands in `PLANE_ROTATIONS` -- the same three Eulers the plane quads use,
+ * and for the same reason. A quad and a ring in the same plane are the same
+ * statement about which two axes are in play, so there is one table of turns
+ * rather than two that have to be kept in step, and the colour follows the same
+ * convention: named by the NORMAL, which for a ring is the axis it spins about.
+ *
+ * Drawn whole, front half and back. Hiding the far side is the usual CAD
+ * flourish and it is not free -- the ring is drawn over everything, so there is
+ * no depth test to hide anything with -- and it would take away the one thing
+ * that makes a near-edge-on ring grabbable at all, which is the length of it
+ * still crossing the pointer.
+ */
+function RotateRing({
+  axis,
+  color,
+  onGrab,
+}: {
+  /** The axis this ring turns ABOUT, which its plane is normal to. */
+  axis: GizmoAxis
+  color: string
+  onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
+}) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <group rotation={new Euler(...PLANE_ROTATIONS[axis])}>
+      <mesh renderOrder={DRAW_ON_TOP} raycast={noRaycast}>
+        <torusGeometry args={[BALL_RADIUS, BALL_TUBE, 8, 64]} />
+        <meshBasicMaterial
+          color={hovered ? lit(color) : color}
+          transparent
+          opacity={hovered ? 1 : 0.85}
+          depthTest={false}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </mesh>
+
+      {/* The hit volume, drawn transparent rather than hidden: `visible` takes
+          a mesh out of the drawing and leaves it in the raycast. */}
+      <mesh
+        raycast={ringRaycast}
+        onPointerDown={(e) => {
+          // Left only. There is no second gesture on a ring any more -- that
+          // was the old right-drag turn, and turning is now what the whole
+          // mode is for -- so the right button is left to the camera.
+          if (e.button === 0) onGrab({ mode: 'rotate', axis }, e)
+        }}
+        onPointerOver={() => setHovered(true)}
+        onPointerOut={() => setHovered(false)}
+        onContextMenu={(e) => e.nativeEvent.preventDefault()}
+      >
+        <torusGeometry args={[BALL_RADIUS, BALL_GRAB_TUBE, 6, 40]} />
+        <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
+      </mesh>
+    </group>
+  )
+}
+
 export function TransformGizmo({
   position,
   rotation,
@@ -514,9 +675,11 @@ export function TransformGizmo({
   sizeOnlyAxes = [],
   colors = AXIS_COLORS,
   ring = true,
+  turns = ring ? 'axes' : false,
   planes = true,
   size = 1,
   sizable = true,
+  mode,
   controlsRef,
   onGrab,
 }: {
@@ -544,7 +707,28 @@ export function TransformGizmo({
    */
   sizeOnlyAxes?: GizmoAxis[]
   colors?: readonly string[]
+  /**
+   * Whether this gizmo has the billboarded ring, which is Scale's uniform
+   * handle. Off for the ruler, whose end is a point: there is nothing about a
+   * point to make bigger.
+   */
   ring?: boolean
+  /**
+   * How this target turns, which decides what Rotate draws:
+   *
+   *   'axes'    three rings, one per world plane. For anything with a full
+   *             orientation to set -- an object, the cut plane -- where the
+   *             choice of axis is the first half of the gesture.
+   *   'facing'  one billboarded ring, for a target with exactly ONE axis to
+   *             turn about. A sketch is the case: it spins in the surface it
+   *             lies on and nowhere else, so there is no axis to choose and a
+   *             ball of three would offer two turns it cannot make.
+   *   false     it does not turn at all. A ruler's end is a point.
+   *
+   * Defaulted off `ring` because the two say the same thing about a point:
+   * nothing to scale, nothing to turn.
+   */
+  turns?: 'axes' | 'facing' | false
   /**
    * Whether this gizmo offers the three plane handles at all.
    *
@@ -555,30 +739,63 @@ export function TransformGizmo({
    * directions it can go, and a quad spanning a world pair would be a handle
    * for a motion the document cannot express.
    *
-   * Where there is a `ring`, the planes take its place while Control is held.
-   * Where there is not -- the ruler's gizmo, whose end is a point with nothing
-   * to scale or turn -- they are the only handle of their kind and stand
-   * permanently, since there is nothing for them to be swapped with.
+   * Where they are offered they stand permanently in Move -- there is nothing
+   * left for them to be swapped with, since the ring that used to want their
+   * room is drawn in another mode now.
    */
   planes?: boolean
   /** Multiplier on the apparent size, for gizmos that annotate small things. */
   size?: number
   /**
-   * Whether the arrows resize on a right-drag. False for the cut plane, which
-   * has no per-axis extent to change -- its one dimension is the guide square,
-   * and that belongs to the ring.
+   * Whether the arrows can resize AT ALL, which is what decides whether Scale
+   * draws them. False for the cut plane, which has no per-axis extent to
+   * change -- its one dimension is the guide square, and that belongs to the
+   * ring -- so Scale gives the plane the ring alone rather than three arrows
+   * that would answer a press with nothing.
    */
   sizable?: boolean
+  /**
+   * Which mode this gizmo is in, overriding the one the tool island holds.
+   *
+   * Every gizmo follows the app-wide mode by default, which is the point of it.
+   * The RULER pins itself to `move`: its end is a point, so Rotate and Scale
+   * have no handle to give it, and following the mode would leave a selected
+   * ruler wearing no gizmo at all for as long as another tool was up.
+   */
+  mode?: TransformMode
   controlsRef: RefObject<{ enabled: boolean } | null>
   onGrab: (handle: GizmoHandle) => void
 }) {
   const root = useRef<Group>(null)
-  const arrows = useRef<Group>(null)
   const ringBand = useRef<Mesh>(null)
   const ringGrab = useRef<Mesh>(null)
   const [ringHovered, setRingHovered] = useState(false)
-  /** Whether the planes have taken the ring's place this frame. See below. */
-  const swapped = useRef(false)
+
+  // The app-wide mode, unless this gizmo pins its own. Subscribed rather than
+  // read, because a change of mode changes what is drawn -- which is the one
+  // thing about this component that IS worth a render.
+  const appMode = useTools((s) => s.transformMode)
+  const parts = gizmoParts(mode ?? appMode)
+
+  // Which arrows this mode actually offers. In Move, all of them. In Scale,
+  // only those with a dimension behind them: an arrow whose target has nothing
+  // to resize along it is a handle that answers a press with nothing, and the
+  // cut plane's three are exactly that.
+  const shownAxes = parts.slide
+    ? axes
+    : axes.filter((axis) => sizable || sizeOnlyAxes.includes(axis))
+
+  // Whether the billboarded ring is up at all, in either of its two jobs.
+  const ringUp = parts.ring || (parts.rings && turns === 'facing')
+
+  // A ring that left the screen under the pointer -- because the tool changed
+  // beneath it -- never gets its `pointerout`, so the lift would stay on and it
+  // would come back lit the next time a mode called for it. The arrows, the
+  // quads and the three rotate rings need no such thing: each is its own
+  // component and its hover state dies with it.
+  useEffect(() => {
+    if (!ringUp) setRingHovered(false)
+  }, [ringUp])
 
   useFrame(({ camera }) => {
     const group = root.current
@@ -587,41 +804,21 @@ export function TransformGizmo({
     // gizmo is a speck at one end of the zoom range and a cage at the other.
     const distance = camera.position.distanceTo(group.getWorldPosition(new Vector3()))
     group.scale.setScalar(clamp(distance * SCALE_PER_UNIT, SCALE_MIN, SCALE_MAX) * size)
-    // The ring is the one handle with no direction, so it is drawn facing the
-    // viewer rather than lying in some plane the user then has to orbit to see.
-    // Its hit volume is a sibling rather than a child -- a torus parented to a
-    // torus would inherit the band's own tube scale -- so it is turned here too
-    // rather than drifting off the ring it is meant to catch.
+    // The uniform ring is the one handle with no direction, so it is drawn
+    // facing the viewer rather than lying in some plane the user then has to
+    // orbit to see. Its hit volume is a sibling rather than a child -- a torus
+    // parented to a torus would inherit the band's own tube scale -- so it is
+    // turned here too rather than drifting off the ring it is meant to catch.
+    //
+    // The rotate ball's rings are the opposite case and are turned by nothing:
+    // each one lies in a fixed world plane, because WHICH plane is the half of
+    // the gesture the ring exists to state.
     if (ringBand.current) ringBand.current.quaternion.copy(camera.quaternion)
     if (ringGrab.current) ringGrab.current.quaternion.copy(camera.quaternion)
-
-    // The arrows step aside for a turn. They point along the axes, and a turn
-    // is the one gesture that moves those axes -- leaving them up would have
-    // three arrows sweeping across the dial that is being read.
-    if (arrows.current) arrows.current.visible = !rotationIndicator.active
-
-    // And the ring steps aside for the planes, which is the whole of the swap:
-    // the quads decide for themselves whether to appear, and this is the same
-    // question asked the other way round, so the two cannot both be up.
-    //
-    // Hiding the torus is only half of standing down. Nothing in three or in
-    // R3F's event layer consults `visible`, so an unseen grab torus would go on
-    // winning presses aimed at the quad drawn over it -- and the two sit at
-    // the same radius, so it would win a good share of them. The flag is kept
-    // for the handler to read as well.
-    swapped.current = planes && planesUp(true)
-    if (ringBand.current) ringBand.current.visible = !swapped.current
-    if (ringGrab.current) ringGrab.current.visible = !swapped.current
-    if (swapped.current && ringHovered) setRingHovered(false)
   })
 
   const grab = (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation()
-    // Held for the length of the drag, so a finger coming off Control part-way
-    // through does not take the quad out from under the gesture using it. The
-    // viewport drops it when the gesture ends, which is the one place that sees
-    // every gesture end.
-    if (handle.mode === 'plane') planeHandles.held = true
     // OrbitControls listens on the canvas directly, so a React-level
     // stopPropagation never reaches it -- and on the right button it would
     // otherwise pan the camera through the whole gesture.
@@ -636,29 +833,32 @@ export function TransformGizmo({
     <group ref={root} position={position}>
       {/* One or the other: a quaternion basis wins where it is given, because
           the frame it came from was never a set of Euler angles. */}
-      <group
-        ref={arrows}
-        rotation={quaternion ? undefined : new Euler(...(rotation ?? [0, 0, 0]))}
-        quaternion={quaternion}
-      >
-        {axes.map((axis) => (
-          <Arrow
-            key={axis}
-            axis={axis}
-            color={colors[axis] ?? AXIS_COLORS[axis]}
-            sizable={sizable}
-            sizeOnly={sizeOnlyAxes.includes(axis)}
-            onGrab={grab}
-          />
-        ))}
-      </group>
+      {parts.arrows && (
+        <group
+          rotation={quaternion ? undefined : new Euler(...(rotation ?? [0, 0, 0]))}
+          quaternion={quaternion}
+        >
+          {shownAxes.map((axis) => (
+            <Arrow
+              key={axis}
+              axis={axis}
+              color={colors[axis] ?? AXIS_COLORS[axis]}
+              // In Scale every arrow resizes; in Move only the ones with no
+              // slide of their own do.
+              sizeOnly={!parts.slide || sizeOnlyAxes.includes(axis)}
+              onGrab={grab}
+            />
+          ))}
+        </group>
+      )}
 
-      {/* In a frame of their own rather than inside `arrows`, although they
-          share its rotation: the arrows are hidden wholesale during a turn and
-          the quads answer a different question about when to show themselves.
-          Same basis either way -- a plane is spanned by two of the very axes
-          the arrows point along, so it can stand nowhere else. */}
-      {planes && (
+      {/* In a frame of their own rather than inside the arrows' group,
+          although they share its rotation: the two answer different questions
+          about when to show themselves, and a quad hidden for being edge-on
+          must not take an arrow with it. Same basis either way -- a plane is
+          spanned by two of the very axes the arrows point along, so it can
+          stand nowhere else. */}
+      {planes && parts.planes && (
         <group
           rotation={quaternion ? undefined : new Euler(...(rotation ?? [0, 0, 0]))}
           quaternion={quaternion}
@@ -668,47 +868,65 @@ export function TransformGizmo({
               key={axis}
               axis={axis}
               color={colors[axis] ?? AXIS_COLORS[axis]}
-              swaps={ring}
               onGrab={grab}
             />
           ))}
         </group>
       )}
 
-      {ring && (
-      <mesh ref={ringBand} renderOrder={DRAW_ON_TOP} raycast={noRaycast}>
-        <torusGeometry args={[RING_RADIUS, RING_TUBE, 8, 48]} />
-        <meshBasicMaterial
-          color={ringHovered ? lit(RING_COLOR) : RING_COLOR}
-          transparent
-          opacity={ringHovered ? 1 : 0.8}
-          depthTest={false}
-          depthWrite={false}
-          toneMapped={false}
-        />
-      </mesh>
-      )}
+      {/* The rotate ball. In the WORLD's own frame, not the target's: the
+          rings are a fixed reference to turn against, and rings that rode the
+          target would be carried off by the first half of every gesture --
+          exactly the trouble the arrows were taken out of the object's frame
+          to avoid. Both callers that ask for 'axes' draw their arrows in the
+          world too, so the two agree by construction. */}
+      {parts.rings &&
+        turns === 'axes' &&
+        ([0, 1, 2] as const).map((axis) => (
+          <RotateRing
+            key={axis}
+            axis={axis}
+            color={colors[axis] ?? AXIS_COLORS[axis]}
+            onGrab={grab}
+          />
+        ))}
 
-      {ring && (
-      <mesh
-        ref={ringGrab}
-        raycast={ringRaycast}
-        onPointerDown={(e) => {
-          // Stood down for the planes: refuse rather than stop, so the press
-          // reaches the quad that has taken this ring's place.
-          if (swapped.current) return
-          // Left scales, right turns -- the same left/right split the arrows
-          // use, so one rule covers the whole gizmo.
-          if (e.button === 0) grab({ mode: 'size', axis: 'all' }, e)
-          else if (e.button === 2) grab({ mode: 'rotate', axis: 'all' }, e)
-        }}
-        onPointerOver={() => !swapped.current && setRingHovered(true)}
-        onPointerOut={() => setRingHovered(false)}
-        onContextMenu={(e) => e.nativeEvent.preventDefault()}
-      >
-        <torusGeometry args={[RING_RADIUS, GRAB_TUBE, 6, 32]} />
-        <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
-      </mesh>
+      {/* The single-axis case: one ring, facing the viewer, for a target whose
+          axis is not a choice. Drawn by the same pair of meshes the uniform
+          ring uses -- see below -- because the two are the same billboarded
+          circle and differ only in what a press on them means. */}
+      {ringUp && (
+        <>
+          <mesh ref={ringBand} renderOrder={DRAW_ON_TOP} raycast={noRaycast}>
+            <torusGeometry args={[RING_RADIUS, RING_TUBE, 8, 48]} />
+            <meshBasicMaterial
+              color={ringHovered ? lit(RING_COLOR) : RING_COLOR}
+              transparent
+              opacity={ringHovered ? 1 : 0.8}
+              depthTest={false}
+              depthWrite={false}
+              toneMapped={false}
+            />
+          </mesh>
+
+          <mesh
+            ref={ringGrab}
+            raycast={ringRaycast}
+            onPointerDown={(e) => {
+              // Left only, and what it does is whichever of the two gestures
+              // this ring is standing for. The right button used to turn from
+              // here; Rotate is where that lives now.
+              if (e.button !== 0) return
+              grab(parts.ring ? { mode: 'size', axis: 'all' } : { mode: 'rotate', axis: 'all' }, e)
+            }}
+            onPointerOver={() => setRingHovered(true)}
+            onPointerOut={() => setRingHovered(false)}
+            onContextMenu={(e) => e.nativeEvent.preventDefault()}
+          >
+            <torusGeometry args={[RING_RADIUS, GRAB_TUBE, 6, 32]} />
+            <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
+          </mesh>
+        </>
       )}
     </group>
   )

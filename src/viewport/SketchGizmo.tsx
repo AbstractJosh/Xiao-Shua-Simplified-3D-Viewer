@@ -30,10 +30,10 @@ const NORMAL_AXIS = [2] as const
  * Extrude slider writes.
  *
  * The frame is turned by the sketch's OWN rotation, not left on the surface's
- * raw U and V. That is what makes the right-drag honest: it resizes the outline
- * along the arrow it was grabbed on, and on a rectangle spun 30 degrees the
- * width axis is spun with it. It pays off on the left button too -- the arrows
- * lie along the edges of the shape being dragged rather than crossing them
+ * raw U and V. That is what makes the stretch in Scale honest: it resizes the
+ * outline along the arrow it was grabbed on, and on a rectangle spun 30 degrees
+ * the width axis is spun with it. It pays off in Move too -- the arrows lie
+ * along the edges of the shape being dragged rather than crossing them
  * diagonally -- and it costs only a decomposition of the travel back into the
  * surface's u and v, which is what a slide is stored in.
  */
@@ -73,17 +73,20 @@ export function SketchGizmo({
       axes={[...SKETCH_AXES]}
       sizeOnlyAxes={[...NORMAL_AXIS]}
       colors={SKETCH_AXIS_COLORS}
-      // The ring scales the outline about its own centre on the left button and
-      // spins it on the right -- the same split the object gizmo uses. The two
-      // tangent arrows now take a right-drag as well: a rectangle has a width
-      // and a height to stretch one at a time, and on a circle or a polygon,
+      // Scale gives it the ring, which sizes the outline about its own centre,
+      // and the two tangent arrows, which stretch it one dimension at a time --
+      // a rectangle has a width and a height, and on a circle or a polygon,
       // which have one radius between them, both arrows drive that instead.
       sizable
+      // ONE ring in Rotate, facing the viewer, rather than the ball of three.
+      // A sketch spins in the surface it lies on and nowhere else, so there is
+      // no axis to choose: two of the three rings would be handles for turns
+      // the document cannot write down.
+      turns="facing"
       // No plane quads. A sketch is anchored to a surface and slides in that
       // surface's own u and v, so there is no such thing as moving it through
       // the world's XZ plane -- and its two tangent arrows already ARE the two
-      // directions it can go. The ring keeps its ring on Control, because there
-      // is nothing here for it to give way to.
+      // directions it can go.
       planes={false}
       size={SKETCH_SCALE}
       controlsRef={controlsRef}

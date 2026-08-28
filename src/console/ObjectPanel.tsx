@@ -1,5 +1,5 @@
 import { assemblyExtent, assemblyScaleLimits } from '../geometry/assembly'
-import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION } from '../geometry/dimensions'
+import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION, baseParams } from '../geometry/dimensions'
 import type { BaseSolid, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import { selectedObject, useDoc } from '../store/docStore'
@@ -247,6 +247,10 @@ export function ObjectPanel() {
     <Section
       title="Dimensions"
       hint={merged ? `${object.parts.length + 1} merged` : solidLabel(base)}
+      // Exactly the numbers the rows below show: a merged object has the one
+      // size row, everything else the base's own dimensions in the order
+      // `dimensionsOf` lists them.
+      lengths={merged ? [assemblyExtent(object)] : baseParams(base)}
     >
       {/* Position and rotation are NOT here. They are a placement, which the
           cut plane has too, so both read the one Position & Rotation panel

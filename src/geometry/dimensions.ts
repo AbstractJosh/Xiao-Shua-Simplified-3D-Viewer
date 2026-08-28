@@ -6,8 +6,8 @@ import type { BaseSolid, Shape2D, Vec3 } from './types'
  * This exists because two places now ask the question and they must not answer
  * it differently: the console's dimension fields, and the gizmo's arrows. The
  * gizmo is the reason it is geometry rather than a detail of the panel -- a
- * right-drag on the X arrow has to know that X is a box's width, a cylinder's
- * radius, and, on a sphere, the only dimension there is.
+ * drag on the X arrow in Scale has to know that X is a box's width, a
+ * cylinder's radius, and, on a sphere, the only dimension there is.
  *
  * Everything here works in the primitive's OWN frame, because that is the frame
  * `BaseSolid` is written in: every solid is centred on the local origin and

@@ -1,11 +1,101 @@
 import { useEffect, useState } from 'react'
-import type { Vec3 } from '../geometry/types'
-import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
-import { cutPlaneNormal, rulerLength, useTools } from '../store/toolStore'
+import type { ReactNode } from 'react'
+import { Quaternion, Vector3 } from 'three'
+import { objectBounds } from '../geometry/assembly'
+import type { SceneObject, Vec3 } from '../geometry/types'
+import {
+  selectedObject,
+  selectedObjectId as primarySelection,
+  useDoc,
+} from '../store/docStore'
+import { RULER_LENGTH, cutPlaneNormal, rulerLength, useTools } from '../store/toolStore'
+import type { RulerFrame, TransformMode } from '../store/toolStore'
+// The camera, read the way the corner compass reads it. This file is where the
+// island's tools are defined; the island itself is a viewport component, and
+// `compassViews` is plain arithmetic with no React and no renderer in it.
+import { compass } from '../viewport/compassViews'
 import { NumberField } from './Field'
 import { NavTool } from './NavTool'
-import { CutIcon, HelpIcon, RulerIcon, SnapIcon, UnitsIcon } from './navIcons'
-import { UNIT_MODES, formatLength } from '../units'
+import {
+  CutIcon,
+  HelpIcon,
+  MoveIcon,
+  RotateIcon,
+  RulerIcon,
+  ScaleIcon,
+  SnapIcon,
+  UnitsIcon,
+} from './navIcons'
+import { UNIT_MODES, formatLength, fromDisplay } from '../units'
+
+/**
+ * The three tools that change what the gizmo IS, as a row of three.
+ *
+ * A PICKER rather than a pair of switches with an unnamed third state. Move is
+ * where the gizmo rests, and leaving it off the panel made that state the
+ * absence of two highlights -- which is a thing you have to work out rather
+ * than read, and it left the row looking like two spare buttons above the
+ * scene tools. One of the three is always lit, and it says which gizmo is on
+ * screen without the user deducing it.
+ *
+ * Exactly one can be on, and no code enforces it: the store holds ONE mode, so
+ * choosing any of them is choosing against the other two. Pressing the one you
+ * are already in leaves you there -- both arms of the toggle below land on the
+ * same value for Move, and for the other two "off" means Move.
+ *
+ * Written once and used three times, because they differ in two words each.
+ */
+function ModeTool({
+  mode,
+  label,
+  icon,
+}: {
+  mode: TransformMode
+  label: string
+  icon: ReactNode
+}) {
+  const current = useTools((s) => s.transformMode)
+  const setTransformMode = useTools((s) => s.setTransformMode)
+
+  return (
+    <NavTool
+      label={label}
+      icon={icon}
+      active={current === mode}
+      // Off lands on Move rather than on nothing: every target has somewhere to
+      // be moved to, so there is always a gizmo, and the one that comes back is
+      // the arrows and the plane quads.
+      onToggle={(on) => setTransformMode(on ? mode : 'move')}
+      // No hover bubble, which is the island's own rule and the same one Snap
+      // and Cut follow: these are pressed constantly, and a paragraph that
+      // appears every time the pointer crosses them is noise rather than help.
+      // What each one draws, and the key that reaches it, are in Help.
+    />
+  )
+}
+
+/** Where the gizmo rests: three arrows to slide along, and the three plane
+ *  quads between them to slide within. The tool the app opens in. */
+export function MoveTool() {
+  return <ModeTool mode="move" label="Move" icon={<MoveIcon />} />
+}
+
+/** Three rings, one per world plane, each turning about the axis it is normal
+ *  to -- and the arrows step aside, since a turn is the one gesture that would
+ *  carry them off. */
+export function RotateTool() {
+  return (
+    <ModeTool mode="rotate" label="Rotate" icon={<RotateIcon />} />
+  )
+}
+
+/** The ring for everything at once, and the arrows for one dimension at a
+ *  time -- which is what the right button used to do. */
+export function ScaleTool() {
+  return (
+    <ModeTool mode="scale" label="Scale" icon={<ScaleIcon />} />
+  )
+}
 
 export function SnapTool() {
   const snap = useTools((s) => s.snap)
@@ -21,6 +111,10 @@ export function SnapTool() {
       active={snap}
       onToggle={setSnap}
       panelTitle="Snapping"
+      // In the bar now, near its right edge, so the panel opens leftwards the
+      // way Units, Export and Help do -- hanging off the left of the button it
+      // would run past the window.
+      align="right"
     >
       {/* The field stays visible with snapping off rather than vanishing: the
           distance is what you came here to read, and a control that disappears
@@ -170,6 +264,114 @@ export function CutActions() {
   )
 }
 
+/** Clear air between a fresh ruler and the solid it was laid down beside.
+ *  15 mm: wide enough to read as a gap rather than as a line stuck to a face,
+ *  and narrow enough that the ruler is plainly about THAT object. */
+const RULER_CLEARANCE = fromDisplay(15, 'mm')
+
+/**
+ * How near the eye a ruler may be laid down, whatever else this asks for.
+ *
+ * Only a camera standing inside the solid it is looking at can ask for nearer
+ * -- the push below is off the object's own near face, so a five-metre part
+ * seen from half a metre away wants the ruler somewhere behind the viewer's
+ * head. One ruler-length out, a 50 mm line spans most of the view: as close as
+ * a thing can come and still be a thing you can see all of.
+ */
+const RULER_STANDOFF = RULER_LENGTH
+
+/**
+ * The camera, as much of it as laying a ruler down needs.
+ *
+ * Structural, and satisfied by `compass` -- which is where the real one comes
+ * from -- so a check can state the rule with a camera it made up rather than a
+ * canvas it has to run.
+ */
+type CameraView = { facing: Quaternion; eye: Vector3; focus: Vector3 }
+
+/**
+ * Where a ruler laid down NOW should land, and which way it should lie: across
+ * the view, in front of the selected object, facing the user.
+ *
+ * A ruler that spawned at the origin was a ruler you had to go and find. The
+ * scene is five metres across and the thing being measured is usually nowhere
+ * near the middle of it, so "add ruler" put a 50 mm line somewhere off screen
+ * and the tool looked like it had done nothing.
+ *
+ * The object is the PRIMARY selection -- the one wearing the gizmo, the one the
+ * cut aims at, the one this app means by "the selected object" everywhere else.
+ * Shift-clicking a second solid does not move the ruler to it, for the same
+ * reason it does not move the gizmo.
+ *
+ * THREE THINGS HAVE TO BE TRUE for a spawn to be one the user can see, and the
+ * frame is built out of the camera because not one of them is a fact about the
+ * world:
+ *
+ *  - It must not be BEHIND the object. The push runs along the view axis, out
+ *    by the box's own extent along that axis plus a clearance, so every point
+ *    of the ruler ends up nearer the eye than every point of the box -- from
+ *    wherever the camera happens to be standing. Pushed along a fixed world
+ *    axis instead, the ruler is in front of the solid from one side of it and
+ *    buried inside it from the other.
+ *  - It must not be END-ON. It runs along the camera's right, so it lies ACROSS
+ *    the view at its full length. A ruler laid along world X is a dot on screen
+ *    the moment the user looks down X, which is one click of the compass away.
+ *  - The SECOND one must not hide behind the first. The lane steps up the
+ *    screen, perpendicular to the view, so consecutive rulers stack up the
+ *    picture rather than into it.
+ *
+ * Sideways it stays over the middle of the object: the push is purely along the
+ * view, which moves nothing on screen, so the ruler lands ON the thing it was
+ * asked for rather than beside it.
+ *
+ * With NOTHING SELECTED it goes to the point the camera orbits, which is the
+ * middle of the viewport by construction -- the one place something can be put
+ * with no scene to hang it off and still be certain it is on screen.
+ *
+ * What it does NOT promise is a clear line of sight past everything else: a
+ * second solid parked between the camera and this one will cover the ruler, and
+ * answering that would mean a raycast per spawn against the evaluated scene.
+ * The object being measured is the one that would hide it, and that one it
+ * clears exactly.
+ *
+ * Measured off `objectBounds`, which is analytic: a feature standing proud of
+ * the primitive is not counted, so a ruler can spawn touching a boss. That is
+ * the right trade for a spawn point -- it costs no boolean solve, and the ruler
+ * is a thing you immediately drag by its ends anyway.
+ *
+ * Pure, and given the object and the camera rather than reading either, so
+ * `ui-check` can state the rule without a document or a canvas.
+ */
+export function rulerFrame(object: SceneObject | null, camera: CameraView): RulerFrame {
+  // The camera's own axes in world terms: its +X is the screen's right, its +Y
+  // the screen's up, and it looks down its own -Z.
+  const along = new Vector3(1, 0, 0).applyQuaternion(camera.facing)
+  const step = new Vector3(0, 1, 0).applyQuaternion(camera.facing)
+  const view = new Vector3(0, 0, -1).applyQuaternion(camera.facing)
+  const frame = (at: Vector3): RulerFrame => ({
+    anchor: [at.x, at.y, at.z],
+    along: [along.x, along.y, along.z],
+    step: [step.x, step.y, step.z],
+  })
+
+  const box = object === null ? null : objectBounds(object)
+  // No object, or one with no extent to stand off from: the middle of the view.
+  if (box === null || box.isEmpty()) return frame(camera.focus.clone())
+
+  const centre = box.getCenter(new Vector3())
+  const half = box.getSize(new Vector3()).multiplyScalar(0.5)
+  // How far the box reaches from its own centre along the view axis -- the
+  // exact support of a box in a direction, which is what makes "clear of it" a
+  // guarantee rather than a guess.
+  const reach =
+    half.x * Math.abs(view.x) + half.y * Math.abs(view.y) + half.z * Math.abs(view.z)
+  const depth = centre.clone().sub(camera.eye).dot(view)
+  const wanted = Math.max(depth - reach - RULER_CLEARANCE, RULER_STANDOFF)
+  // Along the view, so only the DEPTH changes: on screen the anchor stays put,
+  // over the middle of the object.
+  return frame(centre.addScaledVector(view, wanted - depth))
+}
+
 /**
  * The rulers in the scene, and the button that adds one.
  *
@@ -194,17 +396,25 @@ export function RulerTool() {
   const removeRuler = useTools((s) => s.removeRuler)
   const selectRuler = useTools((s) => s.selectRuler)
 
+  // Read at the press rather than subscribed to: where the ruler goes is only
+  // ever a question at the moment one is laid down, and a hook on either would
+  // re-render the island on every click in the scene and every frame of an
+  // orbit. `compass` is the camera as anything outside the canvas sees it --
+  // this button is a DOM sibling of the canvas exactly as the compass widget
+  // is, and neither has a camera of its own to read.
+  const frame = () => rulerFrame(selectedObject(useDoc.getState()), compass)
+
   return (
     <NavTool
       id="ruler"
       label="Ruler"
       icon={<RulerIcon />}
       active={rulerActive}
-      onToggle={setRulerActive}
+      onToggle={(on) => setRulerActive(on, frame())}
       panelTitle="Rulers"
     >
       <div className="tool-group">
-        <button type="button" className="nav-action" onClick={addRuler}>
+        <button type="button" className="nav-action" onClick={() => addRuler(frame())}>
           Add ruler
         </button>
 
@@ -288,26 +498,26 @@ export function HelpTool() {
         <li><b>Export</b> writes the whole scene: .glb, .obj or .stl for a mesh, .step for a CAD solid</li>
         <li><b>Units</b>, beside Export, chooses what every length is shown in -- mm, cm, or auto per value; the model itself never changes</li>
         <li><b>Shift</b> while moving an object lifts it instead</li>
-        <li><b>Drag</b> a gizmo arrow to move along that axis, snapping as it goes</li>
-        <li><b>Right-drag</b> the same arrow to resize the object along it</li>
-        <li><b>Drag</b> the gizmo ring to scale every dimension at once</li>
-        <li><b>Right-drag</b> the ring to turn, about whichever axis faces you</li>
-        <li><b>Hold Ctrl</b> and the ring becomes three planes -- XY, XZ and YZ -- and dragging one slides within that plane</li>
-        <li>A plane seen edge-on stands down, so from straight above only the ground plane is offered</li>
-        <li>The <b>cut plane</b> carries the same gizmo; its ring sizes the guide</li>
+        <li>The gizmo comes in three, chosen at the top of the <b>Tools</b> island: <b>Move</b>, where it rests, <b>Rotate</b> and <b>Scale</b>. Each draws the handles for its own job, and every one of them is a left-drag</li>
+        <li><b>Move</b>: <b>drag</b> an arrow to slide along that axis, snapping as it goes</li>
+        <li>Or <b>drag</b> one of the three plane quads -- XY, XZ, YZ -- to slide within that plane. One seen edge-on stands down, so from straight above only the ground is offered</li>
+        <li><b>Rotate</b> (<b>R</b>): three rings, one per plane. Drag the red, green or blue one to turn about X, Y or Z; the wedge reads the sweep out in degrees and it lands on every 45</li>
+        <li><b>Scale</b> (<b>S</b>): drag the ring to scale every dimension at once, or an arrow to resize the one dimension it points along</li>
+        <li>One of the three is always on: pressing <b>Rotate</b> or <b>Scale</b> again puts you back on <b>Move</b>, which is where the app opens</li>
+        <li>The <b>cut plane</b> carries the same gizmo -- arrows to aim it, rings to tilt it -- and in Scale its ring sizes the guide square</li>
         <li><b>Apply cut</b> and <b>Reset plane</b> appear on the island once it is armed</li>
         <li><b>Drag</b> a sketch to slide it across its own surface</li>
         <li>A selected sketch gets three arrows: two along the outline's own edges, one facing away from the face</li>
-        <li><b>Right-drag</b> either edge arrow to stretch the outline along it</li>
+        <li>In <b>Scale</b>, drag either edge arrow to stretch the outline along it</li>
         <li><b>Drag</b> the arrow facing away to set the depth -- push it back through the face to cut inward instead</li>
-        <li>Its ring scales the outline, the same way an object's scales the solid</li>
+        <li>Its ring scales the outline, the same way an object's scales the solid; in <b>Rotate</b> it gets ONE ring, since a sketch spins in its own face and nowhere else</li>
         <li><b>Drag</b> the highlighted end face of an extrusion to lean it</li>
-        <li>The <b>Ruler</b> tool lays a 50 mm measuring line down; its readout rides the middle of it</li>
+        <li>The <b>Ruler</b> tool lays a 50 mm measuring line across the view, in front of the selected object; its readout rides the middle of it</li>
         <li><b>Click a ruler</b> to select it -- it thickens into yellow and black stripes and the end you pressed nearest takes the arrows</li>
         <li><b>Press the knob</b> at the other end to move the arrows there; each end snaps to corners and edges as you drag it</li>
-        <li>A ruler's gizmo has no ring, so it carries the three plane handles <b>all the time</b> -- no Ctrl needed</li>
+        <li>A ruler's end is a point, so its gizmo stays on Move whichever tool is up -- there is nothing about a point to turn or to scale</li>
         <li><b>Delete</b> removes the selected ruler; the <b>caret beside Ruler</b> opens the list, to add more or delete one with its red cross</li>
-        <li><b>Snap</b>, <b>Ruler</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene</li>
+        <li><b>Move</b>, <b>Rotate</b>, <b>Scale</b>, <b>Ruler</b> and <b>Cut</b> live on the <b>Tools</b> island over the scene; <b>Snap</b> is in the top bar beside <b>Units</b>, since it is a rule every drag obeys rather than a gizmo</li>
         <li><b>Drag the island by its title</b> to move it -- it snaps flush to whichever edge or corner you drop it near -- and click the title to collapse it</li>
         <li><b>Orbit</b> with middle-drag, or <b>Alt</b> and left-drag; zoom to scroll</li>
         <li><b>Drag the corner compass</b> to orbit by hand -- half a turn across the widget, rotation only</li>

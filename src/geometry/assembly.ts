@@ -256,6 +256,21 @@ export function scaleAssembly(obj: SceneObject, factor: number): SceneObject {
 }
 
 /**
+ * The box ONE object fills, in WORLD space.
+ *
+ * `assemblyBounds` in the frame everything else is measured in. Split out
+ * because two callers now want it -- the scene box below, and the ruler, which
+ * lays itself down clear of the solid it was asked for rather than inside it --
+ * and a second transcription of "bounds, then the object's own matrix" is the
+ * way those two quietly come to disagree.
+ *
+ * Analytic, with everything that implies: see `sceneBounds`.
+ */
+export function objectBounds(obj: SceneObject): Box3 {
+  return assemblyBounds(obj).applyMatrix4(objectMatrix(obj.transform))
+}
+
+/**
  * The box every object in the document fills, in WORLD space.
  *
  * Measured analytically, off the base primitives, exactly the way
@@ -271,7 +286,7 @@ export function scaleAssembly(obj: SceneObject, factor: number): SceneObject {
 export function sceneBounds(doc: Doc): Box3 {
   const box = new Box3()
   for (const obj of doc.objects) {
-    box.union(assemblyBounds(obj).applyMatrix4(objectMatrix(obj.transform)))
+    box.union(objectBounds(obj))
   }
   return box
 }

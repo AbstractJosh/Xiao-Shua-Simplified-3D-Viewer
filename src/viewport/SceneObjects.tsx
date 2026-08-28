@@ -21,7 +21,7 @@ import { ObjectSketches } from './SketchLayer'
 import { publishScene } from './snapping'
 import { isRightClick, noteRightPress, useObjectMenu } from './ObjectMenu'
 import { useMarquee } from './marquee'
-import { TransformGizmo } from './TransformGizmo'
+import { TransformGizmo, gizmoParts } from './TransformGizmo'
 
 /** Selection is carried by the object's own material and outline, which is why
  *  there is no separate highlight pass to keep in sync with the scene. */
@@ -236,6 +236,10 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
   // set at a time is the rule the whole viewport keeps. Deselecting the ruler --
   // Escape, or a click on empty space -- hands the gizmo straight back.
   const rulerSelected = useTools((s) => s.rulerActive && s.selectedRuler !== null)
+  // Which frame the selected object's arrows stand in follows from the tool, so
+  // the mode is subscribed here as well as inside the gizmo. See the comment on
+  // the gizmo below.
+  const transformMode = useTools((s) => s.transformMode)
   const openMenu = useObjectMenu((s) => s.openMenu)
   const selectedFeatureId = useDoc((s) => s.selectedFeatureId)
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
@@ -396,18 +400,28 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
           went in rather than parked on whichever happened to be the host. For an
           unmerged object the two are the same point.
 
-          It takes the anchor's POSITION but not its rotation. The arrows stand
-          in the world frame and stay there: red is world X at every angle the
-          object is ever turned to, and the ring turns about world X, Y or Z.
+          It takes the anchor's POSITION always, and its ROTATION only in the
+          mode that needs it -- `gizmoParts().local`, which is Scale and nothing
+          else.
+
+          In Move and Rotate the arrows and rings stand in the world and stay
+          there: red is world X at every angle the object is ever turned to.
           Axes that rode the object had the property every rotation gesture has
           to fight -- turning a thing moves the very handles you turn it by, so
           a second turn is aimed at arrows the first one carried off, and there
           is no way back to square except by eye. Fixed axes are a frame to work
-          against. What the object's own rotation still decides is which of its
-          DIMENSIONS a right-drag resizes; `nearestLocalAxis` makes that call. */}
+          against.
+
+          A Scale arrow is the one that cannot be: it resizes one of the
+          object's OWN three dimensions, and there is no such thing as a box
+          that is wider along world X. So in Scale the arrows ride the object,
+          each one pointing down the side it grows. */}
       {selected && !cutActive && !rulerSelected && !sketchSelected && !marqueeing && (
         <TransformGizmo
           position={assemblyAnchor(selected)}
+          rotation={
+            gizmoParts(transformMode).local ? selected.transform.rotation : undefined
+          }
           controlsRef={controlsRef}
           onGrab={(handle) => startGizmo(selected.id, handle)}
         />

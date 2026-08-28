@@ -151,10 +151,25 @@ export type GizmoHandle =
   | { mode: 'size'; axis: GizmoAxis }
   | { mode: 'size'; axis: 'all' }
   /**
-   * The ring's right-drag. No axis of its own: the axis is chosen at grab time
-   * as whichever of the target's three best faces the viewer, so the turn reads
-   * as a twist of the screen rather than a tumble in some direction the gesture
-   * never suggested.
+   * One of the Rotate gizmo's three rings, named by the axis it turns ABOUT --
+   * which is also the axis its own plane is normal to, so it colours itself
+   * from the same three values the arrows and the plane quads do.
+   *
+   * The ring IS the choice of axis, which is the whole reason the rings are
+   * three rather than one: a gesture that named its own axis needs nothing
+   * guessed from where the camera happens to be standing.
+   */
+  | { mode: 'rotate'; axis: GizmoAxis }
+  /**
+   * A turn with no axis of its own, from a billboarded ring. The axis is chosen
+   * at grab time as whichever of the target's three best faces the viewer, so
+   * the turn reads as a twist of the screen rather than a tumble in some
+   * direction the gesture never suggested.
+   *
+   * A SKETCH is what is left that wants this. It turns about exactly one thing
+   * -- the normal of the surface it lies on -- so there is no choice of axis to
+   * offer and no second ring to draw; its one ring faces the viewer, and the
+   * axis is the only one it has.
    */
   | { mode: 'rotate'; axis: 'all' }
 
@@ -230,6 +245,15 @@ type State = {
    */
   pasteObject: (object: SceneObject) => string
   removeObject: (id: string) => void
+  /**
+   * Delete a whole selection at once.
+   *
+   * One history entry, so one undo puts the lot back the way one Delete took
+   * it away, and one document write, so the scene re-evaluates once rather
+   * than once per object. Ids naming nothing are skipped; a call that would
+   * remove nothing is not an edit and costs no undo step.
+   */
+  removeObjects: (ids: string[]) => void
   /**
    * Move an object up or down the scene list -- `-1` toward the top, `+1`
    * toward the bottom -- and with it, its rendering priority.
@@ -676,12 +700,23 @@ export const useDoc = create<State>((set, get) => {
       })
     },
 
-    removeObject: (id) => {
-      commit((d) => ({ objects: d.objects.filter((o) => o.id !== id) }))
+    removeObject: (id) => get().removeObjects([id]),
+
+    removeObjects: (ids) => {
+      const doomed = new Set(ids)
+      // Nothing named is in the document -- an empty selection, or ids already
+      // gone. Not an edit, and an undo step for it would bury the edit before
+      // it, the same rule `moveObject` follows.
+      if (!get().doc.objects.some((o) => doomed.has(o.id))) return
+
+      commit((d) => ({ objects: d.objects.filter((o) => !doomed.has(o.id)) }))
       set((s) => ({
         ...prune(s.doc, s.selectedObjectIds, s.selectedFeatureId),
         // A drag pointing at a deleted object has nothing left to move.
-        drag: 'objectId' in s.drag && s.drag.objectId === id ? { kind: 'idle' } : s.drag,
+        drag:
+          'objectId' in s.drag && s.drag.objectId !== null && doomed.has(s.drag.objectId)
+            ? { kind: 'idle' }
+            : s.drag,
       }))
     },
 

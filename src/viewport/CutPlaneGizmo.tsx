@@ -80,8 +80,10 @@ export function CutPlaneGizmo({
           in, and it turns about those too rather than about axes the last turn
           has already moved. The quad below still carries the tilt -- it is the
           blade -- so the green arrow is no longer the normal.
-          Right-drag does nothing here: a plane has no per-axis extent, and its
-          one dimension -- the guide square -- is what the ring scales. */}
+          Scale gives the plane its ring and no arrows: a plane has no per-axis
+          extent, and its one dimension -- the guide square -- is what the ring
+          sizes. That falls out of `sizable`, which is why the gizmo needs no
+          case for the plane. */}
       <TransformGizmo
         position={plane.position}
         sizable={false}

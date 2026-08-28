@@ -177,8 +177,15 @@ export type TurnGrab = {
  */
 export const WORLD_FRAME: Vec3 = [0, 0, 0]
 
-/** A frame's three axes as world directions, in X, Y, Z order. */
-function frameAxes(rotation: Vec3): [Vector3, Vector3, Vector3] {
+/**
+ * A frame's three axes as world directions, in X, Y, Z order.
+ *
+ * Exported because it is what "the object's own axes" MEANS, and the Scale
+ * gizmo now draws its arrows along them and measures its drags along them --
+ * see `local` on `GizmoParts`. Stating that rule anywhere costs a camera and
+ * three React trees; stating this one costs a rotation.
+ */
+export function frameAxes(rotation: Vec3): [Vector3, Vector3, Vector3] {
   const euler = new Euler(rotation[0], rotation[1], rotation[2], 'XYZ')
   return [0, 1, 2].map((i) =>
     new Vector3(i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0)
@@ -227,38 +234,6 @@ export function nearestViewAxis(
   // whichever way the axis happened to be pointing.
   if (best.dot(viewDir) > 0) best.negate()
   return { axis: best, index: bestIndex }
-}
-
-/**
- * Which of the target's OWN axes lies nearest a world direction.
- *
- * The bridge between a gizmo drawn in the world frame and a solid whose
- * dimensions are its own. `size[0]` is a box's width measured along its local
- * X, whatever the box has since been turned to; there is no way to write down
- * "wider along world X" for a box standing at an angle. So the world arrow the
- * user grabbed is matched to the local axis it most nearly runs along, and that
- * is the dimension the drag resizes -- which keeps the gesture honest, because
- * the side that grows is still the side being pulled.
- *
- * Exact at every multiple of 90 degrees, which is where objects in this app
- * mostly sit, and the closest available answer in between. Unsigned: a solid is
- * centred on its own origin and a dimension grows both ways at once, so it
- * makes no difference whether the local axis points with the arrow or against
- * it -- pulling outward widens either way.
- */
-export function nearestLocalAxis(rotation: Vec3, worldDir: Vector3): 0 | 1 | 2 {
-  const axes = frameAxes(rotation)
-  let best: 0 | 1 | 2 = 0
-  let bestDot = -1
-
-  for (const index of [0, 1, 2] as const) {
-    const dot = Math.abs(axes[index].dot(worldDir))
-    if (dot > bestDot) {
-      bestDot = dot
-      best = index
-    }
-  }
-  return best
 }
 
 /** The pointer's angle about `centre`, read in the plane spanned by right/up. */

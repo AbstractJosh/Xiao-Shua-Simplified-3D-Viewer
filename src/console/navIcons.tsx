@@ -57,6 +57,58 @@ export function RulerIcon() {
   )
 }
 
+/**
+ * A four-headed cross: go that way, any of the four.
+ *
+ * The one glyph here that IS the stock metaphor, and deliberately -- Move is
+ * the resting tool, the one a user is in without having chosen it, so the
+ * button wants to be recognised rather than read. It is also honest about the
+ * handles: arrows out along the axes, and the quads between them are the
+ * quadrants the cross cuts the square into.
+ */
+export function MoveIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M10 3.2v13.6M3.2 10h13.6" {...STROKE} />
+      <path d="M7.9 5.5 10 3.4 12.1 5.5" {...STROKE} />
+      <path d="M7.9 14.5 10 16.6 12.1 14.5" {...STROKE} />
+      <path d="M5.5 7.9 3.4 10 5.5 12.1" {...STROKE} />
+      <path d="M14.5 7.9 16.6 10 14.5 12.1" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * An arc with a head on it, turning about a marked centre.
+ *
+ * Three quarters of a circle rather than a full one, because a full one is the
+ * Scale glyph below and the two sit one above the other: what tells them apart
+ * has to be the gap and the arrowhead, at 14 pixels.
+ */
+export function RotateIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M15.6 6.6a6.6 6.6 0 1 0 1.2 5.2" {...STROKE} />
+      <path d="M15.9 3.1 15.9 7.1 11.9 7.1" {...STROKE} />
+      <circle cx="10" cy="10" r="1.5" fill="currentColor" />
+    </svg>
+  )
+}
+
+/**
+ * A ring with an arrow running out through it: the gesture itself, which is to
+ * take hold of the circle and pull it outward.
+ */
+export function ScaleIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <circle cx="10" cy="10" r="5.2" {...STROKE} />
+      <path d="M12.4 7.6 17 3" {...STROKE} />
+      <path d="M13.2 3 17 3 17 6.8" {...STROKE} />
+    </svg>
+  )
+}
+
 /** A solid crossed by a line that carries on past both of its edges. */
 export function CutIcon() {
   return (

@@ -59,7 +59,7 @@ export function ImportTools() {
   const input = useRef<HTMLInputElement>(null)
   const receipt = useReceipt()
 
-  const run = async (files: FileList) => {
+  const run = async (files: File[]) => {
     setBusy(true)
     try {
       const landed: string[] = []
@@ -68,7 +68,7 @@ export function ImportTools() {
       // One at a time, and in the order they were chosen: each one's position
       // is worked out from the scene the one before it landed in, so a
       // multi-file import lines up instead of stacking in the same spot.
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         const model = await importModel(await file.arrayBuffer(), file.name)
         const entry = registerMesh(model.geometry, model.label)
         const { size, factor } = fitToEnvelope(entry.natural)
@@ -113,12 +113,17 @@ export function ImportTools() {
         multiple
         tabIndex={-1}
         onChange={(e) => {
-          const files = e.target.files
-          // Cleared before the read, not after: re-picking the SAME file fires
-          // no change event while its name is still in the input, and choosing
-          // a file twice is exactly what happens after one fails.
+          // COPIED OUT FIRST, and that order is the whole of it. `e.target.files`
+          // is a LIVE view of the input's selection rather than a snapshot of
+          // it, so clearing the value empties the very list being read -- the
+          // length goes to zero between one line and the next, and the import
+          // silently never runs. An array is a copy and survives the reset.
+          const files = Array.from(e.target.files ?? [])
+          // Cleared at all because re-picking the SAME file fires no change
+          // event while its name is still in the input, and picking a file a
+          // second time is exactly what happens after one fails.
           e.target.value = ''
-          if (files && files.length > 0) void run(files)
+          if (files.length > 0) void run(files)
         }}
       />
 

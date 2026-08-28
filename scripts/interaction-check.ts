@@ -11,6 +11,7 @@
  *
  * Run: npx tsx scripts/interaction-check.ts
  */
+import { readFileSync } from 'node:fs'
 import { Euler, Mesh, PerspectiveCamera, Raycaster, Vector3 } from 'three'
 
 const realWarn = console.warn.bind(console)
@@ -43,9 +44,17 @@ import {
   viewUp,
 } from '../src/viewport/compassViews'
 import { useTools } from '../src/store/toolStore'
-import { PLANE_ROTATIONS, planesUp } from '../src/viewport/TransformGizmo'
-import { modifiers, planeHandles, clearModifiers } from '../src/viewport/modifiers'
-import { beginPlaneDrag, planeTarget, planeTravel } from '../src/viewport/gizmoDrag'
+import { PLANE_ROTATIONS, gizmoParts } from '../src/viewport/TransformGizmo'
+import { modifiers, clearModifiers } from '../src/viewport/modifiers'
+import { MODE_KEYS } from '../src/viewport/Viewport'
+import {
+  advanceTurn,
+  beginPlaneDrag,
+  planeTarget,
+  planeTravel,
+  pointerAngle,
+  turnedRotation,
+} from '../src/viewport/gizmoDrag'
 import { useDoc } from '../src/store/docStore'
 import {
   centreOnScreen,
@@ -938,6 +947,65 @@ console.log('\n11d. The box only takes the presses nothing else wanted')
   check('nor a press while a placement is already running', !claims({ dragging: true }))
 }
 
+// --- 11e. Delete empties the whole box, in one press ------------------------
+console.log('\n11e. Delete takes the whole selection at once')
+{
+  const doc = () => useDoc.getState()
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+
+  const ids = [
+    doc().addObject(CUBE, [0, 0, 0]),
+    doc().addObject(CUBE, [4, 0, 0]),
+    doc().addObject(CUBE, [8, 0, 0]),
+  ]
+  const bystander = doc().addObject(CUBE, [12, 0, 0])
+  doc().selectObjects(ids)
+  check('three of four solids selected', doc().selectedObjectIds.length === 3)
+
+  const before = doc().doc
+  doc().removeObjects(doc().selectedObjectIds)
+  check('one Delete takes all three', doc().doc.objects.length === 1)
+  check('and leaves the one that was not selected', doc().doc.objects[0].id === bystander)
+  // The point of doing it in one write rather than three: what the user did
+  // once, they undo once.
+  check('the selection goes with them', doc().selectedObjectIds.length === 0)
+  doc().undo()
+  check('and one undo brings all three back', doc().doc.objects.length === 4)
+  check('as the document they came from', doc().doc === before)
+
+  // Ids naming nothing must not cost an undo step -- pressing Delete on an
+  // empty selection would otherwise bury the edit before it.
+  doc().selectObjects([])
+  const untouched = doc().doc
+  doc().removeObjects([])
+  check('deleting nothing is not an edit', doc().doc === untouched)
+  doc().removeObjects(['gone', 'also-gone'])
+  check('nor is deleting ids that are already gone', doc().doc === untouched)
+  // -- and, having cost no history entry, it leaves the redo stack alone.
+  doc().redo()
+  check('so redo still reaches the delete it did not disturb', doc().doc.objects.length === 1)
+  doc().undo()
+
+  // Removing one is the same path now, so the single-object case has to keep
+  // behaving exactly as it did.
+  doc().removeObject(bystander)
+  check('and removing one still removes exactly one', doc().doc.objects.length === 3)
+  check(
+    'namely the one it was given',
+    doc().doc.objects.map((o) => o.id).join() === ids.join()
+  )
+
+  for (const o of [...doc().doc.objects]) doc().removeObject(o.id)
+
+  // The key itself: the Delete branch hands over the whole selection rather
+  // than the one object wearing the gizmo.
+  const viewport = readFileSync(new URL('../src/viewport/Viewport.tsx', import.meta.url), 'utf8')
+  check(
+    'and the Delete key passes the whole selection',
+    viewport.includes('s.removeObjects(s.selectedObjectIds)')
+  )
+}
+
 // --- 12. The sketch gizmo's own axes ---------------------------------------
 console.log('\n12. The tangent arrows follow the OUTLINE, not the surface')
 {
@@ -1113,7 +1181,7 @@ console.log('\n13. The compass flies the camera to the face it names')
     second !== null && Math.abs(second.z - 1) < 1e-9)
 }
 
-console.log('\nThe gizmo trades its ring for three planes')
+console.log('\nEach mode draws the handles for its own job')
 {
   // Which plane each quad IS. The rotation stands a +Z-facing quad onto the
   // plane named by the axis it is normal to, and the arithmetic is done by hand
@@ -1158,33 +1226,129 @@ console.log('\nThe gizmo trades its ring for three planes')
     )
   }
 
-  // The swap itself. This is the whole of what Control does to the gizmo.
-  clearModifiers()
-  check('at rest the ring keeps its place', planesUp(true) === false)
-  check('and a gizmo with no ring shows planes anyway', planesUp(false) === true)
+  // WHAT EACH MODE PUTS UP. This is the whole of what choosing a tool does to
+  // the viewport, and it is not otherwise reachable without a camera, a pointer
+  // and three React trees.
+  const move = gizmoParts('move')
+  check('Move stands the arrows up', move.arrows)
+  check('and a drag on one SLIDES', move.slide)
+  check('and the plane quads stand with them', move.planes)
+  // The quads used to wait behind Control, because a billboarded ring crossed
+  // all three of them whatever the camera angle and the two took each other's
+  // presses. Neither ring is drawn in this mode, so the room is theirs.
+  check('with no ring to take their room', !move.ring && !move.rings)
 
-  modifiers.ctrl = true
-  check('Control brings the planes out', planesUp(true) === true)
-  modifiers.ctrl = false
-  check('and letting go puts the ring back', planesUp(true) === false)
+  const rotate = gizmoParts('rotate')
+  check('Rotate stands the three rings up', rotate.rings)
+  // The arrows point along the axes, and a turn is the one gesture that moves
+  // those axes -- they would sweep across the dial being read.
+  check('and nothing else at all', !rotate.arrows && !rotate.planes && !rotate.ring)
 
-  // The latch: a gesture must not lose its own handle because a finger came off
-  // the key half way through the drag.
-  planeHandles.held = true
-  check('a plane in hand holds the others up', planesUp(true) === true)
-  clearModifiers()
-  check('and the gesture ending lets them go', planesUp(true) === false)
+  const scale = gizmoParts('scale')
+  check('Scale stands the ring up', scale.ring)
+  check('and the arrows with it', scale.arrows)
+  // Which is the whole difference between Scale's arrows and Move's: the same
+  // three handles, and a left-drag on one resizes rather than slides.
+  check('but a drag on one RESIZES', !scale.slide)
+  check('and no quads, which are a way of moving', !scale.planes)
+  // AND THEY RIDE THE OBJECT. A resize changes one of the solid's OWN three
+  // dimensions -- there is no box that is wider along world X -- so an arrow
+  // drawn in the world could only be matched to whichever of them it most
+  // nearly ran along, exactly at right angles and by guess in between. Ridden
+  // to the object, an arrow points down the side it grows.
+  check('and the arrows ride the object rather than the world', scale.local)
+  // The other two stay in the world, and it is the same reason twice: a turn is
+  // the one gesture that MOVES those axes, and handles that rode the object
+  // would sweep out from under the second half of it.
+  check('which Move does not', !move.local)
+  check('and Rotate does not', !rotate.local)
 
-  // A window that loses focus never sees the keyup, so everything is dropped
-  // together rather than leaving the next gizmo wearing planes out of nowhere.
-  modifiers.ctrl = true
+  // Exactly one of the two rings, in every mode. They are the same circle drawn
+  // at the same radius, so a mode that asked for both would have them taking
+  // each other's presses from every angle.
+  for (const mode of ['move', 'rotate', 'scale'] as const) {
+    const parts = gizmoParts(mode)
+    check(`${mode} never draws both kinds of ring`, !(parts.ring && parts.rings))
+  }
+
+  // The keys, which are the same two switches reached without leaving the
+  // model. Nothing binds Move: pressing the tool you are in puts it away, and
+  // what it puts you back to is Move.
+  check('R picks Rotate', MODE_KEYS.r === 'rotate')
+  check('S picks Scale', MODE_KEYS.s === 'scale')
+  check('and nothing else is bound', Object.keys(MODE_KEYS).sort().join() === 'r,s')
+
+  // A window that loses focus never sees the keyup, so the flag is dropped
+  // rather than left to send the next object drag vertical out of nowhere.
   modifiers.shift = true
-  planeHandles.held = true
   clearModifiers()
-  check(
-    'losing focus forgets every one of them',
-    !modifiers.ctrl && !modifiers.shift && !planeHandles.held
-  )
+  check('losing focus forgets what was held', !modifiers.shift)
+
+  // WHAT A NAMED RING MEASURES. Three rings mean the axis is no longer guessed
+  // from where the camera is standing -- the ring that was grabbed IS the axis
+  // -- and this is the arithmetic that turns a pointer somewhere on that circle
+  // into a turn about it. It is `readTurn`'s named branch, minus the camera:
+  // the basis comes from `PLANE_ROTATIONS`, the axis from that basis, and the
+  // angle from where the pointer met the plane.
+  for (const axis of [0, 1, 2] as const) {
+    const euler = new Euler(...PLANE_ROTATIONS[axis], 'XYZ')
+    const right = new Vector3(1, 0, 0).applyEuler(euler)
+    const up = new Vector3(0, 1, 0).applyEuler(euler)
+    // Taken from the basis rather than from the name, because two of the three
+    // Eulers put their local +Z down the NEGATIVE world axis -- they were
+    // chosen to span the positive pair, and something had to give. What must
+    // hold is only that it runs along the axis the ring is named for.
+    const turnAxis = right.clone().cross(up).normalize()
+    const named = new Vector3(axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0)
+    near(
+      `ring ${axis} turns about its own axis`,
+      Math.abs(turnAxis.dot(named)),
+      1,
+      1e-9
+    )
+
+    // A point on the ring, at a known angle round it. The centre is off the
+    // origin on purpose: a turn is read about where the gizmo IS.
+    const centre = new Vector3(2, -1, 0.5)
+    const on = (theta: number) =>
+      centre
+        .clone()
+        .addScaledVector(right, Math.cos(theta) * 0.6)
+        .addScaledVector(up, Math.sin(theta) * 0.6)
+
+    const from = 0.4
+    const to = 1.1
+    near(`ring ${axis} reads the angle it was given`, pointerAngle(on(from), centre, right, up), from, 1e-9)
+
+    const grab = {
+      axis: turnAxis.clone(),
+      rotation: [0, 0, 0] as Vec3,
+      position: [centre.x, centre.y, centre.z] as Vec3,
+      lastAngle: from,
+      total: 0,
+    }
+    const swept = advanceTurn(grab, pointerAngle(on(to), centre, right, up))
+    near(`and the sweep is how far the pointer went`, swept, to - from, 1e-9)
+
+    // THE POINT OF ALL OF IT: the target follows the hand. A probe standing
+    // where the pointer started ends up where the pointer ended -- same plane,
+    // same direction, same amount -- which is what "the ring turns under your
+    // finger" means when it is written down.
+    const probe = on(from).sub(centre).applyEuler(new Euler(...turnedRotation(grab, swept), 'XYZ'))
+    near(
+      `ring ${axis} carries the target round with the pointer`,
+      pointerAngle(probe.add(centre), centre, right, up),
+      to,
+      1e-9
+    )
+
+    // And nothing else moves: a turn about this axis leaves the axis alone,
+    // which is the promise a named ring makes that a camera-facing one cannot.
+    const along = turnAxis
+      .clone()
+      .applyEuler(new Euler(...turnedRotation(grab, swept), 'XYZ'))
+    near(`and leaves its own axis where it was`, along.dot(turnAxis), 1, 1e-9)
+  }
 
   // The drag arithmetic, which is the axis version in two dimensions: pinned at
   // the grab, and every frame computed from that pin rather than added to the
