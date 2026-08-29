@@ -22,6 +22,9 @@ export function NavTool({
   icon,
   active = false,
   onToggle,
+  action,
+  disabled = false,
+  trailing,
   tip,
   panelTitle,
   align = 'left',
@@ -42,6 +45,42 @@ export function NavTool({
    * panel (Help), where pressing it opens and closes that panel instead.
    */
   onToggle?: (on: boolean) => void
+  /**
+   * A tool that DOES something on the press rather than turning something on.
+   *
+   * The third kind of button in this row, and it needed saying out loud. The
+   * others are a switch (`onToggle`, which reports its state as `aria-pressed`)
+   * and a lid over a panel (`aria-expanded`); Mirror is neither -- it fires,
+   * the document changes, and the button goes back to looking exactly as it
+   * did. Announcing a pressed state that is false forever, which is what
+   * reusing `onToggle` would have done, tells a screen reader the tool is
+   * switched off rather than that it is a thing you press.
+   *
+   * Mutually exclusive with `onToggle`: a button cannot be both.
+   */
+  action?: () => void
+  /**
+   * Greyed and inert: the tool is still the tool, there is simply nothing here
+   * for it to act on.
+   *
+   * Two things reach it. Mirror, an `action` with no selection to flip -- and
+   * Import, Export and Snap on a screen that draws no document, where the bar
+   * keeps its shape and dims what does not apply rather than rearranging
+   * itself per screen. See `SCREEN_HAS_DOCUMENT`.
+   *
+   * It takes the CARET with it, not just the button. A dimmed tool whose panel
+   * still opened would be a live control hanging off a dead one.
+   */
+  disabled?: boolean
+  /**
+   * Controls sharing the button's outline, where the caret would otherwise be.
+   *
+   * The caret is one answer to "this tool has a second control on it"; the
+   * mirror's three axis buttons are another, and they are in the same place
+   * for the same reason -- they belong to that button, and hanging them
+   * anywhere else would make them a separate tool sitting suspiciously close.
+   */
+  trailing?: ReactNode
   /** Prose shown on hover. The bar's tooltips replace the console's old hints. */
   tip?: ReactNode
   panelTitle?: string
@@ -68,9 +107,13 @@ export function NavTool({
         <button
           type="button"
           className="nav-btn"
+          disabled={disabled}
+          // Three kinds of button, and each says what it is rather than
+          // borrowing the nearest attribute: a switch reports pressed, a lid
+          // reports expanded, and an action reports neither. See `action`.
           aria-pressed={onToggle ? active : undefined}
-          aria-expanded={onToggle ? undefined : open}
-          onClick={() => (onToggle ? onToggle(!active) : togglePanel())}
+          aria-expanded={onToggle || action ? undefined : open}
+          onClick={() => (onToggle ? onToggle(!active) : action ? action() : togglePanel())}
         >
           <span className="nav-icon" aria-hidden>
             {icon}
@@ -82,6 +125,7 @@ export function NavTool({
           <button
             type="button"
             className="nav-caret"
+            disabled={disabled}
             aria-expanded={open}
             aria-label={`${label} options`}
             onClick={togglePanel}
@@ -98,6 +142,8 @@ export function NavTool({
             </svg>
           </button>
         )}
+
+        {trailing}
       </div>
 
       {/* Sibling of the buttons, not a child of one: the bubble is shown by a

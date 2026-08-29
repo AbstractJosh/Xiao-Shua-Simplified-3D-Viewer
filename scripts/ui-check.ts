@@ -61,6 +61,7 @@ import {
   CutTool,
   ErodeTool,
   HelpTool,
+  MirrorTool,
   MoveTool,
   RotateTool,
   ScaleTool,
@@ -76,6 +77,29 @@ import { PlacementPanel } from '../src/console/PlacementPanel'
 import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { Console } from '../src/console/Console'
+import { LatheConsole } from '../src/console/LatheConsole'
+import { PullTool, PushTool } from '../src/console/LatheTools'
+import { CopyPieceButton, PIECE_NAME } from '../src/viewport/CopyPieceButton'
+import { StockPanel } from '../src/viewport/StockPanel'
+import { fitToEnvelope } from '../src/geometry/importers'
+import { registerMesh } from '../src/geometry/meshLibrary'
+import { revolveClay } from '../src/geometry/revolve'
+import {
+  CLAY_FLARE,
+  CLAY_RINGS,
+  freshClay,
+  isFresh,
+  mold,
+  widestRadius,
+} from '../src/geometry/clay'
+import { useLathe } from '../src/store/latheStore'
+import {
+  clayFrame,
+  pointerToClay,
+  silhouette,
+  turningRings,
+} from '../src/viewport/latheView'
+import { SCREENS, SCREEN_LABELS } from '../src/screens'
 import { SelectionHud } from '../src/viewport/SelectionHud'
 import { ToolIsland } from '../src/viewport/ToolIsland'
 import {
@@ -269,6 +293,7 @@ function occurrences(markup: string, needle: string): number {
 const doc = () => useDoc.getState()
 const library = () => useLibrary.getState()
 const tools = () => useTools.getState()
+const lathe = () => useLathe.getState()
 const rad = (deg: number) => (deg * Math.PI) / 180
 
 /**
@@ -557,18 +582,26 @@ doc().selectObject(pyramidId)
   )
   hides('with the formats behind its menu', bar, '>.glb<')
 
-  // Import went the other way, into the brand slot on the LEFT, where the
-  // tagline used to sit. Everything in the cluster on the right acts on a
-  // document you already have and is inert on the empty scene the app opens
-  // in; this is the one control that is not.
+  // Import used to sit in the brand slot on the LEFT, where the tagline had
+  // been. It is back with Export now: the left of the bar belongs to the screen
+  // tabs, and the two file controls are one act in opposite directions.
   const left = bar.slice(0, bar.indexOf('topbar-right'))
   shows('the wordmark names the app', left, "Xiao Shua&#x27;s 3D Editor")
-  shows('and Import stands beside it', left, '>Import<')
   hides('where the tagline no longer does', bar, 'brand-sub')
+  // Import left the wordmark's side for Export's, which is where the pair of
+  // doors belongs -- and it left because the screen tabs now claim the left of
+  // the bar. Both halves are pinned: gone from one side, arrived on the other.
+  hides('Import no longer stands beside the name', left, '>Import<')
+  shows('it stands with the tools on the right', right, '>Import<')
+  check(
+    'immediately left of Export, which is the pair it belongs to',
+    right.indexOf('>Import<') < right.indexOf('>Export<'),
+    `import ${right.indexOf('>Import<')}, export ${right.indexOf('>Export<')}`
+  )
   // It offers back exactly what Export writes, .stp included -- the same file
   // under its other extension.
   for (const ext of ['.glb', '.obj', '.stl', '.step', '.stp']) {
-    shows(`it accepts ${ext}`, left, ext)
+    shows(`it accepts ${ext}`, right, ext)
   }
 
   // Two invariants that markup cannot show and that both, when broken, look
@@ -597,14 +630,16 @@ doc().selectObject(pyramidId)
     // one that never happened.
     // Comments stripped first: the rule EXPLAINS why it must not clip, and the
     // explanation necessarily contains the declaration it is warning against.
-    const brand = (css.split('.brand {')[1]?.split('}')[0] ?? '').replace(
+    // Import moved into this cluster, so this is the box the receipt now hangs
+    // out of; it used to be `.brand`.
+    const holder = (css.split('.topbar-right {')[1]?.split('}')[0] ?? '').replace(
       /\/\*[\s\S]*?\*\//g,
       ''
     )
     check(
       'and nothing clips the receipt that reports them',
-      brand.trim().length > 0 && !/overflow:\s*hidden/.test(brand),
-      /overflow:\s*hidden/.test(brand) ? 'the brand slot still clips' : 'clear'
+      holder.trim().length > 0 && !/overflow:\s*hidden/.test(holder),
+      /overflow:\s*hidden/.test(holder) ? 'the tool cluster still clips' : 'clear'
     )
   }
 
@@ -836,11 +871,12 @@ doc().selectObject(pyramidId)
     'through the middle of the selected object'
   )
   // The torch's two surprises, both of which a user would otherwise find out by
-  // doing them: a plain click no longer picks anything up, and the tool shapes
-  // a surface rather than opening a hole in it.
+  // doing them: a plain click no longer picks anything up, and a wall thinner
+  // than the brush does not merely dish -- it opens.
   shows('Help explains the blowtorch', toolsPage, 'Blowtorch')
   shows('warns that clicking no longer selects', toolsPage, 'no longer picks anything up')
-  shows('and says it will not burn through', toolsPage, 'does not open holes')
+  shows('and says it burns through a thin wall', toolsPage, 'It burns through.')
+  shows('and that a thick one only dishes', toolsPage, 'cannot be burnt')
   // And the other brush, whose two surprises are the same shape: it is the
   // torch backwards, and arming it puts the torch down.
   shows('Help explains the sculpt tool', toolsPage, 'Sculpt')
@@ -5069,6 +5105,626 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
 
     doc().removeObject(clay)
   }
+}
+
+// --- the mirror tool --------------------------------------------------------
+//
+// One button that is also its own axis selector: three lettered buttons sharing
+// its outline, each in the colour the gizmo draws that axis in. What is worth
+// pinning is that the letters are IN the button rather than beside it, that the
+// colours come from the one place axis colours are defined, and that a flip is
+// a real edit of the document rather than a light on a button.
+{
+  const flipped = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
+  doc().patchObject(flipped, {
+    // Off-centre on two axes of its face, so a mirror about any of the three
+    // moves it somewhere a check can see.
+    features: [
+      {
+        id: 'mirror-f',
+        anchor: { on: 'box-face', face: 2, u: 0.5, v: 0.25 },
+        shape: { type: 'rect', w: 0.4, h: 0.3 },
+        rotation: 0.3,
+        depth: 0.3,
+        enabled: true,
+        tilt: [0, 0, 0],
+        faceOffset: [0, 0],
+      },
+    ],
+  })
+
+  /** Where the sketch actually sits on the solid, in the object's own space. */
+  const sketchAt = () => {
+    const o = doc().doc.objects.find((x) => x.id === flipped)
+    if (!o || o.features.length === 0) throw new Error('the mirrored solid lost its sketch')
+    return hostSurfaceFor(o.base, o.features[0].anchor).frame(o.features[0].anchor).origin
+  }
+  const started = sketchAt().clone()
+
+  // Nothing selected: there is no "mirror everything" reading to fall back on
+  // the way the cut tool has one, so the tool stands down rather than doing
+  // something nobody asked for.
+  doc().selectObject(null)
+  shows(
+    'the mirror tool is dark with nothing selected',
+    markupOf('MirrorTool (nothing selected)', MirrorTool),
+    'class="nav-btn" disabled=""'
+  )
+
+  doc().selectObject(flipped)
+  const mirror = markupOf('MirrorTool', MirrorTool)
+  hides('and live once a solid is', mirror, 'disabled=""')
+  // The three letters live INSIDE the tool's own outline, in the slot the caret
+  // takes on every other tool -- that is the whole design of this button, so it
+  // is pinned as a position rather than merely as three buttons existing.
+  // Nothing between the group and the picker is a div, so a picker that had
+  // become a SIBLING of the button would put the group's own closing tag here.
+  check(
+    'its axis picker sits inside the button group',
+    !mirror.slice(mirror.indexOf('nav-group'), mirror.indexOf('nav-axes')).includes('</div>'),
+    `group ${mirror.indexOf('nav-group')}, axes ${mirror.indexOf('nav-axes')}`
+  )
+  for (const letter of ['x', 'y', 'z']) {
+    shows(`with a ${letter.toUpperCase()} button`, mirror, `nav-axis nav-axis-${letter}`)
+  }
+  // Exactly one lit, and at rest it is X. A picker with none lit would be a
+  // button that cannot say what it is about to do.
+  check(
+    'exactly one axis is lit',
+    (mirror.match(/aria-pressed="true"/g) ?? []).length === 1,
+    `${(mirror.match(/aria-pressed="true"/g) ?? []).length}`
+  )
+  shows('and it is X to start with', mirror, 'nav-axis-x" aria-pressed="true"')
+
+  {
+    // The colours are the GIZMO's, read out of the stylesheet: a user connects
+    // the lit letter to the arrow it matches by colour before reading either,
+    // so a letter tinted from anywhere else would quietly break that.
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    AXIS_CSS_VARS.forEach((name, axis) => {
+      const letter = 'xyz'[axis]
+      const rule = css.split(`.nav-axis-${letter} {`)[1]?.split('}')[0] ?? ''
+      check(
+        `the ${letter.toUpperCase()} button is tinted from ${name}`,
+        rule.includes(`var(${name})`),
+        rule.trim() || 'no rule'
+      )
+    })
+  }
+
+  // A flip is an EDIT. The sketch ends up at the mirror image of where it was,
+  // in the object's own space: one axis negated, the other two untouched.
+  const entries = doc().past.length
+  for (const axis of [0, 1, 2] as const) {
+    const before = sketchAt().clone()
+    doc().mirrorObjects([flipped], axis)
+    const after = sketchAt()
+    const got = [after.x, after.y, after.z]
+    const want = [before.x, before.y, before.z].map((v, i) => (i === axis ? -v : v))
+    check(
+      `mirroring about ${'XYZ'[axis]} reflects the sketch across that axis`,
+      got.every((v, i) => Math.abs(v - want[i]) < 1e-9),
+      `${got.map((v) => v.toFixed(3)).join(', ')} vs ${want.map((v) => v.toFixed(3)).join(', ')}`
+    )
+    // And back, so the next axis starts from the solid this one did.
+    doc().mirrorObjects([flipped], axis)
+  }
+  check(
+    'each press costs one undo entry, like every other edit',
+    doc().past.length === entries + 6,
+    `${doc().past.length - entries} for 6 presses`
+  )
+  {
+    // Six flips, three axes, twice each: the solid is exactly as it was.
+    const at = sketchAt()
+    check(
+      'mirroring twice along an axis leaves the solid where it started',
+      at.distanceTo(started) < 1e-9,
+      `${at.distanceTo(started).toExponential(2)} from where it began`
+    )
+  }
+  // A selection of none is a press that changes nothing, and must not bury the
+  // edit before it under an undo entry that does nothing.
+  doc().mirrorObjects([], 0)
+  check(
+    'and a press with nothing selected costs none',
+    doc().past.length === entries + 6,
+    `${doc().past.length - entries}`
+  )
+
+  // Aiming it moves the light, and the wide button beside the letters is what
+  // repeats the last axis -- so which one is lit has to be readable.
+  tools().setMirrorAxis(2)
+  const aimed = markupOf('MirrorTool (Z)', MirrorTool)
+  shows('choosing Z lights the Z button', aimed, 'nav-axis-z" aria-pressed="true"')
+  hides('and puts X out', aimed, 'nav-axis-x" aria-pressed="true"')
+  tools().setMirrorAxis(0)
+
+  // In the island, with the gizmo tools rather than with the tools below the
+  // rule: all four act on the object you have selected.
+  {
+    const island = markupOf('ToolIsland (mirror)', ToolIsland)
+    shows('the island carries the mirror tool', island, '>Mirror<')
+    check(
+      'above the rule, with the tools that act on the selected object',
+      island.indexOf('>Mirror<') > island.indexOf('>Scale<') &&
+        island.indexOf('>Mirror<') < island.indexOf('island-rule'),
+      `scale ${island.indexOf('>Scale<')}, mirror ${island.indexOf('>Mirror<')}, rule ${island.indexOf('island-rule')}`
+    )
+  }
+
+  doc().removeObject(flipped)
+}
+
+// --- screens ----------------------------------------------------------------
+//
+// The app is no longer one viewport with one console beside it: it is a set of
+// SCREENS, each a viewport and the console that drives it, chosen by tabs at
+// the left of the bar. What is worth pinning is that the two halves are chosen
+// together, that a screen with no document dims the controls that act on one
+// rather than dropping them, and that Lathe's console really is its own.
+{
+  const bar = markupOf('NavBar (screens)', NavBar)
+  const left = bar.slice(0, bar.indexOf('topbar-right'))
+
+  // The tabs, in the order the table gives them, at the left of the bar.
+  for (const id of SCREENS) {
+    shows(`the bar offers the ${SCREEN_LABELS[id]} screen`, left, `>${SCREEN_LABELS[id]}<`)
+  }
+  check(
+    'in the order the table names them',
+    left.indexOf('>Modelling<') < left.indexOf('>Lathe<'),
+    `modelling ${left.indexOf('>Modelling<')}, lathe ${left.indexOf('>Lathe<')}`
+  )
+  // After the name, which keeps the corner it has always had: identity first,
+  // then where you are inside it.
+  check(
+    'after the wordmark, not before it',
+    left.indexOf('brand-mark') < left.indexOf('screen-tabs'),
+    `mark ${left.indexOf('brand-mark')}, tabs ${left.indexOf('screen-tabs')}`
+  )
+  // Divided, and by RULES rather than by more buttons: the bar now holds three
+  // kinds of thing at once and at one gap they read as one row of switches.
+  check(
+    'the bar is divided by rules',
+    (bar.match(/topbar-rule/g) ?? []).length >= 3,
+    `${(bar.match(/topbar-rule/g) ?? []).length} rules`
+  )
+  check(
+    'with one between the name and the tabs',
+    left.indexOf('topbar-rule') > left.indexOf('brand-mark') &&
+      left.indexOf('topbar-rule') < left.indexOf('screen-tabs'),
+    `mark ${left.indexOf('brand-mark')}, rule ${left.indexOf('topbar-rule')}, tabs ${left.indexOf('screen-tabs')}`
+  )
+  // THE BIG one, and it is the only place in the bar that gets it: everything
+  // right of that line belongs to whichever screen is chosen left of it, which
+  // is a bigger break than any between two groups of tools.
+  shows('and it is the full-height one', left, 'topbar-rule topbar-rule-major')
+  check(
+    'used exactly once',
+    (bar.match(/topbar-rule-major/g) ?? []).length === 1,
+    `${(bar.match(/topbar-rule-major/g) ?? []).length}`
+  )
+  // And the smallest of the three, between one tab and its neighbour. One
+  // fewer than there are tabs: it goes BETWEEN them, not around them.
+  check(
+    'with a smaller rule between the tabs themselves',
+    (bar.match(/screen-tab-rule/g) ?? []).length === SCREENS.length - 1,
+    `${(bar.match(/screen-tab-rule/g) ?? []).length} for ${SCREENS.length} tabs`
+  )
+  {
+    // Three heights, one line each, and the height is the whole of what they
+    // say -- so it is the heights that are pinned rather than merely that three
+    // classes exist.
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    const ruleFor = (name: string) => (css.split(`${name} {`)[1]?.split('}')[0] ?? '')
+    check(
+      'the group rule crosses the middle of the bar',
+      /height:\s*20px/.test(ruleFor('.topbar-rule')),
+      ruleFor('.topbar-rule').trim()
+    )
+    check(
+      'the major one runs edge to edge',
+      /align-self:\s*stretch/.test(ruleFor('.topbar-rule-major')),
+      ruleFor('.topbar-rule-major').trim()
+    )
+    check(
+      'and the one between tabs is the shortest',
+      /height:\s*12px/.test(ruleFor('.screen-tab-rule')),
+      ruleFor('.screen-tab-rule').trim()
+    )
+    // The labels are drawn in capitals rather than stored that way, so the
+    // table stays reusable by anything that should not shout.
+    check(
+      'the tabs are set in capitals by the stylesheet',
+      /text-transform:\s*uppercase/.test(ruleFor('.screen-tab')),
+      ruleFor('.screen-tab').trim().slice(0, 60)
+    )
+    check(
+      'and the labels themselves are not shouted',
+      SCREENS.every((id) => SCREEN_LABELS[id] !== SCREEN_LABELS[id].toUpperCase()),
+      SCREENS.map((id) => SCREEN_LABELS[id]).join(', ')
+    )
+  }
+  // Inert. A rule that announced itself would have a screen reader reading out
+  // the layout between every pair of buttons.
+  shows('and the rules are hidden from the reader', bar, 'topbar-rule" aria-hidden="true"')
+
+  // Exactly one tab is current, and it is `aria-current` rather than
+  // `aria-pressed`: these are places, not switches.
+  check(
+    'exactly one screen is current',
+    (bar.match(/aria-current="page"/g) ?? []).length === 1,
+    `${(bar.match(/aria-current="page"/g) ?? []).length}`
+  )
+  shows('and at rest it is Modelling', left, 'aria-current="page">Modelling<')
+
+  // The modelling console: five panels, all about the document.
+  const full = markupOf('Console', Console)
+  for (const panel of ['Clipboard', 'Solids', 'Shapes', 'Color', 'Scene']) {
+    shows(`the modelling console carries ${panel}`, full, `>${panel}<`)
+  }
+
+  // Lathe's console is its OWN. The Clipboard crosses over because what you
+  // have saved is yours rather than the scene's; the other four describe a
+  // document this screen does not draw.
+  const lathe = markupOf('LatheConsole', LatheConsole)
+  shows("the lathe console keeps the clipboard", lathe, '>Clipboard<')
+  for (const panel of ['Solids', 'Shapes', 'Color', 'Scene']) {
+    hides(`and not ${panel}`, lathe, `>${panel}<`)
+  }
+
+  // On a screen with no document, everything that acts on one stands down --
+  // dimmed and still in place, so the bar keeps its shape between screens.
+  tools().setScreen('lathe')
+  {
+    const idle = markupOf('NavBar (lathe)', NavBar)
+    shows('switching screens lights the other tab', idle, 'aria-current="page">Lathe<')
+    hides('and puts Modelling out', idle, 'aria-current="page">Modelling<')
+
+    // Counted rather than named one at a time: what matters is that the six
+    // controls acting on the document all stand down together.
+    const down = (idle.match(/disabled=""/g) ?? []).length
+    check(
+      'the document controls stand down together',
+      down >= 6,
+      `${down} disabled: Import, Export, Snap and its caret, Undo, Redo`
+    )
+    for (const label of ['Import', 'Export', 'Snap', 'Undo', 'Redo']) {
+      shows(`${label} is still in the bar`, idle, `>${label}<`)
+    }
+    // Dimmed, and the stylesheet dims the whole CONTROL rather than the label
+    // inside it: Snap is an engaged tool wearing an accent fill, and fading
+    // only its text left the one button that could not be pressed as the
+    // brightest thing in the bar.
+    shows('and Snap is still lit as the rule it is', idle, 'nav-group nav-group-active')
+    {
+      const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+      const rule = css.split('.nav-group:has(> .nav-btn:disabled) {')[1]?.split('}')[0] ?? ''
+      check('the dim goes on the whole group', rule.includes('opacity'), rule.trim() || 'no rule')
+    }
+    // Help and the cog survive every screen: one explains the app and the other
+    // holds what stays true of the next document you open.
+    check(
+      'Help and Settings stay live',
+      !/>Help<[\s\S]{0,40}disabled/.test(idle) && !/>Settings<[\s\S]{0,40}disabled/.test(idle),
+      'neither is disabled'
+    )
+    // The counts are a readout of the same scene, so they dim with it.
+    shows('and the counts read as inapplicable', idle, 'stats stats-idle')
+  }
+
+  // Switching closes any tool panel with it: every one of them hangs off a bar
+  // or an island that is about to be replaced.
+  tools().setScreen('modelling')
+  tools().setOpenPanel('snap')
+  tools().setScreen('lathe')
+  check('switching screens closes an open panel', tools().openPanel === null, `${tools().openPanel}`)
+
+  // And the screen is a TOOL setting, not a document one: switching must not
+  // land in undo history.
+  {
+    const entries = doc().past.length
+    tools().setScreen('modelling')
+    tools().setScreen('lathe')
+    tools().setScreen('modelling')
+    check(
+      'and costs no undo entries',
+      doc().past.length === entries,
+      `${doc().past.length - entries}`
+    )
+  }
+  check('back on the modelling screen', tools().screen === 'modelling', tools().screen)
+}
+
+// --- the lathe screen --------------------------------------------------------
+//
+// The second screen, and the first one with tools of its own. What is worth
+// pinning here is the shape of the thing rather than the arithmetic -- the clay
+// itself is checked in `engine-check`, which can work a lump without a window.
+// This is about the controls: two tools on the island and no more, the stock in
+// the bar where it dims off this screen, and the one piece of geometry the
+// SCREEN owns rather than the model -- the mapping from a pointer in pixels to
+// a place on the wall, which every gesture on this screen rests on.
+console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands where it looks')
+{
+  tools().setScreen('lathe')
+
+  // THE ISLAND HOLDS TWO TOOLS AND NOTHING ELSE. It is the whole promise of the
+  // screen -- the easy one -- so it is worth a check that would fail the day a
+  // third button is added without a second thought.
+  const push = markupOf('PushTool', PushTool)
+  const pull = markupOf('PullTool', PullTool)
+  shows('the island offers Push', push, '>Push<')
+  shows('and Pull', pull, '>Pull<')
+
+  // Each carries its own two dials, and the pair is deliberately two rather
+  // than the modelling brushes' three: there is no crease to allow for on a
+  // wall that is relaxed after every dab. See `PushPullTool`.
+  for (const [label, markup] of [
+    ['Push', push],
+    ['Pull', pull],
+  ] as const) {
+    tools().setOpenPanel(label.toLowerCase() as 'push' | 'pull')
+    const open = markupOf(`${label} (panel open)`, label === 'Push' ? PushTool : PullTool)
+    shows(`${label} sizes its tool`, open, '>Tool size<')
+    shows(`${label} sets a strength`, open, '>Strength<')
+    check(
+      `and offers no third dial`,
+      (open.match(/field-label/g) ?? []).length === 2,
+      `${(open.match(/field-label/g) ?? []).length} fields`
+    )
+    hides(`${label} has no smoothing to set`, open, '>Smoothing<')
+    // The size is pinned to a unit of its own, as the modelling brushes' are:
+    // `auto` renumbers a scale mid-drag, and a control that SETS a length
+    // cannot be aimed while it does. See `erodeSizeUnit`.
+    shows(`${label}'s size is read in a unit it owns`, open, 'seg field-units')
+    check('the closed one stayed closed', !markup.includes('>Strength<'), '')
+  }
+  tools().setOpenPanel(null)
+
+  // ARMING ONE DISARMS THE OTHER, and nothing enforces it: the store holds ONE
+  // tool. Pressing the lit tool puts it down, which is how a press on the clay
+  // is made to do nothing.
+  tools().setLatheTool('push')
+  check('taking up Push arms it', tools().latheTool === 'push', `${tools().latheTool}`)
+  tools().setLatheTool('pull')
+  check('and taking up Pull puts Push down', tools().latheTool === 'pull', `${tools().latheTool}`)
+  shows(
+    'the armed tool is lit',
+    markupOf('PullTool (armed)', PullTool),
+    'nav-group nav-group-active'
+  )
+  tools().setLatheTool(null)
+
+  // THE STOCK IS A CORNER PANEL over the piece, not a lid on a bar button. It
+  // was in the bar to begin with, which put a number and the shape it changes
+  // at opposite ends of the window; the corner is where the eye already is.
+  {
+    const bar = markupOf('NavBar (lathe)', NavBar)
+    hides('the bar carries no lathe control at all', bar, '>Clay<')
+
+    const panel = markupOf('StockPanel', StockPanel)
+    shows('the corner panel names what it is about', panel, 'The lump')
+    shows('it sets a height', panel, '>Height<')
+    // HEIGHT AND WIDTH, which is what the drawing shows: a rectangle. The wall
+    // is a radius underneath, and the halving happens on the way in -- asking
+    // for a radius here would be asking the reader to double a number to check
+    // their own work against a shape whose width is the thing on screen.
+    shows('and a width', panel, '>Width<')
+    hides('rather than the radius it keeps underneath', panel, '>Radius<')
+    check(
+      'the width field reads as the whole rectangle',
+      /value="8"/.test(panel.slice(panel.indexOf('>Width<'))),
+      'twice the 4 cm stock radius, in the centimetres the app is set to'
+    )
+    shows('and it offers a fresh lump', panel, 'Centre a fresh lump')
+    // Dead while the lump is untouched rather than hidden: a control that
+    // appears the first time you push the clay is one nobody knows is there.
+    check(
+      'which is dead while the lump is untouched',
+      /stock-fresh"[\s\S]{0,40}disabled/.test(panel),
+      'disabled on a fresh lump'
+    )
+
+    // It shuts to its title strip, and the strip is what reopens it: the same
+    // collapse idiom every console section and the tool island already wear.
+    shows('the panel can be shut', panel, 'collapse-btn')
+    shows('and says so where a reader can hear it', panel, 'aria-expanded="true"')
+    tools().setStockOpen(false)
+    const shut = markupOf('StockPanel (shut)', StockPanel)
+    shows('shut, it is the strip and nothing else', shut, 'stock-panel-shut')
+    hides('with the fields gone', shut, '>Height<')
+    shows('and the caret turned the other way', shut, 'aria-expanded="false"')
+    tools().setStockOpen(true)
+
+    // The fields read the clay, and writing them carries the shape rather than
+    // throwing it away -- the whole reason they are safe to touch after an
+    // hour's work. `engine-check` proves the scaling; this proves the panel is
+    // wired to it.
+    lathe().work({ y: 0.75, radius: 0.2, reach: 0.3, bite: 1, push: true })
+    check('working the clay marks it as touched', !isFresh(lathe().clay), '')
+    const before = lathe().clay.wall.slice()
+    lathe().setRadius(lathe().clay.radius * 2)
+    const carried = lathe().clay.wall.every((r, i) => Math.abs(r / before[i] - 2) < 1e-9)
+    check('the panel doubles the piece rather than re-centring it', carried, '')
+    lathe().centreFresh()
+    check('and a fresh lump is a cylinder again', isFresh(lathe().clay), '')
+    check('at the stock it was given', lathe().clay.radius === 0.8, `${lathe().clay.radius}`)
+    lathe().setRadius(0.4)
+  }
+
+  // THE WAY OFF THE LATHE. The piece is swept into a solid and put on the
+  // clipboard -- the one thing in this app that belongs to the user rather than
+  // to a document, and the one panel this screen's console carries.
+  {
+    const corner = markupOf('CopyPieceButton', CopyPieceButton)
+    shows('the corner offers the copy', corner, 'Copy to clipboard')
+    check(
+      'and says nothing until it has something to report',
+      !corner.includes('copy-piece-note'),
+      'no receipt before the first press'
+    )
+
+    // Pressed for real, through the same calls the button makes.
+    const worked = mold(freshClay(1.5, 0.4), {
+      y: 0.9,
+      radius: 0.2,
+      reach: 0.4,
+      bite: 1,
+      push: true,
+    })
+    const entry = registerMesh(revolveClay(worked), PIECE_NAME)
+    const { size } = fitToEnvelope(entry.natural)
+    const piece = makeObject(
+      { kind: 'mesh', meshId: entry.id, label: entry.label, size },
+      [0, size[1] / 2, 0]
+    )
+    library().copyObject(piece)
+    library().renameCustom(library().saveCustom(piece), PIECE_NAME)
+    const copied = library().clipboard
+    check('a copy lands on the clipboard', copied !== null, '')
+    check(
+      'as a mesh, which is what the scene can already hold',
+      copied?.base.kind === 'mesh',
+      `${copied?.base.kind}`
+    )
+    check('named for what it is', copied?.name === PIECE_NAME, `${copied?.name}`)
+    check(
+      'the right way up and standing on the ground',
+      copied !== null && Math.abs(copied.transform.position[1] - worked.height / 2) < 1e-9,
+      `${copied?.transform.position.join(', ')}`
+    )
+    // Its size is the piece's own, not a unit cube: the triangles are
+    // normalised into the mesh library and `size` is what puts them back.
+    const turned = copied?.base.kind === 'mesh' ? copied.base.size : [0, 0, 0]
+    check(
+      'at the size it was turned',
+      Math.abs(turned[1] - worked.height) < 1e-6 &&
+        Math.abs(turned[0] - widestRadius(worked) * 2) < 1e-6,
+      turned.map((n) => n.toFixed(3)).join(' x ')
+    )
+    check(
+      'and as round as it went in',
+      Math.abs(turned[0] - turned[2]) < 1e-6,
+      `${turned[0].toFixed(3)} by ${turned[2].toFixed(3)}`
+    )
+    // BOTH HALVES OF "COPY". The panel called Clipboard is the shelf, so a
+    // press that only filled the paste buffer would put the piece somewhere
+    // the user cannot see; one that only filled the shelf would leave Ctrl+V
+    // doing nothing. See `CopyPieceButton`.
+    check(
+      'it lands on the shelf as well as in the paste buffer',
+      library().customs.some((c) => c.name === PIECE_NAME),
+      library().customs.map((c) => c.name).join(', ') || 'nothing on the shelf'
+    )
+    shows(
+      'so the console beside it has a tile to draw',
+      markupOf('LatheConsole (copied)', LatheConsole),
+      PIECE_NAME
+    )
+  }
+
+  // WHERE A POINTER LANDS. The screen draws itself in scene units and lets the
+  // browser fit that box into whatever shape the window leaves -- so the one
+  // piece of arithmetic it has to own is the way back, and every press, drag
+  // and ghost circle on this screen is wrong if this is.
+  {
+    const clay = freshClay(1.5, 0.4)
+    const frame = clayFrame(clay)
+    check(
+      'the frame is centred on the axis',
+      frame.x === -frame.width / 2,
+      `${frame.x} of ${frame.width}`
+    )
+    check(
+      'and leaves room for the widest the wall may be worked',
+      frame.width / 2 > clay.radius * CLAY_FLARE,
+      `${(frame.width / 2).toFixed(3)} against ${(clay.radius * CLAY_FLARE).toFixed(3)}`
+    )
+    check(
+      'with the piece standing clear of both ends',
+      frame.base < frame.height && frame.base > clay.height,
+      `base ${frame.base.toFixed(3)} in 0..${frame.height.toFixed(3)}`
+    )
+
+    // A square element, so the frame -- which is taller than it is wide -- fits
+    // by HEIGHT and is letterboxed left and right. That is the case a hand-
+    // written inverse gets wrong, so it is the one to check.
+    const square = { left: 0, top: 0, width: 600, height: 600 }
+    const scale = square.height / frame.height
+    const middle = pointerToClay(frame, square, 300, 300)
+    near('the middle of the element is on the axis', middle.x, 0, 1e-9)
+    near(
+      'at half the frame up from the faceplate',
+      middle.y,
+      frame.base - frame.height / 2,
+      1e-9
+    )
+
+    // A point one scene unit to the right of the axis is `scale` pixels right
+    // of the middle, and reads back as one unit -- whichever side of the axis
+    // it is on, because the wall is one row of radii and has no left or right.
+    const right = pointerToClay(frame, square, 300 + scale * 0.3, 300)
+    near('a point right of the axis reads as that far out', right.x, 0.3, 1e-9)
+    const left = pointerToClay(frame, square, 300 - scale * 0.3, 300)
+    near('and the same point on the left is the same distance', left.radius, right.radius, 1e-9)
+    check('with the sign kept for the drawing', left.x < 0 && right.x > 0, '')
+
+    // Up the screen is up the piece, which is the flip this module exists to
+    // own -- SVG counts y downward and a lathe counts it up off the faceplate.
+    const higher = pointerToClay(frame, square, 300, 200)
+    check('higher on screen is higher up the piece', higher.y > middle.y, '')
+    near('by exactly the pixels it moved', higher.y - middle.y, 100 / scale, 1e-9)
+
+    // And the faceplate itself: the y the frame calls the clay's zero.
+    const onPlate = pointerToClay(frame, square, 300, (frame.base / frame.height) * 600)
+    near('the faceplate is the clay zero', onPlate.y, 0, 1e-9)
+
+    // A zero-sized element is not a thing anyone can point at, but a layout can
+    // produce one for a frame, and it must not divide by nothing.
+    const nothing = pointerToClay(frame, { left: 0, top: 0, width: 0, height: 0 }, 10, 10)
+    check('and a zero-sized viewport reads as the origin', nothing.y === 0, `${nothing.y}`)
+  }
+
+  // The silhouette is one path, mirrored from one row of radii: both walls are
+  // the same wall, so the drawing cannot disagree with itself about the shape.
+  {
+    const worked = mold(freshClay(1.5, 0.4), {
+      y: 0.75,
+      radius: 0.2,
+      reach: 0.3,
+      bite: 1,
+      push: true,
+    })
+    const frame = clayFrame(worked)
+    const path = silhouette(worked, frame)
+    check('the silhouette closes', path.startsWith('M ') && path.endsWith(' Z'), path.slice(-2))
+    const points = path.replace(/[MLZ]/g, '').trim().split(/\s+/)
+    check(
+      'and holds both walls of every ring',
+      points.length === CLAY_RINGS * 4,
+      `${points.length / 2} points for ${CLAY_RINGS} rings`
+    )
+
+    // The turning rings live inside the wall they cross rather than at a width
+    // of their own, so they follow every push and pull without being told.
+    const rings = turningRings(worked, frame, 11)
+    check('eleven rings are drawn', rings.length === 11, `${rings.length}`)
+    check(
+      'each inside the wall at its own height',
+      rings.every((ring) => ring.r > 0 && ring.r < Math.max(...worked.wall)),
+      ''
+    )
+    check(
+      'and none of them on the base or the rim',
+      rings.every((ring) => ring.y < frame.base && ring.y > frame.base - worked.height),
+      ''
+    )
+  }
+
+  tools().setScreen('modelling')
+  tools().setLatheTool(null)
 }
 
 console.log(

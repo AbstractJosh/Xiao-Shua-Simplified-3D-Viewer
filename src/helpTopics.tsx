@@ -52,6 +52,7 @@ export type HelpSectionId =
   | 'gizmo'
   | 'tools'
   | 'sketch'
+  | 'lathe'
   | 'look'
   | 'files'
 
@@ -78,8 +79,30 @@ export const HELP_SECTIONS: HelpSection[] = [
   {
     id: 'view',
     title: 'Getting around',
-    blurb: 'Moving the camera. None of it touches the model.',
+    blurb: 'Which screen you are on, and moving the camera. None of it touches the model.',
     entries: [
+      {
+        title: 'Screens',
+        body: [
+          <>
+            The tabs at the left of the top bar -- <b>Modelling</b> and <b>Lathe</b> -- each
+            hold a viewport and the console that drives it. <b>Click</b> one and both halves of
+            the window change together.
+          </>,
+          <>
+            <b>Modelling</b> is everything described here: the scene, the solids, the gizmo and
+            the tools. <b>Lathe</b> is a screen of its own, where one lump of clay is shaped by
+            pushing and pulling its wall -- see <b>The lathe</b> in the rail. Its console
+            carries the Clipboard, since what you have saved is yours wherever you are working.
+          </>,
+          <>
+            Everything in the bar that acts on the scene -- <b>Import</b>, <b>Export</b>,{' '}
+            <b>Snap</b>, undo, redo and the counts -- dims on a screen that has no scene to act
+            on. It stays where it is rather than disappearing, so the bar reads the same
+            whichever screen you are on.
+          </>,
+        ],
+      },
       {
         title: 'Orbit and zoom',
         body: [
@@ -238,7 +261,7 @@ export const HELP_SECTIONS: HelpSection[] = [
     id: 'gizmo',
     title: 'Moving and shaping',
     blurb:
-      'The handles on a selected object. Three of them, chosen at the top of the Tools island, and every one is a left-drag.',
+      'What you do to a selected object. Three gizmos, chosen at the top of the Tools island and worked with a left-drag, and one button that flips the solid outright.',
     entries: [
       {
         title: 'Move',
@@ -282,6 +305,26 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
       },
       {
+        title: 'Mirror',
+        body: [
+          <>
+            Flips the selected solid, like holding it up to a mirror. The three lettered buttons
+            inside the Mirror tool choose which way: <b>X</b>, <b>Y</b> or <b>Z</b>, coloured to
+            match the gizmo's own arrows. <b>Press one</b> and the solid flips straight away.
+          </>,
+          <>
+            It flips about the object's <b>own</b> axes, the way Scale resizes along them -- so a
+            part you have turned is flipped along its own length rather than along the world's. It
+            stays exactly where it was standing; only which way round it is changes.
+          </>,
+          <>
+            Everything on the solid goes with it: sketches land at the mirror image of where they
+            sat, cuts, torch marks and welded parts too. Press the same axis <b>twice</b> and you
+            are back where you started, and <b>Ctrl+Z</b> undoes a flip like any other edit.
+          </>,
+        ],
+      },
+      {
         title: 'Putting the handles away',
         body: [
           <>
@@ -308,7 +351,7 @@ export const HELP_SECTIONS: HelpSection[] = [
     id: 'tools',
     title: 'Tools',
     blurb:
-      'The island over the scene. Move, Rotate, Scale, Ruler, Cut and the two brushes live here; Snap is in the top bar, since it is a rule rather than a gizmo.',
+      'The island over the scene. Move, Rotate, Scale, Mirror, Ruler, Cut and the two brushes live here; Snap is in the top bar, since it is a rule rather than a gizmo.',
     entries: [
       {
         title: 'The Tools island',
@@ -344,11 +387,17 @@ export const HELP_SECTIONS: HelpSection[] = [
             -- <b>right-click</b> or <b>Shift-click</b> to select.
           </>,
           <>
-            The torch shapes a surface; it does not open holes. Melt one spot long enough and a
-            thin wall sags rather than bursting. Arming it takes the gizmo off the selected
-            object on its own, so the arrows are never between the brush and the surface -- and
-            pins the solid while it does, so a stroke that misses cannot shove the thing you
-            were aiming at.
+            <b>It burns through.</b> Hold it on a wall thinner than the brush and the surface
+            sags until there is nothing left of it, and then a hole opens -- widening with each
+            pass to about the size of the brush, and cutting a slot if you drag. The rim is a
+            melted lip rather than a drilled edge, and the solid stays closed, so a panel with a
+            hole burnt in it still exports. A wall much thicker than the brush cannot be burnt
+            through: the flame runs out of reach and leaves a dish, so use a bigger brush.
+          </>,
+          <>
+            Arming it takes the gizmo off the selected object on its own, so the arrows are never
+            between the brush and the surface -- and pins the solid while it does, so a stroke
+            that misses cannot shove the thing you were aiming at.
           </>,
         ],
       },
@@ -507,6 +556,87 @@ export const HELP_SECTIONS: HelpSection[] = [
             -- the outline stops being drawn in the scene, and the sketch stops
             being a row under its object in <b>Scene</b>. Like a subtraction it
             only goes one way, and <b>undo</b> is the way back.
+          </>,
+        ],
+      },
+    ],
+  },
+
+  {
+    id: 'lathe',
+    title: 'The lathe',
+    blurb:
+      'A second screen, and a different way of making: one lump of clay, shaped by pushing and pulling its wall.',
+    entries: [
+      {
+        title: 'What is on the lathe',
+        body: [
+          <>
+            The <b>Lathe</b> tab opens a lump of clay turning on a faceplate, drawn from the
+            side. What you shape is a solid of revolution -- the same all the way round -- so
+            the side view hides nothing and there is no camera to fly: the piece sits still,
+            and both walls of the drawing are the one wall, mirrored about the axis.
+          </>,
+          <>
+            The dashed rectangle that appears once you start work is the <b>stock</b>: where
+            the lump began, so you can see what has come off and what has been drawn out past
+            it. The faint rings across the body follow the wall, and are the quickest way to
+            read the curve you are making.
+          </>,
+        ],
+      },
+      {
+        title: 'Push and Pull',
+        body: [
+          <>
+            The island carries two tools and no others. <b>Push</b> takes material away and{' '}
+            <b>Pull</b> adds it. Take one up, then <b>press and hold</b> against the clay: the
+            wall travels to the pointer and STOPS there, so where you hold is where the wall
+            ends up. Holding longer cannot overshoot -- it only finishes the curve.
+          </>,
+          <>
+            Hold still and the work carries on, because it is the piece that is moving. Move up
+            and down the wall while holding to shape a whole side in one stroke, and work
+            either side of the axis: both are the same wall.
+          </>,
+          <>
+            Each tool has <b>Tool size</b> -- how much of the wall it covers -- and{' '}
+            <b>Strength</b>, which is how fast the wall comes to you rather than how deep it
+            goes. Each remembers its own pair, so a wide tool for the belly and a fine one for
+            the neck stay set as you swap between them. Neither tool works the other's way: a
+            push can never fill a neck back in, which is what makes a missed aim harmless.
+          </>,
+        ],
+      },
+      {
+        title: 'The lump',
+        body: [
+          <>
+            The panel in the <b>bottom-left corner</b> sets the stock you are turning:{' '}
+            <b>Height</b> and <b>Width</b>, which are the two sides of the rectangle you start
+            from. Changing either CARRIES THE SHAPE with it -- a piece made wider is the same
+            piece, wider -- so the fields are safe to touch after you have started. Press the
+            title to shut the panel down to its strip and get the corner back.
+          </>,
+          <>
+            <b>Centre a fresh lump</b> throws the shaping away and leaves the stock as it is.
+            It is the only way back: undo belongs to the document, and the lathe has none, so
+            the other way to unmake a push is a pull.
+          </>,
+        ],
+      },
+      {
+        title: 'Copy to clipboard',
+        body: [
+          <>
+            The button in the <b>top-right corner</b> sweeps the piece a full turn into a real
+            solid and puts it on the <b>Clipboard</b>: a tile appears in the console beside it,
+            and <b>Ctrl+V</b> on the Modelling screen pastes the same thing into the scene.
+          </>,
+          <>
+            What lands there is a mesh, so everything the Modelling screen does works on it --
+            move it, resize it, cut it, mirror it, melt it with the blowtorch, export it. It is
+            a SNAPSHOT: shape the clay further and press the button again for a second copy.
           </>,
         ],
       },

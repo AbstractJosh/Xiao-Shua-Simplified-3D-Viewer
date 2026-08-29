@@ -3,7 +3,7 @@ import { evaluateDoc, mergedGeometry } from '../geometry/evaluate'
 import { FORMAT_INFO, exportSolid } from '../geometry/exporters'
 import type { ExportFormat } from '../geometry/exporters'
 import { useDoc } from '../store/docStore'
-import { useTools } from '../store/toolStore'
+import { onDocument, useTools } from '../store/toolStore'
 import { APP_SLUG } from '../appInfo'
 import { ExportIcon } from './navIcons'
 import { NavTool } from './NavTool'
@@ -56,6 +56,7 @@ const gist = (blurb: string): string => blurb.split('. ')[0]
  */
 export function ExportTools() {
   const setOpenPanel = useTools((s) => s.setOpenPanel)
+  const live = useTools(onDocument)
   const [busy, setBusy] = useState<ExportFormat | null>(null)
   const receipt = useReceipt()
 
@@ -103,6 +104,10 @@ export function ExportTools() {
         id="export"
         label="Export"
         icon={<ExportIcon />}
+        // Dimmed on a screen that draws no document: a menu of four formats
+        // for a scene that is not on show is four ways to write the same
+        // empty file.
+        disabled={!live}
         align="right"
         panelTitle="Export scene"
       >

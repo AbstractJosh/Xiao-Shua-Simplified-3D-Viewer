@@ -21,7 +21,9 @@ import {
 } from '../geometry/types'
 import { clampDepth, conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
 import { assemblyBounds, assemblyParams, scaleAssembly } from '../geometry/assembly'
+import { mirrorAssembly } from '../geometry/mirror'
 import { baseParams } from '../geometry/dimensions'
+import type { Axis } from '../geometry/dimensions'
 import { carryErosion } from '../geometry/erode'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject, removesMaterial, worldBounds } from '../geometry/evaluate'
@@ -358,6 +360,18 @@ type State = {
    * drag keeps swallowing travel the pointer then has to give back.
    */
   scaleObjectTo: (snapshot: SceneObject, factor: number) => void
+  /**
+   * Reflect each of these objects in the plane through its own centre,
+   * perpendicular to one of its own axes.
+   *
+   * PER OBJECT, each about its own centre, rather than the selection being
+   * reflected as a group about a shared plane. Two solids flipped as a group
+   * swap places with each other, which is a rearrangement of the scene rather
+   * than a mirror of anything in it -- and the tool is reached by selecting the
+   * thing you want flipped. Selecting three and getting all three flipped in
+   * place is the reading that holds for a selection of one.
+   */
+  mirrorObjects: (ids: string[], axis: Axis) => void
 
   patchFeature: (objectId: string, featureId: string, patch: Partial<Feature>) => void
   /**
@@ -1037,6 +1051,18 @@ export const useDoc = create<State>((set, get) => {
 
       snapshotOnce()
       silent(mapObject(drag.objectId, () => next))
+    },
+
+    mirrorObjects: (ids, axis) => {
+      const targets = new Set(ids)
+      if (targets.size === 0) return
+      // Nothing in the scene answers to any of these ids: a press that would
+      // rewrite nothing must not cost an undo step.
+      if (!get().doc.objects.some((o) => targets.has(o.id))) return
+
+      commit((d) => ({
+        objects: d.objects.map((o) => (targets.has(o.id) ? mirrorAssembly(o, axis) : o)),
+      }))
     },
 
     resizeObjectTo: (base) => {

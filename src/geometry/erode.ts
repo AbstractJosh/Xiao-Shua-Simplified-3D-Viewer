@@ -21,7 +21,10 @@ import type { BaseSolid, ErodeDab } from './types'
  *
  * NOT a boolean. Subtracting a sphere would leave a crisp spherical bite with a
  * sharp circular rim, which is a drill hole -- the one thing this tool is not.
- * Melting plastic does two things at once, and both of them are here:
+ * That holds even where the flame goes all the way through: what opens there is
+ * a hole with a melted lip, in the middle of a face that was already sagging
+ * toward it, and not a shape anybody subtracted. Melting plastic does two
+ * things at once, and both of them are here:
  *
  *   - the surface SAGS INWARD under the brush, hardest at the middle and
  *     tapering to nothing at the rim, so what is left is a dish rather than a
@@ -31,14 +34,28 @@ import type { BaseSolid, ErodeDab } from './types'
  *     and gives the result the soft, poured look of something that flowed
  *     before it set.
  *
- * Vertices MOVE; no triangle is ever removed and no hole is ever opened. That
- * is the deliberate limit of the approach and it buys three things worth more
- * than perforation: the work is local, so a stroke costs the vertices under the
- * brush and not the object; everything outside the brush stays EXACTLY the
- * geometry the evaluator built, down to the float; and the mesh keeps its
- * groups, so a merged assembly comes out of the torch still wearing all of its
- * colours. Torch one spot long enough and the surface will sag through the far
- * side of a thin wall rather than opening a hole in it -- see `dig`.
+ * VERTICES MOVE, and that is how nearly all of the work is done. It buys three
+ * things: the work is local, so a stroke costs the vertices under the brush and
+ * not the object; everything outside the brush stays EXACTLY the geometry the
+ * evaluator built, down to the float; and the mesh keeps its groups, so a
+ * merged assembly comes out of the torch still wearing all of its colours.
+ *
+ * THE ONE THING MOVING VERTICES CANNOT DO IS RUN OUT OF MATERIAL, and a thin
+ * wall is where that stops being an abstraction. Sinking is along each vertex
+ * own normal, so on a panel the near face travels one way and the far face
+ * travels back at it; with nothing to stop them they meet in the middle, pass
+ * through each other and keep going, and what the user is left with is the
+ * front of the panel bulging out of the back of it, inside out, creased and
+ * unmendable. That is not a melt that went too far, it is a melt with no answer
+ * for the case where the answer is a HOLE.
+ *
+ * So the torch punches through. When a dab would consume the last of the wall
+ * under it, the material there is removed and the two faces are sewn into the
+ * wall of a tunnel -- see `burnList` and `breakThrough` -- and the object comes
+ * out closed, one hole larger. It is the only stage that changes the topology,
+ * it is all-or-nothing, and it declines rather than leaving a rim it cannot
+ * close. The sculpt tool never reaches it: raising drives the two faces of a
+ * wall apart.
  *
  * Everything here runs in OBJECT-LOCAL space, like every other stage of the
  * pipeline, so a dab is stored once and survives the object being moved,
@@ -293,6 +310,59 @@ const DAB_CLOSE = 0.08
  * reads as sandblasting rather than melting, which is what the low end is for.
  */
 export const BRUSH_SMOOTH_MIN = 0.15
+
+/**
+ * The thinnest wall the torch will leave standing, as a fraction of the brush
+ * radius. Anything thinner is gone, and a hole is opened where it was.
+ *
+ * A threshold rather than a crossing test, and the number has to sit between
+ * two things. It cannot be smaller than the tessellation can carry: the rim of
+ * a fresh hole is a ring on each face of the wall, sewn into a tunnel whose
+ * height is whatever wall is left at the ring, so a threshold near zero builds
+ * that tunnel out of slivers. And it cannot be so large that the wall vanishes
+ * before the user has seen it thin -- at a fifth of a radius a panel thinner
+ * than the brush loses nine tenths of the brush footprint on the first dab,
+ * which reads as the tool teleporting a hole in rather than burning one.
+ *
+ * Three twentieths, chosen on the stroke rather than on the press, because the
+ * stroke is where the difference shows. On the panel this was written for --
+ * three units across, a twelfth of a unit thick, under a third-of-a-unit brush
+ * -- one press opens a hole of about three fifths of the brush radius, and
+ * every press after widens it toward the brush. Dragged across, that is a
+ * continuous slot in one pass.
+ *
+ * A SIXTEENTH WAS TRIED FIRST AND IT LEFT A LADDER. The pilot hole was a
+ * quarter of the brush, the dabs are laid a third of a radius apart, and a
+ * brush that has just opened a hole spends the next dab widening it rather than
+ * eating forward -- so the stroke leapfrogged, and what a user got for one pass
+ * was a row of perforations with the web still standing between them. Going
+ * over it again cleared them, which is the honest behaviour of a small flame
+ * and the wrong first impression for a tool that had just been asked to cut.
+ *
+ * A wall thicker than about two thirds of a radius never reaches this at all,
+ * because that is as deep as one dab position can sink before the surface sags
+ * out of its own reach: hold the torch on a thick solid and it still dishes
+ * rather than drilling.
+ */
+const BURN_WALL = 0.15
+
+/**
+ * How squarely two surfaces must face each other to be two sides of one wall.
+ *
+ * The wall of a panel, a shell or a web is the case this is for, and there the
+ * two faces are very nearly back to back. The number is not set at the obvious
+ * right angle and a bit, because a CONE is the counter-example: at this app own
+ * proportions the two flanks of a cone read as ninety-three degrees of facing,
+ * which would make the last millimetre of its point a wall thin enough to burn.
+ * A point burnt away leaves ONE rim rather than two -- see `breakThrough`, which
+ * declines to open a wound it cannot close -- so nothing breaks; it just spends
+ * the search on every dab and then does nothing. At a hundred and thirty-five
+ * degrees the cone is out and every genuine wall this app can build is still in.
+ */
+const BURN_FACING = -0.7
+
+/** Handed back where nothing burnt, which is almost every dab ever laid. */
+const NO_BURN: number[] = []
 
 
 
@@ -768,6 +838,15 @@ type Work = {
   cornerNormal: Float32Array
   group: Uint32Array
   triangleCount: number
+  /**
+   * Which triangles are the wall of a hole this stroke burnt, one flag each.
+   *
+   * Kept because a tunnel has to be treated as a single thing when the flame
+   * comes back to it: burning part of one away leaves a boundary that is not a
+   * pair of rims and cannot be sewn up. See `breakThrough`, which swallows the
+   * rest of any tunnel it touches so the wound stays a shape it can close.
+   */
+  rim: Uint8Array
 }
 
 function grow32(array: Float32Array, needed: number): Float32Array {
@@ -784,6 +863,13 @@ function growU32(array: Uint32Array, needed: number): Uint32Array {
   return next
 }
 
+function growU8(array: Uint8Array, needed: number): Uint8Array {
+  if (array.length >= needed) return array
+  const next = new Uint8Array(Math.max(needed, array.length * 2))
+  next.set(array)
+  return next
+}
+
 function workingCopy(welded: Welded): Work {
   return {
     position: welded.position.slice(),
@@ -792,6 +878,9 @@ function workingCopy(welded: Welded): Work {
     cornerNormal: welded.cornerNormal.slice(),
     group: welded.group.slice(),
     triangleCount: welded.triangleCount,
+    // Nothing has burnt yet, and on the overwhelming majority of strokes
+    // nothing ever will -- this stays all zeroes and costs a byte a triangle.
+    rim: new Uint8Array(welded.triangleCount),
   }
 }
 
@@ -970,6 +1059,7 @@ function refine(work: Work, dabs: ErodeDab[]): void {
     work.corner = growU32(work.corner, needed)
     work.cornerNormal = grow32(work.cornerNormal, needed * 3)
     work.group = growU32(work.group, work.triangleCount + count)
+    work.rim = growU8(work.rim, work.triangleCount + count)
   }
 
   /** Whether the p-q diagonal of a quad is the shorter of the two. */
@@ -1307,7 +1397,7 @@ function dab(
   /** Vertex -> its index in `hit`, or -1. Owned by the caller and handed back
    *  all -1, so the clamp below can ask about a neighbour without a Map. */
   slot: Int32Array
-): void {
+): boolean {
   const cx = spec.at[0]
   const cy = spec.at[1]
   const cz = spec.at[2]
@@ -1337,12 +1427,17 @@ function dab(
     if (distSq >= radiusSq) continue
     const w = falloff(Math.sqrt(distSq) / radius)
     if (w <= 0) continue
+    // A vertex no triangle uses any more: what is left of material an earlier
+    // dab burnt away. It belongs to no surface, so it has no normal to sink
+    // along and nothing to answer for -- and it must not be offered to the
+    // wall search below as though it were still a face.
+    if (adj.triangleStart[v] === adj.triangleStart[v + 1]) continue
     hit.push(v)
     weight.push(w)
     spread.push(Math.pow(w, RELAX_SPREAD))
     touched[v] = 1
   }
-  if (hit.length === 0) return
+  if (hit.length === 0) return false
 
   // Sink, or raise. Along each vertex's own normal rather than toward or away
   // from the brush centre: a torch eats into the surface it is pointed at, and
@@ -1418,8 +1513,16 @@ function dab(
       if (change > room) scale = Math.min(scale, room / change)
     }
   }
-  for (let i = 0; i < hit.length; i++) slot[hit[i]] = -1
   if (scale < 1) for (let i = 0; i < hit.length; i++) step[i] *= scale
+
+  // WHERE THE WALL IS ABOUT TO RUN OUT. Asked after the clamp above and before
+  // anything moves, because the answer is about the step this dab is actually
+  // going to take -- and asked only of the torch, since a raise drives the two
+  // faces of a wall apart rather than together. The surgery itself waits until
+  // the end of the dab: it changes the topology, and the flow below is still
+  // reading the adjacency this dab was built on.
+  const burned = dir < 0 ? burnList(work, hit, normals, step, bite, radius) : NO_BURN
+  for (let i = 0; i < hit.length; i++) slot[hit[i]] = -1
 
   for (let i = 0; i < hit.length; i++) {
     const v = hit[i]
@@ -1509,6 +1612,561 @@ function dab(
         before[i * 3 + 2] + (lz - nz * into) * across + nz * into * keep
     }
   }
+
+  // Last, so everything above ran on the mesh it was built against. True means
+  // the topology moved and the caller owes itself a fresh adjacency.
+  return burned.length > 0 && breakThrough(work, adj, burned, touched)
+}
+
+// --- Burning through --------------------------------------------------------
+
+/**
+ * Which vertices under this dab have no wall left in front of them.
+ *
+ * THE ONE PLACE THE TORCH ADMITS THE MATERIAL CAN RUN OUT. Everywhere else in
+ * this file the surface is a sheet that bends; here it is a wall with a
+ * thickness, and a wall the flame has eaten all the way through is not a
+ * surface that sags -- it is a hole.
+ *
+ * What it measures is the wall UNDER a vertex: from the vertex, straight into
+ * the solid, how far to the surface on the other side. The measurement is
+ * signed along the inward normal and only a POSITIVE answer counts, which is
+ * the whole of how a wall is told apart from a gap. Two sheets with material
+ * between them face each other across that material, so the far one lies
+ * BEHIND this one and the reading is positive. The two walls of a groove, of a
+ * slot, of the inside of any concave corner also face each other -- and lie in
+ * FRONT of each other, across empty air, so the reading is negative and
+ * nothing burns. Without that sign a torch held in a sharp inside corner would
+ * open a hole in the middle of solid material, which is the exact opposite of
+ * what it is for.
+ *
+ * PREDICTIVE, not a post-mortem. It asks what the wall will be once this dab
+ * has moved both of its faces, not what it is now, because a crossing that has
+ * already happened cannot be told from a groove: both are two surfaces facing
+ * each other across a negative gap. Catching it one dab early is what keeps
+ * the distinction above available, and it is why the threshold has to leave
+ * room for a whole dab of closing on each side at once.
+ *
+ * The search space is the brush own hit list and nothing wider. A dab cannot
+ * sink deeper than its own radius -- a vertex that has sagged out of reach
+ * stops being melted, see `dab` -- so a wall this dab could break through is a
+ * wall whose far side is inside the sphere.
+ */
+function burnList(
+  work: Work,
+  hit: number[],
+  normals: Float32Array,
+  step: Float32Array,
+  bite: number,
+  radius: number
+): number[] {
+  // A cold brush moves nothing, so there is no wall for it to consume. Stated
+  // here rather than left to fall out of the arithmetic: with no bite the test
+  // below would still burn anything already thinner than the threshold, and a
+  // tool set to no heat at all must not be the one that opens a hole.
+  if (bite <= 0) return NO_BURN
+  const limit = BURN_WALL * radius
+  // Both faces of the wall may close by a whole bite before the next dab looks
+  // again, so anything nearer than this is worth measuring properly.
+  const search = limit + bite * 2
+
+  // ONE SHEET UNDER THE BRUSH IS THE ORDINARY CASE and it is ruled out in a
+  // pass, because the rest of this function is not free and would otherwise run
+  // on every dab of every stroke anyone ever makes. If every normal under the
+  // brush sits within sixty degrees of their average then no two of them are
+  // further than a hundred and twenty apart, which is not facing enough to be
+  // two sides of a wall -- see BURN_FACING.
+  let ax = 0
+  let ay = 0
+  let az = 0
+  for (let i = 0; i < hit.length; i++) {
+    ax += normals[i * 3]
+    ay += normals[i * 3 + 1]
+    az += normals[i * 3 + 2]
+  }
+  const spread = Math.sqrt(ax * ax + ay * ay + az * az)
+  if (spread > 1e-12) {
+    ax /= spread
+    ay /= spread
+    az /= spread
+    let worst = 1
+    for (let i = 0; i < hit.length; i++) {
+      const d = normals[i * 3] * ax + normals[i * 3 + 1] * ay + normals[i * 3 + 2] * az
+      if (d < worst) worst = d
+    }
+    if (worst > 0.5) return NO_BURN
+  }
+
+  // A grid one search radius to a cell, so the far side of a wall is found in
+  // twenty-seven lookups rather than by sweeping the patch for every vertex in
+  // it.
+  const cells = new Map<number, number[]>()
+  const cellKey = (x: number, y: number, z: number) =>
+    ((Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0)
+  for (let i = 0; i < hit.length; i++) {
+    const v = hit[i]
+    const key = cellKey(
+      Math.floor(work.position[v * 3] / search),
+      Math.floor(work.position[v * 3 + 1] / search),
+      Math.floor(work.position[v * 3 + 2] / search)
+    )
+    const bucket = cells.get(key)
+    if (bucket) bucket.push(i)
+    else cells.set(key, [i])
+  }
+
+  // BOTH SIDES OF A WALL GO TOGETHER, and this is where that is arranged. A
+  // hole is a pair of rims, one on each face, and the tunnel between them is
+  // sewn from the two; burn the near face alone and what is left is a dish with
+  // its bottom missing and a single raw boundary that nothing can close, so
+  // `breakThrough` declines it and the wall never opens at all.
+  //
+  // They do not agree on their own. The far face is further from the middle of
+  // the brush than the near one, so it is bitten less hard, and its vertices
+  // sit wherever its own tessellation put them -- either can fail the test the
+  // other passes, on a wall both of them are standing on. So a vertex burns
+  // whatever it was measured AGAINST as well: the pair is the finding, not the
+  // vertex.
+  const marked = new Uint8Array(hit.length)
+  for (let i = 0; i < hit.length; i++) {
+    const v = hit[i]
+    const px = work.position[v * 3]
+    const py = work.position[v * 3 + 1]
+    const pz = work.position[v * 3 + 2]
+    const nx = normals[i * 3]
+    const ny = normals[i * 3 + 1]
+    const nz = normals[i * 3 + 2]
+    const cx = Math.floor(px / search)
+    const cy = Math.floor(py / search)
+    const cz = Math.floor(pz / search)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const bucket = cells.get(cellKey(cx + dx, cy + dy, cz + dz))
+          if (!bucket) continue
+          for (const j of bucket) {
+            const u = hit[j]
+            if (u === v) continue
+            const away =
+              normals[j * 3] * nx + normals[j * 3 + 1] * ny + normals[j * 3 + 2] * nz
+            if (away >= BURN_FACING) continue
+            const dxu = px - work.position[u * 3]
+            const dyu = py - work.position[u * 3 + 1]
+            const dzu = pz - work.position[u * 3 + 2]
+            // ALONG THE INWARD NORMAL, and the sideways part discarded rather
+            // than added in. The far face of a wall is tessellated on its own,
+            // so the vertex opposite this one is generally not opposite at all
+            // -- it sits half an edge to one side, and its straight-line
+            // distance is the wall plus that offset. What is wanted is the wall
+            // it stands on, which is the part of the offset that runs along the
+            // normal: on any flat stretch that is exactly the thickness however
+            // far to the side the vertex lies, and on a curved one it is out by
+            // the curvature over that half edge, which is nothing.
+            const gap = dxu * nx + dyu * ny + dzu * nz
+            // Positive is material between the two faces, negative is air --
+            // and that sign is the whole difference between a thin wall and a
+            // sharp inside corner. See the note above.
+            if (gap <= 0 || gap > search) continue
+            // Too far to the side to be standing on the same wall.
+            if (dxu * dxu + dyu * dyu + dzu * dzu - gap * gap > search * search) continue
+            // What the far face brings to the meeting, resolved along the same
+            // normal: it moves along its own, which points back at this one.
+            if (gap - step[i] + away * step[j] >= limit) continue
+            marked[i] = 1
+            marked[j] = 1
+          }
+        }
+      }
+    }
+  }
+
+  const burned: number[] = []
+  for (let i = 0; i < hit.length; i++) if (marked[i]) burned.push(hit[i])
+  return burned
+}
+
+/**
+ * One boundary of the wound, as the surviving triangles left it.
+ *
+ * `area` is the loop own normal by Newell formula -- twice its area, pointed
+ * the way the loop winds -- and it is what tells the two ends of a tunnel from
+ * two rings on the same sheet: the ends of a tunnel wind opposite ways, so
+ * their normals oppose.
+ */
+type Loop = {
+  ring: number[]
+  centre: Vector3
+  area: Vector3
+}
+
+/**
+ * Take the burnt material out and sew the two faces of the wall into a tunnel.
+ *
+ * The one operation in this file that changes the TOPOLOGY rather than merely
+ * the shape, and it is deliberately all or nothing: everything is measured
+ * first, and if what comes back is not two rims for every hole then nothing is
+ * removed and the dab is left to sag the way it always did. That is what makes
+ * it safe to run on any mesh a user can produce. A wound that cannot be closed
+ * is never opened, so the object cannot be left with a raw edge -- which would
+ * not merely look wrong but would leak, and every solid here is expected to be
+ * closed enough to measure, to boolean against and to export.
+ *
+ * The rims are ZIPPED rather than filled. Each face of the wall leaves a ring
+ * of surviving vertices around the hole; walking the two rings together and
+ * laying a triangle across at each step turns them into the wall of a tunnel,
+ * with no new vertices minted and every new triangle carrying the reverse of a
+ * boundary edge that was left open. That last part is what makes the result
+ * closed rather than merely convincing.
+ *
+ * WHICH WAY EACH RING IS WALKED IS NOT A CHOICE. A boundary edge of a
+ * consistently wound mesh runs with the material on its left, so the two rims
+ * of one tunnel run opposite ways round it -- and the triangles that close them
+ * have to carry the reverse of each. Walk the second rim forwards and the zip
+ * covers its edges in the direction they already point, which duplicates them
+ * instead of closing them and turns every triangle it lays inside out. So the
+ * second rim is always reversed, and the only freedom left is where to start:
+ * at the nearest pair, so the tunnel is not laid with a twist in it.
+ */
+function breakThrough(
+  work: Work,
+  adj: Adjacency,
+  burned: number[],
+  touched: Uint8Array
+): boolean {
+  const dead = new Uint8Array(work.triangleCount)
+  const doomed: number[] = []
+  for (const v of burned) {
+    for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
+      const t = adj.triangle[i]
+      if (dead[t]) continue
+      dead[t] = 1
+      doomed.push(t)
+    }
+  }
+  if (doomed.length === 0) return false
+
+  const edgeKey = (a: number, b: number) => (a < b ? a * 1048576 + b : b * 1048576 + a)
+
+  /**
+   * Take the peninsulas off the wound, so the rim it leaves is a rim.
+   *
+   * A triangle standing in the wound with two of its three sides on the
+   * boundary is not part of the surface any more -- it is a spur of material
+   * the burn happened to leave, hanging into a hole by one edge or one vertex.
+   * The two faces of a wall are tessellated independently and burn to slightly
+   * different outlines, so they are produced constantly, and every one of them
+   * is a spike on the lip of the hole and a rim of its own for the sewing below
+   * to worry about.
+   *
+   * Twice is enough to matter and cheap: a spur two triangles long comes off in
+   * two rounds, and the round after a round that found nothing finds nothing.
+   * It cannot run away, because the surface outside the brush is a sheet whose
+   * triangles have no burnt neighbours at all.
+   *
+   * BEFORE THE TUNNEL RULE BELOW, and the order is not arbitrary: a spur can be
+   * part of a tunnel this stroke sewed earlier, and taking it off would leave
+   * that tunnel in pieces -- which is the exact state the rule below exists to
+   * put right. Peel first and the rule sees the finished wound.
+   */
+  for (let round = 0; round < 2; round++) {
+    const beside = new Set<number>()
+    for (const t of doomed) {
+      for (let e = 0; e < 3; e++) {
+        const v = work.corner[t * 3 + e]
+        for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
+          if (!dead[adj.triangle[i]]) beside.add(adj.triangle[i])
+        }
+      }
+    }
+    let peeled = false
+    for (const s of beside) {
+      let sides = 0
+      for (let e = 0; e < 3; e++) {
+        const a = work.corner[s * 3 + e]
+        const b = work.corner[s * 3 + ((e + 1) % 3)]
+        for (let i = adj.triangleStart[a]; i < adj.triangleStart[a + 1]; i++) {
+          const o = adj.triangle[i]
+          if (o === s || !dead[o]) continue
+          if (work.corner[o * 3] !== b && work.corner[o * 3 + 1] !== b) {
+            if (work.corner[o * 3 + 2] !== b) continue
+          }
+          sides++
+          break
+        }
+      }
+      if (sides < 2) continue
+      dead[s] = 1
+      doomed.push(s)
+      peeled = true
+    }
+    if (!peeled) break
+  }
+
+  // A TUNNEL GOES WHOLE OR NOT AT ALL, and this is the rule that keeps a
+  // widening hole from tearing. The flame comes back to the rim it just made
+  // and eats part of the tunnel wall; what is left is one boundary running down
+  // the front face, along the surviving strip and back up the far side, which
+  // is not two rims and cannot be zipped. Swallowing the rest of the tunnel
+  // with it puts the wound back to a ring on each face, which is exactly the
+  // shape the zip below understands -- and the tunnel it lays in place of the
+  // old one is the same tunnel, one size larger.
+  let rimmed = false
+  for (const t of doomed) {
+    if (work.rim[t]) {
+      rimmed = true
+      break
+    }
+  }
+  if (rimmed) {
+    const sides = new Map<number, number[]>()
+    for (let t = 0; t < work.triangleCount; t++) {
+      if (!work.rim[t]) continue
+      for (let e = 0; e < 3; e++) {
+        const key = edgeKey(work.corner[t * 3 + e], work.corner[t * 3 + ((e + 1) % 3)])
+        const bucket = sides.get(key)
+        if (bucket) bucket.push(t)
+        else sides.set(key, [t])
+      }
+    }
+    // `doomed` is the queue as well as the record: anything appended here is
+    // walked by the same loop.
+    for (let head = 0; head < doomed.length; head++) {
+      const t = doomed[head]
+      if (!work.rim[t]) continue
+      for (let e = 0; e < 3; e++) {
+        const bucket = sides.get(
+          edgeKey(work.corner[t * 3 + e], work.corner[t * 3 + ((e + 1) % 3)])
+        )
+        if (!bucket) continue
+        for (const s of bucket) {
+          if (dead[s]) continue
+          dead[s] = 1
+          doomed.push(s)
+        }
+      }
+    }
+  }
+
+  // The rim, as half-edges of the SURVIVING triangles. An edge of a doomed
+  // triangle whose other user lives is an edge that has just been left open,
+  // and it is stored pointing the way that survivor winds -- so following
+  // `onward` from any vertex walks the boundary with the material on its left.
+  //
+  // A LIST PER VERTEX RATHER THAN ONE EDGE, because a wound is allowed to be
+  // pinched. Burn two patches that touch at a single vertex and that vertex has
+  // two rims running through it, one for each patch; hold only the second and
+  // the walk below chases the wrong one, never comes home, and the whole
+  // surgery is abandoned over a shape that is perfectly closeable. Each edge is
+  // spent once, so the walk simply takes whichever of them is left.
+  const onward = new Map<number, number[]>()
+  const paint = new Map<number, number>()
+  for (const t of doomed) {
+    for (let e = 0; e < 3; e++) {
+      const u = work.corner[t * 3 + e]
+      const v = work.corner[t * 3 + ((e + 1) % 3)]
+      for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
+        const s = adj.triangle[i]
+        if (dead[s]) continue
+        for (let f = 0; f < 3; f++) {
+          if (work.corner[s * 3 + f] !== v) continue
+          if (work.corner[s * 3 + ((f + 1) % 3)] !== u) continue
+          const out = onward.get(v)
+          if (out) out.push(u)
+          else onward.set(v, [u])
+          paint.set(v, work.group[s])
+        }
+      }
+    }
+  }
+  if (onward.size === 0) return false
+
+  const loops: Loop[] = []
+  const at = new Vector3()
+  const on = new Vector3()
+  for (const start of onward.keys()) {
+    for (;;) {
+      const first = onward.get(start)
+      if (!first || first.length === 0) break
+      const ring: number[] = []
+      let v = start
+      let closed = false
+      for (;;) {
+        const out = onward.get(v)
+        if (!out || out.length === 0) break
+        ring.push(v)
+        v = out.pop() as number
+        if (v === start) {
+          closed = true
+          break
+        }
+        // A rim that arrives somewhere it has already been, other than home. It
+        // cannot happen while every vertex holds one edge each way, and the
+        // guard is here so a mesh that manages it is declined rather than spun
+        // on forever.
+        if (ring.length > onward.size) break
+      }
+      // A boundary that does not come back to where it started is a rim this
+      // cannot close -- a hole that has run off the edge of the sheet, say.
+      // Nothing at all is removed in that case.
+      if (!closed || ring.length < 3) return false
+      const centre = new Vector3()
+      const area = new Vector3()
+      for (let i = 0; i < ring.length; i++) {
+        at.fromArray(work.position, ring[i] * 3)
+        on.fromArray(work.position, ring[(i + 1) % ring.length] * 3)
+        centre.add(at)
+        area.add(on.cross(at))
+      }
+      centre.multiplyScalar(1 / ring.length)
+      loops.push({ ring, centre, area })
+    }
+  }
+
+  // Two rims to a tunnel, paired nearest first, and only ever with a rim that
+  // winds the other way -- which is what stops two rings left on the SAME face
+  // from being sewn to each other into a lid.
+  const pairs: [Loop, Loop][] = []
+  const taken = new Uint8Array(loops.length)
+  for (;;) {
+    let bi = -1
+    let bj = -1
+    let best = Infinity
+    for (let i = 0; i < loops.length; i++) {
+      if (taken[i]) continue
+      for (let j = i + 1; j < loops.length; j++) {
+        if (taken[j]) continue
+        if (loops[i].area.dot(loops[j].area) >= 0) continue
+        const apart = loops[i].centre.distanceToSquared(loops[j].centre)
+        if (apart >= best) continue
+        best = apart
+        bi = i
+        bj = j
+      }
+    }
+    if (bi < 0) break
+    taken[bi] = 1
+    taken[bj] = 1
+    pairs.push([loops[bi], loops[bj]])
+  }
+
+  const fa = new Vector3()
+  const fb = new Vector3()
+  const fc = new Vector3()
+  const fn = new Vector3()
+  const emit = (a: number, b: number, c: number, group: number): void => {
+    const t = work.triangleCount++
+    work.corner = growU32(work.corner, work.triangleCount * 3)
+    work.cornerNormal = grow32(work.cornerNormal, work.triangleCount * 9)
+    work.group = growU32(work.group, work.triangleCount)
+    work.rim = growU8(work.rim, work.triangleCount)
+    work.corner[t * 3] = a
+    work.corner[t * 3 + 1] = b
+    work.corner[t * 3 + 2] = c
+    work.group[t] = group
+    work.rim[t] = 1
+    fa.fromArray(work.position, a * 3)
+    fb.fromArray(work.position, b * 3)
+    fc.fromArray(work.position, c * 3)
+    fn.subVectors(fb, fa).cross(fc.sub(fa))
+    if (fn.lengthSq() < 1e-30) fn.set(0, 1, 0)
+    else fn.normalize()
+    // A stand-in: every vertex of a fresh tunnel is marked touched below, so
+    // the smooth normal computed at the end is what actually ships. This is
+    // what the corner would shade as if it were not.
+    for (let corner = 0; corner < 3; corner++) {
+      fn.toArray(work.cornerNormal, (t * 3 + corner) * 3)
+    }
+  }
+
+  const span = (a: number, b: number): number => {
+    const dx = work.position[a * 3] - work.position[b * 3]
+    const dy = work.position[a * 3 + 1] - work.position[b * 3 + 1]
+    const dz = work.position[a * 3 + 2] - work.position[b * 3 + 2]
+    return dx * dx + dy * dy + dz * dz
+  }
+
+  for (const [front, back] of pairs) {
+    const a = front.ring
+    // Reversed, always. See the note above: the winding decides this, not the
+    // geometry.
+    const b = back.ring.slice().reverse()
+    let from = 0
+    let onto = 0
+    let best = Infinity
+    for (let i = 0; i < a.length; i++) {
+      for (let j = 0; j < b.length; j++) {
+        const apart = span(a[i], b[j])
+        if (apart >= best) continue
+        best = apart
+        from = i
+        onto = j
+      }
+    }
+    let i = 0
+    let j = 0
+    while (i < a.length || j < b.length) {
+      const av = a[(from + i) % a.length]
+      const anext = a[(from + i + 1) % a.length]
+      const bv = b[(onto + j) % b.length]
+      const bnext = b[(onto + j + 1) % b.length]
+      // Whichever step lays the shorter diagonal, so the tunnel is triangulated
+      // across rather than fanned from one point of it.
+      const stepA = j >= b.length || (i < a.length && span(anext, bv) <= span(bnext, av))
+      if (stepA) {
+        emit(anext, av, bv, paint.get(av) ?? 0)
+        i++
+      } else {
+        emit(bv, bnext, av, paint.get(bnext) ?? 0)
+        j++
+      }
+    }
+  }
+
+  // A RIM WITH NOBODY TO PAIR WITH IS HEALED SHUT, and this is what lets the
+  // surgery go ahead at all on a wound that is not simply one hole through one
+  // wall.
+  //
+  // They turn up constantly, and small. The two faces of a wall are tessellated
+  // independently and burn to slightly different outlines, so a scrap of the
+  // near face is left standing where the far face has gone, or a stray triangle
+  // survives inside the wound; either leaves a rim of a handful of vertices
+  // with no opposite number. Refusing the whole surgery over one of those is
+  // what used to leave a stroke as a ladder -- material still bridging a slot
+  // at every point where the dab that should have cleared it was declined.
+  //
+  // A fan from the rim first vertex, which needs no new vertex and covers the
+  // reverse of every edge left open. It is a flat patch across a hole of a few
+  // millimetres and it does the honest thing on the one case where a rim is
+  // BOTH large and alone: a point burnt off a cone leaves a single ring, and
+  // this lands it flat, which is what melting a point off looks like.
+  for (let i = 0; i < loops.length; i++) {
+    if (taken[i]) continue
+    const ring = loops[i].ring
+    for (let k = 1; k + 1 < ring.length; k++) {
+      emit(ring[0], ring[k + 1], ring[k], paint.get(ring[k]) ?? 0)
+    }
+  }
+
+  // Out with the burnt material. The tunnel triangles were appended past the
+  // end of `dead`, so they survive this by construction.
+  let kept = 0
+  for (let t = 0; t < work.triangleCount; t++) {
+    if (t < dead.length && dead[t]) continue
+    if (kept !== t) {
+      for (let k = 0; k < 3; k++) work.corner[kept * 3 + k] = work.corner[t * 3 + k]
+      for (let k = 0; k < 9; k++) {
+        work.cornerNormal[kept * 9 + k] = work.cornerNormal[t * 9 + k]
+      }
+      work.group[kept] = work.group[t]
+      work.rim[kept] = work.rim[t]
+    }
+    kept++
+  }
+  work.triangleCount = kept
+
+  // The rim shades as melt rather than as the face it was cut out of.
+  for (const loop of loops) for (const v of loop.ring) touched[v] = 1
+  return true
 }
 
 // --- Output -----------------------------------------------------------------
@@ -1636,11 +2294,17 @@ export function erodeGeometry(geom: BufferGeometry, dabs: ErodeDab[]): BufferGeo
 
   const work = workingCopy(welded)
   refine(work, dabs)
-  const adj = buildAdjacency(work)
+  let adj = buildAdjacency(work)
   const touched = new Uint8Array(work.vertexCount)
   const reachable = reachableVertices(work, dabs)
   const slot = new Int32Array(work.vertexCount).fill(-1)
-  for (const spec of dabs) dab(work, adj, spec, reachable, touched, slot)
+  // REBUILT ONLY WHEN A DAB BURNS THROUGH. Refinement has finished, so for an
+  // ordinary stroke the topology is fixed and this is built once for the whole
+  // of it; a dab that opens a hole has taken triangles out and put a tunnel in,
+  // and everything after it has to be told.
+  for (const spec of dabs) {
+    if (dab(work, adj, spec, reachable, touched, slot)) adj = buildAdjacency(work)
+  }
   return toGeometry(work, adj, touched)
 }
 

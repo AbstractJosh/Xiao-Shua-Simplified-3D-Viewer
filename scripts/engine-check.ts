@@ -14,7 +14,19 @@
  *
  * Run: npx tsx scripts/engine-check.ts
  */
-import { BufferGeometry, Euler, Ray, Vector3 } from 'three'
+import {
+  Box3,
+  BufferAttribute,
+  BufferGeometry,
+  DoubleSide,
+  Euler,
+  Matrix4,
+  Mesh,
+  MeshBasicMaterial,
+  Ray,
+  Raycaster,
+  Vector3,
+} from 'three'
 
 // three-bvh-csg calls three-mesh-bvh with a deprecated option on every build.
 // It is internal to the libraries and drowns the report, so filter just that.
@@ -35,7 +47,21 @@ import {
   scaleUniform,
 } from '../src/geometry/dimensions'
 import type { Axis } from '../src/geometry/dimensions'
-import { scaleAssembly } from '../src/geometry/assembly'
+import { assemblyCentre, scaleAssembly } from '../src/geometry/assembly'
+import { mirrorAssembly } from '../src/geometry/mirror'
+import {
+  CLAY_RINGS,
+  bite,
+  freshClay,
+  isFresh,
+  mold,
+  resize,
+  ringHeight,
+  wallBounds,
+} from '../src/geometry/clay'
+import type { Clay, Dab } from '../src/geometry/clay'
+import { TURN_FACETS, revolveClay } from '../src/geometry/revolve'
+import { mirrorMesh, registerMesh } from '../src/geometry/meshLibrary'
 import { platonicFaces } from '../src/geometry/solids'
 import {
   advanceTurn,
@@ -58,6 +84,7 @@ import type { SnapTarget } from '../src/geometry/snap'
 import { hostSurfaceFor, samePatch, slideAnchor } from '../src/geometry/surfaces'
 import { endFaceFrame } from '../src/geometry/prism'
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
+import { DAB_SPACING } from '../src/store/toolStore'
 import { objectMatrix, relativeTransform } from '../src/geometry/transform'
 import { planeSeparates, splitPlanes } from '../src/geometry/cut'
 import { signedVolume } from '../src/geometry/volume'
@@ -2821,6 +2848,914 @@ console.log('\nThe erode brush survives curved surfaces and merged assemblies')
     plain.geometry.dispose()
     torched.geometry.dispose()
     meltedMerge.geometry.dispose()
+  }
+}
+// --- The torch through a thin wall ------------------------------------------
+console.log('\nThe erode brush burns through a thin wall rather than pinching it')
+{
+  resetEvaluator()
+
+  /**
+   * Every crossing of the line along Z through (x, y): where it met the
+   * surface, and whether that meeting was an entry or an exit.
+   *
+   * The panels below are thin in Z, so this reads straight through the wall the
+   * torch is pointed at. Two facts come out of it, and both are needed: how
+   * much material is left on that line, and whether the surface is still a
+   * surface.
+   */
+  const throughZ = (geom: BufferGeometry, x: number, y: number): [number, number][] => {
+    const pos = geom.getAttribute('position')
+    const met: [number, number][] = []
+    const a = new Vector3()
+    const b = new Vector3()
+    const c = new Vector3()
+    for (let t = 0; t < pos.count / 3; t++) {
+      a.fromBufferAttribute(pos, t * 3)
+      b.fromBufferAttribute(pos, t * 3 + 1)
+      c.fromBufferAttribute(pos, t * 3 + 2)
+      // Barycentric, in the XY shadow of the triangle.
+      const d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y)
+      if (Math.abs(d) < 1e-14) continue
+      const u = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d
+      const v = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d
+      const w = 1 - u - v
+      if (u < 0 || v < 0 || w < 0) continue
+      const normal = b.clone().sub(a).cross(c.clone().sub(a))
+      met.push([u * a.z + v * b.z + w * c.z, Math.sign(normal.z)])
+    }
+    return met.sort((p, q) => p[0] - q[0])
+  }
+
+  /** Nothing left on the line: the torch went all the way through. */
+  const holed = (geom: BufferGeometry, x: number, y: number): boolean =>
+    throughZ(geom, x, y).length === 0
+
+  /**
+   * THE TEST THAT ANSWERS THE BUG THIS WAS WRITTEN FOR.
+   *
+   * A closed surface that does not pass through itself is entered and left in
+   * strict alternation, entry first. A face pushed through its own far side --
+   * which is what a thin panel used to do under the torch, the near face
+   * bulging out of the back of it inside out -- gives two entries in a row, and
+   * it does so no matter how the tear happens to be tessellated.
+   */
+  const sound = (geom: BufferGeometry, x: number, y: number): boolean => {
+    // A line that grazes the rim of a hole passes through the edge two
+    // triangles share, and both of them report the meeting -- at the same
+    // point, one in and one out, in whichever order the sort happened to leave
+    // them. That is a touch, not a crossing, and a pair of them at the same
+    // depth is dropped rather than counted. Only the SIGNS carry the fold: two
+    // entries in a row survive this untouched, however close together they are.
+    const met: [number, number][] = []
+    for (const cross of throughZ(geom, x, y)) {
+      const last = met[met.length - 1]
+      if (last && Math.abs(last[0] - cross[0]) < 1e-7 && last[1] !== cross[1]) met.pop()
+      else met.push(cross)
+    }
+    for (let i = 0; i < met.length; i++) {
+      if (met[i][1] !== (i % 2 === 0 ? -1 : 1)) return false
+    }
+    return met.length % 2 === 0
+  }
+
+  /** Samples over the panel where the surface is not a surface. Skewed off the
+   *  round numbers, where a line grazes shared edges and every triangle along
+   *  it reports a crossing of its own. */
+  const pinches = (geom: BufferGeometry): number => {
+    let count = 0
+    for (let i = -7; i <= 7; i++) {
+      for (let j = -7; j <= 7; j++) {
+        if (!sound(geom, i * 0.13 + 0.00713, j * 0.13 + 0.00311)) count++
+      }
+    }
+    return count
+  }
+
+  /** Half-edges with nobody on the other side. Zero on a closed mesh -- and
+   *  exact position keys are enough, because everything the torch emits comes
+   *  out of one welded vertex table. */
+  const unsewn = (geom: BufferGeometry): number => {
+    const pos = geom.getAttribute('position')
+    const id = new Map<string, number>()
+    const vertex: number[] = []
+    for (let i = 0; i < pos.count; i++) {
+      const key = `${pos.getX(i)}|${pos.getY(i)}|${pos.getZ(i)}`
+      let at = id.get(key)
+      if (at === undefined) {
+        at = id.size
+        id.set(key, at)
+      }
+      vertex.push(at)
+    }
+    const uses = new Map<number, number>()
+    for (let t = 0; t < pos.count / 3; t++) {
+      for (let e = 0; e < 3; e++) {
+        const a = vertex[t * 3 + e]
+        const b = vertex[t * 3 + ((e + 1) % 3)]
+        if (a === b) continue
+        uses.set(a * 1048576 + b, (uses.get(a * 1048576 + b) ?? 0) + 1)
+      }
+    }
+    let open = 0
+    for (const [key, n] of uses) {
+      const a = Math.floor(key / 1048576)
+      const b = key % 1048576
+      if ((uses.get(b * 1048576 + a) ?? 0) !== n) open++
+    }
+    return open
+  }
+
+  /** The furthest anything strays out of a slab of this thickness. */
+  const poked = (geom: BufferGeometry, thick: number): number => {
+    const pos = geom.getAttribute('position')
+    let worst = 0
+    for (let i = 0; i < pos.count; i++) {
+      worst = Math.max(worst, Math.abs(pos.getZ(i)) - thick / 2)
+    }
+    return worst
+  }
+
+  const RADIUS = 0.3
+  /** A panel two units square, thin enough that a brush can eat right through
+   *  it -- the shape the tool used to turn inside out. */
+  const panel = (thick: number): BaseSolid => ({ kind: 'box', size: [2, 2, thick] })
+  const press = (thick: number, n: number, over: Partial<ErodeDab> = {}): ErodeDab[] =>
+    Array.from({ length: n }, () => ({
+      at: [0, 0, thick / 2] as Vec3,
+      radius: RADIUS,
+      heat: 1,
+      smooth: 0.7,
+      ...over,
+    }))
+  const held = (thick: number, dabs: ErodeDab[], id: string) =>
+    evaluateObject({ ...object(panel(thick), [], [], id), erosion: dabs })
+
+  // ONE PRESS GOES THROUGH. A twelfth of a unit of wall under a brush that
+  // bites more than that in one dab, on both faces at once: there is no wall
+  // left, so there is a hole.
+  {
+    const thin = held(0.08, press(0.08, 1), 'burn-one')
+    check('a press on a thin panel opens a hole', holed(thin.geometry, 0.00713, 0.00311), '')
+    check(
+      'and the panel is still closed around it',
+      unsewn(thin.geometry) === 0,
+      `${unsewn(thin.geometry)} unsewn edges`
+    )
+    // THE BUG, STATED AS THE USER SAW IT. The near face used to sink until it
+    // came out of the back of the panel: a dome standing proud of the far side,
+    // inside out, with the two faces creased through each other. Nothing may
+    // leave the slab it was cut from.
+    check(
+      'and nothing is pushed out of the back of it',
+      poked(thin.geometry, 0.08) < 1e-6,
+      `${poked(thin.geometry, 0.08).toExponential(1)} beyond the face`
+    )
+    check(
+      'and the surface is nowhere folded through itself',
+      pinches(thin.geometry) === 0,
+      `${pinches(thin.geometry)} lines cross it out of order`
+    )
+    thin.geometry.dispose()
+  }
+
+  // GOING OVER IT AGAIN WIDENS THE HOLE, and stops at the brush. A flame
+  // widens the hole it has made by melting its rim back, so the bore grows and
+  // levels off at about the size of the sphere doing the melting -- past that,
+  // the user has to move the brush.
+  {
+    const bore = (n: number): number => {
+      const geom = held(0.08, press(0.08, n), `burn-bore${n}`).geometry
+      let out = 0
+      for (let r = 0.02; r < RADIUS * 1.5; r += 0.02) {
+        let clear = true
+        for (let a = 0; a < 8; a++) {
+          const angle = (a / 8) * Math.PI * 2
+          if (!holed(geom, Math.cos(angle) * r + 0.00713, Math.sin(angle) * r + 0.00311)) {
+            clear = false
+          }
+        }
+        if (clear) out = r
+      }
+      geom.dispose()
+      return out
+    }
+    const one = bore(1)
+    const five = bore(5)
+    const twenty = bore(20)
+    check(
+      'a second press widens the hole',
+      five > one,
+      `${one.toFixed(2)} after one, ${five.toFixed(2)} after five`
+    )
+    check(
+      'and holding it there stops at about the brush',
+      twenty >= five && twenty < RADIUS * 1.2,
+      `${twenty.toFixed(2)} after twenty, brush ${RADIUS}`
+    )
+  }
+
+  // A STROKE CUTS A SLOT, in one pass. The dabs are laid a third of a radius
+  // apart and each of them opens a hole most of the brush across, so what the
+  // user drew is open along its whole length rather than perforated.
+  //
+  // Sampled inside the ends of the stroke rather than out to them. A dab landing
+  // on the rim of the hole the last one made spends itself widening that hole
+  // instead of eating forward -- the material ahead of it is under the outside
+  // of the brush, where the bite is small and the wall is still whole -- so the
+  // slot stops about a dab short of where the flame did. That is the honest
+  // shape of a small flame dragged along, and it is not what this is measuring.
+  {
+    const dabs: ErodeDab[] = []
+    for (let x = -0.6; x <= 0.6; x += RADIUS * DAB_SPACING) {
+      dabs.push({ at: [x, 0, 0.04], radius: RADIUS, heat: 1, smooth: 0.7 })
+    }
+    const slot = held(0.08, dabs, 'burn-slot')
+    let along = 0
+    let broken = ''
+    for (let x = -0.45; x <= 0.45; x += 0.05) {
+      if (holed(slot.geometry, x + 0.00713, 0.00311)) along++
+      else broken += ` ${x.toFixed(2)}`
+    }
+    check('a stroke cuts a slot right through, in one pass', broken === '', `open at ${along} of 19 points${broken && `, closed at${broken}`}`)
+    check(
+      'and the slot leaves the panel closed and unfolded',
+      unsewn(slot.geometry) === 0 && pinches(slot.geometry) === 0,
+      `${unsewn(slot.geometry)} unsewn, ${pinches(slot.geometry)} folded lines`
+    )
+    // REPLAYED, like every other stroke: the dabs are the document and the mesh
+    // is derived from them. Burning through takes triangles out and puts a
+    // tunnel in, which is the one thing in this file that changes the topology,
+    // so the claim is worth making again where it is hardest to keep.
+    const again = held(0.08, dabs, 'burn-slot-again')
+    const first = slot.geometry.getAttribute('position').array
+    const second = again.geometry.getAttribute('position').array
+    let same = first.length === second.length
+    for (let i = 0; same && i < first.length; i++) same = first[i] === second[i]
+    check('and replaying it gives the same mesh', same, `${first.length} floats`)
+    slot.geometry.dispose()
+    again.geometry.dispose()
+  }
+
+  // A WALL THICKER THAN THE BRUSH CAN REACH STILL DISHES. One dab position
+  // cannot sink deeper than its own radius -- a vertex that has sagged out of
+  // reach stops being melted -- so there is a thickness past which the torch
+  // has no way to run out of material, and it must go on behaving exactly as
+  // it did before any of this existed.
+  {
+    const thick = held(1, press(1, 20), 'burn-thick')
+    check(
+      'twenty presses on a thick slab open nothing',
+      !holed(thick.geometry, 0.00713, 0.00311),
+      ''
+    )
+    check(
+      'and dish it without folding it',
+      unsewn(thick.geometry) === 0 && pinches(thick.geometry) === 0,
+      `${unsewn(thick.geometry)} unsewn, ${pinches(thick.geometry)} folded lines`
+    )
+    check(
+      'while still taking material off',
+      signedVolume(thick.geometry) < 4 - 1e-4,
+      `${signedVolume(thick.geometry).toFixed(5)} from 4`
+    )
+    thick.geometry.dispose()
+  }
+
+  // THE SCULPT TOOL NEVER GETS HERE, and it is not a special case in the code
+  // -- raising drives the two faces of a wall APART. Asked of the same panel
+  // that the torch goes through in one press.
+  {
+    const raised = held(0.08, press(0.08, 20, { raise: true }), 'burn-raise')
+    check(
+      'the sculpt tool opens no hole in the panel the torch goes through',
+      !holed(raised.geometry, 0.00713, 0.00311),
+      ''
+    )
+    check(
+      'and adds material rather than taking it',
+      signedVolume(raised.geometry) > 0.32,
+      `${signedVolume(raised.geometry).toFixed(5)} from 0.32`
+    )
+    raised.geometry.dispose()
+  }
+}
+
+
+// --- The mirror -------------------------------------------------------------
+console.log('\nA mirror reflects the whole object and leaves it where it stood')
+{
+  /**
+   * Does one mesh enclose the same points as another?
+   *
+   * Sampled, by ray parity, rather than by a boolean: intersecting a solid with
+   * a copy of itself is every coplanar-face degeneracy in one call, and the CSG
+   * library reports anything from 50% to 100% overlap depending on which
+   * primitive it is handed. Parity does not care how either mesh is
+   * tessellated, which is exactly the indifference this needs -- a mirrored
+   * solid is REBUILT through the whole pipeline, so its triangles are its own.
+   */
+  function sameSolid(a: BufferGeometry, b: BufferGeometry): number {
+    const meshes = [a, b].map((g) => {
+      const mesh = new Mesh(g, new MeshBasicMaterial({ side: DoubleSide }))
+      mesh.updateMatrixWorld(true)
+      return mesh
+    })
+    const box = new Box3()
+      .setFromBufferAttribute(a.getAttribute('position') as BufferAttribute)
+      .union(new Box3().setFromBufferAttribute(b.getAttribute('position') as BufferAttribute))
+      .expandByScalar(0.05)
+
+    const probe = new Raycaster()
+    // Skew, so the ray does not run along a face of anything axis-aligned --
+    // which is most of what is tested here, and where a parity count is least
+    // trustworthy.
+    const along = new Vector3(0.37139068, 0.55708601, 0.74278135)
+    const inside = (mesh: Mesh, p: Vector3) => {
+      probe.set(p, along)
+      return probe.intersectObject(mesh, false).length % 2 === 1
+    }
+
+    // Its own generator, so a run that fails fails again on the next run.
+    let seed = 12345
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed / 0x7fffffff
+    }
+    const span = box.getSize(new Vector3())
+    let agreed = 0
+    const tried = 1200
+    for (let i = 0; i < tried; i++) {
+      const p = new Vector3(
+        box.min.x + rnd() * span.x,
+        box.min.y + rnd() * span.y,
+        box.min.z + rnd() * span.z
+      )
+      if (inside(meshes[0], p) === inside(meshes[1], p)) agreed++
+    }
+    return agreed / tried
+  }
+
+  /** An object's geometry in WORLD space, which is where a mirror is judged. */
+  function worldGeometry(o: SceneObject): BufferGeometry {
+    resetEvaluator()
+    const g = evaluateObject(o).geometry.clone()
+    return g.applyMatrix4(objectMatrix(o.transform))
+  }
+
+  /**
+   * The reflection the tool CLAIMS to have performed, done to the original by
+   * brute force: carry the mesh to the object's own world centre, negate one
+   * world coordinate along the object's own axis, and carry it back.
+   *
+   * This is the ground truth the document rewrite is measured against, and it
+   * shares no code with it -- which is the whole point. `mirror.ts` reaches the
+   * same solid by restating anchors, cut planes and part transforms; if the two
+   * agree, the restatement is right.
+   */
+  function reflectedInPlace(o: SceneObject, axis: Axis): BufferGeometry {
+    const m = objectMatrix(o.transform)
+    const centre = new Vector3(...assemblyCentre(o)).applyMatrix4(m)
+    const n = new Vector3().setComponent(axis, 1).transformDirection(m).normalize()
+    // I - 2nn', with the shift to the centre either side of it.
+    const flip = new Matrix4().set(
+      1 - 2 * n.x * n.x, -2 * n.x * n.y, -2 * n.x * n.z, 0,
+      -2 * n.y * n.x, 1 - 2 * n.y * n.y, -2 * n.y * n.z, 0,
+      -2 * n.z * n.x, -2 * n.z * n.y, 1 - 2 * n.z * n.z, 0,
+      0, 0, 0, 1
+    )
+
+    const source = worldGeometry(o)
+    const out = source.getIndex() ? source.toNonIndexed() : source.clone()
+    out
+      .applyMatrix4(new Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z))
+      .applyMatrix4(flip)
+      .applyMatrix4(new Matrix4().makeTranslation(centre.x, centre.y, centre.z))
+
+    // A reflection turns every triangle inside out, so the winding is put back
+    // -- otherwise the volume comes out negative and the parity test is reading
+    // a solid the mesh does not describe.
+    const pos = out.getAttribute('position').array as Float32Array
+    for (let i = 0; i + 8 < pos.length; i += 9) {
+      for (let k = 0; k < 3; k++) {
+        const swap = pos[i + 3 + k]
+        pos[i + 3 + k] = pos[i + 6 + k]
+        pos[i + 6 + k] = swap
+      }
+    }
+    out.deleteAttribute('normal')
+    out.deleteAttribute('uv')
+    out.computeVertexNormals()
+    return out
+  }
+
+  function mirrors(label: string, o: SceneObject): void {
+    for (const axis of [0, 1, 2] as Axis[]) {
+      const expected = reflectedInPlace(o, axis)
+      const actual = worldGeometry(mirrorAssembly(o, axis))
+      const va = signedVolume(actual)
+      const ve = signedVolume(expected)
+      const same = sameSolid(actual, expected)
+      check(
+        `${label}, mirrored about ${'XYZ'[axis]}`,
+        Math.abs(va - ve) <= 2e-3 * Math.max(1, Math.abs(ve)) && same > 0.995,
+        `volume ${va.toFixed(5)} vs ${ve.toFixed(5)}, ${(same * 100).toFixed(2)}% of samples agree`
+      )
+      expected.dispose()
+      actual.dispose()
+    }
+  }
+
+  const solid = (base: BaseSolid, over: Partial<SceneObject> = {}): SceneObject => ({
+    id: 'm',
+    name: 'm',
+    base,
+    transform: IDENTITY_TRANSFORM,
+    features: [],
+    cuts: [],
+    parts: [],
+    ...over,
+  })
+
+  // The primitives, one at a time. A box, a sphere, a cylinder and a bean are
+  // symmetric about all three of their own axis planes and are the easy case;
+  // the rest are here because they are not.
+  mirrors('a box', solid({ kind: 'box', size: [1, 2, 3] }))
+  // Symmetric about every plane containing its axis and none across it, so a
+  // mirror along Y has to reflect in X and turn the object to make up for it.
+  mirrors('a cone', solid({ kind: 'cone', radius: 0.5, height: 1.4 }))
+  // Odd side counts: the ring's own mirror planes fall on X but not on Z.
+  mirrors('a pentagonal prism', solid({ kind: 'prism', radius: 0.5, height: 0.9, sides: 5 }))
+  mirrors('a pentagonal pyramid', solid({ kind: 'pyramid', radius: 0.5, height: 0.9, sides: 5 }))
+  // The tetrahedron survives NO axis plane once it is stood on a face, so this
+  // is the case that proves the corner search finds a real mirror.
+  mirrors('a tetrahedron', solid({ kind: 'platonic', solid: 'tetrahedron', radius: 0.55 }))
+  mirrors('a dodecahedron', solid({ kind: 'platonic', solid: 'dodecahedron', radius: 0.55 }))
+
+  // And everything a document hangs off a primitive.
+  mirrors(
+    'a turned box wearing a spun boss',
+    solid(
+      { kind: 'box', size: [1, 1, 1] },
+      {
+        features: [
+          feature({
+            anchor: { on: 'box-face', face: 2, u: 0.3, v: -0.2 },
+            shape: { type: 'rect', w: 0.3, h: 0.16 },
+            rotation: 0.4,
+            depth: 0.25,
+          }),
+        ],
+        transform: { position: [0.4, 0.2, -0.3], rotation: [0.3, -0.6, 0.2] },
+      }
+    )
+  )
+  mirrors(
+    'a sphere wearing a spun pocket',
+    solid(
+      { kind: 'sphere', radius: 0.6 },
+      {
+        features: [
+          feature({
+            anchor: { on: 'sphere', theta: 0.9, phi: 1.1 },
+            shape: { type: 'rect', w: 0.3, h: 0.15 },
+            rotation: 0.7,
+            depth: -0.18,
+          }),
+        ],
+      }
+    )
+  )
+  // Tilt and faceOffset together: the created face leans AND slides, and both
+  // are written in a frame that has just changed handedness.
+  mirrors(
+    'a cone wearing a tilted, slid boss',
+    solid(
+      { kind: 'cone', radius: 0.6, height: 1.2 },
+      {
+        features: [
+          feature({
+            anchor: { on: 'cone', theta: 1.2, t: 0.4 },
+            shape: { type: 'rect', w: 0.2, h: 0.12 },
+            rotation: 0.5,
+            depth: 0.22,
+            tilt: [0.2, 0.1, -0.15],
+            faceOffset: [0.06, -0.04],
+          }),
+        ],
+      }
+    )
+  )
+  mirrors(
+    'a cut solid',
+    solid(
+      { kind: 'box', size: [1, 1, 1] },
+      { cuts: [{ id: 'c1', origin: [0.1, 0.15, 0], normal: [0.6, 0.8, 0], side: 1 }] }
+    )
+  )
+  // A part chooses its own mirror plane, and the mismatch with its host's lands
+  // in its rotation: a cone welded into a box is still a cone.
+  mirrors(
+    'a box with a cone welded to it',
+    solid(
+      { kind: 'box', size: [1, 1, 1] },
+      {
+        parts: [
+          solid(
+            { kind: 'cone', radius: 0.3, height: 0.8 },
+            { id: 'part', transform: { position: [0.4, 0.6, 0.2], rotation: [0.4, 0.2, -0.3] } }
+          ),
+        ],
+      }
+    )
+  )
+  mirrors(
+    'a drilled box',
+    solid(
+      { kind: 'box', size: [1, 1, 1] },
+      {
+        erased: [
+          solid(
+            { kind: 'cylinder', radius: 0.15, height: 2 },
+            { id: 'hole', transform: { position: [0.25, 0, 0.1], rotation: [0.2, 0, 0.3] } }
+          ),
+        ],
+      }
+    )
+  )
+  mirrors(
+    'a torched box',
+    solid(
+      { kind: 'box', size: [1, 1, 1] },
+      { erosion: [{ at: [0.3, 0.5, 0.1], radius: 0.3, heat: 0.7, smooth: 0.3 }] }
+    )
+  )
+
+  {
+    // An imported model is the one base with no symmetry to lean on, so its
+    // triangles are genuinely reflected. A handed wedge -- no mirror plane at
+    // all -- is what makes that testable.
+    const wedge = new BufferGeometry()
+    wedge.setAttribute(
+      'position',
+      new BufferAttribute(
+        new Float32Array([
+          0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0,
+          0, 1, 0, 0, 0, 1,
+        ]),
+        3
+      )
+    )
+    wedge.computeVertexNormals()
+    const entry = registerMesh(wedge, 'wedge')
+
+    mirrors(
+      'an imported model',
+      solid(
+        { kind: 'mesh', meshId: entry.id, label: 'wedge', size: [1, 1.4, 0.8] },
+        { transform: { position: [0.3, 0, -0.2], rotation: [0.2, 0.5, -0.1] } }
+      )
+    )
+    // And the shelf does not grow a copy per press: flipping back finds the
+    // model that was already there.
+    check(
+      'a model mirrored twice is the model it started as',
+      mirrorMesh(mirrorMesh(entry.id, 0), 0) === entry.id,
+      `${mirrorMesh(mirrorMesh(entry.id, 0), 0)} vs ${entry.id}`
+    )
+  }
+
+  {
+    // The promise the tool makes about WHERE: a merged object is reflected
+    // about its own centre, which is the point its gizmo sits on, so nothing
+    // slides across the scene when it flips.
+    const merged = solid(
+      { kind: 'box', size: [1, 1, 1] },
+      {
+        parts: [
+          solid(
+            { kind: 'cone', radius: 0.3, height: 0.8 },
+            { id: 'part', transform: { position: [0.6, 0.4, 0.2], rotation: [0, 0, 0] } }
+          ),
+        ],
+        transform: { position: [0.5, 0.25, -0.4], rotation: [0.3, 0.9, -0.2] },
+      }
+    )
+    const anchorOf = (o: SceneObject) =>
+      new Vector3(...assemblyCentre(o)).applyMatrix4(objectMatrix(o.transform))
+
+    for (const axis of [0, 1, 2] as Axis[]) {
+      const moved = anchorOf(merged).distanceTo(anchorOf(mirrorAssembly(merged, axis)))
+      check(
+        `the gizmo point holds still under a mirror about ${'XYZ'[axis]}`,
+        moved < 1e-9,
+        `moved ${moved.toExponential(2)}`
+      )
+    }
+  }
+
+  {
+    // Twice is nothing at all -- and not merely to the eye: the document has to
+    // come back to the same numbers, or a user flipping a part to compare the
+    // two ways round would leave drift behind in every anchor.
+    const twice = solid(
+      { kind: 'pyramid', radius: 0.5, height: 0.9, sides: 5 },
+      {
+        features: [
+          feature({
+            anchor: { on: 'planar-face', face: 0, u: 0.1, v: 0.05 },
+            shape: { type: 'rect', w: 0.2, h: 0.1 },
+            rotation: 0.3,
+            depth: 0.2,
+          }),
+        ],
+        transform: { position: [0.2, 0, 0.1], rotation: [0.1, 0.2, 0.3] },
+      }
+    )
+    for (const axis of [0, 1, 2] as Axis[]) {
+      const back = mirrorAssembly(mirrorAssembly(twice, axis), axis)
+      const drift = Math.max(
+        ...back.transform.position.map((v, i) => Math.abs(v - twice.transform.position[i])),
+        ...back.transform.rotation.map((v, i) => Math.abs(v - twice.transform.rotation[i])),
+        Math.abs(back.features[0].rotation - twice.features[0].rotation)
+      )
+      check(
+        `mirroring twice about ${'XYZ'[axis]} is the identity`,
+        drift < 1e-9,
+        `worst drift ${drift.toExponential(2)}`
+      )
+    }
+  }
+}
+
+// --- The lathe ---------------------------------------------------------------
+//
+// The other way this app makes a solid, and the only one with no mesh in it. A
+// piece on the lathe is a row of radii -- see `clay.ts` -- so what is checked
+// here is not watertightness or winding but the promises the two tools make to
+// the hand: the wall goes to the pointer, it stops there, it goes nowhere the
+// tool is not pointed, and it never comes out of a stroke sharper than it went
+// in.
+console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it')
+{
+  /** The enclosed volume of a solid of revolution: pi times the integral of r
+   *  squared up the axis. The lathe's answer to `signedVolume` -- one number
+   *  that says whether a stroke added material or took it away. */
+  const clayVolume = (c: Clay): number => {
+    const step = c.height / (CLAY_RINGS - 1)
+    let sum = 0
+    for (let i = 0; i < CLAY_RINGS - 1; i += 1) {
+      const a = c.wall[i]
+      const b = c.wall[i + 1]
+      // A frustum per gap, which is exact for a wall drawn as straight
+      // segments -- and the wall IS drawn as straight segments. See
+      // `silhouette`.
+      sum += (Math.PI * step * (a * a + a * b + b * b)) / 3
+    }
+    return sum
+  }
+
+  /** The sharpest step between neighbouring rings: what a crease looks like as
+   *  a number. */
+  const roughest = (c: Clay): number => {
+    let worst = 0
+    for (let i = 1; i < CLAY_RINGS; i += 1) {
+      worst = Math.max(worst, Math.abs(c.wall[i] - c.wall[i - 1]))
+    }
+    return worst
+  }
+
+  /**
+   * Hold a tool at one spot for `times` frames, the way a press does.
+   *
+   * ANCHORED ONCE, which is the whole of what makes it a stroke: the wall the
+   * dish is measured from is the wall this press found, not the one the last
+   * frame left. The store does exactly this between `beginStroke` and
+   * `endStroke`; re-anchoring every frame is what turns the tool into a punch,
+   * and the crease check below is what would catch it.
+   */
+  const hold = (c: Clay, dab: Dab, times: number): Clay => {
+    const from = c.wall
+    let out = c
+    for (let n = 0; n < times; n += 1) out = mold(out, dab, from)
+    return out
+  }
+
+  const stock = freshClay(1.5, 0.4)
+
+  // A FRESH LUMP IS A CYLINDER, which is the one shape the whole screen starts
+  // from and the one the Clay panel claims to set.
+  check(
+    'a fresh lump is a cylinder of the stock radius',
+    stock.wall.length === CLAY_RINGS && stock.wall.every((r) => r === 0.4),
+    `${stock.wall.length} rings, ${new Set(stock.wall).size} distinct radius`
+  )
+  check('and it says it is untouched', isFresh(stock), `${isFresh(stock)}`)
+  near('its rings run from the faceplate', ringHeight(stock, 0), 0, 0)
+  near('to the rim, ends included', ringHeight(stock, CLAY_RINGS - 1), 1.5, 1e-12)
+  near('and it holds the volume of that cylinder', clayVolume(stock), Math.PI * 0.16 * 1.5, 1e-6)
+
+  const middle: Dab = { y: 0.75, radius: 0.25, reach: 0.3, bite: 0.25, push: true }
+
+  // THE WALL GOES TO THE POINTER AND STOPS THERE. Everything about aiming this
+  // screen rests on the second half: hold longer and the curve finishes, it
+  // does not deepen.
+  {
+    const once = mold(stock, middle)
+    const under = once.wall[48]
+    check('one push moves the wall in', under < 0.4, `${under.toFixed(4)} from 0.400`)
+    check('and not past the pointer', under > 0.25, `${under.toFixed(4)} against 0.250`)
+
+    const held = hold(stock, middle, 400)
+    near('holding takes the wall to the pointer', held.wall[48], 0.25, 0.002)
+    check(
+      'and holding for ever cannot take it further',
+      held.wall.every((r) => r >= 0.25 - 1e-9),
+      `deepest ${Math.min(...held.wall).toFixed(4)}`
+    )
+    check('the push took material away', clayVolume(held) < clayVolume(stock), '')
+  }
+
+  // NEITHER TOOL WORKS THE OTHER'S WAY, which is what makes a missed aim
+  // harmless rather than destructive.
+  {
+    const wide = mold(stock, { ...middle, radius: 0.6 })
+    check(
+      'a push aimed outside the wall does nothing at all',
+      wide === stock,
+      wide === stock ? 'the same lump' : 'a new lump'
+    )
+    const pulled = hold(stock, { ...middle, radius: 0.6, push: false }, 400)
+    near('a pull takes the wall out to the pointer', pulled.wall[48], 0.6, 0.002)
+    check('and no further', Math.max(...pulled.wall) <= 0.6 + 1e-9, '')
+    check('the pull added material', clayVolume(pulled) > clayVolume(stock), '')
+    const narrow = mold(stock, { ...middle, radius: 0.25, push: false })
+    check('a pull aimed inside the wall does nothing at all', narrow === stock, '')
+  }
+
+  // WHAT IS OUTSIDE THE TOOL IS UNTOUCHED, to the bit -- the promise the
+  // modelling brushes make about vertices outside the sphere.
+  {
+    const once = mold(stock, middle)
+    let moved = 0
+    for (let i = 0; i < CLAY_RINGS; i += 1) {
+      const far = Math.abs(ringHeight(stock, i) - middle.y) >= middle.reach
+      if (far && once.wall[i] !== stock.wall[i]) moved += 1
+    }
+    check('no ring outside the tool moves', moved === 0, `${moved} moved`)
+    const miss = mold(stock, { ...middle, y: 9 })
+    check('and a tool held off the piece hands back the same lump', miss === stock, '')
+  }
+
+  // THE BOUNDS HOLD however hard the tool is leant on, which is what keeps the
+  // piece inside the frame it is drawn in.
+  {
+    const { min, max } = wallBounds(0.4)
+    const pinched = hold(stock, { y: 0.75, radius: 0, reach: 0.3, bite: 1, push: true }, 200)
+    near(
+      'a wall pinched as hard as possible stops at the floor',
+      Math.min(...pinched.wall),
+      min,
+      1e-9
+    )
+    const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, push: false }, 200)
+    near(
+      'and a wall pulled as hard as possible stops at the ceiling',
+      Math.max(...flared.wall),
+      max,
+      1e-9
+    )
+  }
+
+  // NEITHER TOOL CAN SHARPEN THE WALL. The relax pass is what buys this, and it
+  // is the half of the brush that is easiest to lose in a refactor.
+  {
+    const cut = hold(stock, { y: 0.75, radius: 0.1, reach: 0.3, bite: 1, push: true }, 60)
+    const step = roughest(cut)
+    // The deepest cut here is 0.3 of a unit spread over the rings inside a 0.3
+    // reach -- about 38 of them -- so a wall that had gone step-shaped would
+    // show a jump of that order. A tenth of it is a curve.
+    check('the deepest cut leaves no crease', step < 0.03, `sharpest step ${step.toFixed(4)}`)
+    // And what it leaves is a dish rather than a trench: monotone from the rim
+    // of the tool down to the middle of it.
+    let dents = 0
+    for (let i = 30; i < 48; i += 1) if (cut.wall[i + 1] > cut.wall[i] + 1e-9) dents += 1
+    check('and the cut falls away smoothly to its middle', dents === 0, `${dents} dents`)
+  }
+
+  // THE STRENGTH DIAL IS A SPEED, and it is measured in time rather than in
+  // frames -- the same gesture has to take the same material off at 60 Hz and
+  // at 144.
+  {
+    near('a frame of contact bites by the dial', bite(0.5, 1000 / 60), 0.125, 1e-9)
+    near('twice the frame, twice the bite', bite(0.5, 1000 / 30), 0.25, 1e-9)
+    check('and it can never pass all the way there', bite(1, 10000) === 1, `${bite(1, 10000)}`)
+  }
+
+  // THE SIZE FIELDS CARRY THE SHAPE. A piece made wider is the same piece,
+  // wider -- which is what makes the Clay panel safe to touch after an hour's
+  // work.
+  {
+    const shaped = hold(stock, middle, 40)
+    const wider = resize(shaped, { radius: 0.8 })
+    const drift = Math.max(...shaped.wall.map((r, i) => Math.abs(wider.wall[i] / r - 2)))
+    check('doubling the radius doubles every ring', drift < 1e-9, `worst ${drift.toExponential(2)}`)
+
+    const taller = resize(shaped, { height: 3 })
+    check(
+      'and changing the height leaves the wall alone',
+      taller.wall.every((r, i) => r === shaped.wall[i]),
+      'the rings are fractions of the height, not positions'
+    )
+    near('the rings stretch with it', ringHeight(taller, CLAY_RINGS - 1), 3, 1e-12)
+
+    // A wall pulled to the flare limit of a wide stock is past the limit of a
+    // narrow one, and a shape that could not have been made from the stock it
+    // claims is not one this screen can go on working.
+    const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, push: false }, 200)
+    const shrunk = resize(flared, { radius: 0.1 })
+    const bounds = wallBounds(0.1)
+    const inside = shrunk.wall.every(
+      (r) => r <= bounds.max + 1e-12 && r >= bounds.min - 1e-12
+    )
+    check(
+      'shrinking the stock re-clamps the wall to what it now allows',
+      inside,
+
+      `${Math.min(...shrunk.wall).toFixed(4)}..${Math.max(...shrunk.wall).toFixed(4)}`
+    )
+  }
+
+  // TURNED INTO TRIANGLES, which is the one thing the lathe does that leaves
+  // this screen: the wall swept a full turn and capped, ready for the clipboard
+  // and for everything the modelling screen can do to a solid.
+  //
+  // Signed volume is the whole test, and it is two tests in one: it only comes
+  // out right if the mesh is closed AND wound outward, so a sweep that leaked
+  // at the seam or turned itself inside out cannot land on the answer by
+  // accident. It is the same instrument every boolean in this file is measured
+  // with. See `signedVolume`.
+  {
+    const cylinder = freshClay(1.5, 0.4)
+    const solid = revolveClay(cylinder)
+
+    // A regular n-gon inscribed in a circle holds n*sin(2pi/n) / 2pi of its
+    // area -- 0.99839 at 64 facets -- so a swept cylinder comes out a sixth of
+    // a percent light, and that is the mesh being RIGHT rather than wrong. The
+    // deficit is predicted rather than tolerated, so the check stays tight
+    // enough that a missing cap or a dropped ring fails it outright.
+    const exact = Math.PI * 0.4 * 0.4 * 1.5
+    const facets = (TURN_FACETS * Math.sin((2 * Math.PI) / TURN_FACETS)) / (2 * Math.PI)
+    near('a swept cylinder holds a cylinder of clay', signedVolume(solid), exact * facets, 1e-5)
+    check(
+      'and it is wound the right way out',
+      signedVolume(solid) > 0,
+      `${signedVolume(solid).toFixed(5)}`
+    )
+
+    // The same, on a piece that has actually been worked: the frustum sum the
+    // section is measured by, times the same 64-gon deficit.
+    const worked = hold(cylinder, { y: 0.9, radius: 0.15, reach: 0.35, bite: 1, push: true }, 60)
+    near(
+      'and a shaped piece holds what its profile says',
+      signedVolume(revolveClay(worked)),
+      clayVolume(worked) * facets,
+      1e-4
+    )
+
+    // Standing on the faceplate and no taller than the lump, which is what
+    // makes the piece land resting on the grid when it is pasted.
+    const box = new Box3().setFromBufferAttribute(
+      solid.getAttribute('position') as BufferAttribute
+    )
+    near('it stands on zero', box.min.y, 0, 1e-9)
+    near('and reaches the rim and no further', box.max.y, 1.5, 1e-9)
+    near('as wide as the wall, both ways', box.max.x, 0.4, 0.001)
+    near('and as deep', box.max.z, 0.4, 0.001)
+
+    // Normals are analytic rather than averaged -- see `revolveClay` -- so
+    // every one of them is a unit vector, seam included. An averaged normal at
+    // a duplicated seam vertex is the classic crease down one meridian, and it
+    // is invisible in any test that only counts triangles.
+    const normals = solid.getAttribute('normal')
+    let worstNormal = 0
+    for (let i = 0; i < normals.count; i += 1) {
+      const length = Math.hypot(normals.getX(i), normals.getY(i), normals.getZ(i))
+      worstNormal = Math.max(worstNormal, Math.abs(length - 1))
+    }
+    check('every normal is a unit vector', worstNormal < 1e-6, `worst ${worstNormal.toExponential(2)}`)
+
+    // The seam closes on itself exactly rather than within a float: the last
+    // column is written from the first column's own angle.
+    const pos = solid.getAttribute('position')
+    const columns = TURN_FACETS + 1
+    let seam = 0
+    for (let i = 0; i < CLAY_RINGS; i += 1) {
+      const first = i * columns
+      const last = first + TURN_FACETS
+      if (pos.getX(first) !== pos.getX(last) || pos.getZ(first) !== pos.getZ(last)) seam += 1
+    }
+    check('and the seam meets itself to the bit', seam === 0, `${seam} rings apart`)
   }
 }
 

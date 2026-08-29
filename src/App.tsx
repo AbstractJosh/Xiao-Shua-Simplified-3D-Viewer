@@ -1,9 +1,13 @@
 import { useEffect } from 'react'
+import type { ComponentType } from 'react'
 import { Console } from './console/Console'
 import { HelpScreen } from './console/HelpScreen'
 import { NavBar } from './console/NavBar'
+import { LatheConsole } from './console/LatheConsole'
+import type { ScreenId } from './screens'
 import { useTools } from './store/toolStore'
 import { THEME_ATTRIBUTE } from './theme'
+import { LatheViewport } from './viewport/LatheViewport'
 import { Viewport } from './viewport/Viewport'
 
 /**
@@ -26,21 +30,54 @@ function useTheme() {
 }
 
 /**
+ * WHAT EACH SCREEN MOUNTS: one viewport, and the console that drives it.
+ *
+ * The one thing `screens.ts` deliberately does not hold, because it is the one
+ * thing that needs components -- that file is plain data so the store and the
+ * check suite can read it without dragging a canvas along. Keyed by `ScreenId`
+ * rather than a lookup with a fallback, so a screen added to that table and
+ * forgotten here is a type error rather than a blank window.
+ *
+ * A SCREEN IS A PAIR, not a viewport with a console bolted beside it. The two
+ * halves are chosen together because they are two halves of one working
+ * surface: Lathe's console holds the Clipboard and nothing else precisely
+ * because Lathe's viewport draws no document, and neither of those facts
+ * makes sense without the other.
+ */
+const SCREEN_PARTS: Record<ScreenId, { Viewport: ComponentType; Console: ComponentType }> = {
+  modelling: { Viewport, Console },
+  lathe: { Viewport: LatheViewport, Console: LatheConsole },
+}
+
+/**
  * Two halves, split by what they are about. The bar across the top holds the
  * tools -- how you work, and what leaves the app. The console on the right holds
  * the document: what you can drop in, what is selected, and what the scene now
  * contains. Nothing appears in both.
+ *
+ * Which PAIR of halves is on show is the screen -- see `SCREEN_PARTS`. Only the
+ * chosen one is mounted, so there is never a second WebGL context standing idle
+ * behind a hidden canvas: a browser hands out somewhere between eight and
+ * sixteen, and the clipboard's live thumbnails are already spending three. The
+ * Lathe screen costs none of them at all -- it draws its piece as one SVG path,
+ * because a solid of revolution seen from the side hides nothing.
  */
 export default function App() {
   useTheme()
+  const screen = useTools((s) => s.screen)
+  const { Viewport: ScreenViewport, Console: ScreenConsole } = SCREEN_PARTS[screen]
 
   return (
     <div className="app">
       <NavBar />
 
-      <main className="main">
-        <Viewport />
-        <Console />
+      {/* Keyed by the screen, so switching is a fresh mount of both halves
+          rather than React reconciling one viewport into another -- two
+          `<Canvas>` elements in the same slot would otherwise try to share a
+          renderer built for a different scene. */}
+      <main className="main" key={screen}>
+        <ScreenViewport />
+        <ScreenConsole />
       </main>
 
       {/* Outside the bar, though the button that opens it is in the bar. Two

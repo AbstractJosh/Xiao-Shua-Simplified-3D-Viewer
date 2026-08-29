@@ -5,7 +5,7 @@ import { registerMesh } from '../geometry/meshLibrary'
 import type { BaseSolid, Doc, Vec3 } from '../geometry/types'
 import { useDoc } from '../store/docStore'
 import { formatLength } from '../units'
-import { useTools } from '../store/toolStore'
+import { onDocument, useTools } from '../store/toolStore'
 import { ImportIcon } from './navIcons'
 import { ReceiptFlyout, useReceipt } from './Receipt'
 
@@ -33,16 +33,16 @@ export function dropPosition(doc: Doc, size: Vec3): Vec3 {
 }
 
 /**
- * Import, sitting in the bar beside the app's name.
+ * Import, sitting immediately left of Export.
  *
- * It is there because of what it is: the way a document GETS INTO the app,
- * which makes it a sibling of the name rather than one more tool in the cluster
- * at the right. That cluster is what you do to a document you already have --
- * export it, undo, redo, read its units -- and every one of those is meaningless
- * on the empty scene the app opens in. This is the one control that is not.
- *
- * The tagline used to sit here. It said "drop a shape, push or pull it", which
- * was true and which the palette on the right says better by being a palette.
+ * It spent a while beside the app's name, on the argument that a document
+ * ARRIVING is a different kind of act from anything you do to one you already
+ * have. That was true and it is now outweighed: the left of the bar belongs to
+ * the screen tabs, which decide what the whole window is showing, and a lone
+ * file button beside them read as a third screen. Next to Export it is half of
+ * an obvious pair -- the two are one act in opposite directions, reading and
+ * writing exactly the same four formats -- and a pair of doors is easier to
+ * find as a pair than as two controls at opposite ends of the window.
  *
  * WHAT IT ACCEPTS is exactly what Export writes -- see `importers.ts`. That
  * symmetry is the point of it: the pair together are Save and Open under other
@@ -55,6 +55,9 @@ export function ImportTools() {
   // The receipt reads its size in whatever unit the rest of the app is reading
   // in, so "20.0 cm across" is the same 20.0 the Width field will show.
   const displayUnit = useTools((s) => s.displayUnit)
+  // Dimmed on a screen that draws no document: a model imported into a scene
+  // nobody can see would land, cost an undo entry and show nothing.
+  const live = useTools(onDocument)
   const [busy, setBusy] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const receipt = useReceipt()
@@ -131,7 +134,7 @@ export function ImportTools() {
         <button
           type="button"
           className="nav-btn"
-          disabled={busy}
+          disabled={busy || !live}
           title="Import a model: GLB, OBJ, STL or STEP. It lands as one solid you can size, move, cut and merge."
           onClick={() => {
             // Any tool panel hanging off the bar is pointing at the document

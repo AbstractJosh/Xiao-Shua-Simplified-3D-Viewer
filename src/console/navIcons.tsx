@@ -109,6 +109,30 @@ export function ScaleIcon() {
   )
 }
 
+/**
+ * A shape and its reflection, with the plane standing between them.
+ *
+ * The glyph IS the operation, drawn twice: one arrowhead pointing away from the
+ * mirror line and its image pointing back at it, so which axis the line stands
+ * on is the only thing left to say -- and the three lettered buttons beside it
+ * say that. An arrowhead rather than a symmetric blob, because a blob and its
+ * reflection are the same picture and the icon would be claiming nothing.
+ *
+ * The line is DASHED, which is the one piece of vocabulary borrowed rather than
+ * invented: a dashed line down the middle of a symmetric drawing is how a
+ * mirror plane is written on a technical drawing, and this app is pretending to
+ * be a workshop instrument.
+ */
+export function MirrorIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M10 2.4v15.2" {...STROKE} strokeDasharray="2.6 2.2" />
+      <path d="M2.6 10h4.2M4.9 7.7 2.6 10l2.3 2.3" {...STROKE} />
+      <path d="M17.4 10h-4.2M15.1 7.7 17.4 10l-2.3 2.3" {...STROKE} />
+    </svg>
+  )
+}
+
 /** A solid crossed by a line that carries on past both of its edges. */
 export function CutIcon() {
   return (
@@ -184,6 +208,68 @@ export function SculptIcon() {
       {/* The stylus, and the collar that names it one. */}
       <path d="M16.9 2.6 11.6 7.9" {...STROKE} />
       <path d="M14.4 3.2 16.3 5.1" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * The two tools on the lathe: a wall, and a hand at it.
+ *
+ * THE WALL IS THE VERB, which is the rule `SculptIcon` set and the reason
+ * neither of these is a hand holding something. What a tool does is not visible
+ * in the tool -- both tools are the same edge held against the same clay -- so
+ * what is drawn is the SHAPE THAT COMES OUT: a waist for the one that takes
+ * material away, a belly for the one that adds it. The line is a piece's profile
+ * standing on end, which is exactly what the Lathe viewport draws at full
+ * size, so the button and the screen say the same thing in the same shape.
+ *
+ * The two are honest MIRRORS of each other -- same curve, same arrow, both
+ * turned over -- because push and pull genuinely are one act in two directions,
+ * the way Import and Export are. Where the pair differs is the arrowhead, and
+ * it is the whole of the message: one points at the wall, one points away from
+ * it.
+ */
+export function PushIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The wall, pressed to a waist. Flat at both ends and moving only in the
+          middle: the falloff the tool actually has -- see `falloff` in
+          `clay.ts` -- rather than a corner the tool can never leave. */}
+      <path d="M12.6 2.6C12.6 6.2 8.4 7.4 8.4 10c0 2.6 4.2 3.8 4.2 7.4" {...STROKE} />
+      {/* The tool, coming in at the waist. */}
+      <path d="M17.4 10h-4.6" {...STROKE} />
+      <path d="M14.4 8.4 12.8 10l1.6 1.6" {...STROKE} />
+    </svg>
+  )
+}
+
+export function PullIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The same wall, drawn out to a belly. */}
+      <path d="M8.4 2.6c0 3.6 4.2 4.8 4.2 7.4 0 2.6-4.2 3.8-4.2 7.4" {...STROKE} />
+      {/* And the tool going the other way, off the wall rather than into it. */}
+      <path d="M13.6 10h4.6" {...STROKE} />
+      <path d="M16.6 8.4 18.2 10l-1.6 1.6" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * The stock: a cylinder, seen from the side, before anybody has touched it.
+ *
+ * The one glyph in this set that draws a THING rather than an action, because
+ * that is what the panel behind it sets -- how tall and how wide the lump is
+ * that gets centred on the lathe. Deliberately the plainest possible cylinder,
+ * with no waist and no belly on it: the whole point of the control is that this
+ * is the shape before either tool has been near it.
+ */
+export function ClayIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <ellipse cx="10" cy="5.6" rx="5.2" ry="2.2" {...STROKE} />
+      <path d="M4.8 5.6v8.8M15.2 5.6v8.8" {...STROKE} />
+      <path d="M4.8 14.4a5.2 2.2 0 0 0 10.4 0" {...STROKE} />
     </svg>
   )
 }

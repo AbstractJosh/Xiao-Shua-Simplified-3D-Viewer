@@ -18,10 +18,12 @@ import {
   DEFAULT_CUT_PLANE,
   RULER_LENGTH,
   cutPlaneNormal,
+  onDocument,
   rulerLength,
   useTools,
 } from '../store/toolStore'
 import type { CutPlaneState, RulerFrame, TransformMode } from '../store/toolStore'
+import type { Axis } from '../geometry/dimensions'
 // The camera, read the way the corner compass reads it. This file is where the
 // island's tools are defined; the island itself is a viewport component, and
 // `compassViews` is plain arithmetic with no React and no renderer in it.
@@ -32,6 +34,7 @@ import {
   CutIcon,
   BlowtorchIcon,
   HelpIcon,
+  MirrorIcon,
   MoveIcon,
   RotateIcon,
   RulerIcon,
@@ -124,11 +127,94 @@ export function ScaleTool() {
   )
 }
 
+/** The letters the axis buttons wear, indexed the way `Axis` is. */
+const AXIS_LETTERS = ['X', 'Y', 'Z'] as const
+
+/**
+ * Mirror: flip the selection in the plane through its own centre, across one of
+ * its own axes.
+ *
+ * THE BUTTON IS ALSO THE AXIS SELECTOR, and the three lettered buttons sit
+ * INSIDE its outline where the caret sits on every other tool. That is not a
+ * saving of space; it is the claim that they belong to it. A mirror is not
+ * meaningful until an axis is named -- unlike Move, which does something the
+ * moment it is chosen -- so a Mirror button on its own would be a control that
+ * could not be pressed, and an axis picker parked next to it would read as a
+ * setting some other tool might also use.
+ *
+ * So PRESSING A LETTER FIRES, rather than merely arming. One click flips, which
+ * is what the tool is for; the letter then stays lit and the wide button
+ * repeats it, so flipping a part back and forth to compare the two ways round
+ * is one button pressed twice. The alternative -- aim, then fire -- costs two
+ * clicks for every single flip anyone ever makes.
+ *
+ * COLOURED BY AXIS, from the same three values the gizmo's arrows are drawn
+ * from: red X, green Y, blue Z. That is the app's one piece of colour vocabulary
+ * -- the Position rows in the console are tinted with it too -- so which way a
+ * solid is about to flip is read off this button before the letter is.
+ *
+ * Dark with nothing selected. There is no "mirror everything" reading to fall
+ * back on the way the cut tool has one: a scene reflected as a whole would swap
+ * its solids around each other, which is a rearrangement rather than a mirror
+ * of anything in it.
+ */
+export function MirrorTool() {
+  const axis = useTools((s) => s.mirrorAxis)
+  const setMirrorAxis = useTools((s) => s.setMirrorAxis)
+  // A boolean rather than the list: the only question this button asks of the
+  // selection is whether there is one, and a derived boolean does not re-render
+  // the island every time a different solid is picked.
+  const anySelected = useDoc((s) => s.selectedObjectIds.length > 0)
+
+  // The selection is read at the press rather than subscribed to, the way the
+  // cut tool reads its spawn point: what is selected only matters at the
+  // moment the button goes down.
+  const flip = (next: Axis) => {
+    setMirrorAxis(next)
+    const { selectedObjectIds, mirrorObjects } = useDoc.getState()
+    mirrorObjects(selectedObjectIds, next)
+  }
+
+  return (
+    <NavTool
+      label="Mirror"
+      icon={<MirrorIcon />}
+      action={() => flip(axis)}
+      disabled={!anySelected}
+      trailing={
+        <div className="nav-axes" role="group" aria-label="Mirror axis">
+          {AXIS_LETTERS.map((letter, index) => (
+            <button
+              key={letter}
+              type="button"
+              className={`nav-axis nav-axis-${letter.toLowerCase()}`}
+              // Pressed, not merely current: the lit letter says which axis the
+              // wide button beside it would use, which is a state and not a
+              // one-shot the way the letter's own press is.
+              aria-pressed={axis === index}
+              disabled={!anySelected}
+              title={`Mirror along ${letter}`}
+              onClick={() => flip(index as Axis)}
+            >
+              {letter}
+            </button>
+          ))}
+        </div>
+      }
+    />
+  )
+}
+
 export function SnapTool() {
   const snap = useTools((s) => s.snap)
   const snapDistance = useTools((s) => s.snapDistance)
   const setSnap = useTools((s) => s.setSnap)
   const setSnapDistance = useTools((s) => s.setSnapDistance)
+  // Dimmed on a screen that draws no document. Snapping is a rule every drag
+  // obeys, and a screen with nothing to drag has no drags for it to govern --
+  // the switch stays lit, because the rule has not changed, it simply has
+  // nothing to apply to here.
+  const live = useTools(onDocument)
 
   return (
     <NavTool
@@ -136,6 +222,7 @@ export function SnapTool() {
       label="Snap"
       icon={<SnapIcon />}
       active={snap}
+      disabled={!live}
       onToggle={setSnap}
       panelTitle="Snapping"
       // In the bar now, near its right edge, so the panel opens leftwards the

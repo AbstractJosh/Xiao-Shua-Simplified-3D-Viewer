@@ -133,7 +133,7 @@
   --radius: 0;
 
   /* The exception, and the only one: a thing that is round rather than a thing
-     with rounded corners. The colour wheel is a hue ring -- a circle is what it
+     with rounded corners. The colour lathe is a hue ring -- a circle is what it
      MEANS, not how it is decorated -- so it keeps its geometry while everything
      with a corner loses it. */
   --radius-round: 50%;
@@ -400,22 +400,131 @@ body {
   z-index: 20;
 }
 
-.brand {
+/* Full height, so the tabs inside it can carry an underline that lands on the
+   bar's own bottom border rather than floating above it. */
+.topbar-left {
   display: flex;
-  /* Centred, not baselined: what sits beside the name is a button now, and a
-     button aligned on the text baseline inside it hangs low by its own padding. */
+  /* Centred, not baselined: what sits beside the name is a row of buttons, and
+     a button aligned on the text baseline hangs low by its own padding. */
   align-items: center;
-  gap: 10px;
+  align-self: stretch;
+  gap: 12px;
   min-width: 0;
-  /* The name is the only thing here that may shrink, and only after the tools
+  /* The name is the only thing here that may shrink, and only after the tabs
      have taken the room they need. */
   flex: 0 1 auto;
-  /* NO `overflow: hidden` here, and it is load-bearing that there is not:
-     Import's receipt hangs BELOW the bar out of this box, and a clipping
-     ancestor swallows it entirely -- a successful import that says nothing
-     reads exactly like one that never ran. The wordmark does its own
-     truncation with its own `overflow` and `text-overflow`, which is what
-     this was for and is all it was for. */
+}
+
+/* THE BAR'S DIVIDERS COME IN THREE HEIGHTS, and the height is the whole of what
+   they say. Every one is a 1px line in --line-2; what differs is how much of the
+   bar it crosses, which is how far apart the two things either side of it are:
+
+     full  the app's name from the screens -- the biggest break in the bar,
+           because everything to the right of it belongs to whichever screen is
+           chosen to the left of it
+     20px  one group of tools from the next: files, snap, history, the app
+     12px  one tab from its neighbour, two items of the same kind
+
+   --line-2 rather than --border: a divider drawn INSIDE a control -- the caret's
+   left edge, the console's panel seams -- has the control's own fill either side
+   of it and needs nothing more than --border to read. These stand in open space,
+   and at --line-1 over --panel they are a mark you have to know is there. It is
+   the same argument `.island-rule` settled the same way, one step quieter
+   because the bar is a denser surface than the island. */
+.topbar-rule {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1px;
+  height: 20px;
+  background: var(--line-2);
+}
+
+/* Edge to edge, meeting the bar's own bottom border. Everywhere else that
+   would read as the frame of a table cell; here it is exactly right, because
+   what it divides is not two groups of buttons but the app from the screen the
+   app is showing. */
+.topbar-rule-major {
+  align-self: stretch;
+  height: auto;
+}
+
+/* --- screen tabs --- */
+
+/* Full height so the lit tab's bar can sit on the bottom border of the bar
+   itself, which is what ties a tab to the thing below it. No gap: tabs are
+   adjacent by convention, and space between them would make them read as two
+   separate buttons that happen to be near each other. */
+.screen-tabs {
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
+
+/* The smallest of the three -- see `.topbar-rule`. It divides two tabs, which
+   are two items of one kind, where the others divide whole groups. */
+.screen-tab-rule {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1px;
+  height: 12px;
+  background: var(--line-2);
+}
+
+/* SET IN CAPITALS, with the tracking that always comes with them here: the
+   island's title and every console heading are drawn the same way, so a screen
+   name reads as a heading for the window under it rather than as one more
+   button in a row of them. The letter-spacing is not decoration -- capitals set
+   at body tracking close up into a block -- and it is why the padding is a
+   little tighter than a sentence-case tab would want, since the space is now
+   inside the word.
+
+   Drawn here rather than shouted in `SCREEN_LABELS`, because casing is a way of
+   drawing a word: the table holds the screen's name, and a tooltip or a menu
+   reusing it should not have to shout. */
+.screen-tab {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-family: var(--font-display);
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+
+.screen-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+/* Where you ARE, which is a different claim from a switch being on -- so it is
+   lit the way a tab is lit rather than the way `.nav-group-active` lights an
+   engaged tool: a bar along the bottom edge, sitting exactly on the border the
+   bar draws, reaching down toward the screen it names. Weighted as well as
+   coloured, so the current tab survives a theme whose accent is close to its
+   text colour. */
+.screen-tab[aria-current] {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.screen-tab[aria-current]:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* A readout of a document this screen does not draw. Dimmed with the controls
+   beside it rather than removed, so the bar keeps its shape between screens --
+   see `SCREEN_HAS_DOCUMENT`. */
+.stats-idle {
+  opacity: 0.4;
 }
 
 .brand-mark {
@@ -539,9 +648,27 @@ body {
   transition: color 0.12s, background 0.12s;
 }
 
-.nav-btn:hover {
+.nav-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
+}
+
+/* A TOOL WITH NOTHING TO ACT ON -- Mirror with no solid selected, or Import,
+   Export and Snap on a screen that draws no document.
+
+   The dim goes on the GROUP rather than on the button, and that is the whole of
+   why this rule exists twice over. `.nav-group-active` paints an accent fill, an
+   accent border and a lit edge onto the group; fading only the button inside it
+   left a disabled Snap wearing full-strength accent, which made the one control
+   in the bar that could not be pressed the brightest thing in it. Dimming the
+   container takes the tint, the edge and the label together, and it saves the
+   parts inside from each carrying an opacity that would multiply. */
+.nav-group:has(> .nav-btn:disabled) {
+  opacity: 0.4;
+}
+
+.nav-btn:disabled {
+  cursor: default;
 }
 
 .nav-group-active .nav-btn {
@@ -578,9 +705,14 @@ body {
   transition: transform 0.14s;
 }
 
-.nav-caret:hover {
+.nav-caret:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
+}
+
+/* The group above carries the dim; this only has to stop answering. */
+.nav-caret:disabled {
+  cursor: default;
 }
 
 .nav-caret[aria-expanded="true"] svg {
@@ -590,6 +722,90 @@ body {
 .nav-group-active .nav-caret {
   border-left-color: color-mix(in srgb, var(--accent) 40%, transparent);
   color: color-mix(in srgb, var(--accent) 75%, var(--muted));
+}
+
+/* --- the mirror's axis picker --- */
+
+/* Three letters sharing the mirror button's outline, in the slot the caret
+   occupies on every other tool.
+
+   INSIDE the group on purpose. They are not a setting the tool consults, they
+   ARE the tool -- a mirror means nothing until an axis is named -- and a picker
+   parked beside the button would read as something a second tool might also
+   use. The same left border the caret carries is what separates them from the
+   label, so the two idioms line up wherever they sit in the same column.
+
+   `margin-left: auto` pushes them to the trailing edge, because in the island
+   every button stretches to the full width and the letters would otherwise
+   float in the middle of it. */
+.nav-axes {
+  display: flex;
+  align-items: stretch;
+  margin-left: auto;
+  border-left: 1px solid var(--border);
+}
+
+/* Sized by the letter, which is one mono character: a square-ish target that
+   stays a square when the island is dragged narrower, rather than three
+   buttons that shrink until the letters touch. */
+.nav-axis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 3px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  /* Its own axis colour, held back to a readable weight against the panel so
+     three lit letters in a row do not shout louder than the tool they belong
+     to. The full value comes out when one is chosen. */
+  color: color-mix(in srgb, var(--axis) 62%, var(--muted));
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.nav-axis:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--axis) 18%, transparent);
+  color: var(--axis);
+}
+
+/* The chosen one, which is what the wide button beside it would use. Lit the
+   way an engaged tool is lit -- a tint plus a bar down its own edge -- except
+   that the colour is the AXIS rather than the accent, because that is the whole
+   information here: red means X, and the gizmo's red arrow means the same
+   thing. See `AXIS_COLORS`.
+
+   The bar sits along the BOTTOM rather than the leading edge, which is where
+   `.nav-group-active` puts its own. Down the left it would be a fourth vertical
+   line in a row that already has two, and it would read as a divider between
+   the letters instead of as a mark on one of them. */
+.nav-axis[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--axis) 22%, transparent);
+  color: var(--axis);
+  box-shadow: inset 0 -2px 0 var(--axis);
+}
+
+.nav-axis:disabled {
+  cursor: default;
+}
+
+/* The one variable each button carries. Written as a local `--axis` rather than
+   spelling the token into every rule above, so the states -- rest, hover,
+   chosen -- are stated once and the colour is stated once. */
+.nav-axis-x {
+  --axis: var(--axis-x);
+}
+
+.nav-axis-y {
+  --axis: var(--axis-y);
+}
+
+.nav-axis-z {
+  --axis: var(--axis-z);
 }
 
 /* --- tool panels --- */
@@ -3122,6 +3338,308 @@ body {
 .tool-island-bottom .nav-flyout {
   top: auto;
   bottom: calc(100% + 7px);
+}
+
+/* --- the lathe ---------------------------------------------------------------
+
+   The Lathe screen's viewport: a lump of clay seen from the side, drawn as
+   one SVG and not by a renderer at all.
+
+   WHY IT CAN BE FLAT is in `LatheViewport.tsx`, and it is worth the sentence
+   here too because it is what these rules are allowed to assume: a piece turned
+   on a lathe is the same all the way round, so a side view of it hides nothing
+   and there is no angle it looks different from. What is drawn is therefore a
+   SECTION -- the wall, mirrored about the axis it turns on -- and every value
+   below is a fact about a section rather than a shading trick standing in for
+   one.
+
+   EVERY COLOUR IS A TOKEN, as everywhere else, and that matters more here than
+   in the console: this is a whole viewport, so a literal grey would be a
+   theme-shaped hole the size of the window. The one place the scene's own
+   palette had to be mirrored into a second file is three.js materials, which
+   cannot read a custom property -- see `sceneColors.ts`. Nothing on this screen
+   is a material, so nothing on this screen needs mirroring, and a theme reaches
+   it for free. */
+
+/* The ground the piece stands on: the same near-black the scene's own background
+   is painted, so the two screens read as one app rather than as a viewport and
+   a document. Blank, deliberately -- no grid, no horizon, nothing to count
+   against. The modelling screen's ground is a measuring instrument; this one is
+   a backdrop for a single object, and every line drawn on it would be a line
+   competing with the silhouette that is the whole point. */
+.lathe {
+  background: var(--bg);
+}
+
+/* The tool is in hand: aim it. The same crosshair the modelling brushes take,
+   and on the wrapper rather than the svg so it also covers the chrome the
+   pointer crosses on the way. */
+.lathe-armed {
+  cursor: crosshair;
+}
+
+.lathe-view {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The lathe takes press-and-hold as its whole gesture, so the browser must
+     not read one as a scroll, a pinch or a text selection instead. */
+  touch-action: none;
+  user-select: none;
+}
+
+/* The clay itself.
+
+   --surface-4, the top of the surface ramp, over a ground painted at the bottom
+   of it: the piece is the thing standing furthest off the app's floor, which is
+   exactly what the ramp is ordered by. It is also the fill a pressed control
+   takes, so the piece reads as the same MATERIAL as the rest of the app rather
+   than as a colour invented for it.
+
+   The edge is --line-4, the ramp's brightest, for the reason the tool island's
+   is one step up from a console panel's: this outline has to hold against a
+   whole window of ground rather than against a neighbouring panel, and it is
+   the line the eye actually follows while shaping. */
+.lathe-clay {
+  fill: var(--surface-4);
+  stroke: var(--line-4);
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+}
+
+/* The rings a hand leaves in a turning piece. Faint on purpose: they say "turned"
+   and they show the curve from the inside, and the moment they compete with the
+   silhouette they are decoration that has taken over. */
+.lathe-rings line {
+  stroke: var(--line-3);
+  stroke-width: 1px;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+
+/* The axis the piece is turned about: not material, so it is dashed, and drawn in
+   the faintest line the ramp has that still reads over the clay. */
+.lathe-axis {
+  stroke: var(--line-2);
+  stroke-width: 1px;
+  stroke-dasharray: 3 5;
+}
+
+/* Where the lump started, once the piece has left it. Dashed for the reason the
+   axis is -- it is a reference rather than a thing -- and in the brightest line
+   token, because it is drawn both over the ground and over the clay and has to
+   be legible against either. */
+.lathe-stock {
+  fill: none;
+  stroke: var(--line-4);
+  stroke-width: 1px;
+  stroke-dasharray: 5 4;
+  opacity: 0.7;
+}
+
+/* The faceplate, edge-on. One step up from the ground and one below the clay:
+   it is a surface the piece stands on, so it sits between them on the same ramp
+   that orders everything else. */
+.lathe-plate {
+  fill: var(--surface-2);
+  stroke: var(--line-2);
+  stroke-width: 1px;
+}
+
+/* The tool, at the pointer: how wide it is, and which way it works.
+
+   THE COLOUR IS THE DIRECTION, and it is the app's own pair rather than a new
+   one -- --in is what every subtraction in this app wears, from an inward
+   feature in the Inspector to the eraser, and --out is material added. A user
+   who has learnt that red takes away and green puts on in the modelling screen
+   has already learnt this screen's two tools.
+
+   `color` on the group and `currentColor` on the marks inside, so the pair of
+   rules that follow set one property each. */
+.lathe-tool {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25px;
+}
+
+.lathe-tool circle {
+  opacity: 0.85;
+}
+
+/* The line the wall is being called to: solid, short, at the pointer itself.
+   The circle says how much wall moves; this says where it is going. */
+.lathe-tool-mark {
+  stroke-width: 2px;
+  stroke-linecap: round;
+}
+
+.lathe-tool-push {
+  color: var(--in);
+}
+
+.lathe-tool-pull {
+  color: var(--out);
+}
+
+/* What is on the lathe, in the corner the modelling screen keeps for what is
+   selected -- this screen has one thing and it is always selected.
+
+   Typed like every other readout in the app: mono, tabular figures, muted, so a
+   number that changes under the pointer does not shuffle its own width. Inert,
+   because it is a statement rather than a control. */
+.lathe-readout {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 20;
+  display: flex;
+  gap: 7px;
+  padding: 6px 10px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
+.lathe-readout-sep {
+  color: var(--line-4);
+}
+
+/* The hint that says how to start, lifted clear of the faceplate.
+
+   The modelling screen puts it at the bottom of the scene because the bottom of
+   the scene is empty ground. Here the bottom of the drawing is the plate the
+   lump stands on, and a sentence lying across it read as a label for the plate
+   rather than as a note to the reader. It sits above the piece's own base and
+   below everything else. */
+.lathe .viewport-hint {
+  bottom: 62px;
+}
+
+/* THE LUMP, in the bottom-left corner: how tall the stock stands and how wide
+   it is.
+
+   The same corner, surface and size of thing as the modelling screen's brush
+   scope panel, and deliberately so -- one small panel of settings over an
+   otherwise empty stretch of viewport is an idiom this app already has. What it
+   does not borrow is the tint: that panel is coloured by which brush is armed,
+   and this one describes the piece rather than a tool, so it is the app's plain
+   floating surface. It sits at the same 12px inset the scope panel does, so the
+   two corners match across screens.
+
+   A WIDTH RATHER THAN A FIT. The fields inside are sliders with a number box
+   beside them, and a panel that sized itself to its contents would be a
+   different width per unit -- "1.50 cm" and "15.0 mm" are not the same number
+   of characters, and the corner would breathe every time the unit changed. */
+.stock-panel {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 22;
+  width: 232px;
+  padding: 8px 10px 10px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--lift-1);
+}
+
+/* Shut, it is the strip and nothing else, so the corner goes back to being
+   scene. The width goes with it: a strip as wide as the open panel would be a
+   panel that had not really closed. */
+.stock-panel-shut {
+  width: auto;
+  padding-bottom: 8px;
+}
+
+/* Typed like a console section heading and the tool island's title, because
+   that is what it is: the name of the thing under it. */
+.stock-head {
+  display: flex;
+  align-items: center;
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stock-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+/* The way out of a piece that has gone wrong. Full width, because it is the
+   panel's one action and a button narrower than the fields above it would read
+   as an afterthought rather than as the thing you came here for. */
+.stock-fresh {
+  width: 100%;
+  margin-top: 5px;
+}
+
+.stock-note {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: var(--t-label);
+  line-height: 1.45;
+}
+
+/* THE WAY OFF THE LATHE, in the top-right corner: the piece as a solid, on the
+   clipboard.
+
+   The corner the modelling screen gives its compass, which this screen has no
+   use for -- there is nothing to orbit. That makes it the free corner furthest
+   from the tools, which is where a button pressed at the END of a sitting
+   belongs: nowhere near the hand that is shaping, and nowhere near the panel
+   that sets the stock.
+
+   Right-aligned as a column, so the receipt under the button hangs from the
+   button's own edge rather than from the corner -- the two read as one control
+   with something to say rather than as a button and a stray line of text. */
+.copy-piece {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* Lifted off the scene the way every floating surface here is, and wearing the
+   floating edge rather than the console's: it has a whole viewport behind it
+   rather than a panel. */
+.copy-piece-btn {
+  background: var(--surface-float);
+  border-color: var(--line-2);
+  box-shadow: var(--lift-1);
+}
+
+/* What went on the shelf. Mono and tabular, like every other readout in the
+   app, and inert -- it is a statement, not a control. Capped so a long one
+   wraps rather than pushing the corner across the viewport. */
+.copy-piece-note {
+  max-width: 210px;
+  margin: 0;
+  padding: 5px 9px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  text-align: right;
+  pointer-events: none;
 }
 
 /* --- axis compass --- */

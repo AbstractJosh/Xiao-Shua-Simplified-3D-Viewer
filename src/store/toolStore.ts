@@ -5,9 +5,12 @@ import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
 import { fromDisplay } from '../units'
 import { DEFAULT_HELP_SECTION } from '../helpTopics'
 import type { HelpSectionId } from '../helpTopics'
+import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT } from '../screens'
+import type { ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
 import type { Unit, UnitMode } from '../units'
+import type { Axis } from '../geometry/dimensions'
 import type { Vec3 } from '../geometry/types'
 
 /**
@@ -37,17 +40,27 @@ export type NavPanel =
   | 'erode'
   | 'sculpt'
   | 'help'
+  // The Lathe screen's two tools. One field still, and still for the same
+  // reason -- a panel is a panel wherever its button is, and two of them open
+  // at once would overlap whichever viewport is up. The lathe's STOCK is not in
+  // here: it is a corner panel standing open over the piece rather than a lid
+  // on a button, so it has nothing to take turns with. See `StockPanel`.
+  | 'push'
+  | 'pull'
   | null
 
 /**
  * The panels that hang off buttons INSIDE the tool island, which go off screen
  * with it when it is collapsed.
  *
- * Three, and it is the CONTAINER that decides which: the ruler list and the two
- * brushes' numbers are the panels that hang off buttons over the scene. The
- * unit selector went to the bar first and `snap` followed it, and neither
- * collapses with anything now -- the bar is always there. (The units menu has
- * since become one group inside `settings`, which is a bar panel too.)
+ * Five, and it is the CONTAINER that decides which rather than the screen: the
+ * ruler list, the two modelling brushes' numbers and the two lathe tools' are
+ * the panels that hang off buttons over a viewport. Only one island is ever
+ * mounted, so the modelling three and the lathe two can share this list
+ * without ever being on screen together. The unit selector went to the bar
+ * first and `snap` followed it, and neither collapses with anything now -- the
+ * bar is always there. (The units menu has since become one group inside
+ * `settings`, which is a bar panel too, and so is `clay`.)
  *
  * A panel left off this list is one the island cannot shut: its button goes off
  * screen with the body and `openPanel` still names it, so the panel springs
@@ -55,7 +68,7 @@ export type NavPanel =
  * exactly what the erode panel did between arriving in the island and being
  * added here.
  */
-export const ISLAND_PANELS: NavPanel[] = ['ruler', 'erode', 'sculpt']
+export const ISLAND_PANELS: NavPanel[] = ['ruler', 'erode', 'sculpt', 'push', 'pull']
 
 /** Every bound in this file is applied with it, so a value written by a panel
  *  and one dragged by a gizmo cannot disagree about the limit. */
@@ -101,6 +114,52 @@ export { BRUSH_SMOOTH_MIN }
  * a blade in it, and neither takes the press off a solid.
  */
 export type BrushTool = 'torch' | 'sculpt' | null
+
+/**
+ * Which tool is against the piece, if either. The Lathe screen's whole toolset.
+ *
+ * ONE FIELD, for the reason `BrushTool` is one: push and pull claim the same
+ * gesture -- a left press on the clay, held -- so "both armed" is a state
+ * neither could act on. Arming one is choosing against the other, and nothing
+ * has to enforce it.
+ *
+ * A SEPARATE field from `BrushTool` rather than two more values on it, though
+ * the two pairs are cousins. They are aimed at different things on different
+ * screens: `brushTool` is pointed at a solid in a document Lathe does not
+ * draw, and this is pointed at a lump of clay the modelling screen has never
+ * heard of. Folding them together would let a screen arm a tool that its own
+ * viewport cannot use, and every reader of either field would have to ask which
+ * screen it was on before trusting it.
+ */
+export type LatheTool = 'push' | 'pull' | null
+
+/**
+ * What either tool may be sized to, and where the two of them start.
+ *
+ * The BOUNDS are the modelling brushes', re-used deliberately: how wide a tool
+ * held against a surface can get is a fact about this app's world -- a
+ * millimetre at the fine end, a quarter of the envelope at the coarse -- and
+ * not about which screen the surface is on.
+ *
+ * The DEFAULT is this screen's own. A piece is turned 15 cm tall, and a tool a
+ * third of a span wide -- the modelling default -- would cover a fifth of it in
+ * one dab: every stroke would be a whole-piece gesture and there would be no way
+ * to put a lip on anything. Two and a half centimetres is a thumb, which is
+ * what the hand doing this is meant to be.
+ */
+export const DEFAULT_LATHE_REACH = 0.25
+
+/**
+ * How hard a tool is leant on: how fast the wall travels toward the pointer.
+ *
+ * Higher than the modelling brushes' half force, because the two dials are
+ * measuring different things. Heat is how deep ONE dab bites, and the wall
+ * under a tool is not being bitten -- it is being carried to where the pointer
+ * is holding, and cannot pass it however long you hold. See `mold`. So the dial
+ * is a speed rather than a depth, and the speed people reach for first is one
+ * where the clay plainly follows the hand.
+ */
+export const DEFAULT_LATHE_STRENGTH = 0.6
 
 /**
  * What either brush may be sized to.
@@ -455,6 +514,16 @@ function makeRuler(frame?: RulerFrame): Ruler {
 export type TransformMode = 'move' | 'rotate' | 'scale'
 
 export type ToolState = {
+  /**
+   * Which SCREEN is on show: which viewport is mounted, and which console
+   * beside it. See `screens.ts`.
+   *
+   * Here rather than in the document for the reason everything else in this
+   * store is: it is where you are working, not what you have built. Switching
+   * to Lathe and back must not land in undo history, and a saved document
+   * cannot sensibly say which screen its author last had open.
+   */
+  screen: ScreenId
   /** Which gizmo the viewport is showing. See `TransformMode`. */
   transformMode: TransformMode
   /**
@@ -479,6 +548,20 @@ export type ToolState = {
    * different object, the way Snap and the display unit do.
    */
   gizmoHidden: boolean
+  /**
+   * Which of the object's own axes the Mirror tool flips along.
+   *
+   * A tool setting rather than a document field, and the same kind of thing the
+   * cut plane's angle is: a mirror is fired and finished, and what is left
+   * behind is a reflected solid rather than a solid that remembers being
+   * reflected. What this remembers is only which way you last aimed the tool,
+   * so pressing Mirror again does the same thing again.
+   *
+   * X to start with, which is the one anybody testing the tool reaches for
+   * first: it is the axis a person stands facing, and the flip is the one you
+   * can see happen without turning the camera.
+   */
+  mirrorAxis: Axis
   snap: boolean
   snapDistance: number
   /** Which unit lengths are SHOWN in. Purely a display choice: nothing in the
@@ -614,6 +697,45 @@ export type ToolState = {
   brushScope: BrushScope
 
   /**
+   * Which tool is against the piece on the Lathe screen, if either. See
+   * `LatheTool`.
+   */
+  latheTool: LatheTool
+  /**
+   * Whether the lathe's stock panel is open, or shut down to its title strip.
+   *
+   * Here rather than in the component for the reason `islandCollapsed` and
+   * `openPanel` are: the panel is driven headlessly in `ui-check`, and a
+   * `useState` inside it is state no check and no other part of the app can
+   * reach. Chrome, so like everything else in this store it stays out of undo.
+   *
+   * Open to start with. It is the only place the size of the lump can be set,
+   * and a control that has to be found before it can be used is one nobody
+   * finds -- the corner it stands in is empty scene otherwise.
+   */
+  stockOpen: boolean
+  /**
+   * How much of the wall each tool covers, and how hard each is leant on.
+   *
+   * ONE PAIR EACH, not one pair shared, which is the arrangement the two
+   * modelling brushes already keep and it earns its keep faster here. Push and
+   * pull are used at different scales in the same minute: a belly is pulled out
+   * with a wide tool and the neck above it is pushed in with a narrow one, and a
+   * user alternating between them would spend the sitting re-dialling a single
+   * size back and forth.
+   *
+   * The sizes are LENGTHS in scene units, pinned to a unit of their own the way
+   * the brushes' are -- see `erodeSizeUnit` for why a control that SETS a
+   * length cannot be read in `auto`.
+   */
+  pushReach: number
+  pushSizeUnit: Unit
+  pushStrength: number
+  pullReach: number
+  pullSizeUnit: Unit
+  pullStrength: number
+
+  /**
    * Whether the ruler tool is engaged, and so whether any ruler is drawn.
    *
    * A visibility switch rather than a mode: nothing about how the rest of the
@@ -628,6 +750,9 @@ export type ToolState = {
   /** The one being worked on, and which end holds the gizmo. */
   selectedRuler: RulerSelection
 
+  /** Show a different screen. Closes any open tool panel with it: every one of
+   *  them hangs off a bar or an island that is about to be replaced. */
+  setScreen: (screen: ScreenId) => void
   setTransformMode: (mode: TransformMode) => void
   /**
    * PRESS one of the picker's three buttons -- the whole of what a press means,
@@ -639,6 +764,9 @@ export type ToolState = {
    */
   pressTransformMode: (mode: TransformMode) => void
   setGizmoHidden: (hidden: boolean) => void
+  /** Aim the Mirror tool. Which axis it lands on is remembered; the flip
+   *  itself is a document edit and belongs to `docStore`. */
+  setMirrorAxis: (axis: Axis) => void
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
   setDisplayUnit: (unit: UnitMode) => void
@@ -673,6 +801,15 @@ export type ToolState = {
   setSculptStrength: (strength: number) => void
   setSculptSmooth: (smooth: number) => void
   setBrushScope: (scope: BrushScope) => void
+  /** Take up a tool, or put the one in your hand down. */
+  setLatheTool: (tool: LatheTool) => void
+  setStockOpen: (open: boolean) => void
+  setPushReach: (reach: number) => void
+  setPushSizeUnit: (unit: Unit) => void
+  setPushStrength: (strength: number) => void
+  setPullReach: (reach: number) => void
+  setPullSizeUnit: (unit: Unit) => void
+  setPullStrength: (strength: number) => void
   /**
    * Engage the tool, laying down a first ruler if there are none.
    *
@@ -693,6 +830,8 @@ export type ToolState = {
 }
 
 export const useTools = create<ToolState>((set) => ({
+  // The general editor, which is the only screen there was.
+  screen: DEFAULT_SCREEN,
   // Move: the arrows and the plane quads, which is the gizmo this app had
   // before there was a choice to make.
   transformMode: 'move',
@@ -700,6 +839,9 @@ export const useTools = create<ToolState>((set) => ({
   // oldest behaviour, and it is the right default: the gizmo is how most people
   // do most things, and the ones who want it gone now have a way to say so.
   gizmoHidden: false,
+  // See `mirrorAxis`: the axis you can watch a flip happen along without
+  // moving the camera.
+  mirrorAxis: 0,
   snap: true,
   snapDistance: DEFAULT_SNAP_DISTANCE,
   // `auto` by default: it reads correctly for a 2 mm boss and a 4 m wall alike,
@@ -745,6 +887,22 @@ export const useTools = create<ToolState>((set) => ({
   // a tool that silently did nothing until you had also selected the right
   // solid would read as broken.
   brushScope: 'all',
+
+  // Empty-handed. The lathe is a screen you arrive at to look at what is on it
+  // as often as to work, and a tool armed before it was picked up would take the
+  // first press meant for nothing in particular and put a dent in the piece.
+  latheTool: null,
+  stockOpen: true,
+  pushReach: DEFAULT_LATHE_REACH,
+  pullReach: DEFAULT_LATHE_REACH,
+  // Centimetres, as the brushes are, and for the same reason: a tool runs from a
+  // millimetre to over a metre, and under `auto` a single drag of the size
+  // slider renumbers itself twice while the hand never changes direction.
+  pushSizeUnit: 'cm',
+  pullSizeUnit: 'cm',
+  pushStrength: DEFAULT_LATHE_STRENGTH,
+  pullStrength: DEFAULT_LATHE_STRENGTH,
+
   // Empty, not seeded with a starter palette: every slot on screen is a colour
   // this user actually chose, so the grid is a history rather than a suggestion.
   recentColors: [],
@@ -754,6 +912,8 @@ export const useTools = create<ToolState>((set) => ({
   rulerActive: false,
   rulers: [],
   selectedRuler: null,
+
+  setScreen: (screen) => set({ screen, openPanel: null }),
 
   setTransformMode: (transformMode) => set({ transformMode }),
 
@@ -776,6 +936,8 @@ export const useTools = create<ToolState>((set) => ({
     }),
 
   setGizmoHidden: (gizmoHidden) => set({ gizmoHidden }),
+
+  setMirrorAxis: (mirrorAxis) => set({ mirrorAxis }),
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
@@ -856,6 +1018,15 @@ export const useTools = create<ToolState>((set) => ({
   setSculptSmooth: (smooth) => set({ sculptSmooth: clamp(smooth, BRUSH_SMOOTH_MIN, 1) }),
 
   setBrushScope: (scope) => set({ brushScope: scope }),
+
+  setLatheTool: (latheTool) => set({ latheTool }),
+  setStockOpen: (stockOpen) => set({ stockOpen }),
+  setPushReach: (reach) => set({ pushReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
+  setPushSizeUnit: (pushSizeUnit) => set({ pushSizeUnit }),
+  setPushStrength: (strength) => set({ pushStrength: clamp(strength, 0, 1) }),
+  setPullReach: (reach) => set({ pullReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
+  setPullSizeUnit: (pullSizeUnit) => set({ pullSizeUnit }),
+  setPullStrength: (strength) => set({ pullStrength: clamp(strength, 0, 1) }),
 
   // Arming lays a ruler down rather than arming an empty tool: a switch that
   // turns on and shows nothing reads as broken, and "give me a ruler" is the
@@ -944,6 +1115,39 @@ export const useTools = create<ToolState>((set) => ({
  * numbers a description of one brush rather than of a size, a force and a
  * smoothing that could belong to either.
  */
+/**
+ * Is a DOCUMENT on screen?
+ *
+ * A selector rather than `screen === 'modelling'` written into each of the six
+ * controls that need it. Every one of them -- Import, Export, Snap, undo, redo,
+ * the counts -- is asking the same question, which is not "which screen is
+ * this" but "is there a scene here for me to act on", and the day a third
+ * screen arrives it is answered for that one by the table in `screens.ts`
+ * rather than by six more clauses.
+ */
+export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.screen]
+
+/**
+ * The tool in the user's hand and its two dials, gathered.
+ *
+ * The lathe half of `armedBrush` below, and read the same way: with
+ * `getState()` at the moment of a press or a frame, never as a hook selector.
+ * It builds a fresh object every call, so subscribing a component to it would
+ * hand React a new snapshot on every render and never settle. Hands back `null`
+ * when the hands are empty, so a caller asks one question rather than three.
+ */
+export type ArmedLatheTool = { tool: 'push' | 'pull'; reach: number; strength: number }
+
+export const armedLatheTool = (s: ToolState): ArmedLatheTool | null => {
+  if (s.latheTool === 'push') {
+    return { tool: 'push', reach: s.pushReach, strength: s.pushStrength }
+  }
+  if (s.latheTool === 'pull') {
+    return { tool: 'pull', reach: s.pullReach, strength: s.pullStrength }
+  }
+  return null
+}
+
 export type ArmedBrush = {
   radius: number
   /** How far one dab moves the surface, 0..1: Heat, or Strength. */

@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import {
   CutActions,
   CutTool,
   ErodeTool,
+  MirrorTool,
   MoveTool,
   RotateTool,
   RulerTool,
@@ -24,35 +25,23 @@ import { dockIsland, useTools } from '../store/toolStore'
 const GRAB_SLOP = 4
 
 /**
- * The tools you work *with*, as an island floating over the scene: the three
- * that decide which gizmo is up, Ruler, Cut, and the two actions an armed cut
- * plane brings with it.
+ * THE ISLAND ITSELF, with nothing in it: the surface, the title strip that
+ * drags it, the corner it docks to and the caret that shuts it.
  *
- * They were in the bar across the top. Every one of them is aimed at the SCENE
- * -- a gizmo is dragged on the solid it belongs to, a ruler is laid beside the
- * thing it measures, a cut is fired at a plane standing in the middle of the
- * viewport -- so reaching them meant the hand at the top edge of the window and
- * the eye on the model, and the panel hanging off the button came down over the
- * thing it was aimed at. Over the scene, the hand and the eye are in one place.
+ * Split out from the modelling toolset the day the wheel needed one too. What
+ * an island IS -- a thing you throw at a corner of a viewport and it sticks --
+ * has nothing to do with which buttons are inside it, and the alternative was a
+ * second component carrying a copy of the drag, the dock, the resize observer
+ * and the collapse. Two copies of that is two islands that behave differently
+ * within a week.
  *
- * What is NOT here is the test of that: Snap and Units went back to the bar,
- * because neither is aimed at anything. One is a rule every drag obeys and the
- * other is what all the numbers are counted in.
- *
- * It opens at the top-left, the corner nothing else claims: the compass has the
- * top-right, the selection panels the bottom-right, the drag hint the bottom
- * centre. That is a default rather than a fixture -- it is dragged by its title
- * strip, and it SNAPS to the edges and corners it is dropped near, so "out of
- * the way" is one rough throw rather than a pixel hunt. Where it ends up is
- * kept as an offset from the near edge, so a docked island stays docked when
- * the window resizes; see `IslandPlacement`.
- *
- * The buttons inside are the bar's own components, unchanged -- one definition
- * of what a tool is, rendered somewhere else. What makes them a column, and
- * what turns the panels around when the island is over on the right, is CSS
- * scoped to `.tool-island`.
+ * WHAT IT SHARES ACROSS SCREENS, deliberately: where it sits and whether it is
+ * shut. Only one viewport is ever mounted, so there is only ever one island on
+ * screen -- and somebody who has thrown it into the bottom-left corner because
+ * that is where their hand likes it means that about islands, not about the
+ * modelling screen. See `islandPlacement`.
  */
-export function ToolIsland() {
+export function IslandShell({ children }: { children: ReactNode }) {
   const collapsed = useTools((s) => s.islandCollapsed)
   const setCollapsed = useTools((s) => s.setIslandCollapsed)
   const placement = useTools((s) => s.islandPlacement)
@@ -223,42 +212,86 @@ export function ToolIsland() {
         </span>
       </div>
 
-      {!collapsed && (
-        <div className="island-body">
-          {/* What the GIZMO is, first, and always one of the three: they
-              decide what every drag on a handle does, which makes them the
-              closest thing in the app to a mode. Move leads because it is
-              where the gizmo rests -- see `ModeTool`. */}
-          <MoveTool />
-          <RotateTool />
-          <ScaleTool />
-          {/* The two groups above and below are different kinds of control --
-              one decides what a drag on a HANDLE does, the other puts something
-              new in the scene -- and stacked in one column at one gap they read
-              as a list of five unrelated switches. Inert and hidden from the
-              reader: it separates nothing that is not already two groups in
-              the markup. */}
-          <div className="island-rule" aria-hidden />
-          {/* Then the tools that put something new in the scene. Snap and
-              Units are both left for the bar: neither draws anything or
-              changes what a handle does -- one is a rule every drag obeys, the
-              other is what the numbers are counted in -- so they belong with
-              the document-wide controls rather than over the model. */}
-          <RulerTool />
-          <CutTool />
-          {/* The two brushes, last and together. Beside Cut because the torch
-              is the third tool that takes material away, and beside each other
-              because they are one brush with a sign in front of it -- a user
-              who has found either has found the pair, and swapping between
-              them is the commonest thing anyone does with them. Torch first,
-              since it is the one that was here already. */}
-          <ErodeTool />
-          <SculptTool />
-          {/* Only on screen while the plane is armed, so the island is no
-              taller than its five switches for anyone not cutting. */}
-          <CutActions />
-        </div>
-      )}
+      {!collapsed && <div className="island-body">{children}</div>}
     </div>
+  )
+}
+
+/**
+ * The tools you work *with*, as an island floating over the scene: the three
+ * that decide which gizmo is up, the mirror that flips a solid outright, Ruler,
+ * Cut, the two brushes, and the two actions an armed cut plane brings with it.
+ *
+ * They were in the bar across the top. Every one of them is aimed at the SCENE
+ * -- a gizmo is dragged on the solid it belongs to, a ruler is laid beside the
+ * thing it measures, a cut is fired at a plane standing in the middle of the
+ * viewport -- so reaching them meant the hand at the top edge of the window and
+ * the eye on the model, and the panel hanging off the button came down over the
+ * thing it was aimed at. Over the scene, the hand and the eye are in one place.
+ *
+ * What is NOT here is the test of that: Snap and Units went back to the bar,
+ * because neither is aimed at anything. One is a rule every drag obeys and the
+ * other is what all the numbers are counted in.
+ *
+ * It opens at the top-left, the corner nothing else claims: the compass has the
+ * top-right, the selection panels the bottom-right, the drag hint the bottom
+ * centre. That is a default rather than a fixture -- it is dragged by its title
+ * strip, and it SNAPS to the edges and corners it is dropped near, so "out of
+ * the way" is one rough throw rather than a pixel hunt. Where it ends up is
+ * kept as an offset from the near edge, so a docked island stays docked when
+ * the window resizes; see `IslandPlacement`.
+ *
+ * WHAT IS IN IT is this component's whole contribution: the island it stands in
+ * is `IslandShell`, which the Lathe screen throws around its own two tools.
+ * The buttons are the bar's own components, unchanged -- one definition of what
+ * a tool is, rendered somewhere else. What makes them a column, and what turns
+ * the panels around when the island is over on the right, is CSS scoped to
+ * `.tool-island`.
+ */
+export function ToolIsland() {
+  return (
+    <IslandShell>
+      {/* What the GIZMO is, first, and always one of the three: they
+          decide what every drag on a handle does, which makes them the
+          closest thing in the app to a mode. Move leads because it is
+          where the gizmo rests -- see `ModeTool`. */}
+      <MoveTool />
+      <RotateTool />
+      <ScaleTool />
+      {/* And Mirror with them, although it is the odd one: it FIRES rather
+          than arming a gizmo, and nothing about the scene looks different
+          a moment later except the solid it flipped. It belongs here all
+          the same, because what these four have in common is their target
+          -- each acts on the selected object as a whole, where everything
+          below the rule is aimed at a surface or puts something new in the
+          scene. Last of the four, since it is the one you reach for
+          occasionally rather than constantly. */}
+      <MirrorTool />
+      {/* The two groups above and below are different kinds of control --
+          one acts on the object you have selected, the other puts something
+          new in the scene -- and stacked in one column at one gap they read
+          as a list of unrelated switches. Inert and hidden from the
+          reader: it separates nothing that is not already two groups in
+          the markup. */}
+      <div className="island-rule" aria-hidden />
+      {/* Then the tools that put something new in the scene. Snap and
+          Units are both left for the bar: neither draws anything or
+          changes what a handle does -- one is a rule every drag obeys, the
+          other is what the numbers are counted in -- so they belong with
+          the document-wide controls rather than over the model. */}
+      <RulerTool />
+      <CutTool />
+      {/* The two brushes, last and together. Beside Cut because the torch
+          is the third tool that takes material away, and beside each other
+          because they are one brush with a sign in front of it -- a user
+          who has found either has found the pair, and swapping between
+          them is the commonest thing anyone does with them. Torch first,
+          since it is the one that was here already. */}
+      <ErodeTool />
+      <SculptTool />
+      {/* Only on screen while the plane is armed, so the island is no
+          taller than its own switches for anyone not cutting. */}
+      <CutActions />
+    </IslandShell>
   )
 }

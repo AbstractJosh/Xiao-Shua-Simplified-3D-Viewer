@@ -159,8 +159,105 @@ export function meshGeometry(id: string, size: Vec3): BufferGeometry {
   return copy
 }
 
+/**
+ * Reflections already on the shelf, keyed `sourceId:axis`.
+ *
+ * Not an optimisation. Mirroring a model twice along the same axis has to hand
+ * back the model, not a third copy of it that merely looks like one -- a user
+ * flipping a part to compare the two ways round would otherwise leave a new
+ * entry on the shelf on every press, and undo would rewind past tickets that
+ * stayed registered forever. Both directions are recorded, so the second flip
+ * finds the original by the same lookup the first one filled in.
+ */
+const reflections = new Map<string, string>()
+
+/**
+ * The model reflected in one of its own axis planes, as a ticket for the shelf.
+ *
+ * The one primitive a mirror cannot leave alone. Every other base here is a
+ * handful of numbers describing something symmetric enough that the reflection
+ * can be absorbed by choosing which plane to use -- see `mirrorNormal` -- but a
+ * model off a file is whatever it is, so the triangles themselves are flipped.
+ *
+ * WINDING IS REVERSED with the coordinate, and that is not optional: a
+ * reflection turns every triangle inside out, and a solid whose faces all point
+ * inward is one the boolean will happily subtract the whole world from. The
+ * normals are recomputed rather than reflected for the same reason -- they have
+ * to agree with the winding that is now there.
+ *
+ * The entry stays normalised the way `registerMesh` left it: reflecting a
+ * centred model in a plane through its own centre leaves it centred, and leaves
+ * its bounding box exactly the unit box it was. So `size` and `natural` carry
+ * straight over and the base keeps every dimension it had.
+ */
+export function mirrorMesh(id: string, axis: 0 | 1 | 2): string {
+  const key = `${id}:${axis}`
+  const known = reflections.get(key)
+  if (known !== undefined) return known
+
+  const source = entries.get(id)
+  // A dangling ticket is a bug, and it is `meshGeometry` that says so out loud
+  // once per evaluation. Carrying it through unchanged keeps the mirror from
+  // being the place that reports it.
+  if (!source) return id
+
+  const geometry = source.geometry.clone()
+  const scale: Vec3 = [1, 1, 1]
+  scale[axis] = -1
+  geometry.applyMatrix4(new Matrix4().makeScale(scale[0], scale[1], scale[2]))
+  flipWinding(geometry)
+  geometry.computeVertexNormals()
+
+  counter += 1
+  const mirroredId = `m${counter}`
+  // `natural` is copied rather than shared: a `Vec3` is a mutable array, and
+  // two entries pointing at one would alias the day anything reached past a
+  // spread to write into it.
+  entries.set(mirroredId, {
+    ...source,
+    id: mirroredId,
+    geometry,
+    natural: [...source.natural] as Vec3,
+  })
+  reflections.set(key, mirroredId)
+  reflections.set(`${mirroredId}:${axis}`, id)
+  return mirroredId
+}
+
+/** Swap two vertices of every triangle, so the faces point outward again. */
+function flipWinding(geometry: BufferGeometry): void {
+  const index = geometry.getIndex()
+  if (index) {
+    const a = index.array
+    for (let i = 0; i + 2 < a.length; i += 3) {
+      const swap = a[i + 1]
+      a[i + 1] = a[i + 2]
+      a[i + 2] = swap
+    }
+    index.needsUpdate = true
+    return
+  }
+
+  // Non-indexed: the triangle IS three consecutive vertices, so the swap moves
+  // whole positions rather than pointers to them.
+  for (const name of Object.keys(geometry.attributes)) {
+    const attr = geometry.getAttribute(name) as BufferAttribute
+    const size = attr.itemSize
+    const a = attr.array
+    for (let i = 0; i + 3 * size <= a.length; i += 3 * size) {
+      for (let k = 0; k < size; k++) {
+        const swap = a[i + size + k]
+        a[i + size + k] = a[i + 2 * size + k]
+        a[i + 2 * size + k] = swap
+      }
+    }
+    attr.needsUpdate = true
+  }
+}
+
 /** For the check suite, which builds a fresh shelf per run. */
 export function forgetMeshes(): void {
   for (const entry of entries.values()) entry.geometry.dispose()
   entries.clear()
+  reflections.clear()
 }

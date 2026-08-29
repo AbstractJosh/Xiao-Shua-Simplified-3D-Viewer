@@ -36,7 +36,7 @@ import type { TransformMode } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
 import { BrushScopePanel } from './BrushScopePanel'
 import { brushAllows } from './brushTarget'
-import { GuideGrid } from './GuideGrid'
+import { STAGE_CAMERA, STAGE_MAX_DISTANCE, STAGE_MIN_DISTANCE, Stage } from './Stage'
 import { RulerReadouts, Rulers } from './Rulers'
 import type { ObjectHit } from './picking'
 import {
@@ -113,25 +113,6 @@ type DragOf<K extends Drag['kind']> = Extract<Drag, { kind: K }>
  *  Both now read the one definition in `dimensions.ts`. */
 const FACE_OFFSET_LIMIT = MAX_FACE_OFFSET
 
-/**
- * The grid sits a hair BELOW y = 0 even though objects rest exactly on it:
- * coplanar with a box's bottom face it z-fights across the whole footprint.
- */
-const GRID_Y = -0.002
-
-/**
- * The two grids draw before every other transparent thing in the scene, coarse
- * first and fine over it.
- *
- * Stated rather than left to the sort, which is the whole of what stopped the
- * grid shimmering: they are centred on the same point half a thousandth of a
- * unit apart, so three had nothing to separate them by and the order flipped as
- * the camera came round. Negative, because the ground goes under the gizmo, the
- * rulers, the cut plane and the snap marker without any of them having to say
- * so. See `GuideGrid`.
- */
-const GRID_ORDER_COARSE = -2
-const GRID_ORDER_FINE = -1
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
 
@@ -1483,74 +1464,12 @@ function Scene({
   meshes: RefObject<Map<string, Mesh>>
 }) {
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
-  const scene = useSceneColors()
 
   return (
     <>
-      <color attach="background" args={[scene.bg]} />
-      <ambientLight intensity={0.55} />
-      <directionalLight position={[6, 9, 5]} intensity={2.1} />
-      {/* The cool fill opposite the key, and the one place a theme's hue reaches
-          the solids themselves -- everything else it repaints is chrome. */}
-      <directionalLight position={[-6, 3, -5]} intensity={0.7} color={scene.fillLight} />
-
-      {/* Grid colours are lifted well clear of whatever ground the theme paints:
-          at the original values the ground read as empty space. Major lines
-          carry a cast that separates them from the warm-grey solids, and the
-          fade is gentler so the plane still reads out toward the horizon.
-
-          Both pairs come from `sceneColors` per theme rather than being tinted
-          from one set: "clear of the background" means lighter than it on a dark
-          theme and darker than it on a light one, which no single adjustment
-          gives you.
-
-          TWO grids, each divided ten ways, because one cannot serve a world
-          that runs from a millimetre to five metres. A single grid fine enough
-          to count centimetres against turns to moire the moment you pull back
-          far enough to see a whole wall; one coarse enough to survive that has
-          nothing to say when you are shaping a 5 mm boss.
-
-          So the near grid rules centimetres into decimetres and fades out at
-          about a metre and a half, and the far one takes over ruling
-          decimetres into metres. Zoom in and the ground gets finer; zoom out
-          and it gets coarser, and at every zoom a major square is a round
-          number you can count in.
-
-          The fine grid sits a hair ABOVE the coarse one, and draws after it,
-          so that where their lines coincide -- every 1 unit, which is a section
-          of one and a cell of the other -- the finer of the two wins outright.
-          The ORDER is what decides that now rather than the height: neither
-          grid writes depth any more, because two nearly coplanar depth-writing
-          grids is exactly the fight that had the ground shimmering through
-          every camera move. See `GuideGrid` for the whole of it. */}
-      <GuideGrid
-        renderOrder={GRID_ORDER_FINE}
-        position={[0, GRID_Y + 0.0005, 0]}
-        args={[24, 24]}
-        cellSize={0.1}
-        cellThickness={0.6}
-        cellColor={scene.gridCell}
-        sectionSize={1}
-        sectionThickness={1.2}
-        sectionColor={scene.gridSection}
-        fadeDistance={14}
-        fadeStrength={1}
-        infiniteGrid
-      />
-      <GuideGrid
-        renderOrder={GRID_ORDER_COARSE}
-        position={[0, GRID_Y, 0]}
-        args={[24, 24]}
-        cellSize={1}
-        cellThickness={0.6}
-        cellColor={scene.gridCell}
-        sectionSize={10}
-        sectionThickness={1.4}
-        sectionColor={scene.gridSection}
-        fadeDistance={300}
-        fadeStrength={0.8}
-        infiniteGrid
-      />
+      {/* The room itself -- background, lights, ground -- shared with every
+          other screen's viewport. See `Stage`. */}
+      <Stage />
 
       <SceneObjects meshes={meshes} controlsRef={controlsRef} />
       <PlacingPreview />
@@ -1574,11 +1493,8 @@ function Scene({
         enabled={!dragging}
         enableDamping
         dampingFactor={0.12}
-        // 114 is what it takes to frame the largest solid `dimensions.ts`
-        // allows; 200 leaves room to stand off a scene of them. The near end
-        // drops far enough to put a millimetre feature on screen.
-        minDistance={0.02}
-        maxDistance={200}
+        minDistance={STAGE_MIN_DISTANCE}
+        maxDistance={STAGE_MAX_DISTANCE}
       />
     </>
   )
@@ -2001,17 +1917,12 @@ export function Viewport() {
       onContextMenu={(e) => e.preventDefault()}
     >
       <Canvas
-        // Four units out -- 40 cm -- which frames the 10 cm solid the palette
-        // drops with a comfortable margin of ground around it, rather than the
-        // metre of empty grid the opening shot used to hold. The direction is
-        // unchanged: down the corner, so all three axes read at once.
-        camera={{ position: [2.5, 1.85, 2.5], fov: 45, near: 0.005, far: 1000 }}
-        // A five-metre solid needs the camera 113 units out to frame it; a
-        // millimetre one fills the view from 0.023 units away, which was INSIDE
-        // the old near plane -- the app simply could not draw a part that small.
-        // Both ends had to move, and a 200,000:1 frustum is far past what a
-        // 24-bit depth buffer resolves, so the log buffer is not an
-        // optimisation here but the thing that keeps faces from tearing.
+        // Where a camera stands in this room, shared with every other screen:
+        // see `STAGE_CAMERA`.
+        camera={STAGE_CAMERA}
+        // A 200,000:1 frustum is far past what a 24-bit depth buffer resolves,
+        // so the log buffer is not an optimisation here but the thing that
+        // keeps faces from tearing.
         gl={{ logarithmicDepthBuffer: true }}
         dpr={[1, 2]}
         // The left button is the marquee's, and it clears the selection itself
