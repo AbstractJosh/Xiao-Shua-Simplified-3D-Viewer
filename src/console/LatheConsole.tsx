@@ -1,7 +1,9 @@
+import { BasePanel } from './BasePanel'
 import { ClipboardPanel } from './ClipboardPanel'
+import { ProfilePanel } from './ProfilePanel'
 
 /**
- * The console beside the Lathe viewport: the Clipboard, and nothing else.
+ * The console beside the Lathe viewport: what the piece is, and where it goes.
  *
  * EACH SCREEN HAS ITS OWN CONSOLE, and this is the first proof that they are
  * not obliged to hold the same panels. The modelling console's other four --
@@ -16,21 +18,43 @@ import { ClipboardPanel } from './ClipboardPanel'
  * sense wherever you happen to be working, and it is the shelf anything this
  * screen eventually turns out would be kept on.
  *
- * WHERE THE LATHE'S OWN CONTROLS WENT, since none of them are here: the two
+ * BASE IS THE LATHE'S OWN, and it is BELOW the shelf. The Clipboard is the
+ * panel both screens carry, so it keeps the place it has next door -- first,
+ * at the top -- and the console reads the same on arrival whichever tab you
+ * came from. What is particular to a screen goes under what is shared: a panel
+ * that shoved the Clipboard down a screen's worth would make the two consoles
+ * disagree about where the one thing they have in common lives.
+ *
+ * It is in the console rather than over the viewport for the reason the panel
+ * itself sets out: the base shape is the one fact about the piece the side view
+ * cannot show, so there is nothing for a control over the drawing to sit
+ * beside. See `BasePanel`.
+ *
+ * AND PROFILES UNDER IT, which is the same kind of thing one step further on:
+ * Base says what section the wall is swept round, Profiles says what the wall
+ * itself starts as. It is last because it is the panel you touch once at the
+ * beginning of a piece and then leave, where the base is a switch you may flip
+ * at any point and the shelf is where finished pieces go. See `ProfilePanel`.
+ *
+ * WHERE THE LATHE'S OTHER CONTROLS WENT, since they are still not here: the two
  * tools are on the island over the piece, because they are aimed by pointing
- * at it, and the stock is in the bar beside Snap, because it is a fact about
- * the screen rather than a thing you hold. The console is for what a screen
- * CONTAINS, and what this one contains is one lump that needs no listing.
+ * at it, and the stock is in a corner panel over the clay, because a size is
+ * typed while watching the shape it grows. The console is for what a screen
+ * CONTAINS, which is why the lump's section ended up in it and its handles did
+ * not.
  *
  * Its own component rather than `Console` with a flag, because a flag would
  * make the two consoles one component that is sometimes most of itself. They
- * are different consoles that happen to share a panel today, and they will
- * share less as Lathe grows.
+ * are different consoles that happen to share a panel today, and -- Base being
+ * the first panel that is this screen's alone -- they will share less as Lathe
+ * grows.
  */
 export function LatheConsole() {
   return (
     <aside className="console">
       <ClipboardPanel />
+      <BasePanel />
+      <ProfilePanel />
     </aside>
   )
 }

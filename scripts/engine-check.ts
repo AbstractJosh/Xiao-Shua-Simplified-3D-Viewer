@@ -61,6 +61,18 @@ import {
 } from '../src/geometry/clay'
 import type { Clay, Dab } from '../src/geometry/clay'
 import { TURN_FACETS, revolveClay } from '../src/geometry/revolve'
+import {
+  CLAY_PROFILES,
+  CLAY_SIDES,
+  CLAY_SIDES_MAX,
+  CLAY_SIDES_MIN,
+  bore,
+  clampSides,
+  flatFactor,
+  profileWall,
+  withWall,
+} from '../src/geometry/clay'
+import type { Bore, ClayProfile } from '../src/geometry/clay'
 import { mirrorMesh, registerMesh } from '../src/geometry/meshLibrary'
 import { platonicFaces } from '../src/geometry/solids'
 import {
@@ -3555,7 +3567,7 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
   near('to the rim, ends included', ringHeight(stock, CLAY_RINGS - 1), 1.5, 1e-12)
   near('and it holds the volume of that cylinder', clayVolume(stock), Math.PI * 0.16 * 1.5, 1e-6)
 
-  const middle: Dab = { y: 0.75, radius: 0.25, reach: 0.3, bite: 0.25, push: true }
+  const middle: Dab = { y: 0.75, radius: 0.25, reach: 0.3, bite: 0.25, tool: 'push' }
 
   // THE WALL GOES TO THE POINTER AND STOPS THERE. Everything about aiming this
   // screen rests on the second half: hold longer and the curve finishes, it
@@ -3585,11 +3597,11 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
       wide === stock,
       wide === stock ? 'the same lump' : 'a new lump'
     )
-    const pulled = hold(stock, { ...middle, radius: 0.6, push: false }, 400)
+    const pulled = hold(stock, { ...middle, radius: 0.6, tool: 'pull' }, 400)
     near('a pull takes the wall out to the pointer', pulled.wall[48], 0.6, 0.002)
     check('and no further', Math.max(...pulled.wall) <= 0.6 + 1e-9, '')
     check('the pull added material', clayVolume(pulled) > clayVolume(stock), '')
-    const narrow = mold(stock, { ...middle, radius: 0.25, push: false })
+    const narrow = mold(stock, { ...middle, radius: 0.25, tool: 'pull' })
     check('a pull aimed inside the wall does nothing at all', narrow === stock, '')
   }
 
@@ -3611,14 +3623,14 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
   // piece inside the frame it is drawn in.
   {
     const { min, max } = wallBounds(0.4)
-    const pinched = hold(stock, { y: 0.75, radius: 0, reach: 0.3, bite: 1, push: true }, 200)
+    const pinched = hold(stock, { y: 0.75, radius: 0, reach: 0.3, bite: 1, tool: 'push' }, 200)
     near(
       'a wall pinched as hard as possible stops at the floor',
       Math.min(...pinched.wall),
       min,
       1e-9
     )
-    const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, push: false }, 200)
+    const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, tool: 'pull' }, 200)
     near(
       'and a wall pulled as hard as possible stops at the ceiling',
       Math.max(...flared.wall),
@@ -3630,7 +3642,7 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
   // NEITHER TOOL CAN SHARPEN THE WALL. The relax pass is what buys this, and it
   // is the half of the brush that is easiest to lose in a refactor.
   {
-    const cut = hold(stock, { y: 0.75, radius: 0.1, reach: 0.3, bite: 1, push: true }, 60)
+    const cut = hold(stock, { y: 0.75, radius: 0.1, reach: 0.3, bite: 1, tool: 'push' }, 60)
     const step = roughest(cut)
     // The deepest cut here is 0.3 of a unit spread over the rings inside a 0.3
     // reach -- about 38 of them -- so a wall that had gone step-shaped would
@@ -3672,7 +3684,7 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
     // A wall pulled to the flare limit of a wide stock is past the limit of a
     // narrow one, and a shape that could not have been made from the stock it
     // claims is not one this screen can go on working.
-    const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, push: false }, 200)
+    const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, tool: 'pull' }, 200)
     const shrunk = resize(flared, { radius: 0.1 })
     const bounds = wallBounds(0.1)
     const inside = shrunk.wall.every(
@@ -3715,7 +3727,7 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
 
     // The same, on a piece that has actually been worked: the frustum sum the
     // section is measured by, times the same 64-gon deficit.
-    const worked = hold(cylinder, { y: 0.9, radius: 0.15, reach: 0.35, bite: 1, push: true }, 60)
+    const worked = hold(cylinder, { y: 0.9, radius: 0.15, reach: 0.35, bite: 1, tool: 'push' }, 60)
     near(
       'and a shaped piece holds what its profile says',
       signedVolume(revolveClay(worked)),
@@ -3756,6 +3768,395 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
       if (pos.getX(first) !== pos.getX(last) || pos.getZ(first) !== pos.getZ(last)) seam += 1
     }
     check('and the seam meets itself to the bit', seam === 0, `${seam} rings apart`)
+  }
+
+  // THE BASE THE PIECE STANDS ON. A lump may be turned round or on a triangle
+  // through a decagon, and the whole of that choice is spent here: the clay is
+  // one row of radii either way, and the sweep is where it becomes a prism or a
+  // cylinder. See `Clay.sides`.
+  {
+    // The bound is a bound, and it is the only thing between a panel and a
+    // sweep of two facets -- which encloses nothing -- or of five hundred.
+    check('a base of two is not a base', clampSides(2) === CLAY_SIDES_MIN, `${clampSides(2)}`)
+    check('and nor is a hundred', clampSides(100) === CLAY_SIDES_MAX, `${clampSides(100)}`)
+    check('a count between two lands on one of them', clampSides(6.4) === 6, `${clampSides(6.4)}`)
+    // Round is the OTHER option rather than an absent number: a clamp that
+    // answered a count here would turn every unset piece into a triangle.
+    check('and round stays round', clampSides(null) === null, `${clampSides(null)}`)
+    check(
+      'the selector offers every polygon from a triangle to a decagon',
+      CLAY_SIDES.length === 8 && CLAY_SIDES[0] === 3 && CLAY_SIDES[7] === 10,
+      CLAY_SIDES.join(' ')
+    )
+
+    // THE SAME PIECE ON EVERY BASE. Turning a worked lump hexagonal must not
+    // touch one radius of it -- that is what lets the base be picked at any
+    // point in a sitting rather than only at the start.
+    const worked = hold(freshClay(1.5, 0.4), { y: 0.9, radius: 0.15, reach: 0.35, bite: 1, tool: 'push' }, 60)
+    const hexagonal = { ...worked, sides: 6 }
+    check(
+      'a base change moves no part of the wall',
+      hexagonal.wall.every((r, i) => r === worked.wall[i]),
+      ''
+    )
+
+    // Every base, swept, measured against what the profile says it should
+    // hold. The n-gon deficit is the SAME formula the round sweep is checked
+    // with -- see above -- which is the point worth making: a round piece is an
+    // inscribed 64-gon, so a hexagonal one is not a different kind of solid,
+    // only a coarser count of the same one.
+    for (const sides of CLAY_SIDES) {
+      const piece = { ...worked, sides }
+      const mesh = revolveClay(piece)
+      const deficit = (sides * Math.sin((2 * Math.PI) / sides)) / (2 * Math.PI)
+      near(
+        `a ${sides}-sided piece holds the ${sides}-gon of its profile`,
+        signedVolume(mesh),
+        clayVolume(piece) * deficit,
+        1e-4
+      )
+      check(
+        `and is wound the right way out on ${sides}`,
+        signedVolume(mesh) > 0,
+        `${signedVolume(mesh).toFixed(5)}`
+      )
+    }
+
+    const hexMesh = revolveClay(hexagonal)
+
+    // THE WALL IS THE CORNERS. Every vertex up the wall stands at the radius
+    // the tools worked it to, and the flat between two of them is cut in by
+    // `flatFactor` -- which is what the Base panel tells the user, and what
+    // makes a hexagonal piece the same width across corners as the round one it
+    // was copied from.
+    const pos = hexMesh.getAttribute('position')
+    const width = 12
+    let worstCorner = 0
+    let worstFlat = 0
+    for (let i = 0; i < CLAY_RINGS; i += 1) {
+      const r = hexagonal.wall[i]
+      for (let j = 0; j < width; j += 1) {
+        const v = i * width + j
+        worstCorner = Math.max(worstCorner, Math.abs(Math.hypot(pos.getX(v), pos.getZ(v)) - r))
+      }
+      // The middle of a facet: half way between the two columns that bound it.
+      const a = i * width
+      const b = a + 1
+      const midX = (pos.getX(a) + pos.getX(b)) / 2
+      const midZ = (pos.getZ(a) + pos.getZ(b)) / 2
+      worstFlat = Math.max(worstFlat, Math.abs(Math.hypot(midX, midZ) - r * flatFactor(6)))
+    }
+    check('every corner stands at the radius the wall was worked to', worstCorner < 1e-6, `worst ${worstCorner.toExponential(2)}`)
+    check('and the flats between them at the apothem', worstFlat < 1e-6, `worst ${worstFlat.toExponential(2)}`)
+
+    // FLAT SHADED, which is the difference between a hexagonal prism and a
+    // hexagon-shaped cylinder. A facet's two columns must agree about the way
+    // it faces -- that is the flat -- and the two columns meeting at a corner
+    // must disagree, by the polygon's own exterior angle. Averaged normals get
+    // both of those wrong at once and the piece arrives looking like a badly
+    // tessellated cylinder, which no triangle count would ever show.
+    const nrm = hexMesh.getAttribute('normal')
+    const ring = 40 * width
+    let flatFacet = 0
+    let sharpest = Math.PI
+    for (let k = 0; k < 6; k += 1) {
+      const a = ring + k * 2
+      const b = a + 1
+      flatFacet = Math.max(
+        flatFacet,
+        Math.abs(nrm.getX(a) - nrm.getX(b)) + Math.abs(nrm.getZ(a) - nrm.getZ(b))
+      )
+      // The corner: this facet's second column against the next facet's first.
+      // Compared on the HORIZONTAL part alone, and renormalised first: a wall
+      // that leans tips every normal by the profile's slope, which shortens the
+      // (x, z) part of all of them equally and would read as a gentler corner
+      // than the one that is there.
+      const c = ring + ((k * 2 + 2) % (6 * 2))
+      const one = Math.hypot(nrm.getX(b), nrm.getZ(b))
+      const two = Math.hypot(nrm.getX(c), nrm.getZ(c))
+      const dot = (nrm.getX(b) * nrm.getX(c) + nrm.getZ(b) * nrm.getZ(c)) / (one * two)
+      sharpest = Math.min(sharpest, Math.acos(Math.min(1, Math.max(-1, dot))))
+    }
+    check('both sides of a facet face the same way', flatFacet < 1e-6, `worst ${flatFacet.toExponential(2)}`)
+    near(
+      'and the two columns at a corner turn a sixth of the way round',
+      sharpest,
+      (2 * Math.PI) / 6,
+      1e-6
+    )
+
+    // Unit normals on a faceted piece too. The wall's normals combine the
+    // facet's direction with the profile's slope, and a combination that is not
+    // renormalised is the classic way to light a curved flat wrongly.
+    let worstNormal = 0
+    for (let i = 0; i < nrm.count; i += 1) {
+      const length = Math.hypot(nrm.getX(i), nrm.getY(i), nrm.getZ(i))
+      worstNormal = Math.max(worstNormal, Math.abs(length - 1))
+    }
+    check('every normal on a faceted piece is a unit vector', worstNormal < 1e-6, `worst ${worstNormal.toExponential(2)}`)
+
+    // And it is the CHEAP one, which is worth pinning because the opposite is
+    // the natural assumption: flat shading duplicates every column, so somebody
+    // may one day take it for the expensive path and try to share them back.
+    const hexTris = (hexMesh.getIndex()?.count ?? 0) / 3
+    const roundTris = (revolveClay(worked).getIndex()?.count ?? 0) / 3
+    check(
+      'a faceted piece is far cheaper than a round one',
+      hexTris * 5 < roundTris,
+      `${hexTris} triangles against ${roundTris}`
+    )
+  }
+}
+
+// --- The rib, the profiles and the bore -------------------------------------
+//
+// The three things the lathe grew after its two tools: a smoothing tool that is
+// the second half of the other two, a table of shapes to start from, and a way
+// to take the middle out. All three are arithmetic on the same row of radii,
+// which is why they are checked here rather than in front of a window.
+console.log('\nThe lathe fairs, starts from a shape, and bores itself out')
+{
+  const roughest = (c: Clay): number => {
+    let worst = 0
+    for (let i = 1; i < CLAY_RINGS; i += 1) worst = Math.max(worst, Math.abs(c.wall[i] - c.wall[i - 1]))
+    return worst
+  }
+  const hold = (c: Clay, dab: Dab, times: number): Clay => {
+    const from = c.wall
+    let out = c
+    for (let i = 0; i < times; i += 1) out = mold(out, dab, from)
+    return out
+  }
+
+  // THE RIB. A wall worked hard with a narrow tool carries the marks of it, and
+  // the smoothing tool is the only thing on this screen that takes them out
+  // without taking the shape out with them.
+  {
+    // A deliberately lumpy wall: alternate rings pushed apart, which is the
+    // worst case there is and the one a naive averaging pass oscillates on.
+    const stock = freshClay(1.5, 0.4)
+    const lumpy: Clay = {
+      ...stock,
+      wall: stock.wall.map((r, i) => r + (i % 2 === 0 ? 0.03 : -0.03)),
+    }
+    // MEASURED UNDER THE TOOL, not over the whole piece. A rib is a local
+    // thing -- the ripple either side of where it was held is exactly what it
+    // must leave alone -- so a check that measured the lot would report the
+    // untouched ends and never see the tool work at all.
+    const roughestNear = (c: Clay, y: number, span: number): number => {
+      let worst = 0
+      for (let i = 1; i < CLAY_RINGS; i += 1) {
+        if (Math.abs(ringHeight(c, i) - y) > span) continue
+        worst = Math.max(worst, Math.abs(c.wall[i] - c.wall[i - 1]))
+      }
+      return worst
+    }
+    const rib: Dab = { y: 0.75, radius: 0.4, reach: 0.5, bite: 1, tool: 'smooth' }
+    const before = roughestNear(lumpy, 0.75, 0.25)
+    const ribbed = hold(lumpy, rib, 30)
+    const after = roughestNear(ribbed, 0.75, 0.25)
+    check('the rib takes the ripple out of a wall', after < before / 4, `${before.toFixed(4)} to ${after.toFixed(4)}`)
+    // CONVERGES rather than oscillating, which is the whole reason `SMOOTH` is
+    // under one: at a factor of exactly one this alternating wall would swap
+    // itself back and forth forever and this check would never settle.
+    const longer = hold(lumpy, rib, 120)
+    check(
+      'and holding longer only fairs it further',
+      roughestNear(longer, 0.75, 0.25) <= after + 1e-9,
+      `${roughestNear(longer, 0.75, 0.25).toExponential(2)}`
+    )
+    // And the ripple the rib never reached is still there, to the bit.
+    check(
+      'while the wall beyond it keeps every bump it had',
+      ribbed.wall.every((r, i) => Math.abs(ringHeight(lumpy, i) - 0.75) < 0.5 || r === lumpy.wall[i]),
+      ''
+    )
+
+    // IT DOES NOT AIM. Where the pointer sits across the wall is nothing to
+    // this tool -- only the height it is held at -- which is what the panel
+    // says and what makes the tool usable without a target.
+    const near = mold(lumpy, { y: 0.75, radius: 0.05, reach: 0.5, bite: 1, tool: 'smooth' })
+    const far = mold(lumpy, { y: 0.75, radius: 9, reach: 0.5, bite: 1, tool: 'smooth' })
+    check(
+      'and it ignores how far from the axis it is held',
+      near.wall.every((r, i) => Math.abs(r - far.wall[i]) < 1e-12),
+      ''
+    )
+
+    // A wall with nothing to fair is handed back unchanged, not merely equal --
+    // the same promise a push aimed the wrong way makes.
+    const smoothAlready = mold(stock, { y: 0.75, radius: 0.4, reach: 0.5, bite: 1, tool: 'smooth' })
+    check('a fair wall is left exactly alone', smoothAlready === stock, '')
+    // And a rib held off the piece reaches nothing at all.
+    const missed = mold(lumpy, { y: 9, radius: 0.4, reach: 0.2, bite: 1, tool: 'smooth' })
+    check('so is one the rib never reaches', missed === lumpy, '')
+
+    // Outside the tool it is untouched to the bit, which is what makes the size
+    // dial mean something.
+    const local = mold(lumpy, { y: 0.2, radius: 0.4, reach: 0.15, bite: 1, tool: 'smooth' })
+    let moved = 0
+    for (let i = 0; i < CLAY_RINGS; i += 1) {
+      if (Math.abs(ringHeight(lumpy, i) - 0.2) >= 0.15 && local.wall[i] !== lumpy.wall[i]) moved += 1
+    }
+    check('no ring outside the rib moves', moved === 0, `${moved} moved`)
+  }
+
+  // THE PROFILES. Each one has to land somewhere the tools could have reached
+  // on their own -- inside the bounds every stroke obeys -- and has to come out
+  // fair, since a wall with corners in it is not something anybody turned.
+  {
+    const lump = freshClay(1.5, 0.4)
+    const { min, max } = wallBounds(lump.radius)
+    check('the palette offers eight shapes to start from', CLAY_PROFILES.length === 8, `${CLAY_PROFILES.length}`)
+    for (const profile of CLAY_PROFILES) {
+      const wall = profileWall(lump, profile)
+      const inside = wall.every((r) => r >= min - 1e-9 && r <= max + 1e-9)
+      check(
+        `${profile.id} lands where the tools could have taken it`,
+        wall.length === CLAY_RINGS && inside,
+        `${Math.min(...wall).toFixed(3)}..${Math.max(...wall).toFixed(3)} in ${min.toFixed(3)}..${max.toFixed(3)}`
+      )
+      // Faired on the way in: six straight runs between control points would
+      // leave corners, and a turned piece has none.
+      const shaped: Clay = { ...lump, wall }
+      // A SLOPE, NOT A STEP. Unfaired, a goblet steps from a 1.2 foot to a
+      // 0.28 stem between two neighbouring rings -- a third of the stock radius
+      // in a millimetre and a half of height. Faired, the steepest thing in the
+      // whole palette is that same transition at a twelfth of it. The bar is
+      // set where it separates the two by a wide margin rather than where any
+      // particular profile happens to land.
+      check(
+        `and ${profile.id} arrives fair rather than in straight runs`,
+        roughest(shaped) < 0.05,
+        `sharpest step ${roughest(shaped).toFixed(4)}`
+      )
+    }
+    // A SHAPE RATHER THAN A SIZE: the same profile on a bigger lump is the same
+    // piece, bigger. Checked as a ratio, since that is what "the same shape"
+    // means.
+    const vase = CLAY_PROFILES.find((p) => p.id === 'vase') as ClayProfile
+    const small = profileWall(freshClay(1.5, 0.2), vase)
+    const large = profileWall(freshClay(1.5, 0.4), vase)
+    check(
+      'a profile is a shape rather than a size',
+      large.every((r, i) => Math.abs(r / small[i] - 2) < 1e-9),
+      ''
+    )
+  }
+
+  // THE BORE. One number and two switches on the way in; where the cavity
+  // actually reaches on the way out. See `bore`.
+  {
+    const cup = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.06, capTop: false, capBottom: true } }
+    const b = bore(cup) as Bore
+    check('a hollow piece has a cavity', b !== null, '')
+    near('whose floor is one wall thick', b.lo, 0.06, 1e-9)
+    near('and which reaches the rim', b.hi, 1.5, 1e-9)
+    near('a wall thinner than the piece all the way up', b.wall[0], 0.34, 1e-9)
+    check('open at the top, standing on a floor', b.openTop && !b.openBottom, `${b.openTop}/${b.openBottom}`)
+
+    // A solid piece has none, and neither has one whose wall is thicker than it
+    // is wide -- which is a piece, not an error.
+    check('a solid piece has no cavity', bore(freshClay()) === null, '')
+    const stout = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.5, capTop: false, capBottom: true } }
+    check('nor has one bored thinner than its own wall', bore(stout) === null, '')
+
+    // ASKING IS NOT GETTING. A neck narrower than two walls stops the cavity
+    // before it reaches the end, and the bore says so rather than pretending.
+    const vase = CLAY_PROFILES.find((p) => p.id === 'vase') as ClayProfile
+    // Thick enough that the vase's own rim is narrower than two walls, so
+    // there is nothing to bore through at the end that was asked for. The
+    // cavity ends up in the belly, blind at both ends.
+    const necked = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.31, capTop: false, capBottom: true } }
+    const shaped = { ...necked, wall: profileWall(necked, vase) }
+    const blind = bore(shaped) as Bore
+    check('a neck too thin to bore through stops the cavity', blind !== null && !blind.openTop, `${blind?.openTop}`)
+    check('and the end that was asked for is honestly not open', blind !== null && blind.hi < shaped.height, `${blind?.hi.toFixed(3)} of ${shaped.height}`)
+
+    // BORED FROM THE OPEN END, which is what stops a goblet being hollowed
+    // through its foot -- the widest part of it, and the wrong end entirely.
+    const goblet = CLAY_PROFILES.find((p) => p.id === 'goblet') as ClayProfile
+    // A wall thicker than the stem is wide, so the stem cannot be bored at all
+    // -- which is what makes this a test of WHICH pocket gets chosen rather
+    // than of whether one exists. At a thinner wall the bore runs right down
+    // through the stem into the foot, and that is correct: there is room.
+    const cupLump = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.095, capTop: false, capBottom: true } }
+    const stem = { ...cupLump, wall: profileWall(cupLump, goblet) }
+    const bowlBore = bore(stem) as Bore
+    check(
+      'a goblet is bored from the cup rather than through its foot',
+      bowlBore !== null && bowlBore.hi > stem.height * 0.9 && bowlBore.lo > stem.height * 0.3,
+      `${bowlBore?.lo.toFixed(2)}..${bowlBore?.hi.toFixed(2)} of ${stem.height}`
+    )
+  }
+
+  // AND WHAT IT SWEEPS TO. Signed volume again, which only comes out right if
+  // the cavity is closed, wound INWARD, and joined to the outside at exactly
+  // the ends that are open. It is the same instrument that proved the outer
+  // sweep, pointed at the harder shape.
+  {
+    const facets = (TURN_FACETS * Math.sin((2 * Math.PI) / TURN_FACETS)) / (2 * Math.PI)
+    const solid = Math.PI * 0.4 * 0.4 * 1.5
+    const cavityOf = (h: number) => Math.PI * 0.34 * 0.34 * h
+    const cases: [string, { thickness: number; capTop: boolean; capBottom: boolean }, number][] = [
+      ['a cup', { thickness: 0.06, capTop: false, capBottom: true }, solid - cavityOf(1.44)],
+      ['a pipe', { thickness: 0.06, capTop: false, capBottom: false }, solid - cavityOf(1.5)],
+      ['a sealed void', { thickness: 0.06, capTop: true, capBottom: true }, solid - cavityOf(1.38)],
+      ['a bell', { thickness: 0.06, capTop: true, capBottom: false }, solid - cavityOf(1.44)],
+    ]
+    for (const [name, hollow, exact] of cases) {
+      const piece = { ...freshClay(1.5, 0.4), hollow }
+      const mesh = revolveClay(piece)
+      near(`${name} holds the clay its section says`, signedVolume(mesh), exact * facets, 1e-5)
+      check(`and ${name} is closed and wound the right way out`, signedVolume(mesh) > 0, `${signedVolume(mesh).toFixed(5)}`)
+    }
+
+    // A hollow piece still stands on the faceplate and still reaches its rim:
+    // boring it out must not move the thing itself.
+    const cup = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.06, capTop: false, capBottom: true } }
+    const box = new Box3().setFromBufferAttribute(
+      revolveClay(cup).getAttribute('position') as BufferAttribute
+    )
+    near('a bored piece still stands on zero', box.min.y, 0, 1e-9)
+    near('and still reaches its own rim', box.max.y, 1.5, 1e-9)
+    near('and is no wider than it was', box.max.x, 0.4, 0.001)
+
+    // Every normal is a unit vector on the inside too -- the cavity's wall is
+    // the same analytic normal with its sign turned over.
+    const normals = revolveClay(cup).getAttribute('normal')
+    let worst = 0
+    for (let i = 0; i < normals.count; i += 1) {
+      worst = Math.max(worst, Math.abs(Math.hypot(normals.getX(i), normals.getY(i), normals.getZ(i)) - 1))
+    }
+    check('every normal on a hollow piece is a unit vector', worst < 1e-6, `worst ${worst.toExponential(2)}`)
+
+    // AND IT WORKS ON A FACETED PIECE, where the cavity is a hexagon inside a
+    // hexagon: both walls take the same facet count, so the corners line up and
+    // the rim between them is one quad per flat.
+    const hex = { ...cup, sides: 6 }
+    const hexVol = signedVolume(revolveClay(hex))
+    const hexFacets = (6 * Math.sin((2 * Math.PI) / 6)) / (2 * Math.PI)
+    near('a hollow hexagonal piece holds its own section', hexVol, (solid - cavityOf(1.44)) * hexFacets, 1e-5)
+  }
+
+  // UNDO IS THE WALL. `withWall` is what puts one back, and it has to survive
+  // the lump having changed since -- an entry taken before the stock was
+  // narrowed describes a wall the lump can no longer hold.
+  {
+    const wide = freshClay(1.5, 0.8)
+    const flared = hold(wide, { y: 0.75, radius: 1.4, reach: 0.4, bite: 1, tool: 'pull' }, 60)
+    const narrowed = resize(flared, { radius: 0.2 })
+    const put = withWall(narrowed, flared.wall)
+    const { min, max } = wallBounds(narrowed.radius)
+    check(
+      'a wall put back on a narrower lump is clamped to what it now allows',
+      put.wall.every((r) => r >= min - 1e-9 && r <= max + 1e-9),
+      `${Math.min(...put.wall).toFixed(3)}..${Math.max(...put.wall).toFixed(3)}`
+    )
+    check('and the lump keeps its own stock', put.radius === 0.2 && put.height === 1.5, `${put.radius}`)
+    // Handed back unchanged when it is the wall the lump already has, so a redo
+    // of a stroke that moved nothing cannot make React redraw.
+    check('putting back the wall it already has changes nothing', withWall(flared, flared.wall) === flared, '')
   }
 }
 

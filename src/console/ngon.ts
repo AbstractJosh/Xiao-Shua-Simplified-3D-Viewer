@@ -10,12 +10,23 @@
  */
 export const NGON_SIDES = [3, 4, 5, 6, 8, 10]
 
+/**
+ * What each polygon is called.
+ *
+ * WIDER THAN `NGON_SIDES`, and deliberately: the chip omits the rare counts
+ * rather than diluting its six target areas, but the lathe's base selector
+ * offers the whole run from a triangle to a decagon -- there is no crowding in
+ * a grid of eight tiles -- and both read their names from here so the two
+ * cannot end up calling a nonagon different things.
+ */
 export const NGON_NAMES: Record<number, string> = {
   3: 'Triangle',
   4: 'Square',
   5: 'Pentagon',
   6: 'Hexagon',
+  7: 'Heptagon',
   8: 'Octagon',
+  9: 'Nonagon',
   10: 'Decagon',
 }
 

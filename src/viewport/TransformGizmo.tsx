@@ -5,6 +5,7 @@ import type { ThreeEvent } from '@react-three/fiber'
 import { Line } from '@react-three/drei'
 import { Color, DoubleSide, Euler, Group, Mesh, Quaternion, Vector3 } from 'three'
 import type { Intersection, Object3D, Raycaster } from 'three'
+import { useDoc } from '../store/docStore'
 import type { GizmoAxis, GizmoHandle } from '../store/docStore'
 import type { Vec3 } from '../geometry/types'
 import { AXIS_COLORS } from './axisColors'
@@ -25,8 +26,12 @@ import type { TransformMode } from '../store/toolStore'
  *
  * WHICH of them is on screen is the app-wide `transformMode`, read here rather
  * than passed down, so that choosing a tool changes every gizmo at once and no
- * caller can forget to pass it on. That is the one piece of state this
- * component knows about; everything else about it is props.
+ * caller can forget to pass it on. Whether a gesture is currently running is
+ * read the same way and for the same reason -- a drag ends at a window-level
+ * pointerup that this component never sees, and no caller should have to
+ * remember to tell every gizmo that one handle is already held. Those two are
+ * the whole of what this component knows without being told; everything else
+ * about it is props.
  *
  * WHICH FRAME the arrows stand in is the caller's to decide, and the callers
  * do not all agree, because the thing an arrow means differs:
@@ -184,8 +189,13 @@ const HEAD_RADIUS = 0.09
 /** The invisible volume that actually catches the pointer, and the one number
  *  here that is about the hand rather than the eye. Far fatter than the arrow
  *  it wraps -- a 0.026-radius shaft is a three-pixel target -- and it grew when
- *  the gizmo shrank, so the thing stays as easy to grab as it was. */
-const GRAB_RADIUS = 0.17
+ *  the gizmo shrank, so the thing stays as easy to grab as it was.
+ *
+ *  Exported with `PLANE_FROM` and `PLANE_TO`, because what those three say
+ *  TOGETHER is a rule rather than three separate choices of taste: the quads
+ *  have to start outside this, or the tie-break `planeRaycast` now uses is
+ *  breaking a tie that exists. Checked rather than remembered. */
+export const GRAB_RADIUS = 0.17
 
 /**
  * The ring sits WELL inside the arrowheads and carries a thin hit band.
@@ -223,24 +233,44 @@ const BALL_TUBE = 0.02
 const BALL_GRAB_TUBE = 0.07
 
 /**
- * The three plane handles: small quads standing in the corners between each
- * pair of arrows, which slide the target within that plane.
+ * The three plane handles: quads standing in the corners between each pair of
+ * arrows, which slide the target within that plane.
  *
- * They live in the ring's territory rather than out among the arrowheads, and
- * that is not an accident of layout -- they are the ring's understudy. Hold
- * Control and the ring gives way to these; let go and it comes back. The two
- * could not both be up at once anyway: a billboarded circle at radius 0.27
- * crosses all three quads whatever the camera angle, and one of the two would
- * be taking presses meant for the other from every direction.
+ * THEY USED TO BE FAR TOO SMALL TO HIT. A square from 0.16 to 0.40 is 0.24 of
+ * a gizmo unit on a side, and at the opening camera a gizmo unit is about 68
+ * pixels -- so 16 pixels square before any foreshortening, and a quad is
+ * ALWAYS foreshortened, since one seen square-on is one whose two neighbours
+ * have stood down. Worse, most of even that was not really there: an arrow's
+ * grab cylinder is a fat thing crossing the quad's territory in projection, so
+ * a ray that met the quad usually met an arrow somewhere along its length too,
+ * and the arrow took it. Measured over the sphere of camera angles, what was
+ * actually left to press was about 56 square pixels per quad -- an 8-pixel
+ * target -- and from some angles the number was zero and the plane handles
+ * could not be grabbed at all.
  *
- * A square between 0.16 and 0.40 along each of its two axes, so its inner
- * corner clears the arrows' shafts and its outer one stops well short of the
- * heads. What that leaves overlapping is a sliver along each inner edge, inside
- * an arrow's own grab cylinder, and `planeRaycast` hands those to the arrow --
- * the same tie, broken the same way, as the ring's.
+ * So the square runs from 0.20 to 0.64, and the two ends are each pinned to
+ * something rather than picked:
+ *
+ *   INNER 0.20, just clear of GRAB_RADIUS. An arrow's grab cylinder reaches
+ *     0.17 out from its axis, and a quad crossing into that is offering area
+ *     it will lose -- which is what the old 0.16 did. Clearing it by 0.03
+ *     leaves the two volumes disjoint, and that is worth more than the sliver
+ *     it gives up: see `planeRaycast` for what being disjoint buys.
+ *   OUTER 0.64, so the corner stays inside the arrows. A square out to `d`
+ *     puts its far corner at d*sqrt(2), and the arrowheads end at 1 -- so
+ *     anything past about 0.7 would have the quads' corners poking out beyond
+ *     the tips and the gizmo's silhouette would be theirs rather than the
+ *     arrows'. 0.64 lands the corner at 0.90, filling the corner without
+ *     claiming it.
+ *
+ * That is 0.44 on a side, three and a third times the area, and with the
+ * change to `planeRaycast` it comes to about 380 square pixels per quad -- a
+ * 19-pixel target, against roughly 33 for an arrow. A secondary handle at half
+ * the linear size of the primary one, and no camera angle left with nothing to
+ * press.
  */
-const PLANE_FROM = 0.16
-const PLANE_TO = 0.4
+export const PLANE_FROM = 0.2
+export const PLANE_TO = 0.64
 const PLANE_SIDE = PLANE_TO - PLANE_FROM
 const PLANE_CENTRE = (PLANE_FROM + PLANE_TO) / 2
 
@@ -276,11 +306,14 @@ const PLANE_BORDER = [
   new Vector3(PLANE_FROM, PLANE_FROM, 0),
 ]
 
-/** Fill weights. Faint at rest, because three of these stand in the middle of
- *  the gizmo and a solid one would hide the very thing being moved; plainly
- *  lit under the pointer, because that is the only thing that says which of
- *  three overlapping quads a press is about to take. */
-const PLANE_OPACITY = 0.22
+/** Fill weights. Fainter at rest than they were, because the quads now cover
+ *  three and a third times the area and three of them stand in the middle of
+ *  the gizmo -- at the old 0.22 the enlarged squares veiled the very thing
+ *  being moved. The outline carries where the handle IS, at full strength; the
+ *  fill only has to say there is a surface there. Under the pointer it is left
+ *  where it was, so the gap between resting and lit is wider than before, which
+ *  is what says which of three overlapping quads a press is about to take. */
+const PLANE_OPACITY = 0.16
 const PLANE_HOVER_OPACITY = 0.46
 
 /**
@@ -401,21 +434,118 @@ export function biasedRaycast(scale: number) {
 
 const gizmoRaycast = biasedRaycast(PRIORITY_SCALE)
 const ringRaycast = biasedRaycast(RING_PRIORITY_SCALE)
-/** The planes take the ring's weight, because they take the ring's place: they
- *  beat any real scene hit and lose to an arrow, which is the same bargain and
- *  is wanted for the same reason -- the arrows are the precise handles, and
- *  there is plenty of quad to grab away from one. */
-const planeRaycast = biasedRaycast(RING_PRIORITY_SCALE)
+
+/**
+ * THE PLANES TAKE THE ARROWS' WEIGHT, so between a quad and an arrow the
+ * NEARER one wins.
+ *
+ * They used to take the ring's, which is an order of magnitude weaker, on the
+ * grounds that the two overlapped along a sliver of the quad's inner edge and
+ * the tie should go to the precise handle. But a scale that weak is not a
+ * tie-break at all: it hands the arrow every meeting of the two at any depth,
+ * and a fat grab cylinder crosses a quad's territory in projection from most
+ * camera angles. So the arrow won points the quad was drawn plainly in FRONT
+ * of, and the quad was left with a fraction of the area it appeared to have.
+ * That, more than the size, is what made these impossible to hold.
+ *
+ * There is no tie left to break. At `PLANE_FROM` the two volumes are disjoint
+ * -- nothing is inside both -- so depth is meaningful everywhere they meet,
+ * and taking the nearer is also taking the one DRAWN in front: both are
+ * transparent at the same `renderOrder`, which three sorts back to front, so
+ * whichever is nearer is already the one on top. What you can see is what you
+ * get, which is the only rule a user can predict.
+ *
+ * Still far under any real scene hit, which is the part that has not changed:
+ * a quad in the middle of the solid it is moving must still beat that solid's
+ * own front face.
+ */
+const planeRaycast = biasedRaycast(PRIORITY_SCALE)
 
 /** The drawn parts are decoration; the grab volumes below are what is aimed at.
  *  Leaving these pickable would let a two-pixel shaft steal a click from the
  *  fat cylinder wrapped around it. */
 const noRaycast: Object3D['raycast'] = () => {}
 
+/**
+ * ONE HANDLE AT A TIME.
+ *
+ * A gizmo is a knot of overlapping volumes, and deliberately so: the grab
+ * cylinders are six times fatter than the arrows they wrap, the plane quads sit
+ * in the corners between them, and a ring is a circle drawn AROUND all three
+ * axes. So a pointer ray crosses two or three of them from most angles a scene
+ * is ever looked at -- measured over the sphere of camera positions, an eighth
+ * of Move's own area, a seventh of Scale's, and better than a quarter of
+ * Rotate's, where three big rings share one centre and a ray can pass through
+ * all three.
+ *
+ * THE PRESS was always settled. `grab` stops the event and R3F walks the hits
+ * nearest-first, so exactly one handle can ever start a drag.
+ *
+ * THE HOVER was not. R3F offers `pointerover` to every object the ray met, and
+ * a handler that merely lit itself let all of them light -- two arrows at once,
+ * an arrow and the quad wedged between it and the next, all three rotate rings.
+ * Which of them the press would actually take was then unguessable, because the
+ * tie is broken on a depth the user cannot see. That is what made the thing
+ * feel clunky and what produced the misgrabs: the gizmo offered several handles
+ * and then quietly chose one.
+ *
+ * So a hovered handle CLAIMS the pointer -- `stopPropagation` inside
+ * `pointerover` -- which is the press's own tie-break applied to the light, so
+ * the handle that lights up is by construction the handle that will be grabbed.
+ * R3F records the claim against the hover entry, so it holds for as long as the
+ * pointer stays on that handle rather than only for the move that arrived on
+ * it. Every grab volume in this file goes through `hoverHandlers`, so a handle
+ * cannot be added without one.
+ *
+ * THE OTHER HALF IS THE DRAG. Once a handle is held the pointer leaves it --
+ * that is what dragging is -- and sweeps across the handles it left behind.
+ * Lighting those would be the same lie told in the middle of a gesture, so
+ * `held` overrides the pointer for as long as one is: the dragged handle stays
+ * lit wherever it has been carried to, and no other can light at all. And
+ * `grab` refuses a second gesture outright, so a right button or a second
+ * finger cannot start one over the top of the first.
+ */
+
+/**
+ * The hover handlers every grab volume wears: light up, and take the pointer
+ * with you.
+ *
+ * `offered` is for a handle that is on screen but standing down -- the plane
+ * quads seen edge-on, which refuse the press as well. One that claimed a
+ * pointer it would then hand back would be a hole in the rule rather than a
+ * case of it: the arrow behind it would take the press without ever lighting.
+ *
+ * Exported for the ruler's spare knob, which is the one grabbable thing drawn
+ * over the scene that is not part of a gizmo -- and which sits at the far end
+ * of a line whose near end is wearing one, so the two can and do cross. One
+ * definition of the rule rather than a second copy of it a file away, exactly
+ * as `biasedRaycast` is shared for the ordering the rule then depends on.
+ */
+export function hoverHandlers(set: (hot: boolean) => void, offered?: () => boolean) {
+  return {
+    onPointerOver: (e: ThreeEvent<PointerEvent>) => {
+      if (offered && !offered()) return
+      e.stopPropagation()
+      set(true)
+    },
+    onPointerOut: () => set(false),
+  }
+}
+
+/**
+ * Whether a handle is the one currently being dragged.
+ *
+ * Null while nothing is held, which is the ordinary case and means the pointer
+ * decides. True or false for as long as a drag runs, and then it OVERRIDES the
+ * pointer in both directions -- see the block above.
+ */
+type Held = boolean | null
+
 function Arrow({
   axis,
   color,
   sizeOnly,
+  held,
   onGrab,
 }: {
   axis: GizmoAxis
@@ -429,13 +559,14 @@ function Arrow({
    * anchored to but can sweep along it. See `sizeOnlyAxes`.
    */
   sizeOnly: boolean
+  held: Held
   onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
 }) {
   const rotation = AXIS_ROTATIONS[axis]
   const shaftLength = SHAFT_TO - SHAFT_FROM
   const grabLength = 1 - SHAFT_FROM
   const [hovered, setHovered] = useState(false)
-  const shown = hovered ? lit(color) : color
+  const shown = (held ?? hovered) ? lit(color) : color
 
   const press = (e: ThreeEvent<PointerEvent>) => {
     // LEFT does the one thing this arrow is for, which the mode has already
@@ -496,8 +627,7 @@ function Arrow({
         position={[0, SHAFT_FROM + grabLength / 2, 0]}
         raycast={gizmoRaycast}
         onPointerDown={press}
-        onPointerOver={() => setHovered(true)}
-        onPointerOut={() => setHovered(false)}
+        {...hoverHandlers(setHovered)}
         onContextMenu={(e) => e.nativeEvent.preventDefault()}
       >
         <cylinderGeometry args={[GRAB_RADIUS, GRAB_RADIUS, grabLength, 8]} />
@@ -526,15 +656,18 @@ function Arrow({
 function PlaneHandle({
   axis,
   color,
+  held,
   onGrab,
 }: {
   /** The axis this plane is NORMAL to. See `PLANE_ROTATIONS`. */
   axis: GizmoAxis
   color: string
+  held: Held
   onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
 }) {
   const root = useRef<Group>(null)
   const [hovered, setHovered] = useState(false)
+  const hot = held ?? hovered
   // Whether this quad is currently offered, read by its own handlers. A ref
   // rather than state because it is decided per frame from a held key and a
   // camera angle, neither of which is worth a render -- and because the press
@@ -576,15 +709,14 @@ function PlaneHandle({
           // gesture, on the button everything else in the viewport uses.
           if (e.button === 0) onGrab({ mode: 'plane', axis }, e)
         }}
-        onPointerOver={() => up.current && setHovered(true)}
-        onPointerOut={() => setHovered(false)}
+        {...hoverHandlers(setHovered, () => up.current)}
         onContextMenu={(e) => e.nativeEvent.preventDefault()}
       >
         <planeGeometry args={[PLANE_SIDE, PLANE_SIDE]} />
         <meshBasicMaterial
-          color={hovered ? lit(color) : color}
+          color={hot ? lit(color) : color}
           transparent
-          opacity={hovered ? PLANE_HOVER_OPACITY : PLANE_OPACITY}
+          opacity={hot ? PLANE_HOVER_OPACITY : PLANE_OPACITY}
           side={DoubleSide}
           depthTest={false}
           depthWrite={false}
@@ -596,7 +728,7 @@ function PlaneHandle({
           grey is a smudge; the outline is what makes it read as a handle. */}
       <Line
         points={PLANE_BORDER}
-        color={hovered ? lit(color) : color}
+        color={hot ? lit(color) : color}
         lineWidth={1.5}
         transparent
         depthTest={false}
@@ -627,23 +759,26 @@ function PlaneHandle({
 function RotateRing({
   axis,
   color,
+  held,
   onGrab,
 }: {
   /** The axis this ring turns ABOUT, which its plane is normal to. */
   axis: GizmoAxis
   color: string
+  held: Held
   onGrab: (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => void
 }) {
   const [hovered, setHovered] = useState(false)
+  const hot = held ?? hovered
 
   return (
     <group rotation={new Euler(...PLANE_ROTATIONS[axis])}>
       <mesh renderOrder={DRAW_ON_TOP} raycast={noRaycast}>
         <torusGeometry args={[BALL_RADIUS, BALL_TUBE, 8, 64]} />
         <meshBasicMaterial
-          color={hovered ? lit(color) : color}
+          color={hot ? lit(color) : color}
           transparent
-          opacity={hovered ? 1 : 0.85}
+          opacity={hot ? 1 : 0.85}
           depthTest={false}
           depthWrite={false}
           toneMapped={false}
@@ -660,8 +795,7 @@ function RotateRing({
           // mode is for -- so the right button is left to the camera.
           if (e.button === 0) onGrab({ mode: 'rotate', axis }, e)
         }}
-        onPointerOver={() => setHovered(true)}
-        onPointerOut={() => setHovered(false)}
+        {...hoverHandlers(setHovered)}
         onContextMenu={(e) => e.nativeEvent.preventDefault()}
       >
         <torusGeometry args={[BALL_RADIUS, BALL_GRAB_TUBE, 6, 40]} />
@@ -782,6 +916,47 @@ export function TransformGizmo({
   const appMode = useTools((s) => s.transformMode)
   const parts = gizmoParts(mode ?? appMode)
 
+  /**
+   * WHICH HANDLE IS BEING DRAGGED, so that no other one can read as grabbable
+   * while it is. See the "one handle at a time" block above.
+   *
+   * Two pieces, and neither works alone. WHETHER a gesture is running is the
+   * store's to say, because the release is a window-level pointerup that lands
+   * wherever the pointer has ended up -- often nowhere near this gizmo, and
+   * routinely outside the canvas -- so the handle that was grabbed never sees
+   * the end of its own drag. WHICH handle it was is this component's, and it
+   * is a ref rather than state because the render that reads it is one the
+   * store is already about to trigger.
+   *
+   * The ref is only ever consulted while the store says a drag is running, so
+   * a press that somehow started no drag leaves nothing lit. It is cleared at
+   * the end of every gesture all the same, because more than one gizmo can be
+   * on screen and the ref would otherwise be a stale claim: a gizmo that had
+   * been dragged an hour ago would light that handle again the moment ANOTHER
+   * gizmo was picked up.
+   *
+   * ANY drag, not merely a drag of this gizmo, and the difference is the whole
+   * point of returning `false` rather than null in that case. While a gesture
+   * is running -- another gizmo's handle, the body of a solid, a brush stroke,
+   * a solid being placed -- nothing here is grabbable, because `grab` refuses
+   * a second one. A handle that went on lighting under the pointer would be
+   * offering something it cannot give, which is the same lie in a different
+   * place.
+   *
+   * `drag.kind` alone, not the whole drag: it changes once at each end of a
+   * gesture rather than on every frame of one.
+   */
+  const dragging = useDoc((s) => s.drag.kind !== 'idle')
+  const grabbed = useRef<GizmoHandle | null>(null)
+  useEffect(() => {
+    if (!dragging) grabbed.current = null
+  }, [dragging])
+  const holding = (handle: GizmoHandle): Held => {
+    if (!dragging) return null
+    const held = grabbed.current
+    return held !== null && held.mode === handle.mode && held.axis === handle.axis
+  }
+
   // Which arrows this mode actually offers. In Move, all of them. In Scale,
   // only those with a dimension behind them: an arrow whose target has nothing
   // to resize along it is a handle that answers a press with nothing, and the
@@ -790,8 +965,14 @@ export function TransformGizmo({
     ? axes
     : axes.filter((axis) => sizable || sizeOnlyAxes.includes(axis))
 
-  // Whether the billboarded ring is up at all, in either of its two jobs.
+  // Whether the billboarded ring is up at all, in either of its two jobs, and
+  // which of the two a press on it means -- one answer, so what it is lit for
+  // and what it does cannot drift apart.
   const ringUp = parts.ring || (parts.rings && turns === 'facing')
+  const ringHandle: GizmoHandle = parts.ring
+    ? { mode: 'size', axis: 'all' }
+    : { mode: 'rotate', axis: 'all' }
+  const ringHot = holding(ringHandle) ?? ringHovered
 
   // A ring that left the screen under the pointer -- because the tool changed
   // beneath it -- never gets its `pointerout`, so the lift would stay on and it
@@ -824,10 +1005,23 @@ export function TransformGizmo({
 
   const grab = (handle: GizmoHandle, e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation()
+    // One gesture at a time, and the press that would start a second is
+    // swallowed rather than passed on -- above it has already been stopped, so
+    // it reaches neither the handle behind this one nor the solid behind them
+    // both. A second grab is not a thing to redirect somewhere; it is a thing
+    // that must not happen.
+    //
+    // Read from the store rather than from `dragging`, which is a render
+    // behind: a right button pressed over a left-drag, or a second finger, can
+    // arrive before React has been told about the first.
+    if (useDoc.getState().drag.kind !== 'idle') return
     // OrbitControls listens on the canvas directly, so a React-level
     // stopPropagation never reaches it -- and on the right button it would
     // otherwise pan the camera through the whole gesture.
     if (controlsRef.current) controlsRef.current.enabled = false
+    // Before the store, so the render that `onGrab` sets off already knows
+    // which handle to keep lit.
+    grabbed.current = handle
     onGrab(handle)
   }
 
@@ -843,17 +1037,23 @@ export function TransformGizmo({
           rotation={quaternion ? undefined : new Euler(...(rotation ?? [0, 0, 0]))}
           quaternion={quaternion}
         >
-          {shownAxes.map((axis) => (
-            <Arrow
-              key={axis}
-              axis={axis}
-              color={colors[axis] ?? AXIS_COLORS[axis]}
-              // In Scale every arrow resizes; in Move only the ones with no
-              // slide of their own do.
-              sizeOnly={!parts.slide || sizeOnlyAxes.includes(axis)}
-              onGrab={grab}
-            />
-          ))}
+          {shownAxes.map((axis) => {
+            // In Scale every arrow resizes; in Move only the ones with no
+            // slide of their own do. Which is also the whole of what a press
+            // on this arrow produces, so the same answer says what to draw and
+            // says whether the handle being dragged is this one.
+            const sizeOnly = !parts.slide || sizeOnlyAxes.includes(axis)
+            return (
+              <Arrow
+                key={axis}
+                axis={axis}
+                color={colors[axis] ?? AXIS_COLORS[axis]}
+                sizeOnly={sizeOnly}
+                held={holding({ mode: sizeOnly ? 'size' : 'move', axis })}
+                onGrab={grab}
+              />
+            )
+          })}
         </group>
       )}
 
@@ -873,6 +1073,7 @@ export function TransformGizmo({
               key={axis}
               axis={axis}
               color={colors[axis] ?? AXIS_COLORS[axis]}
+              held={holding({ mode: 'plane', axis })}
               onGrab={grab}
             />
           ))}
@@ -892,6 +1093,7 @@ export function TransformGizmo({
             key={axis}
             axis={axis}
             color={colors[axis] ?? AXIS_COLORS[axis]}
+            held={holding({ mode: 'rotate', axis })}
             onGrab={grab}
           />
         ))}
@@ -905,9 +1107,9 @@ export function TransformGizmo({
           <mesh ref={ringBand} renderOrder={DRAW_ON_TOP} raycast={noRaycast}>
             <torusGeometry args={[RING_RADIUS, RING_TUBE, 8, 48]} />
             <meshBasicMaterial
-              color={ringHovered ? lit(ringColor) : ringColor}
+              color={ringHot ? lit(ringColor) : ringColor}
               transparent
-              opacity={ringHovered ? 1 : 0.8}
+              opacity={ringHot ? 1 : 0.8}
               depthTest={false}
               depthWrite={false}
               toneMapped={false}
@@ -922,10 +1124,9 @@ export function TransformGizmo({
               // this ring is standing for. The right button used to turn from
               // here; Rotate is where that lives now.
               if (e.button !== 0) return
-              grab(parts.ring ? { mode: 'size', axis: 'all' } : { mode: 'rotate', axis: 'all' }, e)
+              grab(ringHandle, e)
             }}
-            onPointerOver={() => setRingHovered(true)}
-            onPointerOut={() => setRingHovered(false)}
+            {...hoverHandlers(setRingHovered)}
             onContextMenu={(e) => e.nativeEvent.preventDefault()}
           >
             <torusGeometry args={[RING_RADIUS, GRAB_TUBE, 6, 32]} />

@@ -27,6 +27,7 @@ export function NavTool({
   trailing,
   tip,
   panelTitle,
+  panelRight,
   align = 'left',
   children,
 }: {
@@ -84,6 +85,16 @@ export function NavTool({
   /** Prose shown on hover. The bar's tooltips replace the console's old hints. */
   tip?: ReactNode
   panelTitle?: string
+  /**
+   * A control at the top right of the PANEL, opposite its title.
+   *
+   * `trailing` is the same idea on the button; this is the one on the lid. It
+   * exists for a setting that belongs to the whole panel rather than to one row
+   * of it -- the unit a panel of lengths is read in, which is what Hollow puts
+   * there. Beside the close button rather than in place of it: shutting the
+   * panel stays where the eye already looks for it.
+   */
+  panelRight?: ReactNode
   /** Which way the panel opens. Tools near the right edge open leftwards. */
   align?: 'left' | 'right'
   children?: ReactNode
@@ -161,6 +172,7 @@ export function NavTool({
           <div className="nav-panel-head">
             <span className="nav-panel-title">{panelTitle ?? label}</span>
             {tip && <Tip>{tip}</Tip>}
+            {panelRight && <span className="nav-panel-right">{panelRight}</span>}
             <button
               type="button"
               className="nav-panel-close"

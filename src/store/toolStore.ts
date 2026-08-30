@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { Euler, Vector3 } from 'three'
+import type { ClayTool } from '../geometry/clay'
 import { BRUSH_SMOOTH_MIN } from '../geometry/erode'
 import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
 import { fromDisplay } from '../units'
@@ -9,6 +10,7 @@ import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT } from '../screens'
 import type { ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
+import { clampZoom } from '../viewport/latheView'
 import type { Unit, UnitMode } from '../units'
 import type { Axis } from '../geometry/dimensions'
 import type { Vec3 } from '../geometry/types'
@@ -47,6 +49,10 @@ export type NavPanel =
   // on a button, so it has nothing to take turns with. See `StockPanel`.
   | 'push'
   | 'pull'
+  | 'smooth'
+  // Not a tool that is aimed, and the only lid on this island that is not: it
+  // is a setting for the whole piece with a panel to hold it. See `HollowTool`.
+  | 'hollow'
   | null
 
 /**
@@ -68,7 +74,15 @@ export type NavPanel =
  * exactly what the erode panel did between arriving in the island and being
  * added here.
  */
-export const ISLAND_PANELS: NavPanel[] = ['ruler', 'erode', 'sculpt', 'push', 'pull']
+export const ISLAND_PANELS: NavPanel[] = [
+  'ruler',
+  'erode',
+  'sculpt',
+  'push',
+  'pull',
+  'smooth',
+  'hollow',
+]
 
 /** Every bound in this file is applied with it, so a value written by a panel
  *  and one dragged by a gizmo cannot disagree about the limit. */
@@ -131,7 +145,13 @@ export type BrushTool = 'torch' | 'sculpt' | null
  * viewport cannot use, and every reader of either field would have to ask which
  * screen it was on before trusting it.
  */
-export type LatheTool = 'push' | 'pull' | null
+/**
+ * The three that shape the wall, plus empty hands.
+ *
+ * `ClayTool` in `clay.ts` is this without the null: the geometry has no notion
+ * of putting a tool down, and this store has no notion of what a dab does.
+ */
+export type LatheTool = ClayTool | null
 
 /**
  * What either tool may be sized to, and where the two of them start.
@@ -715,6 +735,23 @@ export type ToolState = {
    */
   stockOpen: boolean
   /**
+   * How far the lathe's view is zoomed, as a factor on the frame at rest.
+   *
+   * THE ONLY THING THAT MOVES THAT VIEW, and that is the point of it existing
+   * at all. The frame used to fit itself to the stock, so it rescaled whenever
+   * the lump was resized -- twice wrong, because it cancelled out the growth it
+   * was meant to show and because it did it mid-drag. Now nothing re-frames on
+   * its own: a lump too big for the frame runs off it and is clipped, and this
+   * is the number the user turns to go and look. See `clayFrame`.
+   *
+   * IN THE TOOL STORE, beside `stockOpen`, not in `latheStore`. The rule there
+   * is stated at the top of that file: it holds what you have BUILT, and a zoom
+   * is not part of the piece -- copy the piece to the clipboard and the zoom
+   * does not go with it. It is chrome, so like everything else here it stays out
+   * of undo.
+   */
+  latheZoom: number
+  /**
    * How much of the wall each tool covers, and how hard each is leant on.
    *
    * ONE PAIR EACH, not one pair shared, which is the arrangement the two
@@ -734,6 +771,22 @@ export type ToolState = {
   pullReach: number
   pullSizeUnit: Unit
   pullStrength: number
+  smoothReach: number
+  smoothSizeUnit: Unit
+  smoothStrength: number
+  /**
+   * The unit the Hollow panel is read and typed in.
+   *
+   * Pinned rather than `auto`, like every other control that SETS a length --
+   * see `erodeSizeUnit` -- and it starts at MILLIMETRES rather than at the
+   * centimetres the tool sizes use, because that is the unit a wall thickness
+   * is actually spoken in. Nobody says a pot has a 0.6 cm wall.
+   *
+   * One unit for the whole panel rather than one per row, which is why it is
+   * named for the panel and not for a field: it is chosen from the panel's own
+   * header. See `UnitPicker`.
+   */
+  hollowSizeUnit: Unit
 
   /**
    * Whether the ruler tool is engaged, and so whether any ruler is drawn.
@@ -804,12 +857,27 @@ export type ToolState = {
   /** Take up a tool, or put the one in your hand down. */
   setLatheTool: (tool: LatheTool) => void
   setStockOpen: (open: boolean) => void
+  /**
+   * Zoom the lathe's view, by a FACTOR rather than to a value.
+   *
+   * A factor because every gesture that drives it is a relative one -- a wheel
+   * notch, a press of a button -- and because zoom is felt geometrically: a step
+   * that is a fifth of the frame when you are close should be a fifth of it when
+   * you are far off, not a fixed number of scene units. `setLatheZoom` is the
+   * absolute one, for the single caller that has an absolute answer: Fit.
+   */
+  zoomLathe: (factor: number) => void
+  setLatheZoom: (zoom: number) => void
   setPushReach: (reach: number) => void
   setPushSizeUnit: (unit: Unit) => void
   setPushStrength: (strength: number) => void
   setPullReach: (reach: number) => void
   setPullSizeUnit: (unit: Unit) => void
   setPullStrength: (strength: number) => void
+  setSmoothReach: (reach: number) => void
+  setSmoothSizeUnit: (unit: Unit) => void
+  setSmoothStrength: (strength: number) => void
+  setHollowSizeUnit: (unit: Unit) => void
   /**
    * Engage the tool, laying down a first ruler if there are none.
    *
@@ -893,15 +961,26 @@ export const useTools = create<ToolState>((set) => ({
   // first press meant for nothing in particular and put a dent in the piece.
   latheTool: null,
   stockOpen: true,
+  latheZoom: 1,
   pushReach: DEFAULT_LATHE_REACH,
   pullReach: DEFAULT_LATHE_REACH,
+  // Wider than the two that cut, because it is a different gesture: a rib is
+  // drawn along a side to take the wobble out of a whole stretch of it, where a
+  // push is aimed at one place. Half again is enough to feel like a different
+  // size of thing without needing its own explanation.
+  smoothReach: DEFAULT_LATHE_REACH * 1.5,
   // Centimetres, as the brushes are, and for the same reason: a tool runs from a
   // millimetre to over a metre, and under `auto` a single drag of the size
   // slider renumbers itself twice while the hand never changes direction.
   pushSizeUnit: 'cm',
   pullSizeUnit: 'cm',
+  smoothSizeUnit: 'cm',
+  // Millimetres: a wall is millimetres thick, and the panel opens speaking the
+  // unit its one number is usually said in.
+  hollowSizeUnit: 'mm',
   pushStrength: DEFAULT_LATHE_STRENGTH,
   pullStrength: DEFAULT_LATHE_STRENGTH,
+  smoothStrength: DEFAULT_LATHE_STRENGTH,
 
   // Empty, not seeded with a starter palette: every slot on screen is a colour
   // this user actually chose, so the grid is a history rather than a suggestion.
@@ -1021,12 +1100,20 @@ export const useTools = create<ToolState>((set) => ({
 
   setLatheTool: (latheTool) => set({ latheTool }),
   setStockOpen: (stockOpen) => set({ stockOpen }),
+  // Clamped in `latheView`, so the range is written down once beside the frame
+  // that has to honour it rather than here and there again.
+  zoomLathe: (factor) => set((s) => ({ latheZoom: clampZoom(s.latheZoom * factor) })),
+  setLatheZoom: (zoom) => set({ latheZoom: clampZoom(zoom) }),
   setPushReach: (reach) => set({ pushReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
   setPushSizeUnit: (pushSizeUnit) => set({ pushSizeUnit }),
   setPushStrength: (strength) => set({ pushStrength: clamp(strength, 0, 1) }),
   setPullReach: (reach) => set({ pullReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
   setPullSizeUnit: (pullSizeUnit) => set({ pullSizeUnit }),
   setPullStrength: (strength) => set({ pullStrength: clamp(strength, 0, 1) }),
+  setSmoothReach: (reach) => set({ smoothReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
+  setSmoothSizeUnit: (smoothSizeUnit) => set({ smoothSizeUnit }),
+  setSmoothStrength: (strength) => set({ smoothStrength: clamp(strength, 0, 1) }),
+  setHollowSizeUnit: (hollowSizeUnit) => set({ hollowSizeUnit }),
 
   // Arming lays a ruler down rather than arming an empty tool: a switch that
   // turns on and shows nothing reads as broken, and "give me a ruler" is the
@@ -1136,7 +1223,7 @@ export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.scree
  * hand React a new snapshot on every render and never settle. Hands back `null`
  * when the hands are empty, so a caller asks one question rather than three.
  */
-export type ArmedLatheTool = { tool: 'push' | 'pull'; reach: number; strength: number }
+export type ArmedLatheTool = { tool: ClayTool; reach: number; strength: number }
 
 export const armedLatheTool = (s: ToolState): ArmedLatheTool | null => {
   if (s.latheTool === 'push') {
@@ -1144,6 +1231,9 @@ export const armedLatheTool = (s: ToolState): ArmedLatheTool | null => {
   }
   if (s.latheTool === 'pull') {
     return { tool: 'pull', reach: s.pullReach, strength: s.pullStrength }
+  }
+  if (s.latheTool === 'smooth') {
+    return { tool: 'smooth', reach: s.smoothReach, strength: s.smoothStrength }
   }
   return null
 }

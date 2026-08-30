@@ -72,6 +72,55 @@ function groundedPosition(object: SceneObject): [number, number, number] {
   return [0, -surfaceFor(object.base).bounds().min.y, 0]
 }
 
+/**
+ * How a name too long for its tile walks past while the pointer is on it.
+ *
+ * Thirty pixels a second is reading pace rather than ticker pace: the whole
+ * point is to be READ, and a name that has gone by before the eye has caught up
+ * has to be waited out for another lap. The rest at each end is what makes the
+ * two ends legible at all -- a walk that turned round the instant it arrived
+ * would show the last word for one frame.
+ */
+const MARQUEE_SPEED = 30
+const MARQUEE_PAUSE = 800
+
+/**
+ * Where a walking name has got to, `elapsed` milliseconds in.
+ *
+ * Out to the end, a rest, back to the start, a rest, repeat -- and it is a
+ * FUNCTION OF THE CLOCK rather than a position nudged along each frame. Nudging
+ * accumulates: a tile whose animation is throttled in a background tab, or
+ * whose frames arrive unevenly, drifts away from where it should be and has no
+ * way back. Read off the elapsed time, a dropped frame is a frame the name is
+ * simply further along in, which is what a marquee is.
+ *
+ * Pure and exported so the check suite can walk a lap of it without a DOM --
+ * the only part of this that is arithmetic rather than paint.
+ */
+export function marqueeOffset(travel: number, elapsed: number): number {
+  if (!(travel > 0) || !Number.isFinite(elapsed)) return 0
+  const walk = (travel / MARQUEE_SPEED) * 1000
+  const lap = 2 * (MARQUEE_PAUSE + walk)
+  // Modulo twice, so a clock that somehow runs backwards lands in the lap
+  // rather than at a negative offset the scroller would clamp to zero.
+  const t = ((elapsed % lap) + lap) % lap
+
+  if (t < MARQUEE_PAUSE) return 0
+  if (t < MARQUEE_PAUSE + walk) return (travel * (t - MARQUEE_PAUSE)) / walk
+  if (t < 2 * MARQUEE_PAUSE + walk) return travel
+  return travel - (travel * (t - 2 * MARQUEE_PAUSE - walk)) / walk
+}
+
+/** Whether the reader has asked for less movement. Guarded, because this runs
+ *  in a check suite that renders components without a window around them. */
+function wantsStillness(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
 function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
   const startPlacingSolidTemplate = useDoc((s) => s.startPlacingSolidTemplate)
   const addObject = useDoc((s) => s.addObject)
@@ -80,8 +129,62 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
   // The field is only bound while it is being edited, so a rename in another
   // tile -- or a name that arrives from anywhere else -- cannot fight the caret.
   const [draft, setDraft] = useState<string | null>(null)
+  /** Whether the pointer is on this tile, which is what sets a long name off. */
+  const [reading, setReading] = useState(false)
+  const nameField = useRef<HTMLInputElement>(null)
 
   const { object } = custom
+
+  /**
+   * Walk an over-long name past while the pointer is on the tile.
+   *
+   * A name is docked across the top of a square about a hundred pixels wide, so
+   * "Bearing block, left hand" does not fit and never will. At rest it is cut
+   * off with an ellipsis, which says there is more without saying what -- and
+   * the only way to read the rest was to click into the field and arrow across,
+   * which is an edit gesture performed in order to READ. Hovering the tile you
+   * were already looking at costs nothing and answers the question.
+   *
+   * MEASURED, NOT ASSUMED: nothing moves unless the text actually overflows, so
+   * a shelf of short names is a still shelf. The measurement happens after the
+   * ellipsis is turned off, because the point of asking is how wide the text
+   * would be without one.
+   */
+  useEffect(() => {
+    const el = nameField.current
+    if (!reading || !el || wantsStillness()) return
+
+    el.dataset.walking = 'true'
+    const travel = el.scrollWidth - el.clientWidth
+    // A pixel of slack: sub-pixel text metrics routinely leave a fraction of
+    // overflow on a name that plainly fits, and a tile that twitches is worse
+    // than one that says nothing.
+    if (travel <= 1) {
+      delete el.dataset.walking
+      return
+    }
+
+    let raf = 0
+    const start = performance.now()
+    const step = (now: number) => {
+      raf = requestAnimationFrame(step)
+      // The caret owns the scroll while the field is being typed in. The clock
+      // keeps running underneath, so letting go picks the walk up where it
+      // would have been rather than restarting it.
+      if (document.activeElement === el) return
+      el.scrollLeft = marqueeOffset(travel, now - start)
+    }
+    raf = requestAnimationFrame(step)
+
+    return () => {
+      cancelAnimationFrame(raf)
+      delete el.dataset.walking
+      // Back to the beginning, because the beginning is the part of a name that
+      // identifies it -- a shelf left showing the tail ends of three names is a
+      // shelf you cannot read at a glance.
+      el.scrollLeft = 0
+    }
+  }, [reading, custom.name])
 
   const commitName = () => {
     if (draft === null) return
@@ -93,7 +196,20 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
   }
 
   return (
-    <div className="custom-tile" data-custom={custom.id}>
+    <div
+      className="custom-tile"
+      data-custom={custom.id}
+      // The whole tile, not the field: you point at the object to find out what
+      // it is called, and the field is a twenty-pixel strip at the top of it.
+      // `onFocus` and `onBlur` come along for the keyboard, which reaches the
+      // tile through the drag surface's own tab stop -- React's are the
+      // bubbling focusin and focusout, so a child taking focus counts as the
+      // tile taking it.
+      onPointerEnter={() => setReading(true)}
+      onPointerLeave={() => setReading(false)}
+      onFocus={() => setReading(true)}
+      onBlur={() => setReading(false)}
+    >
       <div
         className="custom-grab"
         role="button"
@@ -117,9 +233,27 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
         <ObjectThumbnail object={object} label={custom.name} live={live} />
       </div>
 
+      {/* The name, docked across the top of the tile's own little viewport.
+          Under the square it was a caption on a picture; over it, the tile is
+          one object with its name on it, and the shelf gets a row of chrome per
+          tile back.
+
+          STILL A SIBLING OF THE DRAG SURFACE, NOT A CHILD OF IT, and that is
+          load-bearing rather than incidental. `.custom-grab` is a
+          `role="button"` that starts a placement on pointerdown: a text field
+          inside it would be interactive content inside a button -- which no
+          screen reader can present sensibly -- and every press meant for the
+          caret would start a drag instead. Laid over the square from outside
+          it, the two gestures stay exactly as separate as they were when the
+          field sat below, and the only thing that changed is where it is
+          drawn. */}
       <input
+        ref={nameField}
         className="custom-name"
         value={draft ?? custom.name}
+        // The whole name, for a reader who has asked for less movement and for
+        // anyone who would rather not wait out a lap of it.
+        title={custom.name}
         aria-label={`Name of ${custom.name}`}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commitName}

@@ -300,6 +300,15 @@ type NumberFieldProps = {
    * the row costs no extra height.
    */
   ownUnit?: { unit: Unit; onChange: (unit: Unit) => void }
+  /**
+   * Pinned to a unit chosen ELSEWHERE -- a picker in the panel's header rather
+   * than on the row.
+   *
+   * The same pin `ownUnit` applies, without the buttons: for a panel whose
+   * lengths all mean the same kind of thing, one switch at the top says it once
+   * instead of every row saying it again. See `UnitPicker` and `HollowTool`.
+   */
+  pinUnit?: Unit
   onChange: (v: number) => void
 }
 
@@ -315,13 +324,14 @@ export function NumberField({
   resetTo,
   unit = false,
   ownUnit,
+  pinUnit,
   onChange,
 }: NumberFieldProps) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
   const { unit: shown, labelled, hold, release } = useFieldUnit(
     value,
-    unit || ownUnit !== undefined,
-    ownUnit?.unit
+    unit || ownUnit !== undefined || pinUnit !== undefined,
+    ownUnit?.unit ?? pinUnit
   )
 
   // Everything the control shows moves together -- value, both bounds and the
@@ -362,20 +372,7 @@ export function NumberField({
             slot on purpose: the unit is changed where it is already being read,
             and the row does not grow. */}
         {ownUnit ? (
-          <div className="seg field-units" role="group" aria-label={`${label} unit`}>
-            {UNITS.map((option) => (
-              <button
-                key={option}
-                type="button"
-                className={`seg-btn${ownUnit.unit === option ? ' seg-active' : ''}`}
-                aria-pressed={ownUnit.unit === option}
-                title={`Read and type ${label.toLowerCase()} in ${option}`}
-                onClick={() => ownUnit.onChange(option)}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
+          <UnitPicker unit={ownUnit.unit} onChange={ownUnit.onChange} of={label} />
         ) : (
           shown && labelled && <span className="field-unit">{suffixOf(shown)}</span>
         )}
@@ -392,6 +389,51 @@ export function NumberField({
         onPointerCancel={track.drop}
         onChange={(e) => onChange(clamp(raw(Number(e.target.value))))}
       />
+    </div>
+  )
+}
+
+/**
+ * The two-button unit switch: the one every control that SETS a length wears.
+ *
+ * ITS OWN COMPONENT because there are now two places it belongs. On a field it
+ * stands where the suffix would, so the unit is changed where it is read and
+ * the row costs no extra height -- see `ownUnit`. In a tool panel's header it
+ * stands at the top right and speaks for the whole panel, which is the right
+ * arrangement once a panel has one length in it and a settled opinion about
+ * what that length is measured in. Two copies of five buttons and an
+ * `aria-pressed` would have drifted the first time either was touched.
+ *
+ * `of` names what is being measured, for the accessible name and for a reader
+ * who arrives at the buttons with no idea what they apply to. Given as the
+ * control's own label, in the case it is written in -- the tooltip lowercases
+ * it, since there it lands mid-sentence.
+ */
+export function UnitPicker({
+  unit,
+  onChange,
+  of,
+  className = 'field-units',
+}: {
+  unit: Unit
+  onChange: (unit: Unit) => void
+  of: string
+  className?: string
+}) {
+  return (
+    <div className={`seg ${className}`} role="group" aria-label={`${of} unit`}>
+      {UNITS.map((option) => (
+        <button
+          key={option}
+          type="button"
+          className={`seg-btn${unit === option ? ' seg-active' : ''}`}
+          aria-pressed={unit === option}
+          title={`Read and type ${of.toLowerCase()} in ${option}`}
+          onClick={() => onChange(option)}
+        >
+          {option}
+        </button>
+      ))}
     </div>
   )
 }

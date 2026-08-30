@@ -879,6 +879,37 @@ body {
   margin-bottom: 10px;
 }
 
+/* The panel's own setting, docked against the close button at the right-hand
+   end of the head.
+
+   ONE AUTO MARGIN BETWEEN THE TWO OF THEM, and which one has it decides where
+   the picker lands. `.nav-panel-close` carries one of its own, and two auto
+   margins in a flex row SHARE the slack rather than both pushing right -- so
+   with an auto on each, the picker floated in the middle of the head, tied to
+   neither the title nor the cross. Taking it off the picker instead packs it
+   against the title, which is the same mistake the other way round.
+
+   So the auto sits here, and the rule below takes the close button's away
+   whenever there is a picker in front of it: the pair travels to the end as
+   one, and the setting sits immediately left of the cross. */
+.nav-panel-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.nav-panel-right + .nav-panel-close {
+  margin-left: 0;
+}
+
+/* Smaller than a field's own picker. It speaks for a whole panel from a
+   heading, so it is typed like the heading rather than like a control in the
+   body -- and it must not out-weigh the title it sits beside. */
+.nav-panel-right .seg-btn {
+  padding: 2px 7px;
+  font-size: var(--t-label);
+}
+
 .nav-panel-title {
   font-size: var(--t-label);
   font-weight: 600;
@@ -1788,10 +1819,11 @@ body {
   gap: 8px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  /* A shade less below than above: the scrollbar sits in that gap when the
-     shelf is long enough to have one, and lands on the frame rather than on a
-     tile's name. */
-  padding: 8px 8px 5px;
+  /* Even all round, now that the name docks inside the square instead of
+     hanging under it. The gap below used to be cut short so the scrollbar
+     landed on the frame rather than across a tile's name; there is nothing down
+     there for it to land on any more. */
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   scroll-snap-type: x proximity;
@@ -1799,11 +1831,12 @@ body {
   scrollbar-color: var(--line-3) transparent;
 }
 
+/* One square, with two controls laid over it. The column it used to be -- the
+   model, then the name field under it -- is gone with the name, which now docks
+   inside the viewport; what is left in flow is the square alone, so the tile is
+   exactly as tall as the thing it shows. */
 .custom-tile {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
   min-width: 0;
   /* Lands the row on tile boundaries, so a scroll leaves three whole models
      rather than two and two halves -- which would be four contexts to keep. */
@@ -1818,8 +1851,8 @@ body {
    It stands in the row the tiles use rather than replacing it, so the shelf is
    the same shape and in the same place whether or not anything has been saved
    -- and saving the first object fills a slot instead of swapping one panel
-   for another. Slightly shorter than a filled tile, which carries a name field
-   under its square; an empty slot has no name to hold. */
+   for another. Exactly a filled tile's height, now that the name docks inside
+   the square rather than under it: a slot and a tile are the same square. */
 .custom-slot {
   aspect-ratio: 1;
   min-width: 0;
@@ -1832,8 +1865,9 @@ body {
   scroll-snap-align: start;
 }
 
-/* The drag surface. Square, and separate from the name field below it, so a
-   press meant to rename can never start a placement instead. */
+/* The drag surface. Square, and a separate element from the name field laid
+   over it, so a press meant to rename can never start a placement instead --
+   the field overlaps this box without ever being inside it. */
 .custom-grab {
   position: relative;
   display: grid;
@@ -1921,15 +1955,35 @@ body {
 
 /* Editable at rest rather than behind a click: a shelf of "Custom 1, Custom 2"
    is one a user renames immediately, and a field that looks like a label until
-   clicked hides the one thing this panel exists to let them change. */
+   clicked hides the one thing this panel exists to let them change.
+
+   DOCKED ACROSS THE TOP OF THE VIEWPORT it names, rather than sitting under it.
+   Out of flow, so the tile is the square and nothing else -- see `.custom-tile`
+   -- and laid over the model from OUTSIDE the drag surface, which is what keeps
+   a text field out of the middle of a `role="button"`. See `ClipboardPanel`.
+
+   The insets are not symmetric with the padding by accident: the remove button
+   hangs off the top-right corner and reaches 11px back into the tile, so 14px
+   either side clears it with air to spare and leaves the field centred on the
+   square, which is where a title belongs. */
 .custom-name {
-  width: 100%;
+  position: absolute;
+  top: 4px;
+  left: 14px;
+  right: 14px;
+  z-index: 1;
+  width: auto;
   min-width: 0;
   padding: 2px 4px;
   appearance: none;
   border: 1px solid transparent;
   border-radius: var(--radius);
-  background: transparent;
+  /* A ground of its own, because a MODEL TURNS UNDER THIS. A transparent label
+     over a turntable is legible on one frame of the spin and lost against the
+     silhouette on the next. Mixed from the tile's own surface rather than from
+     a flat black, so it reads the same in both themes and disappears into the
+     tile rather than sitting on it as a second panel. */
+  background: color-mix(in srgb, var(--panel-2) 78%, transparent);
   color: var(--muted);
   font: inherit;
   font-size: var(--t-label);
@@ -1938,8 +1992,20 @@ body {
   transition: border-color 0.12s, color 0.12s, background 0.12s;
 }
 
+/* While an over-long name is walking past -- see `ClipboardPanel` -- the
+   ellipsis has to go. It is a mark that says "there is more", and there is
+   nothing left for it to promise once the more is being shown; left on, it also
+   sits over the tail of the very text it was pointing at. */
+.custom-name[data-walking] {
+  text-overflow: clip;
+}
+
+/* Opaque under the pointer and while being typed in: at that moment it stops
+   being a caption over a picture and becomes a field, and a field you can see
+   the model through is one you cannot read your own typing in. */
 .custom-name:hover {
   border-color: var(--border);
+  background: var(--panel-2);
   color: var(--text);
 }
 
@@ -1957,6 +2023,10 @@ body {
   position: absolute;
   top: -5px;
   right: -5px;
+  /* Over the name, which now reaches along the top of the same square. They are
+     inset to clear each other -- see `.custom-name` -- so this only decides what
+     happens in the corner they both round off. */
+  z-index: 2;
   width: 16px;
   height: 16px;
   display: grid;
@@ -2134,6 +2204,177 @@ body {
 
 .chip-ngon:hover .chip-icon {
   color: var(--accent);
+}
+
+/* --- hollow: a wall thickness and a decision at each end ---
+
+   The two ends are rows rather than fields, because what they hold is a
+   segmented pair rather than a number -- the label sits on the left where every
+   field label in this app sits, and the pair takes the rest. */
+.hollow-end {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.hollow-end-label {
+  color: var(--muted);
+  font-size: var(--t-label);
+}
+
+.hollow-end .seg-btn {
+  padding: 4px 10px;
+}
+
+/* What the piece actually came out as, which is not always what was asked for.
+   Typed like the stock panel's note was and the base panel's still is: this is
+   the app answering, not labelling. */
+.hollow-note {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: var(--t-label);
+  line-height: 1.45;
+}
+
+/* --- the lathe's starting profiles ---
+
+   Four across, two down. The tiles are TALL, unlike everything else in a
+   console that is roughly square, and that is the point: what they show is a
+   piece standing on a lathe, and a bowl and a goblet are told apart by their
+   proportion before they are told apart by their outline. */
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.profile-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 2px 5px;
+  appearance: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--t-label);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.profile-tile:hover {
+  border-color: var(--line-3);
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.profile-tile:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* NO CHOSEN STATE, deliberately, and it is the one thing that makes this panel
+   different from Base above it. A profile is not what the piece IS -- it is
+   what the piece STARTED as, and one push later that is no longer true. A lit
+   tile would go on claiming a shape the clay had left. */
+.profile-icon {
+  width: 30px;
+  height: 38px;
+  fill: var(--surface-4);
+  stroke: var(--line-4);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
+.profile-tile:hover .profile-icon {
+  fill: var(--surface-3);
+  stroke: var(--accent);
+}
+
+.profile-name {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* --- the lathe's base shape: circle, or one of eight polygons ---
+
+   Two controls, one under the other, because the choice is made in two steps:
+   round or faceted, and only then how many facets. The seg above is the app's
+   own segmented pair; the grid below is this panel's alone. */
+.base-modes {
+  margin-bottom: 8px;
+}
+
+/* Half the panel each, rather than two buttons and a stretch of empty border.
+   The pair is a two-way switch over the same question, so neither half has a
+   claim on more room than the other -- and full width lines it up with the row
+   of polygons below, which is the second half of the same control. */
+.base-modes .seg-btn {
+  flex: 1;
+}
+
+/* ONE ROW, in order, three to ten: the family is a run rather than a set, and a
+   run reads as a run when it is laid out as one. All eight fit across this
+   console at about the size of a unit button, which is the smallest target the
+   app already asks anyone to hit.
+
+   `auto-fit` rather than a fixed eight, so the row wraps into two instead of
+   crushing its tiles the day the console is narrowed or the family grows. */
+.base-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(42px, 1fr));
+  gap: 6px;
+}
+
+.base-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 0 4px;
+  appearance: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--t-label);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.base-side:hover {
+  border-color: var(--line-3);
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+/* The chosen one wears the accent as an outline and a tint rather than as a
+   fill: the shape inside the tile IS the information, and a solid accent
+   background would turn the one polygon that matters into a silhouette against
+   its own colour. The same treatment an engaged tool wears in the bar -- see
+   `.nav-group-active` -- minus the edge strip, which needs a row to run down. */
+.base-side-on,
+.base-side-on:hover {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+.base-side-icon {
+  width: 26px;
+  height: 26px;
+}
+
+.base-side:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* --- fields --- */
@@ -3407,6 +3648,22 @@ body {
   stroke-linejoin: round;
 }
 
+/* Where the flats of a faceted piece run, inside the corners the tools work.
+
+   Dashed, and in the same brightest line token the stock ghost wears, for the
+   same reason: it is a REFERENCE rather than an edge of the material -- the
+   piece really does reach the silhouette, at its corners -- and it has to read
+   over the clay it is drawn on top of. A shorter dash than the stock's, so the
+   two references are told apart where they cross: this one is a fact about the
+   section, that one about where the lump started. */
+.lathe-flats {
+  fill: none;
+  stroke: var(--line-4);
+  stroke-width: 1px;
+  stroke-dasharray: 2 4;
+  opacity: 0.6;
+}
+
 /* The rings a hand leaves in a turning piece. Faint on purpose: they say "turned"
    and they show the curve from the inside, and the moment they compete with the
    silhouette they are decoration that has taken over. */
@@ -3510,6 +3767,78 @@ body {
   color: var(--line-4);
 }
 
+/* The zoom, directly over the readout and sharing its right edge, so the corner
+   reads as one stack: how big the piece is, and how big it is being drawn.
+
+   The bottom offset clears the readout rather than being a round number --
+   14px of margin, the readout's own 6+6 of padding and its line -- so the two
+   sit a gap apart however the label metrics fall.
+
+   It is a control where the readout is a label, so unlike the readout it takes
+   pointer events, and it carries the panel float rather than a background of
+   its own: one surface with three buttons on it, not three floating chips. */
+.lathe-zoom {
+  position: absolute;
+  right: 14px;
+  bottom: 52px;
+  z-index: 20;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  user-select: none;
+}
+
+/* Both kinds of button in here are smaller and quieter than a console button:
+   this is furniture over a drawing, and it must not out-shout the piece. */
+.lathe-zoom .btn {
+  padding: 3px 7px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: var(--t-label);
+  line-height: 1.2;
+}
+
+.lathe-zoom .btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--line-3);
+  color: var(--text);
+}
+
+.lathe-zoom .btn:disabled {
+  /* Dead, not gone -- see `ZoomControl`. Dimmed rather than hidden so the
+     corner keeps its shape and the control keeps its place. */
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The steppers: square, and wide enough that a plus and a minus of very
+   different widths do not make the strip lopsided. */
+.lathe-zoom-step {
+  min-width: 22px;
+  font-family: var(--mono);
+}
+
+/* The percentage. Tabular, so the strip does not jitter as the number changes
+   under a wheel, and wide enough for the longest reading the range produces. */
+.lathe-zoom-fit {
+  min-width: 52px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The base, last in the readout: a word among figures, so it is set apart from
+   them the way the unit suffixes are -- not mono, and not tabular, because it
+   is the one thing in this corner that is not a measurement. */
+.lathe-readout-base {
+  font-family: var(--font);
+  letter-spacing: 0.02em;
+}
+
 /* The hint that says how to start, lifted clear of the faceplate.
 
    The modelling screen puts it at the bottom of the scene because the bottom of
@@ -3578,17 +3907,17 @@ body {
 
 /* The way out of a piece that has gone wrong. Full width, because it is the
    panel's one action and a button narrower than the fields above it would read
-   as an afterthought rather than as the thing you came here for. */
+   as an afterthought rather than as the thing you came here for.
+
+   Uppercased here rather than in the markup -- see `StockPanel` -- so the word
+   in the DOM stays a word. The tracking goes with the caps: capitals set at
+   body spacing read as a solid block, which is why every uppercase run in this
+   app carries some. */
 .stock-fresh {
   width: 100%;
   margin-top: 5px;
-}
-
-.stock-note {
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: var(--t-label);
-  line-height: 1.45;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
 }
 
 /* THE WAY OFF THE LATHE, in the top-right corner: the piece as a solid, on the

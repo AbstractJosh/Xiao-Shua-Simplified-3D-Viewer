@@ -108,18 +108,26 @@ export function StockPanel() {
               this screen that throws work away -- there is no undo on the
               lathe. Dead while the lump is untouched rather than hidden: a
               control that appears the first time you push the clay is one
-              nobody knows is there for the one press they will want it for. */}
+              nobody knows is there for the one press they will want it for.
+
+              ONE WORD. It said `Centre a fresh lump`, which described the
+              mechanism -- the stock is kept and re-centred, the shaping is not
+              -- and made the panel's one action the longest string in it. What
+              a user is looking for at that moment is the way back, and the way
+              back is called Reset everywhere else they have ever met one.
+
+              Sentence case in the markup and uppercased by CSS, the way the
+              panel's own title strip is: a screen reader says "Reset" rather
+              than spelling it, and the caps stay a fact about how this app sets
+              a heading rather than about what the button is named. */}
           <button
             type="button"
             className="btn stock-fresh"
             disabled={isFresh(clay)}
             onClick={centreFresh}
           >
-            Centre a fresh lump
+            Reset
           </button>
-          <p className="stock-note">
-            Changing the size carries the shape with it. A fresh lump throws it away.
-          </p>
         </div>
       )}
     </div>
