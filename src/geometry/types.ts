@@ -534,11 +534,20 @@ const POLYGON_PREFIX: Record<number, string> = {
   6: 'Hexagonal',
   7: 'Heptagonal',
   8: 'Octagonal',
+  9: 'Nonagonal',
   10: 'Decagonal',
   12: 'Dodecagonal',
 }
 
-function polygonPrefix(sides: number): string {
+/**
+ * The adjective a solid standing on `sides` wears in its name.
+ *
+ * Exported for the lathe, whose pieces are meshes and so have no `BaseSolid`
+ * kind to be named from -- but a piece turned on a hexagon and a hexagonal
+ * prism from the palette are the same shape of thing, and they had better not
+ * be called two different words for it. See `pieceName`.
+ */
+export function polygonPrefix(sides: number): string {
   return POLYGON_PREFIX[sides] ?? `${sides}-sided`
 }
 

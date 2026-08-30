@@ -11,6 +11,13 @@ import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION } from './dimensions'
  * each height. Store that, and every other fact about the piece is arithmetic:
  * its silhouette, its widest point, the section the viewport draws.
  *
+ * THE ONE THING THAT IS NOT A RADIUS is `sides`, and it changes none of the
+ * above. A piece may be turned round or on a triangle through a decagon, and
+ * every one of those has the same PROFILE -- a hexagonal prism and a cylinder
+ * are the same rectangle from the side, which is why the drawing, the tools and
+ * every function here carry on unaware of it. It is settled in one place, where
+ * the wall is swept into triangles: see `revolveClay`.
+ *
  * WHY NOT `erode.ts`. The modelling screen already has a brush that pushes a
  * surface around, and it is a serious piece of work -- it re-tessellates under
  * the pointer, guards against the mesh folding through itself, and relaxes
@@ -56,6 +63,9 @@ export const CLAY_RINGS = 96
  * are fractions of the stock radius (see `wallBounds`), and the view frames
  * itself against the stock so the piece does not swim about the screen as it
  * is shaped.
+ *
+ * `sides` is the SECTION -- what the lump would look like sawn through, which
+ * is the one fact about it this screen cannot draw. See below.
  */
 export type Clay = {
   /** How tall the lump stands on the lathe. */
@@ -63,12 +73,69 @@ export type Clay = {
   /** How far the wall stood from the axis before anyone touched it. */
   radius: number
   /**
+   * How many flats go round the piece, or null for a round one.
+   *
+   * NOTHING ELSE IN THIS FILE READS IT, and that is the point rather than an
+   * oversight. A prism and a cylinder of the same profile have the SAME
+   * SILHOUETTE -- turn a hexagonal piece to a waist and the waist is in the
+   * same place -- so every function here goes on working one row of radii and
+   * the whole screen goes on drawing one filled path. The section is settled
+   * once, when the wall is swept into triangles on its way to the clipboard:
+   * see `revolveClay`.
+   *
+   * THE WALL IS THE CORNERS. A radius is the distance from the axis to a
+   * corner of the section, so the polygon is INSCRIBED in the profile the
+   * screen draws and the flats sit `flatFactor` closer in. That is not a new
+   * convention invented here -- the sweep has always been an inscribed 64-gon,
+   * and every prism in the palette measures its radius the same way (see
+   * `prismFaces`). Picking a hexagon is picking a coarser sweep, not a
+   * different kind of solid.
+   */
+  sides: number | null
+  /**
    * The wall: one radius per ring, bottom first, always `CLAY_RINGS` long.
    *
    * Never empty and never partial. Every function here takes a whole wall and
    * hands back a whole wall, so no consumer has to ask whether a ring exists.
    */
   wall: number[]
+  /**
+   * The bore: how thick a wall to leave and which ends are open, or null for a
+   * piece that is solid all through.
+   *
+   * NOT A SECOND WALL. The obvious way to hollow a piece is to remember an
+   * inner profile beside the outer one and let the tools shape both, and it is
+   * the wrong way for this screen: it doubles what every stroke has to decide
+   * (which wall am I on?), it lets the two cross, and it asks somebody to turn
+   * the inside of a vessel they cannot see. What people mean by "hollow it" is
+   * a WALL THICKNESS -- take the middle out and leave me half a centimetre --
+   * which is one number, cannot self-intersect, and follows every stroke made
+   * afterwards for nothing.
+   *
+   * So the inside is DERIVED rather than stored: see `bore`, which offsets this
+   * wall inward and works out how far the cavity can actually reach. Shape the
+   * outside and the inside follows, which is what happens when you thin a pot
+   * on a real wheel.
+   */
+  hollow: Hollow | null
+}
+
+/**
+ * How a piece is hollowed: one thickness, and a decision at each end.
+ *
+ * THE TWO ENDS ARE INDEPENDENT, and that is what makes this one control instead
+ * of four shapes. Capped at the bottom and open at the top is a cup; open at
+ * both is a pipe; capped at both is a sealed void, which is what "hollow it for
+ * printing" means and shows from outside only when something cuts it; open at
+ * the bottom with a lid on is the same cup upside down, which is a bell.
+ */
+export type Hollow = {
+  /** How much material to leave, in scene units. The floor and the lid are the
+   *  same thickness -- one number is the whole control. */
+  thickness: number
+  /** Closed by material at the rim / at the faceplate. */
+  capTop: boolean
+  capBottom: boolean
 }
 
 /**
@@ -85,6 +152,61 @@ export const CLAY_HEIGHT_MIN = MIN_DIMENSION
 export const CLAY_HEIGHT_MAX = MAX_SIZE
 export const CLAY_RADIUS_MIN = MIN_DIMENSION
 export const CLAY_RADIUS_MAX = MAX_RADIUS
+
+/**
+ * And what the section may be: a triangle through a decagon, or round.
+ *
+ * THREE at the bottom because two flats do not enclose anything -- a piece with
+ * fewer than three sides is not a thinner piece, it is no piece at all.
+ *
+ * TEN at the top because that is where the family stops being read as a shape
+ * and starts being read as a bad circle. A decagonal piece next to a round one
+ * is plainly a decagon; a fourteen-sided one is a cylinder somebody has drawn
+ * badly, and offering it would be offering the user a way to make the sweep
+ * look broken. Anyone who wants the smooth thing already has it one button
+ * away, at the 64 facets `TURN_FACETS` sweeps a round piece with.
+ */
+export const CLAY_SIDES_MIN = 3
+export const CLAY_SIDES_MAX = 10
+
+/**
+ * How thin a wall may be left, and how thick.
+ *
+ * The floor is `MIN_DIMENSION`, a millimetre, which is the smallest thing this
+ * app draws at all -- and, not by coincidence, about the thinnest wall anything
+ * printed from one of these would survive.
+ *
+ * The ceiling is a quarter of the largest radius the app allows. Past that the
+ * hollow stops being a hollow on any piece anybody is turning, and the dial
+ * would spend most of its travel doing nothing. A wall thicker than the piece
+ * is wide is not refused -- it simply leaves nothing to bore. See `bore`.
+ */
+export const CLAY_WALL_MIN = MIN_DIMENSION
+export const CLAY_WALL_MAX = MAX_RADIUS / 4
+
+/**
+ * The wall a piece is left with when hollowing is first switched on: 6 mm.
+ *
+ * Around a seventh of the default lump's radius, which reads as a made thing
+ * rather than as a shell -- plainly hollow in section, and thick enough that
+ * the next stroke does not open a hole in it.
+ */
+export const DEFAULT_CLAY_WALL = 0.06
+
+/**
+ * How narrow the cavity may get before it counts as pinched shut.
+ *
+ * A millimetre of bore is not a bore. Below this the piece is simply solid
+ * there -- which is what stops a vase's neck being drilled to a hair, and what
+ * gives the cavity its ends when the caps do not.
+ */
+const BORE_MIN = MIN_DIMENSION
+
+/** Every side count the selector offers, in the order it reads them out. */
+export const CLAY_SIDES: number[] = Array.from(
+  { length: CLAY_SIDES_MAX - CLAY_SIDES_MIN + 1 },
+  (_, i) => CLAY_SIDES_MIN + i
+)
 
 /**
  * The lump the screen opens on: 15 cm tall and 8 cm across.
@@ -139,14 +261,54 @@ export function wallBounds(radius: number): { min: number; max: number } {
   }
 }
 
+/**
+ * A section this screen can actually turn: whole, and in range.
+ *
+ * Null stays null and never becomes a number. Round is not a polygon with a
+ * side count nobody supplied -- it is the other option -- and a clamp that
+ * quietly answered `CLAY_SIDES_MIN` would turn every unset piece into a
+ * triangle.
+ */
+export function clampSides(sides: number | null): number | null {
+  if (sides === null || !Number.isFinite(sides)) return null
+  return clamp(Math.round(sides), CLAY_SIDES_MIN, CLAY_SIDES_MAX)
+}
+
+/**
+ * How far a FLAT stands from the axis, per unit of wall.
+ *
+ * The wall is the corners -- see `Clay.sides` -- and the flat between two of
+ * them cuts the corner off, so it lies at the apothem: `cos(pi / n)` of the
+ * radius. A hexagon keeps 87% of it, a triangle half, and a round piece all of
+ * it, which is why this is 1 for null rather than a special case anywhere else.
+ *
+ * What it is FOR: the viewport draws it as a second, fainter profile inside the
+ * silhouette, so the one thing the side view cannot show -- that this piece has
+ * corners and where its narrowest side sits -- is on screen while it is being
+ * shaped rather than a surprise on the clipboard.
+ */
+export function flatFactor(sides: number | null): number {
+  return sides === null ? 1 : Math.cos(Math.PI / sides)
+}
+
 /** A fresh lump: the stock, unworked, every ring at the same radius. */
 export function freshClay(
   height: number = DEFAULT_CLAY_HEIGHT,
-  radius: number = DEFAULT_CLAY_RADIUS
+  radius: number = DEFAULT_CLAY_RADIUS,
+  sides: number | null = null
 ): Clay {
   const h = clamp(height, CLAY_HEIGHT_MIN, CLAY_HEIGHT_MAX)
   const r = clamp(radius, CLAY_RADIUS_MIN, CLAY_RADIUS_MAX)
-  return { height: h, radius: r, wall: new Array<number>(CLAY_RINGS).fill(r) }
+  return {
+    height: h,
+    radius: r,
+    sides: clampSides(sides),
+    // Solid. Hollowing is a thing you do to a piece rather than a thing a lump
+    // arrives as, and `centreFresh` puts back a solid lump for the same reason
+    // it puts back an unworked one.
+    hollow: null,
+    wall: new Array<number>(CLAY_RINGS).fill(r),
+  }
 }
 
 /**
@@ -186,9 +348,28 @@ export type Dab = {
   reach: number
   /** How far toward the tool the middle of the brush travels this instant, 0..1. */
   bite: number
-  /** Which way the tool works: in, taking material away, or out, adding it. */
-  push: boolean
+  /** Which of the three it is. */
+  tool: ClayTool
 }
+
+/**
+ * The three things a hand can do to a turning wall.
+ *
+ * `push` takes material away and `pull` adds it: one behaviour with a direction
+ * on it, which is why they are one function below.
+ *
+ * `smooth` is the odd one, and it is the odd one in an interesting way -- it is
+ * the SECOND HALF of the other two with the first half taken off. Every dab
+ * already relaxes the wall it has just moved, because a tool that only
+ * displaced would leave a crease under its middle; smooth is that relax on its
+ * own, aimed where you hold it and displacing nothing. So the third tool costs
+ * a branch rather than a pipeline. See `mold`.
+ *
+ * Named here rather than imported from the tool store, which knows about React
+ * and about which button is lit. This is the geometry's own word for it, and
+ * the store's `LatheTool` is this plus `null` for empty hands.
+ */
+export type ClayTool = 'push' | 'pull' | 'smooth'
 
 /**
  * How much of the way to the tool the wall travels in `ms` of contact.
@@ -225,6 +406,22 @@ export function bite(strength: number, ms: number): number {
  */
 const RELAX = 0.4
 
+/**
+ * And how much the smoothing TOOL gives up, when relaxing is the whole of what
+ * it is doing.
+ *
+ * Half again as much as a dab's own tidy-up, because the two are asking for
+ * different things: `RELAX` runs after every push and must never take the shape
+ * the user just cut, while this IS the shape the user asked for.
+ *
+ * Under one, and that is not a taste: a ring set to the average of its
+ * neighbours in one step is Jacobi iteration, which oscillates on the
+ * highest-frequency wobble there is -- alternate rings swapping places forever
+ * rather than settling. Six tenths converges on every frequency, and since a
+ * held tool relaxes sixty times a second, converging is all it needs to do.
+ */
+const SMOOTH = 0.6
+
 /** Smoothstep: flat at both ends, so a dab meets the untouched wall without a
  *  corner. The same falloff the modelling brushes use, in one dimension. */
 const falloff = (t: number) => t * t * (3 - 2 * t)
@@ -233,12 +430,19 @@ const falloff = (t: number) => t * t * (3 - 2 * t)
  * Work the wall with a tool held at one spot, and hand back the lump that
  * leaves.
  *
- * TWO TOOLS, ONE FUNCTION, ONE COMPARISON BETWEEN THEM -- the arrangement
- * `erode.ts` arrived at for the torch and the sculpt tool, for the same reason:
- * push and pull are not two behaviours, they are one behaviour with a direction
- * on it, and written twice they would drift the first time either was tuned.
- * `Dab.push` chooses `Math.min` over `Math.max`, and nothing else in here
- * changes.
+ * THREE TOOLS, ONE FUNCTION -- the arrangement `erode.ts` arrived at for the
+ * torch and the sculpt tool, for the same reason: push and pull are not two
+ * behaviours, they are one behaviour with a direction on it, and written twice
+ * they would drift the first time either was tuned. `Dab.tool` chooses
+ * `Math.min` over `Math.max`, and nothing else in here changes.
+ *
+ * AND SMOOTH IS THE THIRD BY SUBTRACTION. Every dab ends with a relax pass over
+ * the window it touched -- see `RELAX` -- so the smoothing tool is this same
+ * function with the displacement skipped and that pass turned up. It reaches
+ * the same rings, falls off the same way, obeys the same bounds. What it does
+ * NOT do is aim: where the pointer sits across the wall is ignored, because
+ * there is nothing to aim AT. Only the height matters, which is why the ghost
+ * circle is all the user needs to see.
  *
  * THE TOOL ONLY EVER WORKS ITS OWN WAY. Push may not push a ring outward, even
  * one that is already inside the pointer, and pull may not draw one in. That is
@@ -263,6 +467,7 @@ const falloff = (t: number) => t * t * (3 - 2 * t)
 export function mold(clay: Clay, dab: Dab, from: number[] = clay.wall): Clay {
   const { min, max } = wallBounds(clay.radius)
   const strength = clamp(dab.bite, 0, 1)
+  const smoothing = dab.tool === 'smooth'
   // A reach of zero is a tool with no width: it would divide by nothing below,
   // and touch a single ring if it touched anything at all.
   const reach = Math.max(dab.reach, MIN_DIMENSION)
@@ -295,26 +500,35 @@ export function mold(clay: Clay, dab: Dab, from: number[] = clay.wall): Clay {
      * at its rim, with the falloff between: holding still finishes a dish and
      * then stops.
      */
-    const limit = from[i] + (dab.radius - from[i]) * shape
-    // And the tool only ever works its own way, whatever the limit says.
-    const aim = dab.push ? Math.min(limit, r) : Math.max(limit, r)
+    if (!smoothing) {
+      const limit = from[i] + (dab.radius - from[i]) * shape
+      // And the tool only ever works its own way, whatever the limit says.
+      const aim = dab.tool === 'push' ? Math.min(limit, r) : Math.max(limit, r)
 
-    worked[i] = clamp(r + (aim - r) * shape * strength, min, max)
-    if (worked[i] !== r) moved = true
+      worked[i] = clamp(r + (aim - r) * shape * strength, min, max)
+      if (worked[i] !== r) moved = true
+    }
 
     if (lo < 0) lo = i
     hi = i
   }
 
-  // Nothing moved: no ring in reach, no strength behind it, or a tool aimed the
-  // way it does not work. Not even the relax below runs -- a push held wide of
-  // the wall must be as inert as a push held off the piece entirely.
-  if (lo < 0 || !moved) return clay
+  // Nothing in reach: the tool is off the piece, or off the end of it.
+  if (lo < 0) return clay
+  // Nothing moved: no strength behind it, or a tool aimed the way it does not
+  // work. Not even the relax below runs -- a push held wide of the wall must be
+  // as inert as a push held off the piece entirely. Smoothing displaces nothing
+  // by definition, so it is not asked this question; whether IT moved anything
+  // is a question only the relax can answer, and it is asked below.
+  if (!moved && !smoothing) return clay
 
   // Then the relax, over the same window and weighted by the same falloff, so
   // it fades out where the dab does and the wall beyond the brush stays
   // untouched. Read from `worked`, written to `wall`: a pass that read its own
   // output would smear the first ring's correction along the whole window.
+  //
+  // For the smoothing tool this pass IS the tool, and it is turned up to match.
+  const give = smoothing ? SMOOTH : RELAX
   const wall = worked.slice()
   for (let i = lo; i <= hi; i += 1) {
     // Mirrored at the ends rather than clamped to zero: the base ring and the
@@ -323,9 +537,17 @@ export function mold(clay: Clay, dab: Dab, from: number[] = clay.wall): Clay {
     const before = worked[i === 0 ? 0 : i - 1]
     const after = worked[i === CLAY_RINGS - 1 ? CLAY_RINGS - 1 : i + 1]
     const gap = Math.abs(ringHeight(clay, i) - dab.y)
-    const shape = falloff(Math.max(0, 1 - gap / reach)) * strength * RELAX
+    const shape = falloff(Math.max(0, 1 - gap / reach)) * strength * give
     wall[i] = clamp(worked[i] + ((before + after) / 2 - worked[i]) * shape, min, max)
   }
+
+  // A smoothing tool held against a wall that is already smooth -- a fresh
+  // cylinder, or a curve it has already finished -- has done nothing, and must
+  // hand back the very lump it was given rather than an equal one. The other
+  // two tools answered this above; this is the same promise, asked after the
+  // fact because for them the answer is known before the relax and for this one
+  // it is not.
+  if (smoothing && wall.every((r, i) => r === clay.wall[i])) return clay
 
   return { ...clay, wall }
 }
@@ -360,7 +582,284 @@ export function resize(clay: Clay, next: { height?: number; radius?: number }): 
   const { min, max } = wallBounds(radius)
   const wall =
     factor === 1 ? clay.wall : clay.wall.map((r) => clamp(r * factor, min, max))
-  return { height, radius, wall }
+  // Spread rather than listed out, so the section rides along: a piece resized
+  // is the same piece at another size, and it does not turn round on the way.
+  return { ...clay, height, radius, wall }
+}
+
+/** A wall thickness this screen can actually leave: in range, and a number. */
+export function clampWall(thickness: number): number {
+  if (!Number.isFinite(thickness)) return DEFAULT_CLAY_WALL
+  return clamp(thickness, CLAY_WALL_MIN, CLAY_WALL_MAX)
+}
+
+/**
+ * The outer wall's radius at any height, not just at a ring.
+ *
+ * The bore is sampled on a grid of its OWN -- it starts and stops at exact
+ * heights the outer rings know nothing about, because a floor is `thickness`
+ * off the faceplate and that lands between rings. So it has to be able to ask
+ * the wall a question at any height, and this is that question. Straight
+ * between rings, which is exactly what the drawing and the sweep both do with
+ * them. See `silhouette`.
+ */
+export function wallAt(clay: Clay, height: number): number {
+  const t = clamp(height / (clay.height || 1), 0, 1) * (CLAY_RINGS - 1)
+  const i = Math.floor(t)
+  if (i >= CLAY_RINGS - 1) return clay.wall[CLAY_RINGS - 1]
+  return clay.wall[i] + (clay.wall[i + 1] - clay.wall[i]) * (t - i)
+}
+
+/**
+ * How many samples the cavity's own profile is remembered at.
+ *
+ * The same count the outer wall uses, for the same reason and with none of the
+ * same constraints: the bore is recomputed from scratch whenever anything
+ * changes, so this is a drawing resolution rather than a memory. Matching the
+ * wall means a hollow piece's inside is described as finely as its outside,
+ * which is what stops a smooth outer curve reading as a faceted inner one.
+ */
+export const BORE_SAMPLES = CLAY_RINGS
+
+/**
+ * The cavity inside a hollowed piece: where it starts and stops, how wide it is
+ * all the way up, and which ends it comes out of.
+ *
+ * ONE CAVITY, NOT SEVERAL. A wall offset inward can be interrupted -- pinch a
+ * vase's neck below twice the wall thickness and the inside is two pockets with
+ * solid clay between them -- and this returns the ONE that matters rather than
+ * a list. Which one is decided the way a person with a drill would decide it:
+ *
+ *   - An open top means boring from the top, so the cavity is the run that
+ *     reaches the rim, however far down it gets before the neck closes.
+ *   - Failing that, an open bottom means boring from underneath.
+ *   - With both ends capped there is no opening to bore from, so the cavity is
+ *     simply the biggest pocket the wall leaves.
+ *
+ * That rule is worth stating because the alternatives are worse in a way that
+ * shows up immediately: "the widest run" would hollow a goblet's FOOT and leave
+ * the cup solid, since a foot is wider than a bowl on a stem.
+ *
+ * OPEN IS NOT THE SAME AS UNCAPPED. An end is open only if the user asked for
+ * it AND the cavity actually reaches that end. Ask for a pipe and pinch the
+ * middle shut and you get a blind hole, which is what would come off a real
+ * lathe -- and `openTop` / `openBottom` say so, so the panel can tell you.
+ *
+ * Null when there is nothing to bore: no hollow asked for, a wall thicker than
+ * the piece, or a lump too short to hold a floor and a lid.
+ */
+export type Bore = {
+  /** The cavity's floor and ceiling, in scene units off the faceplate. */
+  lo: number
+  hi: number
+  /** Whether material really is missing at each end of the piece. */
+  openBottom: boolean
+  openTop: boolean
+  /** One radius per sample, evenly spread from `lo` to `hi`, ends included. */
+  wall: number[]
+}
+
+export function bore(clay: Clay): Bore | null {
+  const hollow = clay.hollow
+  if (hollow === null) return null
+  const thickness = clampWall(hollow.thickness)
+
+  // The window the caps leave. A floor and a lid on a lump shorter than the two
+  // of them together is a solid lump, and says so by handing back nothing.
+  const lo = hollow.capBottom ? thickness : 0
+  const hi = clay.height - (hollow.capTop ? thickness : 0)
+  if (hi - lo < BORE_MIN) return null
+
+  // The widest the cavity may be at each sample: the wall, less its thickness.
+  // Anything under `BORE_MIN` is pinched shut, and marked so by a zero.
+  const span = hi - lo
+  const radii = new Array<number>(BORE_SAMPLES)
+  for (let i = 0; i < BORE_SAMPLES; i += 1) {
+    const y = lo + (i / (BORE_SAMPLES - 1)) * span
+    const r = wallAt(clay, y) - thickness
+    radii[i] = r >= BORE_MIN ? r : 0
+  }
+
+  // Every unbroken run of open samples, as index pairs.
+  const runs: [number, number][] = []
+  let start = -1
+  for (let i = 0; i < BORE_SAMPLES; i += 1) {
+    if (radii[i] > 0 && start < 0) start = i
+    if (radii[i] <= 0 && start >= 0) {
+      runs.push([start, i - 1])
+      start = -1
+    }
+  }
+  if (start >= 0) runs.push([start, BORE_SAMPLES - 1])
+  if (runs.length === 0) return null
+
+  const last = BORE_SAMPLES - 1
+  const fromTop = !hollow.capTop ? runs.find((run) => run[1] === last) : undefined
+  const fromBottom = !hollow.capBottom ? runs.find((run) => run[0] === 0) : undefined
+  const widest = runs.reduce((best, run) => {
+    const reach = (r: [number, number]) => Math.max(...radii.slice(r[0], r[1] + 1))
+    return reach(run) > reach(best) ? run : best
+  })
+  const [from, to] = fromTop ?? fromBottom ?? widest
+
+  // Resampled onto the chosen run's own span, so the cavity is described at the
+  // same resolution however short it turns out to be. The ends are pulled in to
+  // where the wall actually closes rather than left at the last open sample --
+  // a floor half a millimetre thick between the last sample and the pinch is a
+  // sliver no sweep should have to carry.
+  const runLo = lo + (from / last) * span
+  const runHi = lo + (to / last) * span
+  const runSpan = runHi - runLo
+  const wall = new Array<number>(BORE_SAMPLES)
+  for (let i = 0; i < BORE_SAMPLES; i += 1) {
+    const y = runLo + (i / (BORE_SAMPLES - 1)) * (runSpan || 0)
+    wall[i] = Math.max(BORE_MIN, wallAt(clay, y) - thickness)
+  }
+
+  return {
+    lo: runLo,
+    hi: runHi,
+    openBottom: !hollow.capBottom && from === 0,
+    openTop: !hollow.capTop && to === last,
+    wall,
+  }
+}
+
+/**
+ * A SHAPE THE LATHE CAN START FROM: a handful of control points up the piece.
+ *
+ * Why a table of profiles exists at all. Every piece on this screen begins as
+ * the same cylinder, and the first two minutes of every sitting are spent
+ * turning that cylinder into roughly the KIND of thing the person came to make
+ * -- a bowl is wide and shallow, a vase has a belly and a neck, a goblet has a
+ * stem. None of that is the interesting part of the work, and all of it is the
+ * part that is hardest with two tools and no reference: getting a stem thin
+ * enough without pinching it off is a minute of careful pushing before the
+ * shaping proper starts.
+ *
+ * IN MULTIPLES OF THE STOCK RADIUS rather than in scene units, so a profile is
+ * a shape rather than a size: loaded onto a thumbnail-sized lump it makes a
+ * thumbnail-sized goblet, and the stock fields go on meaning what they meant.
+ * Every value here lives inside `CLAY_PINCH`..`CLAY_FLARE`, which is what the
+ * wall may be worked to -- a profile that could not have been reached with the
+ * tools would be the app offering a shape it then refuses to let you edit.
+ *
+ * FEW POINTS, FAIRED ON THE WAY IN. Six or seven pairs describe any of these,
+ * and the run between two of them is straight -- so `profileWall` relaxes the
+ * sampled row before handing it over, which turns the corners into the curves
+ * the numbers were meant to describe. Writing 96 radii per profile by hand
+ * would be the same shape and nobody could tune it.
+ */
+export type ClayProfile = {
+  id: string
+  label: string
+  /** `[height up the piece 0..1, radius as a multiple of the stock]`, bottom
+   *  first. The first point must sit at 0 and the last at 1. */
+  points: [number, number][]
+}
+
+export const CLAY_PROFILES: ClayProfile[] = [
+  // The stock itself, and it earns its place: it is the way back to a straight
+  // wall without throwing the stock away, and the tile that shows what all the
+  // others are a departure FROM.
+  { id: 'cylinder', label: 'Cylinder', points: [[0, 1], [1, 1]] },
+  { id: 'bowl', label: 'Bowl', points: [[0, 0.55], [0.25, 1.1], [0.6, 1.5], [1, 1.65]] },
+  {
+    id: 'vase',
+    label: 'Vase',
+    points: [[0, 0.7], [0.15, 1.15], [0.38, 1.4], [0.7, 0.72], [0.88, 0.55], [1, 0.78]],
+  },
+  {
+    id: 'goblet',
+    label: 'Goblet',
+    points: [[0, 1.2], [0.08, 1.1], [0.16, 0.28], [0.42, 0.24], [0.6, 0.85], [1, 1.25]],
+  },
+  { id: 'cone', label: 'Cone', points: [[0, 1.55], [1, 0.12]] },
+  { id: 'barrel', label: 'Barrel', points: [[0, 0.85], [0.5, 1.35], [1, 0.85]] },
+  { id: 'spool', label: 'Spool', points: [[0, 1.3], [0.2, 1.25], [0.5, 0.5], [0.8, 1.25], [1, 1.3]] },
+  { id: 'dome', label: 'Dome', points: [[0, 1.25], [0.45, 1.15], [0.8, 0.8], [1, 0.18]] },
+]
+
+/**
+ * How many fairing passes a loaded profile gets.
+ *
+ * Enough to take the corners out of six straight runs and not so many that a
+ * goblet's stem is smoothed back into a cone. Each pass is the same Laplacian
+ * step `mold` relaxes with, run over the whole wall rather than under a tool.
+ */
+const PROFILE_FAIRING = 24
+
+/** The radius a profile asks for at height fraction `t`, before fairing. */
+function sampleProfile(profile: ClayProfile, t: number): number {
+  const points = profile.points
+  for (let i = 1; i < points.length; i += 1) {
+    const [t1, r1] = points[i]
+    if (t > t1 && i < points.length - 1) continue
+    const [t0, r0] = points[i - 1]
+    const span = t1 - t0
+    // Two points at the same height would be a step in the profile, which this
+    // model cannot hold -- one radius per height. Take the upper one.
+    const k = span <= 0 ? 1 : clamp((t - t0) / span, 0, 1)
+    return r0 + (r1 - r0) * k
+  }
+  return points[0][1]
+}
+
+/**
+ * A profile, as a wall for this lump: sampled at every ring, faired, and
+ * bounded by what the stock allows.
+ *
+ * Pure and taking the clay rather than reading a store, so `engine-check` can
+ * load a vase and measure it. The bounds are the same ones every tool obeys, so
+ * a profile lands somewhere the tools can carry on from rather than somewhere
+ * only the palette can reach.
+ */
+export function profileWall(clay: Clay, profile: ClayProfile): number[] {
+  const { min, max } = wallBounds(clay.radius)
+  const wall = new Array<number>(CLAY_RINGS)
+  for (let i = 0; i < CLAY_RINGS; i += 1) {
+    const t = i / (CLAY_RINGS - 1)
+    wall[i] = clamp(sampleProfile(profile, t) * clay.radius, min, max)
+  }
+
+  // The fairing. Ends held rather than mirrored: the base and the rim are where
+  // the profile SAYS they are -- a foot is meant to be flat and a rim is meant
+  // to be where it is -- and a mirrored end pass walks both of them inward a
+  // little more with every pass.
+  for (let pass = 0; pass < PROFILE_FAIRING; pass += 1) {
+    const from = wall.slice()
+    for (let i = 1; i < CLAY_RINGS - 1; i += 1) {
+      wall[i] = clamp((from[i - 1] + from[i] * 2 + from[i + 1]) / 4, min, max)
+    }
+  }
+  return wall
+}
+
+/**
+ * Put a wall back on a lump: the same stock, the same base, another shape.
+ *
+ * WHAT UNDO IS MADE OF, and what a profile is loaded with. Both are the same
+ * act from here -- a row of radii arriving from somewhere other than a tool --
+ * and both have to survive the lump having changed since the row was written:
+ * an undo entry taken before the stock was narrowed describes a wall past the
+ * flare limit of the lump it is being put back on. So every ring is re-clamped
+ * on the way in, exactly as `resize` re-clamps on the way through, and a short
+ * or missing row falls back to the stock radius rather than to a hole.
+ *
+ * The lump is handed back unchanged when the wall it already has is the wall
+ * being given to it, so a redo of a stroke that moved nothing cannot make React
+ * redraw. Same promise as `mold`.
+ */
+export function withWall(clay: Clay, wall: number[]): Clay {
+  const { min, max } = wallBounds(clay.radius)
+  const next = new Array<number>(CLAY_RINGS)
+  let same = true
+  for (let i = 0; i < CLAY_RINGS; i += 1) {
+    const r = Number.isFinite(wall[i]) ? wall[i] : clay.radius
+    next[i] = clamp(r, min, max)
+    if (next[i] !== clay.wall[i]) same = false
+  }
+  return same ? clay : { ...clay, wall: next }
 }
 
 /**

@@ -1,6 +1,14 @@
 import { create } from 'zustand'
-import { freshClay, mold, resize } from '../geometry/clay'
-import type { Clay, Dab } from '../geometry/clay'
+import {
+  clampSides,
+  clampWall,
+  freshClay,
+  mold,
+  profileWall,
+  resize,
+  withWall,
+} from '../geometry/clay'
+import type { Clay, ClayProfile, Dab, Hollow } from '../geometry/clay'
 
 /**
  * The lump on the lathe: what the Lathe screen has made.
@@ -21,14 +29,40 @@ import type { Clay, Dab } from '../geometry/clay'
  * hand and how wide its brush is are tool state and live over there; the clay
  * they are pointed at is here.
  *
- * WHAT IS MISSING, said out loud: there is no undo. The bar's undo acts on the
- * document and stands down on this screen with everything else that does, so a
- * stroke on the lathe cannot be walked back -- only worked back out with the
- * other tool, or centred fresh from the Clay panel. That is the honest state of
- * it rather than an argument that a lathe should not have one.
+ * UNDO IS HERE NOW, and it is the wall and nothing else -- see `past`. The bar's
+ * two buttons act on whichever screen is up: on Modelling they walk the
+ * document's history, on Lathe they walk this one. They are the same act to the
+ * user and there was never a good reason for the lathe to be the screen where
+ * the obvious keystroke does nothing.
  */
+/**
+ * How many strokes back you can walk. The document's own limit, and the same
+ * one for the same reason: far more than anybody reaches for in a sitting, and
+ * small enough that the stack is a rounding error beside the mesh.
+ */
+const HISTORY_LIMIT = 50
+
 type LatheState = {
   clay: Clay
+  /**
+   * The wall as it stood before each act that changed it, oldest first.
+   *
+   * THE WALL, NOT THE LUMP. What is remembered is one array of radii, and undo
+   * puts it back into whatever lump is on the lathe now -- so the size fields,
+   * the base and the hollow are untouched by it. That is the honest line
+   * between the two kinds of change on this screen: the wall is SHAPED, by
+   * gestures that cannot be typed back in, and everything else is SET, by a
+   * control that is one click away from where it was. An undo that reverted a
+   * width somebody typed after the stroke it was undoing would be the surprise
+   * that stops people trusting the button.
+   *
+   * One entry per STROKE rather than per frame: `beginStroke` pushes, and the
+   * sixty dabs that follow it are the one act it opened. The other pushers are
+   * the two acts that throw shaping away wholesale -- `centreFresh` and
+   * `shapeAs` -- which are exactly the presses somebody wants back.
+   */
+  past: number[][]
+  future: number[][]
   /**
    * The wall as the CURRENT STROKE found it, or null between strokes.
    *
@@ -57,14 +91,70 @@ type LatheState = {
   /** Change the stock, carrying the shape with it -- see `resize`. */
   setHeight: (height: number) => void
   setRadius: (radius: number) => void
+  /**
+   * Change the base the piece stands on: round, or a triangle through a
+   * decagon.
+   *
+   * It touches nothing else. The wall is the same row of radii on every base --
+   * see `Clay.sides` -- so this is not a resize and carries no risk of one: a
+   * piece worked for ten minutes and then turned hexagonal is the same piece
+   * with corners on it, and turning it back leaves it exactly as it was.
+   */
+  setSides: (sides: number | null) => void
+  /**
+   * Bore the piece out, or fill it back in: `null` is solid.
+   *
+   * Whole rather than field by field -- no `setWallThickness`, no
+   * `setCapTop` -- because the three of them are one answer. "Hollow, 6 mm,
+   * open at the top" is a single state, and a store with three setters for it
+   * is a store where two of them are unreachable while it is switched off.
+   *
+   * NOT REMEMBERED BY UNDO, and for the reason the size fields are not: the
+   * history on this screen holds the WALL -- see `past` -- and hollowing moves
+   * no part of it. It is a switch you can flip back.
+   */
+  setHollow: (hollow: Hollow | null) => void
   /** Take the piece off and centre a fresh lump of the same stock. */
   centreFresh: () => void
+  /**
+   * Load a starting shape onto the lump: the same stock, a new wall.
+   *
+   * THROWS THE SHAPING AWAY, like `centreFresh`, and is offered without a
+   * warning for the same reason that one now is -- it costs one undo entry and
+   * Ctrl+Z is one press. A palette that asked "are you sure" before every tile
+   * would be a palette nobody browses, and browsing is what it is for.
+   */
+  shapeAs: (profile: ClayProfile) => void
+  /** Step the wall back one act, or forward again. Inert with nothing to step. */
+  undo: () => void
+  redo: () => void
 }
+
+/**
+ * Remember the wall as it stands, and drop whatever was undone.
+ *
+ * The half of every history that is easy to forget: taking a new act after an
+ * undo has to throw the redo stack away, because the branch it described no
+ * longer leads anywhere from here. `docStore` does the same at every one of its
+ * own push sites; this is that, written once.
+ */
+const remember = (s: LatheState) => ({
+  past: [...s.past, s.clay.wall].slice(-HISTORY_LIMIT),
+  future: [],
+})
 
 export const useLathe = create<LatheState>((set) => ({
   clay: freshClay(),
   stroke: null,
-  beginStroke: () => set((s) => ({ stroke: s.clay.wall })),
+  past: [],
+  future: [],
+  // Where a stroke is remembered, and it is the same instant the dish is
+  // measured from -- one act, one entry, however many frames the hand holds
+  // for. A press that turns out to move nothing still costs an entry, which is
+  // the one wart: undoing it puts back a wall identical to the one on the
+  // lathe. Cheaper than the alternative, which is deciding at `endStroke`
+  // whether anything happened and unwinding the entry if not.
+  beginStroke: () => set((s) => ({ stroke: s.clay.wall, ...remember(s) })),
   endStroke: () => set({ stroke: null }),
   // `mold` hands back the very object it was given when a dab moves nothing, so
   // a stroke that misses the piece -- or a push aimed where only a pull could
@@ -81,9 +171,77 @@ export const useLathe = create<LatheState>((set) => ({
   // measured from a wall that has since been rescaled is measured from nothing.
   setHeight: (height) => set((s) => ({ clay: resize(s.clay, { height }), stroke: null })),
   setRadius: (radius) => set((s) => ({ clay: resize(s.clay, { radius }), stroke: null })),
+  // The stroke is LEFT ALONE here, where the two size fields end it. The reason
+  // they end it is that they rescale the wall, and a dish measured from a wall
+  // that has since moved is measured from nothing; this changes no radius at
+  // all, so a stroke in progress is still being cut from the wall it started
+  // on. Not that one can be: the selector is in the console, a window away from
+  // the clay, and the pointer cannot be on both.
+  setSides: (sides) =>
+    set((s) => {
+      const next = clampSides(sides)
+      // Handing back the very lump we hold when nothing changes, the way `mold`
+      // does: pressing the base a piece is already on must not redraw it.
+      return next === s.clay.sides ? s : { clay: { ...s.clay, sides: next } }
+    }),
+  // Clamped on the way in, since a panel is what writes it and a wall thicker
+  // than the app's own limit is not a wall. What it means for a given piece --
+  // where the cavity reaches, whether an end really is open -- is worked out
+  // fresh every time anything asks. See `bore`.
+  setHollow: (hollow) =>
+    set((s) => ({
+      clay: {
+        ...s.clay,
+        hollow: hollow === null ? null : { ...hollow, thickness: clampWall(hollow.thickness) },
+      },
+    })),
   // The stock is kept, the shaping is not: this is "start again", not "start
   // again from the app's idea of a lump". Somebody who has set a tall narrow
   // stock and made a mess of it wants the tall narrow stock back.
   centreFresh: () =>
-    set((s) => ({ clay: freshClay(s.clay.height, s.clay.radius), stroke: null })),
+    // The base goes with the stock, and for the same reason: somebody who has
+    // set a hexagonal lump and made a mess of it wants a hexagonal lump back.
+    set((s) => ({
+      clay: freshClay(s.clay.height, s.clay.radius, s.clay.sides),
+      stroke: null,
+      // Remembered, so the one button on this screen that throws work away is
+      // also the one press it is safest to make. It used to be irreversible,
+      // which is why it was worded as a whole sentence and dimmed on an
+      // untouched lump.
+      ...remember(s),
+    })),
+  shapeAs: (profile) =>
+    set((s) => ({
+      clay: withWall(s.clay, profileWall(s.clay, profile)),
+      stroke: null,
+      ...remember(s),
+    })),
+  undo: () =>
+    set((s) => {
+      if (s.past.length === 0) return s
+      const wall = s.past[s.past.length - 1]
+      return {
+        // Put back into the lump that is on the lathe NOW, not into the one the
+        // entry was taken from -- and re-clamped on the way in, because the
+        // stock may have been narrowed since and a wall past the flare limit of
+        // the lump it now belongs to is a shape this screen cannot go on
+        // working. See `wallBounds`.
+        clay: withWall(s.clay, wall),
+        past: s.past.slice(0, -1),
+        future: [s.clay.wall, ...s.future].slice(0, HISTORY_LIMIT),
+        // Any stroke in progress is over: its dish was measured from a wall
+        // that has just been replaced.
+        stroke: null,
+      }
+    }),
+  redo: () =>
+    set((s) => {
+      if (s.future.length === 0) return s
+      return {
+        clay: withWall(s.clay, s.future[0]),
+        past: [...s.past, s.clay.wall].slice(-HISTORY_LIMIT),
+        future: s.future.slice(1),
+        stroke: null,
+      }
+    }),
 }))

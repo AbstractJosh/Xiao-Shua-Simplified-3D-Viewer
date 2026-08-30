@@ -93,7 +93,8 @@ export const HELP_SECTIONS: HelpSection[] = [
             <b>Modelling</b> is everything described here: the scene, the solids, the gizmo and
             the tools. <b>Lathe</b> is a screen of its own, where one lump of clay is shaped by
             pushing and pulling its wall -- see <b>The lathe</b> in the rail. Its console
-            carries the Clipboard, since what you have saved is yours wherever you are working.
+            carries <b>Base</b>, which is the lathe's own, and the Clipboard, since what you
+            have saved is yours wherever you are working.
           </>,
           <>
             Everything in the bar that acts on the scene -- <b>Import</b>, <b>Export</b>,{' '}
@@ -202,8 +203,12 @@ export const HELP_SECTIONS: HelpSection[] = [
         title: 'Picking things up',
         body: [
           <>
-            <b>Click</b> an object to select it, then <b>drag</b> it to move it.{' '}
-            <b>Shift-click</b> to gather several.
+            <b>Click</b> an object to select it. <b>Shift-click</b> to gather several.
+          </>,
+          <>
+            With <b>Move</b> chosen you can also <b>drag</b> an object by its body. Under{' '}
+            <b>Rotate</b> and <b>Scale</b> a press on the body only selects -- those two work
+            through their own handles.
           </>,
         ],
       },
@@ -274,6 +279,10 @@ export const HELP_SECTIONS: HelpSection[] = [
             Or <b>drag</b> one of the three plane quads -- XY, XZ, YZ -- to slide within that
             plane. One seen edge-on stands down, so from straight above only the ground is
             offered.
+          </>,
+          <>
+            Or <b>drag the object itself</b> to slide it along the ground. Move is the only tool
+            where the body drags.
           </>,
           <>
             Hold <b>Shift</b> while moving an object and it lifts instead.
@@ -573,15 +582,23 @@ export const HELP_SECTIONS: HelpSection[] = [
         body: [
           <>
             The <b>Lathe</b> tab opens a lump of clay turning on a faceplate, drawn from the
-            side. What you shape is a solid of revolution -- the same all the way round -- so
-            the side view hides nothing and there is no camera to fly: the piece sits still,
-            and both walls of the drawing are the one wall, mirrored about the axis.
+            side. What you shape is a profile -- how far the wall stands from the axis at each
+            height -- so the side view hides nothing and there is no camera to fly: the piece
+            sits still, and both walls of the drawing are the one wall, mirrored about the
+            axis.
           </>,
           <>
             The dashed rectangle that appears once you start work is the <b>stock</b>: where
             the lump began, so you can see what has come off and what has been drawn out past
-            it. The faint rings across the body follow the wall, and are the quickest way to
-            read the curve you are making.
+            it. The faint rings across the body are a <b>measure</b> -- a fixed distance apart,
+            whatever size the piece is -- so they follow the wall to show the curve you are
+            making, and a lump made taller crosses more of them.
+          </>,
+          <>
+            The frame never re-fits itself. The faceplate, the rings and the edges stay where
+            they are so that a piece getting bigger LOOKS bigger -- a view that resized to suit
+            the lump would cancel out the very change you had just asked for. A lump too big
+            for the frame simply runs off the edge of it; see <b>Zoom and fit</b>.
           </>,
         ],
       },
@@ -589,8 +606,9 @@ export const HELP_SECTIONS: HelpSection[] = [
         title: 'Push and Pull',
         body: [
           <>
-            The island carries two tools and no others. <b>Push</b> takes material away and{' '}
-            <b>Pull</b> adds it. Take one up, then <b>press and hold</b> against the clay: the
+            <b>Push</b> takes material away and <b>Pull</b> adds it. They sit above the rule
+            on the island because they are the two that MOVE material; what is below it fairs
+            what they left, or changes the piece rather than shaping it. Take one up, then <b>press and hold</b> against the clay: the
             wall travels to the pointer and STOPS there, so where you hold is where the wall
             ends up. Holding longer cannot overshoot -- it only finishes the curve.
           </>,
@@ -609,6 +627,24 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
       },
       {
+        title: 'Zoom and fit',
+        body: [
+          <>
+            <b>Scroll</b> anywhere over the lathe to zoom, or use the{' '}
+            <b>bottom-right corner</b>: <b>&minus;</b> and <b>+</b> step the view, and the
+            percentage between them is a button -- press it to <b>fit the piece to the frame</b>.
+            The faceplate stays where it is throughout, so zooming opens room above the piece
+            rather than sliding it about.
+          </>,
+          <>
+            Nothing zooms on its own. Set a lump far bigger or smaller than the frame and it
+            will hang off the edge until you go and look, which is deliberate: an automatic
+            zoom is one that moves the picture while your hand is on a slider. Press the
+            percentage and the piece comes back. It dims when there is nothing left to fit.
+          </>,
+        ],
+      },
+      {
         title: 'The lump',
         body: [
           <>
@@ -619,9 +655,107 @@ export const HELP_SECTIONS: HelpSection[] = [
             title to shut the panel down to its strip and get the corner back.
           </>,
           <>
-            <b>Centre a fresh lump</b> throws the shaping away and leaves the stock as it is.
-            It is the only way back: undo belongs to the document, and the lathe has none, so
-            the other way to unmake a push is a pull.
+            <b>Reset</b> throws the shaping away and leaves the stock as it is. It costs one
+            undo step like anything else here, so it is safe to press -- see <b>Undo on the
+            lathe</b>.
+          </>,
+        ],
+      },
+      {
+        title: 'Smooth',
+        body: [
+          <>
+            The third tool on the island, under the rule: it neither adds nor takes away, it
+            FAIRS. Hold it against a stretch of wall and the ripples a hard push left come out,
+            while the curve they sit on stays. It is the tool to reach for after the other two,
+            and the whole of what it does is the tidy-up every dab already does, turned up and
+            aimed.
+          </>,
+          <>
+            It does not matter how far from the axis you hold it -- only how far UP. There is
+            nothing to aim at, so the ghost circle is the whole of what you need to see. Its two
+            dials are the pair's: <b>Tool size</b> is how much wall it fairs at once, and it
+            starts wider than the other two, because fairing a side is a longer gesture than
+            aiming at a spot.
+          </>,
+        ],
+      },
+      {
+        title: 'Hollow',
+        body: [
+          <>
+            <b>Hollow</b>, at the foot of the island, takes the middle out and leaves a wall.
+            Switch it on and the drawing changes: the piece is a section, so you see the bore and
+            the clay either side of it. <b>Wall</b> sets how much is left -- read in millimetres,
+            which is the unit the panel opens in and the one at its top right.
+          </>,
+          <>
+            <b>Bottom</b> and <b>Top</b> are set independently, and between them they are every
+            hollow thing there is. Closed underneath and open at the top is a cup; open at both
+            is a pipe; closed at both is a sealed void, which shows only when something cuts it;
+            open underneath and closed at the top is a bell.
+          </>,
+          <>
+            The inside FOLLOWS the outside. It is not a second wall you shape -- it is the wall
+            you can see, offset inward -- so a stroke made after hollowing thins the piece rather
+            than leaving the bore behind. If the piece is too narrow to bore through to an end
+            you asked to be open, the cavity stops where the clay closes and the panel says so.
+          </>,
+        ],
+      },
+      {
+        title: 'Starting from a shape',
+        body: [
+          <>
+            <b>Profiles</b>, at the foot of the console, holds eight shapes to start from: a
+            bowl, a vase, a goblet, a cone, a barrel, a spool, a dome, and the plain cylinder.
+            Press one and the wall becomes it. They keep the stock and the base, and every one of
+            them is somewhere the two tools could have got to on their own -- the point is the
+            minute of careful pushing it saves before the shaping proper starts.
+          </>,
+          <>
+            It throws away what you have shaped, and asks nothing first, because <b>Ctrl+Z</b>{' '}
+            puts it back. Browse them -- press one, look at it, press the next.
+          </>,
+        ],
+      },
+      {
+        title: 'Undo on the lathe',
+        body: [
+          <>
+            <b>Ctrl+Z</b> steps back one stroke and <b>Ctrl+Shift+Z</b> forward again, and the
+            bar's own <b>Undo</b> and <b>Redo</b> do the same. A whole stroke is one step,
+            however long you held the tool down, and <b>Reset</b> and loading a profile are one
+            step each as well.
+          </>,
+          <>
+            What it remembers is the WALL. A height or a width you type afterwards stays typed,
+            and so do the base and the hollow -- those are settings you can put back by setting
+            them back, where a stroke is a gesture you cannot.
+          </>,
+        ],
+      },
+      {
+        title: 'The base it stands on',
+        body: [
+          <>
+            <b>Base</b>, under the Clipboard in the console, is what the piece is turned ON: a{' '}
+            <b>Circle</b>, or a <b>Polygon</b> from a triangle to a decagon. A circle gives you
+            a cylinder-bodied piece, a hexagon a hexagonal prism of the same profile, and so on
+            through the eight.
+          </>,
+          <>
+            It is in the console rather than over the clay because it is the one thing the
+            drawing cannot show: every base has the SAME profile, so a hexagonal piece and a
+            round one are the same shape from the side. What you do see is a fainter dashed
+            line inside the piece -- that is where the flats run. The wall you push and pull is
+            the line the CORNERS follow, and the flats between them sit closer in: nearly
+            touching on a decagon, half way in on a triangle.
+          </>,
+          <>
+            Pick it whenever you like. It moves no part of the wall, so a piece shaped for ten
+            minutes can be turned hexagonal and back without losing a stroke, and the fields in{' '}
+            <b>The lump</b> and <b>Reset</b> both keep it.
           </>,
         ],
       },
@@ -632,6 +766,8 @@ export const HELP_SECTIONS: HelpSection[] = [
             The button in the <b>top-right corner</b> sweeps the piece a full turn into a real
             solid and puts it on the <b>Clipboard</b>: a tile appears in the console beside it,
             and <b>Ctrl+V</b> on the Modelling screen pastes the same thing into the scene.
+            It is swept on the base you chose -- 64 facets for a round piece, six flats for a
+            hexagon -- and named for it, so a shelf of pieces can be told apart.
           </>,
           <>
             What lands there is a mesh, so everything the Modelling screen does works on it --

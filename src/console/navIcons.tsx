@@ -256,6 +256,52 @@ export function PullIcon() {
 }
 
 /**
+ * The rib: a wobbly wall on one side of the tool and a fair one on the other.
+ *
+ * A BEFORE AND AFTER rather than a picture of a tool, which is the one thing
+ * this glyph can say that the other two cannot. Push and Pull draw a wall being
+ * moved somewhere, and they are legible because the direction IS the tool.
+ * Smoothing has no direction -- it takes a shape and gives back the same shape
+ * with less noise in it -- so what the icon has to carry is the difference,
+ * which means drawing both.
+ */
+export function SmoothIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The wall as it is: a ripple, four bumps of it. */}
+      <path
+        d="M5.4 2.8c1.6 1.2-1.6 2.4 0 3.6s-1.6 2.4 0 3.6 -1.6 2.4 0 3.6 -1.6 2.4 0 3.6"
+        {...STROKE}
+      />
+      {/* And as the rib leaves it, on the other side of the axis. */}
+      <path d="M14.6 2.8v14.4" {...STROKE} />
+      {/* The rib itself, lying along the wall between them. */}
+      <path d="M10 6.4v7.2" {...STROKE} opacity="0.55" />
+    </svg>
+  )
+}
+
+/**
+ * Hollow: the piece with the middle taken out of it, seen in section.
+ *
+ * The outer wall solid and the bore dashed, which is the same language the
+ * viewport uses a few inches away -- a real edge is drawn, a reference or a
+ * surface you are looking THROUGH is dashed. It draws the commonest case, open
+ * at the top and closed at the bottom, because that is the vessel everybody
+ * pictures when they hear the word.
+ */
+export function HollowIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The body. */}
+      <path d="M4.6 3.2v11.2a5.4 3.2 0 0 0 10.8 0V3.2" {...STROKE} />
+      {/* The bore, standing in from it and stopping short of the floor. */}
+      <path d="M7.4 3.2v9.5a2.6 1.6 0 0 0 5.2 0V3.2" {...STROKE} strokeDasharray="2 1.8" />
+    </svg>
+  )
+}
+
+/**
  * The stock: a cylinder, seen from the side, before anybody has touched it.
  *
  * The one glyph in this set that draws a THING rather than an action, because

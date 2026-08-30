@@ -70,7 +70,7 @@ import {
   cutPlaneSpawn,
   rulerFrame,
 } from '../src/console/NavTools'
-import { ClipboardPanel, liveTiles } from '../src/console/ClipboardPanel'
+import { ClipboardPanel, liveTiles, marqueeOffset } from '../src/console/ClipboardPanel'
 import { VIEW, framingDistance } from '../src/console/ObjectThumbnail'
 import { ObjectPanel } from '../src/console/ObjectPanel'
 import { PlacementPanel } from '../src/console/PlacementPanel'
@@ -78,24 +78,47 @@ import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { Console } from '../src/console/Console'
 import { LatheConsole } from '../src/console/LatheConsole'
-import { PullTool, PushTool } from '../src/console/LatheTools'
-import { CopyPieceButton, PIECE_NAME } from '../src/viewport/CopyPieceButton'
+import { BasePanel } from '../src/console/BasePanel'
+import { HollowTool } from '../src/console/HollowTool'
+import { ProfilePanel } from '../src/console/ProfilePanel'
+import { PullTool, PushTool, SmoothTool } from '../src/console/LatheTools'
+import { CopyPieceButton, PIECE_NAME, pieceName } from '../src/viewport/CopyPieceButton'
+import { LatheViewport } from '../src/viewport/LatheViewport'
 import { StockPanel } from '../src/viewport/StockPanel'
+import { ZoomControl } from '../src/viewport/ZoomControl'
 import { fitToEnvelope } from '../src/geometry/importers'
 import { registerMesh } from '../src/geometry/meshLibrary'
 import { revolveClay } from '../src/geometry/revolve'
 import {
   CLAY_FLARE,
+  CLAY_HEIGHT_MAX,
+  CLAY_HEIGHT_MIN,
+  CLAY_RADIUS_MAX,
+  CLAY_RADIUS_MIN,
   CLAY_RINGS,
+  CLAY_PROFILES,
+  CLAY_SIDES,
+  DEFAULT_CLAY_HEIGHT,
+  DEFAULT_CLAY_RADIUS,
+  bore,
+  flatFactor,
   freshClay,
   isFresh,
   mold,
   widestRadius,
 } from '../src/geometry/clay'
+import type { ClayProfile } from '../src/geometry/clay'
+import { armedLatheTool } from '../src/store/toolStore'
 import { useLathe } from '../src/store/latheStore'
 import {
+  ZOOM_MAX,
+  ZOOM_MIN,
+  clampZoom,
   clayFrame,
+  fitZoom,
+  flatsProfile,
   pointerToClay,
+  sectionPath,
   silhouette,
   turningRings,
 } from '../src/viewport/latheView'
@@ -284,6 +307,21 @@ function hides(label: string, markup: string, needle: string) {
  */
 function resetIsDown(markup: string, name: string): boolean {
   return markup.includes(`aria-label="Reset ${name}" disabled=""`)
+}
+
+/**
+ * Whether the button carrying a given `aria-label` is disabled.
+ *
+ * By the button it belongs to rather than by the attribute order around it,
+ * which is the trap `resetIsDown` above documents: React emits attributes in the
+ * order the JSX writes them, so a needle that pins `disabled` next to a
+ * neighbour is a needle that breaks the day somebody reorders two props.
+ */
+function buttonIsDown(markup: string, name: string): boolean {
+  const tag = markup
+    .split('<button')
+    .find((part) => part.includes(`aria-label="${name}"`))
+  return tag !== undefined && tag.slice(0, tag.indexOf('>')).includes('disabled=""')
 }
 
 function occurrences(markup: string, needle: string): number {
@@ -1047,39 +1085,65 @@ doc().selectObject(pyramidId)
   {
     check(
       'an object wearing handles can be dragged by its body',
-      bodyCanBeDragged({ hidden: false, brushArmed: false }),
+      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false }),
       'draggable'
     )
     check(
       'putting the handles down stops that too',
-      !bodyCanBeDragged({ hidden: true, brushArmed: false }),
+      !bodyCanBeDragged({ mode: 'move', hidden: true, brushArmed: false }),
       'fixed'
     )
     check(
       'and so does arming a brush',
-      !bodyCanBeDragged({ hidden: false, brushArmed: true }),
+      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: true }),
       'fixed'
     )
-    // The two rules have to agree in the direction that matters: anything that
-    // stops the body being dragged must also have taken the handles away, or
-    // there would be a state offering arrows on an object it refuses to move.
-    for (const hidden of [false, true]) {
-      for (const brushArmed of [false, true]) {
-        const wearing = selectionWearsGizmo({
-          selected: true,
-          hidden,
-          brushArmed,
-          cutActive: false,
-          rulerSelected: false,
-          sketchSelected: false,
-          marqueeing: false,
-        })
-        const draggable = bodyCanBeDragged({ hidden, brushArmed })
-        check(
-          `hidden=${hidden} brush=${brushArmed}: handles and body agree`,
-          wearing === draggable,
-          `${wearing ? 'arrows' : 'none'} / ${draggable ? 'draggable' : 'fixed'}`
-        )
+
+    // AND THE MODE. The body offers exactly one gesture -- a slide across the
+    // ground -- so in the two modes that are not about sliding it is a handle
+    // for something the tool does not do. Pressing a solid in Rotate and having
+    // it slide is the same lie as pressing one under a dark picker and having
+    // it move: the gizmo says one thing and the object does another.
+    check(
+      'Rotate does not slide a solid by its body',
+      !bodyCanBeDragged({ mode: 'rotate', hidden: false, brushArmed: false }),
+      'fixed'
+    )
+    check(
+      'nor does Scale',
+      !bodyCanBeDragged({ mode: 'scale', hidden: false, brushArmed: false }),
+      'fixed'
+    )
+    check(
+      'and Move still does',
+      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false }),
+      'draggable'
+    )
+
+    // The two rules have to agree in the direction that matters: a body that
+    // can be dragged must be wearing handles, or the solid would move on a
+    // press with nothing on screen to say it could. The converse is NOT
+    // claimed, and stopped being true when the mode joined the rule -- Rotate
+    // wears three rings and refuses the body, which is the whole point of it.
+    for (const mode of ['move', 'rotate', 'scale'] as const) {
+      for (const hidden of [false, true]) {
+        for (const brushArmed of [false, true]) {
+          const wearing = selectionWearsGizmo({
+            selected: true,
+            hidden,
+            brushArmed,
+            cutActive: false,
+            rulerSelected: false,
+            sketchSelected: false,
+            marqueeing: false,
+          })
+          const draggable = bodyCanBeDragged({ mode, hidden, brushArmed })
+          check(
+            `${mode} hidden=${hidden} brush=${brushArmed}: a draggable body wears handles`,
+            !draggable || wearing,
+            `${wearing ? 'arrows' : 'none'} / ${draggable ? 'draggable' : 'fixed'}`
+          )
+        }
       }
     }
   }
@@ -2708,6 +2772,55 @@ publish([])
   shows('in a grid', panel, 'custom-grid')
   shows('each one renameable in place', panel, 'custom-name')
   shows('and draggable into the scene', panel, 'custom-grab')
+  // The whole name is on the tile for a reader who cannot wait out a lap of it
+  // walking past, or who has asked for no walking at all.
+  shows('with its full name reachable without hovering', panel, 'title="Bracket"')
+
+  // A NAME TOO LONG FOR ITS TILE WALKS PAST WHILE THE POINTER IS ON IT, and the
+  // walk is a function of the clock rather than a position nudged along each
+  // frame -- so this is checkable without a DOM, which is the reason it was
+  // written that way. A tile is about a hundred pixels wide and the names people
+  // give things are longer than that; the alternative to walking was clicking
+  // into the field and arrowing across, which is an edit gesture done in order
+  // to read.
+  {
+    const travel = 60
+    // 30 px a second over 60 px is two seconds of walking, with an 800 ms rest
+    // at each end: 5600 ms the lap.
+    const walk = (travel / 30) * 1000
+    const lap = 2 * (800 + walk)
+    check('it starts at the beginning of the name', marqueeOffset(travel, 0) === 0, '')
+    check(
+      'and rests there before setting off',
+      marqueeOffset(travel, 799) === 0,
+      `${marqueeOffset(travel, 799)}`
+    )
+    near('half way through the walk it is half way along', marqueeOffset(travel, 800 + walk / 2), travel / 2, 1e-9)
+    near('it reaches the end', marqueeOffset(travel, 800 + walk), travel, 1e-9)
+    near('and rests at the end too', marqueeOffset(travel, 1500 + walk), travel, 1e-9)
+    near('then walks back', marqueeOffset(travel, 1600 + 1.5 * walk), travel / 2, 1e-9)
+    // A LAP, not a one-way trip: the tile is still hovered, and the beginning of
+    // a name is the part that identifies it.
+    near('and the lap comes round to where it started', marqueeOffset(travel, lap), 0, 1e-9)
+    near('however many laps have gone by', marqueeOffset(travel, lap * 7 + 800 + walk), travel, 1e-9)
+    // NEVER PAST EITHER END, at any moment of any lap: a scroller handed an
+    // offset past its own travel simply clamps, and the name would sit still at
+    // one end for however long the arithmetic was wrong.
+    let worst = 0
+    for (let t = 0; t < lap * 3; t += 13) {
+      const at = marqueeOffset(travel, t)
+      worst = Math.max(worst, Math.max(-at, at - travel))
+    }
+    check('and never past either end of the name', worst <= 1e-9, `overshoot ${worst}`)
+    // A name that FITS does not move at all, which is what keeps a shelf of
+    // short names still.
+    check(
+      'a name that fits its tile never moves',
+      marqueeOffset(0, 1234) === 0 && marqueeOffset(-5, 1234) === 0,
+      ''
+    )
+    check('and a clock that reports nonsense moves nothing', marqueeOffset(travel, Number.NaN) === 0, '')
+  }
 
   library().removeCustom(first)
   check('removing takes one away', library().customs.length === 2, `${library().customs.length}`)
@@ -5373,6 +5486,18 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
   for (const panel of ['Solids', 'Shapes', 'Color', 'Scene']) {
     hides(`and not ${panel}`, lathe, `>${panel}<`)
   }
+  // And it has one of its own now, which is what a console per screen was for:
+  // the section the lump is turned on describes the piece rather than the
+  // document, so it could never have lived in the other console at all.
+  shows('and it carries a Base of its own', lathe, '>Base<')
+  // Under the shelf, not over it: the Clipboard is the panel both consoles
+  // carry, so it keeps the top slot it has next door and the two screens agree
+  // about where the one thing they share lives.
+  check(
+    'below the clipboard, which is the panel both consoles carry',
+    lathe.indexOf('>Clipboard<') < lathe.indexOf('>Base<'),
+    `clipboard ${lathe.indexOf('>Clipboard<')}, base ${lathe.indexOf('>Base<')}`
+  )
 
   // On a screen with no document, everything that acts on one stands down --
   // dimmed and still in place, so the bar keeps its shape between screens.
@@ -5382,13 +5507,20 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
     shows('switching screens lights the other tab', idle, 'aria-current="page">Lathe<')
     hides('and puts Modelling out', idle, 'aria-current="page">Modelling<')
 
-    // Counted rather than named one at a time: what matters is that the six
+    // Counted rather than named one at a time: what matters is that the
     // controls acting on the document all stand down together.
+    //
+    // FOUR, NOT SIX. Undo and redo used to be in this list and are not any
+    // more: the lathe has a history of its own now, so the bar's two buttons
+    // walk whichever screen is up and are dead only when there is nothing to
+    // step. On an untouched lump that is still dead -- which is why the count
+    // below is a floor rather than an equality -- but it is dead for a reason
+    // that has nothing to do with which screen this is. See `NavBar`.
     const down = (idle.match(/disabled=""/g) ?? []).length
     check(
       'the document controls stand down together',
-      down >= 6,
-      `${down} disabled: Import, Export, Snap and its caret, Undo, Redo`
+      down >= 4,
+      `${down} disabled: Import, Export, Snap and its caret`
     )
     for (const label of ['Import', 'Export', 'Snap', 'Undo', 'Redo']) {
       shows(`${label} is still in the bar`, idle, `>${label}<`)
@@ -5450,9 +5582,12 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
 {
   tools().setScreen('lathe')
 
-  // THE ISLAND HOLDS TWO TOOLS AND NOTHING ELSE. It is the whole promise of the
-  // screen -- the easy one -- so it is worth a check that would fail the day a
-  // third button is added without a second thought.
+  // THE ISLAND HOLDS A SHORT LIST, and it is worth a check that would fail the
+  // day it stopped being one. It held two for its whole first life -- push and
+  // pull, the whole promise of the easy screen -- and now holds those two, a
+  // rib under a rule, and a switch for hollowing. What the rule is there to say
+  // is that the pair above it are the ones that MOVE MATERIAL and the rest are
+  // not; see `LatheViewport`, which lays them out.
   const push = markupOf('PushTool', PushTool)
   const pull = markupOf('PullTool', PullTool)
   shows('the island offers Push', push, '>Push<')
@@ -5518,7 +5653,11 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
       /value="8"/.test(panel.slice(panel.indexOf('>Width<'))),
       'twice the 4 cm stock radius, in the centimetres the app is set to'
     )
-    shows('and it offers a fresh lump', panel, 'Centre a fresh lump')
+    // ONE WORD, and it is the word every other app in the world uses for the
+    // way back. The caps are the stylesheet's, so what is checked here is the
+    // name rather than the shouting.
+    shows('and it offers a reset', panel, '>Reset<')
+    hides('without a paragraph under it explaining itself', panel, 'stock-note')
     // Dead while the lump is untouched rather than hidden: a control that
     // appears the first time you push the clay is one nobody knows is there.
     check(
@@ -5542,7 +5681,7 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     // throwing it away -- the whole reason they are safe to touch after an
     // hour's work. `engine-check` proves the scaling; this proves the panel is
     // wired to it.
-    lathe().work({ y: 0.75, radius: 0.2, reach: 0.3, bite: 1, push: true })
+    lathe().work({ y: 0.75, radius: 0.2, reach: 0.3, bite: 1, tool: 'push' })
     check('working the clay marks it as touched', !isFresh(lathe().clay), '')
     const before = lathe().clay.wall.slice()
     lathe().setRadius(lathe().clay.radius * 2)
@@ -5572,7 +5711,7 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
       radius: 0.2,
       reach: 0.4,
       bite: 1,
-      push: true,
+      tool: 'push',
     })
     const entry = registerMesh(revolveClay(worked), PIECE_NAME)
     const { size } = fitToEnvelope(entry.natural)
@@ -5631,7 +5770,7 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
   // and ghost circle on this screen is wrong if this is.
   {
     const clay = freshClay(1.5, 0.4)
-    const frame = clayFrame(clay)
+    const frame = clayFrame(1)
     check(
       'the frame is centred on the axis',
       frame.x === -frame.width / 2,
@@ -5647,13 +5786,22 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
       frame.base < frame.height && frame.base > clay.height,
       `base ${frame.base.toFixed(3)} in 0..${frame.height.toFixed(3)}`
     )
+    // SQUARE, and it is the squareness that keeps the drawing still: `meet`
+    // re-fits on the frame's ASPECT, so a frame whose aspect tracked the stock
+    // would redraw the whole picture -- plate included -- narrower every time
+    // somebody asked for a taller lump.
+    check(
+      'and the frame is square, so `meet` fits it the same way whatever is in it',
+      frame.width === frame.height,
+      `${frame.width.toFixed(3)} by ${frame.height.toFixed(3)}`
+    )
 
-    // A square element, so the frame -- which is taller than it is wide -- fits
-    // by HEIGHT and is letterboxed left and right. That is the case a hand-
-    // written inverse gets wrong, so it is the one to check.
-    const square = { left: 0, top: 0, width: 600, height: 600 }
+    // A landscape element, so the square frame fits by HEIGHT and is letterboxed
+    // left and right. That is the case a hand-written inverse gets wrong, so it
+    // is the one to check.
+    const square = { left: 0, top: 0, width: 900, height: 600 }
     const scale = square.height / frame.height
-    const middle = pointerToClay(frame, square, 300, 300)
+    const middle = pointerToClay(frame, square, 450, 300)
     near('the middle of the element is on the axis', middle.x, 0, 1e-9)
     near(
       'at half the frame up from the faceplate',
@@ -5665,26 +5813,246 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     // A point one scene unit to the right of the axis is `scale` pixels right
     // of the middle, and reads back as one unit -- whichever side of the axis
     // it is on, because the wall is one row of radii and has no left or right.
-    const right = pointerToClay(frame, square, 300 + scale * 0.3, 300)
+    const right = pointerToClay(frame, square, 450 + scale * 0.3, 300)
     near('a point right of the axis reads as that far out', right.x, 0.3, 1e-9)
-    const left = pointerToClay(frame, square, 300 - scale * 0.3, 300)
+    const left = pointerToClay(frame, square, 450 - scale * 0.3, 300)
     near('and the same point on the left is the same distance', left.radius, right.radius, 1e-9)
     check('with the sign kept for the drawing', left.x < 0 && right.x > 0, '')
 
     // Up the screen is up the piece, which is the flip this module exists to
     // own -- SVG counts y downward and a lathe counts it up off the faceplate.
-    const higher = pointerToClay(frame, square, 300, 200)
+    const higher = pointerToClay(frame, square, 450, 200)
     check('higher on screen is higher up the piece', higher.y > middle.y, '')
     near('by exactly the pixels it moved', higher.y - middle.y, 100 / scale, 1e-9)
 
     // And the faceplate itself: the y the frame calls the clay's zero.
-    const onPlate = pointerToClay(frame, square, 300, (frame.base / frame.height) * 600)
+    const onPlate = pointerToClay(frame, square, 450, (frame.base / frame.height) * 600)
     near('the faceplate is the clay zero', onPlate.y, 0, 1e-9)
 
     // A zero-sized element is not a thing anyone can point at, but a layout can
     // produce one for a frame, and it must not divide by nothing.
     const nothing = pointerToClay(frame, { left: 0, top: 0, width: 0, height: 0 }, 10, 10)
     check('and a zero-sized viewport reads as the origin', nothing.y === 0, `${nothing.y}`)
+  }
+
+  // A LUMP THAT GROWS HAS TO LOOK LIKE ONE, which is a fact about the frame
+  // rather than about the clay. Cut to the stock, the frame grew with the piece
+  // and `meet` scaled the difference straight back out again: a taller lump was
+  // drawn at the same height as a short one and merely narrower, so the Height
+  // field read as a width field. Rounded onto a ladder it stopped doing that and
+  // started doing something else instead -- rescaling in steps, unasked, mid-drag.
+  //
+  // What replaced both is a frame the clay cannot reach. `clayFrame` takes a
+  // ZOOM and no `Clay` at all, so these checks are really one check made several
+  // ways: nothing about the piece moves the view.
+  {
+    const frame = clayFrame(1)
+    check(
+      'the frame is square, so `meet` fits it the same way whatever is in it',
+      frame.width === frame.height,
+      `${frame.width} by ${frame.height}`
+    )
+    // Every lump the app can make, against ONE frame. A stock 5000 times another
+    // gets the same viewBox, the same plate and the same rules -- which is what
+    // there being no `Clay` in the signature buys, stated out loud.
+    for (const [height, radius] of [
+      [CLAY_HEIGHT_MIN, CLAY_RADIUS_MIN],
+      [CLAY_HEIGHT_MAX, CLAY_RADIUS_MIN],
+      [CLAY_HEIGHT_MIN, CLAY_RADIUS_MAX],
+      [CLAY_HEIGHT_MAX, CLAY_RADIUS_MAX],
+      [DEFAULT_CLAY_HEIGHT, DEFAULT_CLAY_RADIUS],
+    ]) {
+      // Worked, not just centred, so a wall pulled right out to its flare limit
+      // is in the sample too -- that is the case the OLD frame rescaled on.
+      const lump = mold(freshClay(height, radius), {
+        y: height * 0.5,
+        radius: radius * CLAY_FLARE,
+        reach: height * 0.3,
+        bite: 1,
+        tool: 'pull',
+      })
+      const box = clayFrame(1)
+      check(
+        `a ${height}x${radius} lump leaves the frame exactly where it was`,
+        box.width === frame.width &&
+          box.height === frame.height &&
+          box.base === frame.base &&
+          box.rule === frame.rule,
+        `${box.width} against ${frame.width}, widest ${widestRadius(lump).toPrecision(3)}`
+      )
+    }
+
+    // The piece has somewhere to grow INTO, so growing is something the eye can
+    // see rather than something only the readout knows about.
+    check(
+      'so a taller lump fills more of the frame',
+      1.5 / frame.height > 1.1 / frame.height,
+      `${((1.5 / frame.height) * 100).toFixed(0)}% against ${((1.1 / frame.height) * 100).toFixed(0)}%`
+    )
+
+    // The rules are a MEASURE, so the ones two pieces share are at the same
+    // heights, and the taller piece simply reaches more of them. That is the
+    // "reveal more guidelines" half of it, and it is the half a ring count
+    // spread evenly over the piece can never do.
+    const few = turningRings(freshClay(1.1, 0.4), frame)
+    const many = turningRings(freshClay(1.5, 0.4), frame)
+    check(
+      'a taller lump reveals more rings rather than the same rings further apart',
+      many.length > few.length,
+      `${few.length} then ${many.length}`
+    )
+    check(
+      'and the rings they share are in the same places',
+      few.every((ring, i) => Math.abs(ring.y - many[i].y) < 1e-9),
+      few.map((r) => r.y.toFixed(2)).join(' ')
+    )
+    check(
+      'one rule apart, all the way up',
+      many.every((ring, i) => Math.abs(frame.base - ring.y - (i + 1) * frame.rule) < 1e-9),
+      `rule ${frame.rule}`
+    )
+    // A lump taller than the view is clipped by the top of it, and rings drawn
+    // past that edge are rings drawn on nothing.
+    const giant = turningRings(freshClay(CLAY_HEIGHT_MAX, 0.4), frame)
+    check(
+      'and a lump taller than the frame is ruled only as far as the frame goes',
+      giant.length > 0 && giant.every((ring) => ring.y > frame.y),
+      `${giant.length} rings, highest at ${Math.min(...giant.map((r) => r.y)).toFixed(3)}`
+    )
+  }
+
+  // ZOOM: the only thing that moves this view, and the way back from a piece
+  // that has run off the edge of it.
+  {
+    const wide = clayFrame(0.5)
+    const close = clayFrame(2)
+    check(
+      'zooming out shows more of the world',
+      wide.width > clayFrame(1).width && close.width < clayFrame(1).width,
+      `${wide.width} / ${clayFrame(1).width} / ${close.width}`
+    )
+    // The plate is at a fixed FRACTION of the frame, so it does not move on
+    // screen as the view zooms -- the piece stands on it, so it is the right
+    // thing to hold still while you go looking for the rim.
+    check(
+      'and the faceplate stays put on screen through all of it',
+      Math.abs(wide.base / wide.height - close.base / close.height) < 1e-12,
+      `${(wide.base / wide.height).toFixed(6)} against ${(close.base / close.height).toFixed(6)}`
+    )
+    // The rules stay a round measure at every zoom rather than becoming some
+    // arbitrary fraction of the frame -- that is what the ladder is for now.
+    check(
+      'the rules are a round length at every zoom',
+      [0.02, 0.1, 0.35, 1, 1.7, 8, 50].every((z) => {
+        const r = clayFrame(z).rule
+        const decade = Math.pow(10, Math.floor(Math.log10(r)))
+        return [1, 2, 3, 5, 7].some((rung) => Math.abs(rung * decade - r) < r * 1e-9)
+      }),
+      [0.1, 1, 8].map((z) => clayFrame(z).rule.toPrecision(2)).join(' ')
+    )
+    check(
+      'and the frame carries between six and twelve of them',
+      [0.02, 0.1, 0.35, 1, 1.7, 8, 50].every((z) => {
+        const f = clayFrame(z)
+        return f.width / f.rule >= 6 - 1e-9 && f.width / f.rule <= 12 + 1e-9
+      }),
+      [0.1, 1, 8]
+        .map((z) => (clayFrame(z).width / clayFrame(z).rule).toFixed(1))
+        .join(' ')
+    )
+
+    // Out of range in either direction is pulled back rather than honoured, so a
+    // wheel held down cannot leave the view somewhere it takes fifty notches to
+    // return from.
+    check(
+      'zoom is clamped at both ends and survives nonsense',
+      clampZoom(1e9) === ZOOM_MAX &&
+        clampZoom(0) === ZOOM_MIN &&
+        clampZoom(-3) === ZOOM_MIN &&
+        clampZoom(Number.NaN) === 1,
+      `${ZOOM_MIN} .. ${ZOOM_MAX}`
+    )
+
+    // FIT is the one re-framing left, and it happens on a press. It has to work
+    // at both ends of the stock range, which is the whole reason it exists.
+    for (const [height, radius] of [
+      [DEFAULT_CLAY_HEIGHT, DEFAULT_CLAY_RADIUS],
+      [CLAY_HEIGHT_MAX, CLAY_RADIUS_MIN],
+      [0.4, CLAY_RADIUS_MAX],
+      [CLAY_HEIGHT_MIN, CLAY_RADIUS_MIN],
+    ]) {
+      const lump = freshClay(height, radius)
+      const fitted = clayFrame(fitZoom(lump))
+      check(
+        `fitting a ${height}x${radius} lump puts it inside the frame`,
+        lump.height <= fitted.base + 1e-9 &&
+          widestRadius(lump) * 2 <= fitted.width + 1e-9,
+        `${height} tall in ${fitted.base.toPrecision(3)}, ` +
+          `${(widestRadius(lump) * 2).toPrecision(3)} across in ${fitted.width.toPrecision(3)}`
+      )
+    }
+    // And it is a real fit rather than a retreat to the far end of the range:
+    // the piece comes back filling most of the frame it is put in.
+    const fitted = clayFrame(fitZoom(freshClay(4, 0.4)))
+    check(
+      'and fills it, rather than merely fitting somewhere inside it',
+      4 / fitted.height > 0.7,
+      `${((4 / fitted.height) * 100).toFixed(0)}%`
+    )
+  }
+
+  // THE CONTROL IN THE CORNER. The frame no longer moves on its own, so this is
+  // the only way to move it -- which makes "is it there, does it read right, and
+  // does Fit stand down when there is nothing to fit" the whole of what has to
+  // hold.
+  {
+    tools().setLatheZoom(1)
+    lathe().centreFresh()
+
+    const at100 = markupOf('ZoomControl', ZoomControl)
+    shows('the corner says how far the view is zoomed', at100, '100%')
+    shows('and offers a way in', at100, 'Zoom in')
+    shows('and a way out', at100, 'Zoom out')
+    // The default lump does not fill the default frame, so there IS something
+    // for Fit to do the moment the screen opens -- an offer, not a warning.
+    shows('with Fit live on the opening view', at100, 'Fit the piece to the frame')
+
+    // Stepping is geometric, so two presses of the same button is a clean
+    // halving or doubling however far out you already are.
+    tools().zoomLathe(Math.SQRT2)
+    tools().zoomLathe(Math.SQRT2)
+    near('two presses in doubles the zoom', tools().latheZoom, 2, 1e-9)
+    shows('and the readout follows', markupOf('ZoomControl (in)', ZoomControl), '200%')
+
+    // Wound to the stops rather than past them: the ends are where the range
+    // says, and the button that cannot go further stands down.
+    tools().zoomLathe(1e9)
+    check('winding in stops at the ceiling', tools().latheZoom === ZOOM_MAX, `${tools().latheZoom}`)
+    check(
+      'and the button that can go no further stands down',
+      buttonIsDown(markupOf('ZoomControl (at the ceiling)', ZoomControl), 'Zoom in'),
+      ''
+    )
+    tools().zoomLathe(1e-9)
+    check('winding out stops at the floor', tools().latheZoom === ZOOM_MIN, `${tools().latheZoom}`)
+
+    // And Fit: pressed, it puts the piece in the frame, and then has nothing
+    // left to do -- so it stands down rather than sitting there live and inert.
+    tools().setLatheZoom(fitZoom(lathe().clay))
+    const atFit = markupOf('ZoomControl (fitted)', ZoomControl)
+    shows('once fitted, Fit stands down', atFit, 'The piece already fits the frame')
+    shows('rather than disappearing out of the corner', atFit, 'lathe-zoom-fit')
+
+    // Far out, whole percents would read as a readout that had stuck: three of
+    // the wheel's own steps down there all round to the same number.
+    tools().setLatheZoom(ZOOM_MIN)
+    shows(
+      'and a zoom under ten percent keeps a decimal',
+      markupOf('ZoomControl (far out)', ZoomControl),
+      '1.6%'
+    )
+
+    tools().setLatheZoom(1)
   }
 
   // The silhouette is one path, mirrored from one row of radii: both walls are
@@ -5695,9 +6063,9 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
       radius: 0.2,
       reach: 0.3,
       bite: 1,
-      push: true,
+      tool: 'push',
     })
-    const frame = clayFrame(worked)
+    const frame = clayFrame(1)
     const path = silhouette(worked, frame)
     check('the silhouette closes', path.startsWith('M ') && path.endsWith(' Z'), path.slice(-2))
     const points = path.replace(/[MLZ]/g, '').trim().split(/\s+/)
@@ -5709,8 +6077,12 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
 
     // The turning rings live inside the wall they cross rather than at a width
     // of their own, so they follow every push and pull without being told.
-    const rings = turningRings(worked, frame, 11)
-    check('eleven rings are drawn', rings.length === 11, `${rings.length}`)
+    const rings = turningRings(worked, frame)
+    check(
+      'a ring for every rule the piece stands past, and one more would clear it',
+      rings.length > 0 && (rings.length + 1) * frame.rule >= worked.height,
+      `${rings.length} rings of ${frame.rule} over ${worked.height}`
+    )
     check(
       'each inside the wall at its own height',
       rings.every((ring) => ring.r > 0 && ring.r < Math.max(...worked.wall)),
@@ -5721,6 +6093,322 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
       rings.every((ring) => ring.y < frame.base && ring.y > frame.base - worked.height),
       ''
     )
+  }
+
+  // THE BASE THE PIECE STANDS ON, which is the one control on this screen that
+  // is in the console rather than over the clay -- and it is there because it
+  // is the one fact about the lump the drawing cannot show. `engine-check`
+  // proves what a base does to the triangles; this proves the panel is wired to
+  // it, and that picking one costs the piece nothing.
+  {
+    lathe().setSides(null)
+    const round = markupOf('BasePanel', BasePanel)
+    shows('the panel names itself', round, '>Base<')
+    shows('and says which base the piece is on', round, '>Circle<')
+    shows('it offers the round answer', round, '>Circle<')
+    shows('and the family beside it', round, '>Polygon<')
+    // Not merely dimmed: eight tiles a round piece has no use for would be the
+    // biggest thing in this console, standing under a question already answered.
+    hides('with no side tiles while the piece is round', round, 'base-side')
+
+    lathe().setSides(6)
+    const poly = markupOf('BasePanel (hexagon)', BasePanel)
+    // The class ends there or carries the chosen flag; the grid around them is
+    // `base-sides` and the marks inside them are `base-side-icon`, and a looser
+    // pattern counts all three.
+    const tiles = (poly.match(/class="base-side[" ]/g) ?? []).length
+    check(
+      'Polygon opens the whole run from a triangle to a decagon',
+      tiles === CLAY_SIDES.length && tiles === 8,
+      `${tiles} tiles`
+    )
+    shows('one of them chosen', poly, 'base-side base-side-on')
+    shows('and the header says which', poly, '>Hexagon<')
+    // The seg is the app's own segmented pair, and the pressed half is the one
+    // the piece is actually on -- read off the store rather than off a second
+    // copy of the answer kept in the panel.
+    check(
+      'exactly one of Circle and Polygon is pressed',
+      (poly.match(/aria-pressed="true"/g) ?? []).length === 2,
+      `${(poly.match(/aria-pressed="true"/g) ?? []).length} pressed, counting the chosen tile`
+    )
+
+    // A BASE IS NOT A RESIZE. This is what makes the selector safe to press
+    // after an hour's work -- and it is the whole reason the section can live
+    // outside the wall at all. See `Clay.sides`.
+    lathe().setSides(null)
+    lathe().work({ y: 0.75, radius: 0.2, reach: 0.3, bite: 1, tool: 'push' })
+    const shaped = lathe().clay.wall.slice()
+    lathe().setSides(8)
+    check(
+      'turning a worked piece octagonal moves no part of the wall',
+      lathe().clay.wall.every((r, i) => r === shaped[i]),
+      ''
+    )
+    check('and it stays worked', !isFresh(lathe().clay), '')
+    // Out of range on the way in, because the store is what a panel writes to.
+    lathe().setSides(99)
+    check('a base past the family lands on the last of it', lathe().clay.sides === 10, `${lathe().clay.sides}`)
+
+    // The stock fields and the fresh lump carry the base, for the same reason
+    // they carry the shape: somebody who set a decagonal lump wants a decagonal
+    // lump back.
+    lathe().setRadius(0.5)
+    check('resizing keeps the base', lathe().clay.sides === 10, `${lathe().clay.sides}`)
+    lathe().centreFresh()
+    check('and a fresh lump is centred on the same one', lathe().clay.sides === 10, `${lathe().clay.sides}`)
+    check('unworked, as a fresh lump always is', isFresh(lathe().clay), '')
+
+    // WHAT THE DRAWING DOES ABOUT IT. Nothing to the silhouette -- every base
+    // has the same profile, which is the premise the whole screen rests on --
+    // and one line inside it, at the apothem, so the choice is visible on the
+    // piece rather than only on the clipboard.
+    const frame = clayFrame(1)
+    const decagon = lathe().clay
+    const cylinder = { ...decagon, sides: null }
+    check(
+      'the profile is the same on every base',
+      silhouette(decagon, frame) === silhouette(cylinder, frame),
+      ''
+    )
+    check('a round piece draws no flats line', flatsProfile(cylinder, frame) === null, '')
+    const flats = flatsProfile(decagon, frame)
+    check('a faceted one does', flats !== null && flats.startsWith('M '), `${flats?.slice(0, 12)}`)
+    // Inside the wall, by exactly the apothem: the line is the same curve
+    // scaled, so one number tells the whole story.
+    const widthOf = (path: string) =>
+      Math.max(...path.replace(/[MLZ]/g, '').trim().split(/\s+/).filter((_, i) => i % 2 === 0).map(Number))
+    near(
+      'and it runs at the apothem, inside the corners the tools work',
+      widthOf(flats ?? '0 0') / widthOf(silhouette(decagon, frame)),
+      flatFactor(10),
+      0.002
+    )
+
+    // Said out loud in the corner as well, since a reader who cannot see the
+    // drawing gets the base from the same place they get the two sizes.
+    const view = markupOf('LatheViewport (decagon)', LatheViewport)
+    shows('the readout names the base', view, 'decagon')
+    shows('and the label says it too', view, 'decagon based')
+    lathe().setSides(null)
+    shows(
+      'a round piece says so in the same place',
+      markupOf('LatheViewport (round)', LatheViewport),
+      'circle'
+    )
+
+    // AND IT REACHES THE SHELF. The one thing a thumbnail may not show is the
+    // section -- a hexagonal piece and the round one it was copied from are the
+    // same picture from the front -- so the name has to carry it.
+    check('a round piece is named for what it is', pieceName(null) === PIECE_NAME, pieceName(null))
+    check(
+      'and a faceted one for the polygon it stands on',
+      pieceName(6) === 'Hexagonal turned piece',
+      pieceName(6)
+    )
+    check(
+      'in the same word the palette names a prism with',
+      pieceName(9) === 'Nonagonal turned piece',
+      pieceName(9)
+    )
+  }
+
+  // THE RIB, THE HISTORY, THE PALETTE AND THE BORE -- the four things the
+  // lathe grew after its two tools. What each one DOES is proved in
+  // `engine-check`, which can work a lump without a window; this is about the
+  // controls being wired to it, and about the one promise a screen with no
+  // document can now make: that the obvious keystroke does something.
+  {
+    // A THIRD TOOL ON THE ISLAND, and a fourth button under a rule. The old
+    // check here said two and nothing else; the promise it was guarding was
+    // that the island stays a short list, and four with a break in it still is.
+    const smooth = markupOf('SmoothTool', SmoothTool)
+    shows('the island offers Smooth', smooth, '>Smooth<')
+    tools().setOpenPanel('smooth')
+    const smoothOpen = markupOf('SmoothTool (panel open)', SmoothTool)
+    shows('with a size of its own', smoothOpen, '>Tool size<')
+    shows('and a strength', smoothOpen, '>Strength<')
+    check(
+      'and the same two dials as the pair above it, no more',
+      (smoothOpen.match(/field-label/g) ?? []).length === 2,
+      `${(smoothOpen.match(/field-label/g) ?? []).length} fields`
+    )
+    tools().setOpenPanel(null)
+
+    // Each tool keeps its own dials -- see `pushReach`. The rib opens WIDER
+    // than the two that cut, because fairing a side is a different gesture from
+    // aiming at a spot.
+    check(
+      'the rib is a wider tool than the pair that cut',
+      tools().smoothReach > tools().pushReach,
+      `${tools().smoothReach} against ${tools().pushReach}`
+    )
+    tools().setLatheTool('smooth')
+    check('and arming it puts the other two down', tools().latheTool === 'smooth', `${tools().latheTool}`)
+    const armed = armedLatheTool(tools())
+    check(
+      'the armed tool reports the rib and its own dials',
+      armed?.tool === 'smooth' && armed.reach === tools().smoothReach,
+      `${armed?.tool} at ${armed?.reach}`
+    )
+    tools().setLatheTool(null)
+
+    // UNDO, which this screen did without for its whole first life. One entry
+    // per stroke, and the bar's own buttons walk it.
+    // A known screen: an unworked lump with an empty history. Emptied through
+    // `setState` rather than by pressing undo until it stops, which would walk
+    // back through the strokes the checks above made and leave the lump shaped.
+    lathe().centreFresh()
+    useLathe.setState({ past: [], future: [] })
+    check('a fresh lathe has nothing to undo', lathe().past.length === 0, `${lathe().past.length}`)
+
+    lathe().beginStroke()
+    lathe().work({ y: 0.75, radius: 0.2, reach: 0.3, bite: 1, tool: 'push' })
+    lathe().endStroke()
+    const cut = lathe().clay.wall.slice()
+    check('taking hold of the clay remembers the wall', lathe().past.length === 1, `${lathe().past.length}`)
+    check('and the stroke moved it', !isFresh(lathe().clay), '')
+    lathe().undo()
+    check('undo puts the wall back', isFresh(lathe().clay), '')
+    check('and offers it forward again', lathe().future.length === 1, `${lathe().future.length}`)
+    lathe().redo()
+    check(
+      'redo takes the stroke back off the shelf',
+      lathe().clay.wall.every((r, i) => r === cut[i]),
+      ''
+    )
+
+    // ONE ENTRY FOR ONE STROKE, however many frames the hand holds for. Sixty
+    // dabs between one press and one release is one act, and undoing it must
+    // not take sixty presses.
+    const depth = lathe().past.length
+    lathe().beginStroke()
+    for (let i = 0; i < 40; i += 1) {
+      lathe().work({ y: 0.4, radius: 0.3, reach: 0.3, bite: 0.5, tool: 'push' })
+    }
+    lathe().endStroke()
+    check('a whole stroke is one entry, not one per frame', lathe().past.length === depth + 1, `${lathe().past.length - depth}`)
+
+    // THE WALL, NOT THE LUMP. A width typed after the stroke stays typed --
+    // otherwise nobody would trust the button. See `past`.
+    lathe().setRadius(0.6)
+    lathe().undo()
+    check('undo leaves a size set afterwards alone', lathe().clay.radius === 0.6, `${lathe().clay.radius}`)
+    lathe().setRadius(0.4)
+
+    // The bar drives whichever screen is up, which is the one place in the app
+    // where the same button means two things -- and the right two.
+    tools().setScreen('lathe')
+    const bar = markupOf('NavBar (lathe, with history)', NavBar)
+    const undoBtn = bar.slice(bar.indexOf('Undo (Ctrl+Z)') - 200, bar.indexOf('Undo (Ctrl+Z)'))
+    check('undo is live on the lathe once there is a stroke to walk back', !undoBtn.includes('disabled'), undoBtn.slice(-90))
+
+    // THE PALETTE. Eight shapes, each one loadable, each one costing an entry.
+    const palette = markupOf('ProfilePanel', ProfilePanel)
+    shows('the console offers a palette of profiles', palette, '>Profiles<')
+    for (const profile of CLAY_PROFILES) {
+      shows(`including a ${profile.label.toLowerCase()}`, palette, `>${profile.label}<`)
+    }
+    check(
+      'each one drawn as its own silhouette rather than as a word',
+      (palette.match(/class="profile-icon"/g) ?? []).length === CLAY_PROFILES.length,
+      `${(palette.match(/class="profile-icon"/g) ?? []).length} icons`
+    )
+    // NO CHOSEN STATE. A profile is what the piece STARTED as, and one push
+    // later that is not true any more -- see `ProfilePanel`.
+    hides('and none of them lit as the current one', palette, 'profile-tile-on')
+
+    const before = lathe().past.length
+    const vase = CLAY_PROFILES.find((p) => p.id === 'vase') as ClayProfile
+    lathe().shapeAs(vase)
+    check('loading a profile shapes the piece', !isFresh(lathe().clay), '')
+    check('and costs one entry, so Ctrl+Z puts back what was there', lathe().past.length === before + 1, '')
+    check('the stock is kept', lathe().clay.radius === 0.4 && lathe().clay.height === 1.5, `${lathe().clay.radius}`)
+
+    // THE BORE. A toggle with two settings and a note that says what actually
+    // came of them.
+    lathe().setHollow(null)
+    const solidPanel = markupOf('HollowTool', HollowTool)
+    shows('the island offers Hollow', solidPanel, '>Hollow<')
+    check('and a solid piece has no cavity', bore(lathe().clay) === null, '')
+
+    tools().setOpenPanel('hollow')
+    lathe().setHollow({ thickness: 0.06, capTop: false, capBottom: true })
+    const cup = markupOf('HollowTool (a cup)', HollowTool)
+    shows('the panel sets a wall thickness', cup, '>Wall<')
+    shows('and each end independently', cup, 'aria-label="Bottom end"')
+    shows('both of them', cup, 'aria-label="Top end"')
+    shows('with a unit of its own at the top right', cup, 'nav-panel-right')
+    check('read in millimetres to start with', tools().hollowSizeUnit === 'mm', tools().hollowSizeUnit)
+    shows('and the wall field wears it', cup, '>mm<')
+    // WHAT CAME OF IT, which is the only thing on this screen that can say so.
+    shows('the panel says what the piece became', cup, 'Open at the top, standing on a floor.')
+
+    lathe().setHollow({ thickness: 0.06, capTop: false, capBottom: false })
+    shows(
+      'a pipe says it goes all the way through',
+      markupOf('HollowTool (a pipe)', HollowTool),
+      'Open all the way through.'
+    )
+    lathe().setHollow({ thickness: 0.06, capTop: true, capBottom: true })
+    shows(
+      'and a sealed one says it shows only when cut',
+      markupOf('HollowTool (sealed)', HollowTool),
+      'A sealed void'
+    )
+    // ASKING IS NOT GETTING, and the panel is where that is said out loud.
+    lathe().setHollow({ thickness: 3, capTop: false, capBottom: true })
+    shows(
+      'a wall thicker than the piece says there is nothing to bore',
+      markupOf('HollowTool (too thick)', HollowTool),
+      'Nothing to bore'
+    )
+    tools().setOpenPanel(null)
+
+    // AND THE DRAWING SHOWS IT, which is the whole reason the section exists:
+    // a hollow piece cut down the middle is two walls and a void, and the
+    // silhouette cannot say that.
+    lathe().setHollow({ thickness: 0.06, capTop: false, capBottom: true })
+    const hollowClay = lathe().clay
+    const frame = clayFrame(1)
+    const section = sectionPath(hollowClay, frame)
+    check(
+      'a hollow piece is drawn as a section rather than an outline',
+      section !== silhouette(hollowClay, frame),
+      ''
+    )
+    check('and a solid one is still the plain silhouette', sectionPath({ ...hollowClay, hollow: null }, frame) === silhouette(hollowClay, frame), '')
+    // A cup is ONE loop -- up the outside, in across the rim, down the inside
+    // and back -- because the mouth is where the two walls meet rather than a
+    // line drawn across the opening. A sealed void is two.
+    check(
+      'a cup is one closed loop, with the mouth left open',
+      (section.match(/M /g) ?? []).length === 1,
+      `${(section.match(/M /g) ?? []).length} subpaths`
+    )
+    lathe().setHollow({ thickness: 0.06, capTop: true, capBottom: true })
+    const sealed = sectionPath(lathe().clay, frame)
+    check(
+      'a sealed void is the piece and a hole in it',
+      (sealed.match(/M /g) ?? []).length === 2,
+      `${(sealed.match(/M /g) ?? []).length} subpaths`
+    )
+    lathe().setHollow({ thickness: 0.06, capTop: false, capBottom: false })
+    const pipe = sectionPath(lathe().clay, frame)
+    check(
+      'and a pipe is two bands with the gap between them',
+      (pipe.match(/M /g) ?? []).length === 2,
+      `${(pipe.match(/M /g) ?? []).length} subpaths`
+    )
+
+    // Said out loud for a reader who cannot see any of that.
+    shows(
+      'the viewport says the piece is hollow where a reader can hear it',
+      markupOf('LatheViewport (hollow)', LatheViewport),
+      'hollow and open at both ends'
+    )
+    lathe().setHollow(null)
+    lathe().centreFresh()
   }
 
   tools().setScreen('modelling')

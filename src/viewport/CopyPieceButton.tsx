@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { fitToEnvelope } from '../geometry/importers'
 import { registerMesh } from '../geometry/meshLibrary'
 import { revolveClay } from '../geometry/revolve'
-import { makeObject } from '../geometry/types'
+import { makeObject, polygonPrefix } from '../geometry/types'
 import type { BaseSolid } from '../geometry/types'
 import { useLathe } from '../store/latheStore'
 import { useLibrary } from '../store/libraryStore'
@@ -59,6 +59,24 @@ const NOTED_MS = 8000
  *  tile, the thumbnail's label and the object that lands from a paste all agree. */
 export const PIECE_NAME = 'Turned piece'
 
+/**
+ * And the same name with the base said out loud, for a piece that has one.
+ *
+ * The shelf names entries by counting, which is why this button names its own
+ * -- see the rename below -- and the same argument runs one step further the
+ * moment the lathe can make more than one kind of thing. A shelf of tiles that
+ * all say "Turned piece" is a shelf nobody can read, and the section is the one
+ * difference between two pieces that a thumbnail may not show: seen from the
+ * front, a hexagonal piece and the round one it was copied from are the same
+ * picture.
+ *
+ * `polygonPrefix` rather than a word of its own, so a piece turned on a hexagon
+ * and a hexagonal prism dropped from the palette are called the same thing.
+ */
+export function pieceName(sides: number | null): string {
+  return sides === null ? PIECE_NAME : `${polygonPrefix(sides)} turned piece`
+}
+
 export function CopyPieceButton() {
   const copyObject = useLibrary((s) => s.copyObject)
   const saveCustom = useLibrary((s) => s.saveCustom)
@@ -80,8 +98,11 @@ export function CopyPieceButton() {
 
     // `registerMesh` consumes the geometry -- it normalises it in place and
     // keeps it -- which is exactly what this is built for and why it is built
-    // here rather than held anywhere.
-    const entry = registerMesh(revolveClay(clay), PIECE_NAME)
+    // here rather than held anywhere. The sweep reads the base off the clay: a
+    // round piece gets its 64 facets, a hexagonal one gets six flats. See
+    // `revolveClay`.
+    const name = pieceName(clay.sides)
+    const entry = registerMesh(revolveClay(clay), name)
     // Through the same gate an import goes through. Nothing the lathe can make
     // is outside the app's envelope today, since the stock is bounded by the
     // same `dimensions.ts` limits every cylinder is -- but the day those bounds
@@ -98,7 +119,7 @@ export function CopyPieceButton() {
     // entries by counting because it has nothing better to go on; this one
     // knows exactly what it put there, and a row of tiles that all say Custom
     // is a row nobody can read. It stays editable in place, like every other.
-    renameCustom(saveCustom(piece), PIECE_NAME)
+    renameCustom(saveCustom(piece), name)
 
     setNoted(
       `Copied · ${formatLength(clay.height, displayUnit)} tall` +

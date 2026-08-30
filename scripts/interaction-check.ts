@@ -12,7 +12,21 @@
  * Run: npx tsx scripts/interaction-check.ts
  */
 import { readFileSync } from 'node:fs'
-import { Euler, Mesh, PerspectiveCamera, Raycaster, Vector3 } from 'three'
+import {
+  BufferGeometry,
+  CylinderGeometry,
+  DoubleSide,
+  Euler,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  PlaneGeometry,
+  Raycaster,
+  TorusGeometry,
+  Vector2,
+  Vector3,
+} from 'three'
 
 const realWarn = console.warn.bind(console)
 console.warn = (...args: unknown[]) => {
@@ -44,7 +58,14 @@ import {
   viewUp,
 } from '../src/viewport/compassViews'
 import { useTools } from '../src/store/toolStore'
-import { PLANE_ROTATIONS, gizmoParts } from '../src/viewport/TransformGizmo'
+import {
+  GRAB_RADIUS,
+  PLANE_FROM,
+  PLANE_ROTATIONS,
+  PLANE_TO,
+  gizmoParts,
+  hoverHandlers,
+} from '../src/viewport/TransformGizmo'
 import { modifiers, clearModifiers } from '../src/viewport/modifiers'
 import { MODE_KEYS } from '../src/viewport/Viewport'
 import {
@@ -1409,6 +1430,291 @@ console.log('\nEach mode draws the handles for its own job')
     'coming back to the grab comes back to the start',
     JSON.stringify(home) === JSON.stringify([1, 1, 1]),
     `${home}`
+  )
+}
+
+// --- 14b. One handle at a time ---------------------------------------------
+console.log('\n14b. Only ever one gizmo handle is grabbable')
+{
+  // WHY THE RULE IS NEEDED, measured rather than asserted: the grab volumes
+  // overlap heavily and on purpose. The cylinders are six times fatter than the
+  // arrows they wrap, the quads sit in the corners between them, and a ring is
+  // a circle drawn AROUND all three axes -- so a pointer ray passes through
+  // more than one of them from most angles a scene is ever looked at.
+  //
+  // Rebuilt from the same proportions the component draws at rather than
+  // imported, because what is being checked is the SHAPE of the problem, and a
+  // gizmo redrawn at other proportions would still have it.
+  const grabVolumes = (mode: 'move' | 'rotate' | 'scale', camera: PerspectiveCamera) => {
+    const SHAFT_FROM = 0.17, GRAB_RADIUS = 0.17
+    const PLANE_FROM = 0.16, PLANE_TO = 0.4
+    const RING_RADIUS = 0.27, GRAB_TUBE = 0.045
+    const BALL_RADIUS = 0.62, BALL_GRAB_TUBE = 0.07
+    const AXIS_ROTATIONS: Vec3[] = [[0, 0, -Math.PI / 2], [0, 0, 0], [Math.PI / 2, 0, 0]]
+    const root = new Group()
+    const put = (geo: BufferGeometry, rot?: Vec3, pos?: Vec3) => {
+      const group = new Group()
+      if (rot) group.rotation.set(...rot)
+      const mesh = new Mesh(geo)
+      if (pos) mesh.position.set(...pos)
+      group.add(mesh)
+      root.add(group)
+    }
+    const grabLength = 1 - SHAFT_FROM
+    if (mode !== 'rotate') {
+      for (const axis of [0, 1, 2] as const) {
+        put(new CylinderGeometry(GRAB_RADIUS, GRAB_RADIUS, grabLength, 8),
+          AXIS_ROTATIONS[axis], [0, SHAFT_FROM + grabLength / 2, 0])
+      }
+    }
+    if (mode === 'move') {
+      const side = PLANE_TO - PLANE_FROM
+      const centre = (PLANE_FROM + PLANE_TO) / 2
+      for (const axis of [0, 1, 2] as const) {
+        put(new PlaneGeometry(side, side), PLANE_ROTATIONS[axis], [centre, centre, 0])
+      }
+    }
+    if (mode === 'scale') {
+      // Billboarded, so it is turned to face wherever the camera happens to be.
+      const ring = new Mesh(new TorusGeometry(RING_RADIUS, GRAB_TUBE, 6, 32))
+      ring.quaternion.copy(camera.quaternion)
+      root.add(ring)
+    }
+    if (mode === 'rotate') {
+      for (const axis of [0, 1, 2] as const) {
+        put(new TorusGeometry(BALL_RADIUS, BALL_GRAB_TUBE, 6, 40), PLANE_ROTATIONS[axis])
+      }
+    }
+    root.updateMatrixWorld(true)
+    return root
+  }
+
+  /** The worst a pointer can do: how many handles one ray passes through. */
+  const crowding = (mode: 'move' | 'rotate' | 'scale') => {
+    let most = 0
+    for (let azimuth = 0; azimuth < 360; azimuth += 15) {
+      for (const elevation of [12, 35, 60]) {
+        const camera = new PerspectiveCamera(50, 1.6, 0.1, 100)
+        const a = (azimuth * Math.PI) / 180
+        const e = (elevation * Math.PI) / 180
+        camera.position.set(6 * Math.cos(e) * Math.cos(a), 6 * Math.sin(e), 6 * Math.cos(e) * Math.sin(a))
+        camera.lookAt(0, 0, 0)
+        camera.updateMatrixWorld(true)
+        const root = grabVolumes(mode, camera)
+        for (let px = -0.4; px <= 0.4; px += 0.02) {
+          for (let py = -0.4; py <= 0.4; py += 0.02) {
+            const caster = new Raycaster()
+            caster.setFromCamera(new Vector2(px, py), camera)
+            const meshes = new Set(caster.intersectObject(root, true).map((hit) => hit.object))
+            most = Math.max(most, meshes.size)
+          }
+        }
+      }
+    }
+    return most
+  }
+
+  check('a Move pointer can be over two handles at once', crowding('move') >= 2, `${crowding('move')}`)
+  check('and a Scale pointer over the ring and an arrow together', crowding('scale') >= 2)
+  // The worst of the three by a distance: three big rings sharing one centre.
+  check('and a Rotate pointer over all three rings', crowding('rotate') >= 3, `${crowding('rotate')}`)
+
+  // WHAT THE RULE DOES ABOUT IT. The claim is the whole mechanism: a hovered
+  // handle stops the event, so no handle further along the ray is ever told
+  // the pointer is on it -- which is the tie-break the PRESS already used,
+  // applied to the light, so the handle that lights is by construction the
+  // handle a press would take.
+  {
+    let hot: boolean | null = null
+    let stopped = false
+    const event = { stopPropagation: () => { stopped = true } } as never
+
+    const claiming = hoverHandlers((on) => { hot = on })
+    claiming.onPointerOver(event)
+    check('a hovered handle lights up', hot === true)
+    check('and takes the pointer with it', stopped)
+    claiming.onPointerOut()
+    check('and gives it back on the way out', hot === false)
+
+    // A handle standing down -- a plane quad seen edge-on -- refuses the press,
+    // so it must refuse the hover too. One that claimed a pointer it would then
+    // hand back would leave the arrow behind it taking a press it never lit for.
+    hot = null
+    stopped = false
+    hoverHandlers((on) => { hot = on }, () => false).onPointerOver(event)
+    check('a handle standing down claims nothing', !stopped)
+    check('and does not light', hot === null)
+  }
+
+  // The three places the rule lives. None of them is reachable without a
+  // camera, a pointer and a React tree, so they are read out of the source --
+  // and a handle added without one is what these are here to catch.
+  const gizmo = readFileSync(new URL('../src/viewport/TransformGizmo.tsx', import.meta.url), 'utf8')
+  check(
+    'every gizmo handle claims its hover through the one helper',
+    !/onPointerOver=/.test(gizmo),
+    gizmo.match(/onPointerOver=[^\n]*/)?.[0] ?? ''
+  )
+  check(
+    'and so does the ruler knob, which is drawn among them',
+    /hoverHandlers/.test(readFileSync(new URL('../src/viewport/Rulers.tsx', import.meta.url), 'utf8'))
+  )
+  // The other half: once a handle is held the pointer has left it, and the
+  // handles it swept on the way must not light behind the drag.
+  check(
+    'a held handle overrides the pointer',
+    (gizmo.match(/held \?\? /g) ?? []).length >= 3,
+    `${(gizmo.match(/held \?\? /g) ?? []).length} of 3`
+  )
+  // And a second gesture cannot be started over the top of the first, by a
+  // right button or by a second finger.
+  check(
+    'and a second grab is refused outright',
+    gizmo.includes("if (useDoc.getState().drag.kind !== 'idle') return")
+  )
+}
+
+// --- 14c. The plane quads are big enough to press --------------------------
+console.log('\n14c. A plane handle is a target, not a speck')
+{
+  // The two ends of the square are each pinned to something. Stated here
+  // rather than trusted, because nothing at runtime would notice them drifting
+  // -- the quads would simply get harder to hit again, which is exactly the
+  // failure they were just brought back from.
+  check(
+    'a quad starts outside the arrows\' grab cylinders',
+    PLANE_FROM > GRAB_RADIUS,
+    `${PLANE_FROM} vs ${GRAB_RADIUS}`
+  )
+  // Which is what licenses `planeRaycast`'s weight: disjoint volumes mean the
+  // depth between a quad and an arrow is real, so the nearer of the two can be
+  // taken -- and the nearer one is also the one drawn in front.
+  check(
+    'and its corner stays inside the arrow tips',
+    PLANE_TO * Math.SQRT2 < 1,
+    `corner at ${(PLANE_TO * Math.SQRT2).toFixed(2)} of the arrow's 1`
+  )
+
+  // WHAT A POINTER CAN ACTUALLY LAND ON, which is not the quad's area: an
+  // arrow's grab cylinder crosses its territory in projection, and where the
+  // two meet along a ray only one of them can win. Measured by asking, over a
+  // ring of camera angles, which handle a press at each pointer position would
+  // take -- the same question the app answers, with the same arithmetic.
+  const SHAFT_FROM = 0.17
+  const AXIS_ROTATIONS: Vec3[] = [[0, 0, -Math.PI / 2], [0, 0, 0], [Math.PI / 2, 0, 0]]
+  const PLANE_EDGE_ON = 0.2
+
+  const built = (from: number, to: number, planeBias: number, camera: PerspectiveCamera) => {
+    const root = new Group()
+    const bias = new Map<Mesh, number>()
+    const quad = new Set<Mesh>()
+    const grabLength = 1 - SHAFT_FROM
+    for (const axis of [0, 1, 2] as const) {
+      const group = new Group()
+      group.rotation.set(...AXIS_ROTATIONS[axis])
+      const mesh = new Mesh(new CylinderGeometry(GRAB_RADIUS, GRAB_RADIUS, grabLength, 12))
+      mesh.position.set(0, SHAFT_FROM + grabLength / 2, 0)
+      group.add(mesh)
+      root.add(group)
+      bias.set(mesh, 1e-6)
+    }
+    const view = camera.getWorldDirection(new Vector3())
+    for (const axis of [0, 1, 2] as const) {
+      const group = new Group()
+      group.rotation.set(...PLANE_ROTATIONS[axis])
+      // Double-sided, as the real quad is: a slide across a plane is the same
+      // slide from behind it, and a front-facing test would report half the
+      // handles missing.
+      const mesh = new Mesh(
+        new PlaneGeometry(to - from, to - from),
+        new MeshBasicMaterial({ side: DoubleSide })
+      )
+      mesh.position.set((from + to) / 2, (from + to) / 2, 0)
+      group.add(mesh)
+      root.add(group)
+      root.updateMatrixWorld(true)
+      // Standing down when edge-on takes it out of the picking as well as out
+      // of the drawing.
+      if (Math.abs(group.getWorldDirection(new Vector3()).dot(view)) <= PLANE_EDGE_ON) {
+        root.remove(group)
+        continue
+      }
+      bias.set(mesh, planeBias)
+      quad.add(mesh)
+    }
+    root.updateMatrixWorld(true)
+    return { root, bias, quad }
+  }
+
+  /** Pointer positions that would take a QUAD, and the leanest single view. */
+  const reachable = (from: number, to: number, planeBias: number) => {
+    let total = 0
+    let leanest = Infinity
+    for (let azimuth = 0; azimuth < 360; azimuth += 30) {
+      for (const elevation of [20, 45]) {
+        // The opening shot: the camera sits this many GIZMO units out once the
+        // gizmo has been scaled to hold its size on screen.
+        const away = 3.99 / 0.279
+        const camera = new PerspectiveCamera(45, 1.5, 0.005, 1000)
+        const a = (azimuth * Math.PI) / 180
+        const e = (elevation * Math.PI) / 180
+        camera.position.set(away * Math.cos(e) * Math.cos(a), away * Math.sin(e), away * Math.cos(e) * Math.sin(a))
+        camera.lookAt(0, 0, 0)
+        camera.updateMatrixWorld(true)
+        const gizmo = built(from, to, planeBias, camera)
+        let here = 0
+        for (let px = -0.22; px <= 0.22; px += 0.008) {
+          for (let py = -0.22; py <= 0.22; py += 0.008) {
+            const caster = new Raycaster()
+            caster.setFromCamera(new Vector2(px, py), camera)
+            let won: Mesh | null = null
+            let at = Infinity
+            for (const hit of caster.intersectObject(gizmo.root, true)) {
+              const weight = gizmo.bias.get(hit.object as Mesh)
+              if (weight === undefined) continue
+              if (hit.distance * weight < at) {
+                at = hit.distance * weight
+                won = hit.object as Mesh
+              }
+            }
+            if (won && gizmo.quad.has(won)) here++
+          }
+        }
+        total += here
+        leanest = Math.min(leanest, here)
+      }
+    }
+    return { total, leanest }
+  }
+
+  // What it was: a 0.16-to-0.40 square that lost every meeting with an arrow.
+  const before = reachable(0.16, 0.4, 1e-5)
+  // And what the file now draws, read from the source so a change to either
+  // end of the square is a change to this answer.
+  const after = reachable(PLANE_FROM, PLANE_TO, 1e-6)
+
+  // THE WORST ANGLE, not the average, because that is the one that made these
+  // feel broken: a handle that is hard from every direction is a small handle,
+  // but one that is fine from most and impossible from a few reads as a bug.
+  // Sampled coarsely here to keep the suite quick -- a finer sweep found
+  // angles where the old square offered NOTHING at all -- so what is claimed
+  // is the improvement rather than the old zero.
+  check(
+    'the leanest camera angle offers something to press',
+    after.leanest > 0,
+    `${after.leanest} pointer positions`
+  )
+  check(
+    'and many times what the old square left it',
+    after.leanest > before.leanest * 5,
+    `${after.leanest} against ${before.leanest}`
+  )
+  // Both halves of the fix in one number: a bigger square, and a tie-break that
+  // stops handing the arrow ground the quad is drawn in front of.
+  check(
+    'with several times the area a pointer can land on',
+    after.total > before.total * 4,
+    `${after.total} positions against ${before.total}`
   )
 }
 

@@ -10,7 +10,7 @@ import { rulerLength, useTools } from '../store/toolStore'
 import type { Ruler, RulerEnd } from '../store/toolStore'
 import { formatLength } from '../units'
 import { useSceneColors } from './useSceneColors'
-import { TransformGizmo, biasedRaycast } from './TransformGizmo'
+import { TransformGizmo, biasedRaycast, hoverHandlers } from './TransformGizmo'
 
 /**
  * The rulers laid over the scene, and the readouts that say what they measure.
@@ -324,7 +324,14 @@ function RulerBody({
                 not unpick it -- neither three nor R3F consults `visible` when
                 raycasting -- so an invisible knob would go on taking presses
                 from the end that is supposed to have them. It is mounted only
-                while it is wanted instead, which does. */}
+                while it is wanted instead, which does.
+
+                Its hover TAKES THE POINTER, the way every gizmo handle's does.
+                The knob is drawn over the scene alongside the arrows standing
+                on the ruler's other end, and on a short ruler seen end-on the
+                two overlap; two things lit with only one of them grabbable is
+                exactly the confusion that rule exists to stop. See
+                `hoverHandlers`. */}
             {grabbable && (
               <mesh
                 ref={(mesh) => {
@@ -332,8 +339,7 @@ function RulerBody({
                 }}
                 raycast={rulerRaycast}
                 onPointerDown={(e) => press(e, end)}
-                onPointerOver={() => setHovered(end)}
-                onPointerOut={() => setHovered(null)}
+                {...hoverHandlers((hot) => setHovered(hot ? end : null))}
               >
                 <sphereGeometry args={[KNOB_GRAB, 8, 6]} />
                 <meshBasicMaterial

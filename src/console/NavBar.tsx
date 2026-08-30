@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { APP_NAME } from '../appInfo'
 import { useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
+import { useLathe } from '../store/latheStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
 import { ImportTools } from './ImportTools'
@@ -62,17 +63,41 @@ function Rule({ major = false }: { major?: boolean }) {
  * the window meant the hand and the eye in two different places.
  */
 export function NavBar() {
-  const undo = useDoc((s) => s.undo)
-  const redo = useDoc((s) => s.redo)
-  const canUndo = useDoc((s) => s.past.length > 0)
-  const canRedo = useDoc((s) => s.future.length > 0)
-
   const openPanel = useTools((s) => s.openPanel)
   const setOpenPanel = useTools((s) => s.setOpenPanel)
-  // Undo and redo act on the document, so they stand down with everything else
-  // that does when the screen on show has none. Dimmed rather than removed --
-  // see `SCREEN_HAS_DOCUMENT`.
+  // Whether the screen on show has a document, which is what dims Import,
+  // Export and Snap. See `SCREEN_HAS_DOCUMENT`.
   const live = useTools(onDocument)
+
+  /**
+   * UNDO AND REDO BELONG TO THE SCREEN, not to the document.
+   *
+   * They used to stand down on Lathe with everything else that acts on a
+   * document, because the lathe had no history of its own to walk. It has one
+   * now -- see `latheStore` -- and these two buttons are the only place in the
+   * app where the same act means something different depending on which screen
+   * is up. That is not an exception to the rule the rest of the bar follows; it
+   * is the rule read properly. "Undo" was never about the DOCUMENT, it was
+   * about the last thing you did, and there is no screen where that question
+   * has no answer.
+   *
+   * Both stores are subscribed to on both screens, which costs a comparison per
+   * change to a store the bar is not showing. The alternative -- a hook that
+   * picks a store -- is not one React allows.
+   */
+  const docUndo = useDoc((s) => s.undo)
+  const docRedo = useDoc((s) => s.redo)
+  const docPast = useDoc((s) => s.past.length > 0)
+  const docFuture = useDoc((s) => s.future.length > 0)
+  const latheUndo = useLathe((s) => s.undo)
+  const latheRedo = useLathe((s) => s.redo)
+  const lathePast = useLathe((s) => s.past.length > 0)
+  const latheFuture = useLathe((s) => s.future.length > 0)
+
+  const undo = live ? docUndo : latheUndo
+  const redo = live ? docRedo : latheRedo
+  const canUndo = live ? docPast : lathePast
+  const canRedo = live ? docFuture : latheFuture
 
   // Escape and click-outside for EVERY tool panel, mounted once here because
   // `openPanel` is one field for all of them. The bar is not the only thing
@@ -144,10 +169,13 @@ export function NavBar() {
         <SnapTool />
         <Rule />
         <div className="seg">
+          {/* Dead when there is nothing to step, which is the only reason
+              either of them is ever dead now. On Lathe that is an untouched
+              lump; on Modelling it is a document nobody has edited yet. */}
           <button
             type="button"
             className="seg-btn"
-            disabled={!live || !canUndo}
+            disabled={!canUndo}
             onClick={undo}
             title="Undo (Ctrl+Z)"
           >
@@ -156,7 +184,7 @@ export function NavBar() {
           <button
             type="button"
             className="seg-btn"
-            disabled={!live || !canRedo}
+            disabled={!canRedo}
             onClick={redo}
             title="Redo (Ctrl+Shift+Z)"
           >
@@ -165,8 +193,8 @@ export function NavBar() {
         </div>
         <Rule />
         <HelpTool />
-        {/* Last, and the two that survive every screen: Import, Export, Snap,
-            undo and redo all act on a document, and Lathe has none to act on.
+        {/* Last, and the two that survive every screen: Import, Export and
+            Snap all act on a document, and Lathe has none to act on.
             Help explains the app and the cog holds what stays true of the next
             document you open, so both are as live on one screen as on another.
             The unit selector moved into the cog from its own button beside
