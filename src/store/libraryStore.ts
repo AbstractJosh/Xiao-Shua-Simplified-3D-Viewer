@@ -96,10 +96,12 @@ export function templateOf(object: SceneObject): SceneObject {
   const copy = cloneObject(object)
   return {
     ...copy,
-    // Saved as a SHAPE, never as an eraser. The shelf is what you have built,
-    // and a tile that dropped a red ghost would be the one entry on it that
-    // does not add anything to the scene. Erase the same shape by dragging it
-    // out of Solids again, from the grip.
+    // Stored as a SHAPE. What the shelf holds is what you built, and whether a
+    // copy of it comes out as a solid or as an eraser is decided by the corner
+    // of the tile it is dragged from -- see `startPlacingSolidTemplate`, which
+    // writes the flag either way round. So an object that happened to be an
+    // eraser when it was saved is still a shape here, and a tile whose body is
+    // dragged still adds material.
     erase: undefined,
     transform: { ...copy.transform, position: [0, 0, 0] },
   }

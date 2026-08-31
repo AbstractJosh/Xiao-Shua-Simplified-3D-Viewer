@@ -26,6 +26,7 @@ import {
 import type { CutPlaneState, RulerFrame, TransformMode } from '../store/toolStore'
 import type { Axis } from '../geometry/dimensions'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
+import { DEFAULT_LATHE_SNAP, LATHE_SNAP_MAX, LATHE_SNAP_MIN } from '../viewport/latheRuler'
 // The camera, read the way the corner compass reads it. This file is where the
 // island's tools are defined; the island itself is a viewport component, and
 // `compassViews` is plain arithmetic with no React and no renderer in it.
@@ -214,36 +215,41 @@ export function MirrorTool() {
  *
  * IT USED TO BE DIMMED ANYWHERE BUT THE MODELLING SCREEN, on the reasoning that
  * snapping is a rule every drag obeys and a screen with nothing to drag has no
- * drags to govern. That reading was one screen out of date. The laser cutter
+ * drags to govern. That reading has now been overtaken twice. The laser cutter
  * has a drag worth aiming -- a Point Cut's knots line up with the knots already
- * placed -- so the question the button is really asking is "is there anything
- * here to catch", which is `snapsHere` and its table in `screens.ts`. The lathe
- * still answers no, and is still dimmed.
+ * placed -- and so has the lathe, whose ruler ends catch the wall, the axis and
+ * the rim. So the question the button is really asking is "is there anything
+ * here to catch", which is `snapsHere` and its table in `screens.ts`, and all
+ * three screens now answer yes.
  *
  * THE SWITCH IS SHARED AND THE DISTANCE IS NOT, which is the whole of what the
- * panel below is doing with two fields. Working with snapping on is a
+ * panel below is doing with three fields. Working with snapping on is a
  * preference and follows you about; how near is near is a fact about what is
- * being aimed at, and the two screens do not aim at the same kind of thing. One
- * catches the corner of a solid standing somewhere in a room, so its tolerance
- * is a length in the world and a millimetre stays a millimetre as you lean in.
- * The other lines a mark up with another mark on the same flat face, under a
- * camera that zooms twenty times over, so its tolerance is a distance ON SCREEN
- * -- which is also the only reading that survives that wheel. See
- * `laserSnapDistance`, and `pointSnap.ts` for what the number does.
+ * being aimed at, and the three screens do not aim at the same kind of thing.
+ * One catches the corner of a solid standing somewhere in a room, so its
+ * tolerance is a length in the world and a millimetre stays a millimetre as you
+ * lean in. The other two line a mark up with something on the same flat
+ * drawing, under a view that zooms twenty times over on one screen and four
+ * thousand on the other, so their tolerances are distances ON SCREEN -- which
+ * is also the only reading that survives either wheel. See `laserSnapDistance`
+ * and `latheSnapDistance`, and `pointSnap.ts` and `latheRuler.ts` for what the
+ * two numbers do.
  *
- * ONE FIELD AT A TIME rather than both stacked. The panel is opened to answer
- * "how close is close, here", and a second number that governs a screen you are
- * not on is one more thing to read past.
+ * ONE FIELD AT A TIME rather than all three stacked. The panel is opened to
+ * answer "how close is close, here", and two more numbers governing screens you
+ * are not on are two more things to read past.
  */
 export function SnapTool() {
   const snap = useTools((s) => s.snap)
   const snapDistance = useTools((s) => s.snapDistance)
   const laserSnapDistance = useTools((s) => s.laserSnapDistance)
+  const latheSnapDistance = useTools((s) => s.latheSnapDistance)
   const setSnap = useTools((s) => s.setSnap)
   const setSnapDistance = useTools((s) => s.setSnapDistance)
   const setLaserSnapDistance = useTools((s) => s.setLaserSnapDistance)
+  const setLatheSnapDistance = useTools((s) => s.setLatheSnapDistance)
   const live = useTools(snapsHere)
-  const onBlock = useTools((s) => s.screen === 'laser')
+  const screen = useTools((s) => s.screen)
 
   return (
     <NavTool
@@ -263,7 +269,7 @@ export function SnapTool() {
           distance is what you came here to read, and a control that disappears
           when the tool is idle reads as a bug. */}
       <fieldset className="tool-group" disabled={!snap}>
-        {onBlock ? (
+        {screen === 'laser' ? (
           <NumberField
             label="Sensitivity"
             value={laserSnapDistance}
@@ -274,6 +280,18 @@ export function SnapTool() {
             resetTo={DEFAULT_LASER_SNAP}
             tip="How near a point has to come to another point's row or column before it lines up with it. In pixels on screen, so it is the same reach under the finger at every zoom -- which a length in the world could not be on a camera that zooms this far."
             onChange={setLaserSnapDistance}
+          />
+        ) : screen === 'lathe' ? (
+          <NumberField
+            label="Sensitivity"
+            value={latheSnapDistance}
+            min={LATHE_SNAP_MIN}
+            max={LATHE_SNAP_MAX}
+            step={1}
+            decimals={0}
+            resetTo={DEFAULT_LATHE_SNAP}
+            tip="How near a ruler end has to come to the wall, the axis, the rim or the row its own other end stands on before it takes it. In pixels on screen, so it is the same reach under the finger at every zoom -- and this view zooms four thousand to one."
+            onChange={setLatheSnapDistance}
           />
         ) : (
           <NumberField
@@ -1050,8 +1068,14 @@ export function HelpTool() {
  * because the geometry and the stylesheet have to agree with them, this is two
  * labels for one boolean and nothing outside the panel needs them.
  */
+// "most solids" rather than "every solid", because a very dense one goes
+// without: past about ten thousand triangles the lines describe the
+// triangulation instead of the shape, and cost more than the solid does to
+// draw. See `OUTLINE_TRIANGLE_LIMIT` in `SceneObjects`. Said in the tooltip
+// rather than left to be discovered, since a setting that reads On while a
+// particular solid shows no lines is otherwise a bug report.
 const OUTLINE_CHOICES = [
-  { on: true, label: 'On', title: 'Draw the edge lines around every solid' },
+  { on: true, label: 'On', title: 'Draw the edge lines around most solids. Very dense ones -- imported models, laser-cut pieces -- go without: at that many facets the lines trace the triangulation rather than the shape.' },
   { on: false, label: 'Off', title: 'Hide them and show the surfaces bare' },
 ] as const
 
@@ -1102,6 +1126,12 @@ export function SettingsTool() {
       label="Settings"
       icon={<SettingsIcon />}
       panelTitle="Settings"
+      // Kept as the panel's name for a screen reader, and taken off the panel
+      // itself along with the close cross: this one is reached by pressing a
+      // cog labelled Settings, so a heading repeating the word and a cross
+      // doing what pressing that cog again does are a row of chrome over two
+      // rows of controls. See `bare`.
+      bare
       align="right"
     >
       {/* Named so the panel can size itself to two rows of short buttons rather

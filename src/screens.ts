@@ -84,18 +84,22 @@ export const SCREEN_HAS_DOCUMENT: Record<ScreenId, boolean> = {
  *
  * WHAT IS SHARED IS THE SWITCH AND NOT THE DISTANCE. Whether you are working
  * with snapping on is one preference and follows you between screens; how near
- * is near is a fact about what is being aimed at, and the two screens are not
+ * is near is a fact about what is being aimed at, and the three screens are not
  * aiming at the same kind of thing at all -- one catches the corner of a solid
- * somewhere in a room, at a length in the world, and the other lines a mark up
- * with a mark on the same flat face, at a distance on the screen. One number
- * for both would be a number that could only ever suit one of them. See
- * `snapDistance` and `laserSnapDistance` in `toolStore`.
+ * somewhere in a room, at a length in the world, and the other two line a mark
+ * up with something on the same flat drawing, at a distance on the screen. One
+ * number for all of them would be a number that could only ever suit one. See
+ * `snapDistance`, `laserSnapDistance` and `latheSnapDistance` in `toolStore`.
  */
 export const SCREEN_SNAPS: Record<ScreenId, boolean> = {
   modelling: true,
-  // Nothing on the lathe is placed against anything else: the profile is a
-  // wall pushed about by a brush, and there are no two marks to line up.
-  lathe: false,
+  // THE LATHE USED TO ANSWER NO, on the reasoning that the profile is a wall
+  // pushed about by a brush and there are no two marks to line up. That was
+  // true of the tools that SHAPE the piece and stayed true when a tool arrived
+  // that measures it: a ruler's end catches the wall, the axis, the rim and the
+  // plate, and every one of those is an edge worth landing exactly on rather
+  // than a pixel away from. See `latheRuler.ts`.
+  lathe: true,
   laser: true,
 }
 

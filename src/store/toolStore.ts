@@ -1,9 +1,16 @@
 import { create } from 'zustand'
 import { Euler, Vector3 } from 'three'
-import type { ClayTool } from '../geometry/clay'
+import type { Clay, ClayTool } from '../geometry/clay'
 import { BRUSH_SMOOTH_MIN, ROUND_MIN } from '../geometry/erode'
 import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
+import {
+  DEFAULT_LATHE_SNAP,
+  LATHE_SNAP_MAX,
+  LATHE_SNAP_MIN,
+  latheRulerSpawn,
+} from '../viewport/latheRuler'
+import type { LatheEnd, LatheRuler, LatheRulerEnd } from '../viewport/latheRuler'
 import { fromDisplay } from '../units'
 import { DEFAULT_HELP_SECTION } from '../helpTopics'
 import type { HelpSectionId } from '../helpTopics'
@@ -11,7 +18,8 @@ import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT, SCREEN_SNAPS } from '../screens'
 import type { ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
-import { clampZoom } from '../viewport/latheView'
+import { NO_PAN, clampPan, clampZoom } from '../viewport/latheView'
+import type { LathePan } from '../viewport/latheView'
 import type { Unit, UnitMode } from '../units'
 import type { Axis } from '../geometry/dimensions'
 import type { Vec3 } from '../geometry/types'
@@ -61,6 +69,13 @@ export type NavPanel =
   // Not a tool that is aimed, and the only lid on this island that is not: it
   // is a setting for the whole piece with a panel to hold it. See `HollowTool`.
   | 'hollow'
+  // The lathe's ruler list, and NOT `ruler`: that is the modelling screen's,
+  // over a scene this one does not draw, with a list of its own behind it. The
+  // same split `smooth` and `smoother` already make, and for the sharper
+  // version of the reason -- these two panels are both called "Rulers" and
+  // hold different rulers, so one id would have been the surest way to open
+  // the wrong list and believe it.
+  | 'lathe-ruler'
   // The Laser Cutter's two, which are the same tool wearing two ways of putting
   // a line on a face. See `LaserTools`.
   | 'freehand'
@@ -96,6 +111,7 @@ export const ISLAND_PANELS: NavPanel[] = [
   'pull',
   'smooth',
   'hollow',
+  'lathe-ruler',
   'freehand',
   'points',
 ]
@@ -171,12 +187,26 @@ export type BrushTool = StrokeBrush | null
  * screen it was on before trusting it.
  */
 /**
- * The three that shape the wall, plus empty hands.
+ * The three that shape the wall, the one that states it outright, plus empty
+ * hands.
  *
- * `ClayTool` in `clay.ts` is this without the null: the geometry has no notion
- * of putting a tool down, and this store has no notion of what a dab does.
+ * `ClayTool` in `clay.ts` is the first three: the geometry has no notion of
+ * putting a tool down, and this store has no notion of what a dab does.
+ *
+ * `points` IS NOT ONE OF THEM, and the gap in the types is the honest one. The
+ * other three are brushes -- held against the wall, working it a little per
+ * frame, described by a `Dab` -- and Point Sculpt is not held against anything:
+ * it places marks, and one press re-cuts the wall to the line through them. So
+ * it has no reach, no strength and no dab, `armedLatheTool` returns null for it
+ * (which is what keeps the frame loop from trying to work with it), and the
+ * geometry it calls is `sculpt` rather than `mold`.
+ *
+ * It is in THIS field all the same, because it claims the same gesture the
+ * other three do: a left press on the clay cannot both hold a brush and put a
+ * point down, and one field is the only way to say that once. Same argument as
+ * `LaserTool`, where `move` sits beside the two cutters.
  */
-export type LatheTool = ClayTool | null
+export type LatheTool = ClayTool | 'points' | null
 
 /**
  * Which tool is in hand on the Laser Cutter, if any.
@@ -627,6 +657,22 @@ function makeRuler(frame?: RulerFrame): Ruler {
 }
 
 /**
+ * The lathe's own counter, and its own id prefix.
+ *
+ * Separate from the one above for the reason that one is separate from the
+ * document's: an id is what a live gesture holds onto, and two lists handing
+ * out `r3` would let a drag released on one screen land on a ruler on the
+ * other. It never restarts either, so a ruler deleted mid-drag cannot have the
+ * gesture land on whatever took its place.
+ */
+let latheRulerCounter = 0
+
+function makeLatheRuler(clay: Clay): LatheRuler {
+  latheRulerCounter += 1
+  return { id: `lr${latheRulerCounter}`, ends: latheRulerSpawn(latheRulerCounter - 1, clay) }
+}
+
+/**
  * What the gizmo is FOR right now: sliding the target, turning it, or sizing
  * it.
  *
@@ -737,6 +783,26 @@ export type ToolState = {
    * See `DEFAULT_LASER_SNAP` in `pointSnap.ts`, which owns the range as well.
    */
   laserSnapDistance: number
+  /**
+   * And how near a ruler end has to come to an edge of the piece on the lathe,
+   * likewise in PIXELS on screen.
+   *
+   * A THIRD NUMBER, which needs the same defence the second one did and gets it
+   * from the same place. What it catches is the wall of the section, the axis
+   * it turns about, or the row the ruler's other end is standing on -- all of
+   * them marks on one flat drawing, exactly as on the laser cutter, so what
+   * makes an end look caught is again how far it is ON SCREEN. And this screen
+   * zooms four thousand to one, which is two hundred times the room the laser's
+   * camera has: a fixed length in the world would be a third of the frame at
+   * one end of that range and finer than a pixel at the other.
+   *
+   * Its own field rather than the laser's, though the two start on the same
+   * ten, because they govern different hands doing different work: a user who
+   * loosens the reach while placing knots has said nothing whatever about how
+   * near their ruler should catch. See `DEFAULT_LATHE_SNAP` in `latheRuler.ts`,
+   * which owns the range as well.
+   */
+  latheSnapDistance: number
   /** Which unit lengths are SHOWN in. Purely a display choice: nothing in the
    *  document or the geometry changes with it. */
   displayUnit: UnitMode
@@ -954,6 +1020,29 @@ export type ToolState = {
    * where what you placed is exactly what gets cut.
    */
   fitCurve: boolean
+  /**
+   * The same question for the Lathe screen's Point Sculpt, and a SEPARATE field
+   * from `fitCurve` above.
+   *
+   * One switch for both was the first thing tried and it is the wrong shape,
+   * for the reason `latheTool` is not a value on `laserTool`: the two are aimed
+   * at different things on different screens. How you like a cut joined up on a
+   * block is a decision you make about cutting; how you like a profile joined
+   * up on a lathe is a decision you make about turning, and the two screens are
+   * a tab apart. Sharing one boolean means going to the lathe, wanting a
+   * straight shoulder, and finding you have quietly straightened the curve
+   * waiting on the cutting bench -- a change to a screen you cannot see, which
+   * is the one kind this app tries hardest not to make. Same argument as
+   * `pushReach` against one shared brush size.
+   *
+   * ON to start with, where the laser's is off, and the difference is honest.
+   * A cut is a line through a block and the straight one is what anybody wants
+   * first; a turned profile is a CURVE almost by definition -- the shapes this
+   * screen exists to make are bowls and vases and necks -- so the tool opens on
+   * the reading that makes those, and Off is what you reach for to put a hard
+   * shoulder in.
+   */
+  sculptFit: boolean
   /* AUTO DISCARD USED TO LIVE HERE, one flag shared by both cutting tools: a
      cut threw its own offcut away as it landed, for anyone trimming a block
      down to a shape where every cut ends in the same Delete.
@@ -1003,6 +1092,21 @@ export type ToolState = {
    * of undo.
    */
   latheZoom: number
+  /**
+   * And how far the view has been slid off the middle of the lathe, in scene
+   * units.
+   *
+   * The other half of the same answer. Zoom decides how much of the world the
+   * frame covers; this decides WHICH part, and without it a zoomed-in view can
+   * only ever look at the one place the frame happens to start -- which on a
+   * tall piece is the foot, forever. Beside the zoom for the reason the zoom is
+   * here: it is where you are looking, not what you have made, so it is out of
+   * undo and does not travel with the piece to the clipboard.
+   *
+   * See `LathePan` in `latheView.ts` for what the two numbers mean and why they
+   * are lengths rather than fractions of the frame.
+   */
+  lathePan: LathePan
   /**
    * How much of the wall each tool covers, and how hard each is leant on.
    *
@@ -1054,6 +1158,38 @@ export type ToolState = {
   rulers: Ruler[]
   /** The one being worked on, and which end holds the gizmo. */
   selectedRuler: RulerSelection
+
+  /**
+   * The same switch for the lathe's own rulers, and a SEPARATE field from
+   * `rulerActive` although the two do the same job on two screens.
+   *
+   * The Snap switch above is shared across the app, and this looks like the
+   * same kind of thing until you notice what is behind it: arming this tool
+   * LAYS A RULER DOWN if there are none, because a switch that turns on and
+   * shows nothing reads as broken. Share the field and that guarantee breaks
+   * the moment anyone crosses between screens -- arm the ruler on the bench,
+   * walk to the lathe, and the button is lit over a lathe with no ruler on it,
+   * which is precisely the state both halves of this tool exist to prevent.
+   * One flag per list is what keeps "lit" and "there is something to see" the
+   * same fact.
+   */
+  latheRulerActive: boolean
+  /** Every ruler on the section, in the order they were laid down. */
+  latheRulers: LatheRuler[]
+  /**
+   * The one being worked on, or null.
+   *
+   * An id and NOT an id plus an end, which is where this parts company with
+   * `selectedRuler`. That one names an end because the end is where the gizmo
+   * stands, and two sets of arrows a centimetre apart is two sets to tell apart
+   * mid-drag. Here there is no gizmo: both ends are knobs on a flat drawing and
+   * either is taken hold of by pressing it, so there is nothing for a selection
+   * to move about and nothing it would mean to select one end over the other.
+   * What the selection does here is the rest of what it does there -- mark
+   * which ruler the panel's row, the hazard stripes and the Delete key are all
+   * talking about.
+   */
+  selectedLatheRuler: string | null
 
   /** Show a different screen. Closes any open tool panel with it: every one of
    *  them hangs off a bar or an island that is about to be replaced. */
@@ -1116,6 +1252,7 @@ export type ToolState = {
   setLaserTool: (tool: LaserTool) => void
   setFreehandSmoothing: (smoothing: number) => void
   setFitCurve: (fit: boolean) => void
+  setSculptFit: (fit: boolean) => void
   setStockOpen: (open: boolean) => void
   /**
    * Zoom the lathe's view, by a FACTOR rather than to a value.
@@ -1128,6 +1265,25 @@ export type ToolState = {
    */
   zoomLathe: (factor: number) => void
   setLatheZoom: (zoom: number) => void
+  /**
+   * Slide the view, by a DELTA rather than to a point, for the reason the zoom
+   * is a factor: the only gesture that drives it is a drag, and a drag is a
+   * series of deltas. In scene units, so the caller converts the pixels its
+   * pointer moved through the scale the drawing is currently laid out at.
+   */
+  panLathe: (dx: number, dy: number) => void
+  /**
+   * Put the view back: the zoom the screen opens at, over the middle of the
+   * lathe.
+   *
+   * ONE ACTION FOR BOTH NUMBERS, because "I have lost the piece" is one
+   * complaint however it happened -- wheeled in too far, dragged off the edge,
+   * or both -- and a button that fixed half of it would leave the user hunting
+   * for the other half. It is what every other Reset in this app means: not the
+   * best view of what is there, which is what Fit is for, but the view the
+   * screen started with.
+   */
+  resetLatheView: () => void
   setPushReach: (reach: number) => void
   setPushSizeUnit: (unit: Unit) => void
   setPushStrength: (strength: number) => void
@@ -1152,6 +1308,27 @@ export type ToolState = {
   selectRuler: (selection: RulerSelection) => void
   /** Write one end's position, from its gizmo or from anywhere else. */
   setRulerEnd: (id: string, end: RulerEnd, position: Vec3) => void
+  /**
+   * The lathe's four, which are the modelling four with the camera taken out.
+   *
+   * Each takes the CLAY rather than reaching for it, the same split
+   * `addRuler(frame)` makes: where a ruler lands is a fact about the piece, and
+   * this store has never read another. See `latheRulerSpawn`.
+   */
+  setLatheRulerActive: (on: boolean, clay: Clay) => void
+  /** Lay down another across the piece and take it as the selection. */
+  addLatheRuler: (clay: Clay) => void
+  removeLatheRuler: (id: string) => void
+  selectLatheRuler: (id: string | null) => void
+  /** Write one end's position, in the clay's own terms. */
+  setLatheRulerEnd: (id: string, end: LatheRulerEnd, at: LatheEnd) => void
+  /** Write BOTH ends, which is what a ruler slid bodily up the piece does --
+   *  see `latheRulerSlide`. One action rather than two calls to the one above,
+   *  because a ruler written an end at a time is a diagonal for a frame, and a
+   *  level ruler that flickers out of level under the hand holding it level is
+   *  the one thing this gesture exists to prevent. */
+  setLatheRulerEnds: (id: string, ends: [LatheEnd, LatheEnd]) => void
+  setLatheSnapDistance: (pixels: number) => void
   /** Record a colour as just used, moving it to the front if it is already
    *  there rather than letting the shelf fill with one repeated swatch. */
   noteRecentColor: (color: string) => void
@@ -1173,6 +1350,7 @@ export const useTools = create<ToolState>((set) => ({
   snap: true,
   snapDistance: DEFAULT_SNAP_DISTANCE,
   laserSnapDistance: DEFAULT_LASER_SNAP,
+  latheSnapDistance: DEFAULT_LATHE_SNAP,
   // `auto` by default: it reads correctly for a 2 mm boss and a 4 m wall alike,
   // which a fixed unit cannot do across the range the app now allows.
   displayUnit: 'auto',
@@ -1239,8 +1417,15 @@ export const useTools = create<ToolState>((set) => ({
   // what you see is exactly what you placed. Curving is a thing you decide
   // about a line that already exists.
   fitCurve: false,
+  // See `sculptFit`: a turned profile is a curve almost by definition, so this
+  // one opens the other way up from the cutter's.
+  sculptFit: true,
   stockOpen: true,
   latheZoom: 1,
+  // Over the middle of the lathe, which is the view the whole frame is drawn
+  // around: the axis down the centre and the plate eleven twelfths of the way
+  // down. See `NO_PAN`.
+  lathePan: NO_PAN,
   pushReach: DEFAULT_LATHE_REACH,
   pullReach: DEFAULT_LATHE_REACH,
   // Wider than the two that cut, because it is a different gesture: a rib is
@@ -1270,6 +1455,11 @@ export const useTools = create<ToolState>((set) => ({
   rulerActive: false,
   rulers: [],
   selectedRuler: null,
+
+  // And the lathe's, on the same footing and for the same reason.
+  latheRulerActive: false,
+  latheRulers: [],
+  selectedLatheRuler: null,
 
   setScreen: (screen) => set({ screen, openPanel: null }),
 
@@ -1430,11 +1620,17 @@ export const useTools = create<ToolState>((set) => ({
   setFreehandSmoothing: (freehandSmoothing) =>
     set({ freehandSmoothing: clamp(freehandSmoothing, 0, 1) }),
   setFitCurve: (fitCurve) => set({ fitCurve }),
+  setSculptFit: (sculptFit) => set({ sculptFit }),
   setStockOpen: (stockOpen) => set({ stockOpen }),
   // Clamped in `latheView`, so the range is written down once beside the frame
   // that has to honour it rather than here and there again.
   zoomLathe: (factor) => set((s) => ({ latheZoom: clampZoom(s.latheZoom * factor) })),
   setLatheZoom: (zoom) => set({ latheZoom: clampZoom(zoom) }),
+
+  panLathe: (dx, dy) =>
+    set((s) => ({ lathePan: clampPan({ x: s.lathePan.x + dx, y: s.lathePan.y + dy }) })),
+
+  resetLatheView: () => set({ latheZoom: 1, lathePan: NO_PAN }),
   setPushReach: (reach) => set({ pushReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
   setPushSizeUnit: (pushSizeUnit) => set({ pushSizeUnit }),
   setPushStrength: (strength) => set({ pushStrength: clamp(strength, 0, 1) }),
@@ -1503,6 +1699,89 @@ export const useTools = create<ToolState>((set) => ({
         return { ...r, ends }
       }),
     })),
+
+  // The lathe's five. Every rule above holds here word for word -- disarming
+  // keeps the rulers and drops the selection, a fresh one arrives selected and
+  // arms the tool, and a deleted one takes the selection with it -- so the only
+  // thing worth reading below is what is DIFFERENT: there is no frame to spawn
+  // in, because the piece is the frame, and no end to select, because neither
+  // end wears a gizmo.
+  // TAKING UP THE RULER EMPTIES THE HAND, which is the one way this tool is not
+  // simply a layer over the screen.
+  //
+  // Everything about a ruler says it should coexist with the tools: it changes
+  // no clay, it is out of undo, and its knobs stop the press reaching the
+  // drawing, so a tool held while a ruler lies across the piece cannot gouge it
+  // by accident. All of that is still true. What is NOT true is that the two
+  // are comfortable at once. A tool in hand puts a ghost under the pointer and
+  // a crosshair on the whole viewport, and both of them are aimed at the very
+  // knob you are reaching for -- so the screen goes on saying "you are about to
+  // cut" throughout a gesture that cuts nothing.
+  //
+  // `latheTool` is ONE field, so this puts down whichever of the four was held.
+  // Point Sculpt goes with the three brushes and has to: it claims a press on
+  // the drawing to place a knot, which is the same press a ruler end takes, and
+  // it stands a second panel in the corner while it is up.
+  //
+  // NOT THE REVERSE. Taking a tool back up leaves the rulers exactly where they
+  // are -- measure, then shape against what you measured, which is the whole
+  // reason to have both on one screen. Putting the Ruler down does not hand the
+  // tool back either: restoring something the user did not ask for is worse
+  // than leaving the hand empty, and the tool is one click away.
+  setLatheRulerActive: (on, clay) =>
+    set((s) => {
+      if (!on) return { latheRulerActive: false, selectedLatheRuler: null }
+      if (s.latheRulers.length > 0) return { latheRulerActive: true, latheTool: null }
+      const ruler = makeLatheRuler(clay)
+      return {
+        latheRulerActive: true,
+        latheTool: null,
+        latheRulers: [ruler],
+        selectedLatheRuler: ruler.id,
+      }
+    }),
+
+  // The same, because this arms the tool too: "Add ruler" from the panel with a
+  // brush in hand is the same act as pressing the button with one.
+  addLatheRuler: (clay) =>
+    set((s) => {
+      const ruler = makeLatheRuler(clay)
+      return {
+        latheRulerActive: true,
+        latheTool: null,
+        latheRulers: [...s.latheRulers, ruler],
+        selectedLatheRuler: ruler.id,
+      }
+    }),
+
+  removeLatheRuler: (id) =>
+    set((s) => ({
+      latheRulers: s.latheRulers.filter((r) => r.id !== id),
+      selectedLatheRuler: s.selectedLatheRuler === id ? null : s.selectedLatheRuler,
+    })),
+
+  selectLatheRuler: (id) => set({ selectedLatheRuler: id }),
+
+  setLatheRulerEnd: (id, end, at) =>
+    set((s) => ({
+      latheRulers: s.latheRulers.map((r) => {
+        if (r.id !== id) return r
+        // Rebuilt rather than written through, for the reason the pair above
+        // is: what draws the line is memoised on the array it came from.
+        const ends: [LatheEnd, LatheEnd] = end === 0 ? [at, r.ends[1]] : [r.ends[0], at]
+        return { ...r, ends }
+      }),
+    })),
+
+  setLatheRulerEnds: (id, ends) =>
+    set((s) => ({
+      latheRulers: s.latheRulers.map((r) => (r.id === id ? { ...r, ends } : r)),
+    })),
+
+  setLatheSnapDistance: (pixels) =>
+    set({
+      latheSnapDistance: Math.min(LATHE_SNAP_MAX, Math.max(LATHE_SNAP_MIN, pixels)),
+    }),
 
   noteRecentColor: (color) =>
     set((s) => ({

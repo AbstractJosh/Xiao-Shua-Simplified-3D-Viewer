@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Edges } from '@react-three/drei'
 import type { ThreeEvent } from '@react-three/fiber'
-import type { Mesh } from 'three'
+import type { BufferGeometry, Mesh } from 'three'
 import { lighten } from '../color'
 import { assemblyAnchor, assemblyColors } from '../geometry/assembly'
 import { evaluateDoc } from '../geometry/evaluate'
@@ -84,6 +84,57 @@ const SELECTED_OWN_INTENSITY = 0.28
 
 const EDGE_WIDTH_IDLE = 1
 const EDGE_WIDTH_SELECTED = 2.5
+
+/**
+ * Above this many triangles, an object goes without its outline.
+ *
+ * NOT A BUDGET SO MUCH AS THE POINT WHERE THE DRAWING STOPS BEING TRUE.
+ * `<Edges>` is three's `EdgesGeometry`, which rebuilds adjacency by hashing
+ * vertex positions to four decimal places -- and a boolean writes the same
+ * corner out several times with the last bits disagreeing, so half the shared
+ * edges find no partner and come back as silhouettes. The whole argument is
+ * written out above `outlineOf` in `laserCut.ts`, which exists because of it:
+ * what lands on screen is not the shape's edges but its TRIANGULATION, a spray
+ * of lines radiating across every flat face the boolean left.
+ *
+ * Measured on a block taken through six laser cuts, which is how the heaviest
+ * objects in this app actually get made:
+ *
+ *     1,608 tris  ->   2,001 segments,  25 ms
+ *    30,252 tris  ->  29,589 segments, 207 ms
+ *   118,545 tris  -> 112,940 segments, 965 ms
+ *
+ * One segment per triangle, near enough, at every size. So the outline pass
+ * costs about a second of the main thread per edit AND roughly twice the
+ * object's own triangles on the GPU -- drei draws each segment as a
+ * `LineSegments2` quad, two triangles apiece -- to draw something that is
+ * actively misleading. On a solid whose facets are few the same class draws the
+ * right thing for a few milliseconds, which is why this is a ceiling rather
+ * than a removal.
+ *
+ * TEN THOUSAND is where the cost is still under a tenth of a second. Every
+ * primitive clears it comfortably -- the densest is the sphere at 4,992 -- as
+ * does any ordinary assembly of them with pockets and cuts. What it excludes is
+ * imported models and laser-cut pieces, which are exactly the geometry
+ * `EdgesGeometry` cannot describe anyway.
+ *
+ * `outlineOf` is the algorithm that gets this right, and it is deliberately not
+ * used here: it settles unpartnered edges by walking every triangle for each
+ * one, which its own comment calls "quadratic in the piece and perfectly
+ * affordable" for the few hundred facets a cut piece has. At a hundred thousand
+ * it does not return. Making it scale is the way this ceiling eventually comes
+ * off.
+ */
+const OUTLINE_TRIANGLE_LIMIT = 10_000
+
+/** Triangles in an evaluated geometry, index or soup. Mirrors the evaluator's
+ *  own `triangleCount`, which is not exported. */
+function triangleCountOf(geometry: BufferGeometry): number {
+  const index = geometry.getIndex()
+  const position = geometry.getAttribute('position')
+  if (!position) return 0
+  return Math.floor((index ? index.count : position.count) / 3)
+}
 
 /**
  * How far a COLOURED solid is lifted toward white while it is selected.
@@ -677,8 +728,12 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                   And they are a preference: Settings can put them away for
                   good, selected objects included. Nothing is lost by that --
                   a chosen solid is lit by its own material as well as ringed,
-                  so selection still reads with every line in the scene gone. */}
-              {showOutlines && !dragging && (
+                  so selection still reads with every line in the scene gone.
+                  Which is the same reason a solid over the triangle ceiling can
+                  go without one -- see `OUTLINE_TRIANGLE_LIMIT`, where what is
+                  dropped is a drawing of the triangulation rather than a
+                  drawing of the shape. */}
+              {showOutlines && !dragging && triangleCountOf(geometry) <= OUTLINE_TRIANGLE_LIMIT && (
                 <Edges
                   threshold={18}
                   color={

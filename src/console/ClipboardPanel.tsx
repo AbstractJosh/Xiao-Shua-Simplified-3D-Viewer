@@ -5,6 +5,7 @@ import { useDoc } from '../store/docStore'
 import type { CustomObject } from '../store/libraryStore'
 import { templateOf, useLibrary } from '../store/libraryStore'
 import { Section } from './Field'
+import { EraseIcon } from './navIcons'
 import { ObjectThumbnail } from './ObjectThumbnail'
 import { releaseThumbnail } from './thumbnailGeometry'
 
@@ -123,7 +124,8 @@ function wantsStillness(): boolean {
 
 function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
   const startPlacingSolidTemplate = useDoc((s) => s.startPlacingSolidTemplate)
-  const addObject = useDoc((s) => s.addObject)
+  const updatePlacingSolid = useDoc((s) => s.updatePlacingSolid)
+  const commitPlacingSolid = useDoc((s) => s.commitPlacingSolid)
   const renameCustom = useLibrary((s) => s.renameCustom)
   const removeCustom = useLibrary((s) => s.removeCustom)
   // The field is only bound while it is being edited, so a rename in another
@@ -195,6 +197,26 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
     setDraft(null)
   }
 
+  /**
+   * What a keyboard "drag" can mean: there is no pointer to follow and no
+   * release to end the gesture, so the placement is armed and dropped on the
+   * grid in one go -- the same bargain the solid palette's rows strike.
+   *
+   * THROUGH THE PLACEMENT PATH RATHER THAN `addObject`, which builds an object
+   * from a BASE and a custom object is never just its base. Activating a tile
+   * used to land the bare primitive it happened to be built on, with its
+   * pockets, cuts and merged parts gone -- the one shape on the shelf that the
+   * thumbnail beside it was not a picture of. Armed and committed back to back,
+   * it is still one history entry, because `commitPlacingSolid` is the only one
+   * of the three that writes the document.
+   */
+  const drop = (erase: boolean) => {
+    const template = templateOf(object)
+    startPlacingSolidTemplate(template, erase)
+    updatePlacingSolid(groundedPosition(template))
+    commitPlacingSolid()
+  }
+
   return (
     <div
       className="custom-tile"
@@ -222,12 +244,8 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
         }}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' && e.key !== ' ') return
-          // A keyboard "drag" would leave the ghost following nothing, with no
-          // release to end it, so activation drops the object on the grid --
-          // the same bargain the solid palette's rows strike.
           e.preventDefault()
-          const template = templateOf(object)
-          addObject(template.base, groundedPosition(template))
+          drop(false)
         }}
       >
         <ObjectThumbnail object={object} label={custom.name} live={live} />
@@ -268,6 +286,43 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
         }}
       />
 
+      {/* THE OTHER CORNER, and the tile's second drag source: the same object,
+          the same aiming, dropped as an ERASER instead of as material. A
+          sibling of `.custom-grab` for the reason the name field is one -- a
+          button inside a `role="button"` is neither presentable to a screen
+          reader nor pressable without starting the drag underneath it.
+
+          It erases with EVERYTHING THE TILE SHOWS. A hole is evaluated the way
+          a merged part is (see `subtractHole`), so a saved bracket takes a
+          bracket-shaped bite rather than the bite of the primitive it was
+          grown from -- which is the whole reason for putting this here instead
+          of leaving people to rebuild the shape out of Solids and erase with
+          that.
+
+          Bigger than the remove chip opposite it, and deliberately: this is a
+          grip you go looking for, where the cross is one you want to be sure
+          you meant. Wearing the erase colour at rest for the same reason -- an
+          unlabelled grip in the console's own grey would be one more corner
+          decoration, and the point of a red one is that it is spotted without
+          being hunted for. */}
+      <button
+        type="button"
+        className="custom-erase"
+        title={`Drag out to erase with ${custom.name}. It takes nothing away until you confirm it under Position & Rotation.`}
+        aria-label={`${custom.name} eraser, drag into the scene`}
+        onPointerDown={(e) => {
+          e.preventDefault()
+          startPlacingSolidTemplate(object, true)
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return
+          e.preventDefault()
+          drop(true)
+        }}
+      >
+        <EraseIcon />
+      </button>
+
       <button
         type="button"
         className="custom-remove"
@@ -306,6 +361,18 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
  * a placement and the window carries it onto the canvas from there. What lands
  * is a full copy -- features, cuts, merged parts, and the rotation it was saved
  * at -- with fresh ids, so it edits independently of the one it came from.
+ *
+ * TWO SOURCES PER TILE, one at each top corner of the square, exactly as a
+ * Solids row carries a body and a grip. The body adds the object; the grip at
+ * the top right drops the same object as an ERASER, which takes its own shape
+ * out of whatever it is aimed at once the subtraction is confirmed. A shelf of
+ * things the user built is the obvious place to keep the negatives of those
+ * things -- the boss you saved is the pocket you want -- and rebuilding that
+ * shape out of primitives to erase with it was the alternative.
+ *
+ * The remove cross sits at the top LEFT, opposite the grip. Both corners of a
+ * square are only two corners, and the one you reach for by accident should not
+ * be the one that throws the tile away.
  *
  * EMPTY, IT IS STILL THE SHELF. Three dashed slots stand where the tiles will
  * go, rather than a paragraph explaining that there are none. A shelf with
@@ -349,7 +416,7 @@ export function ClipboardPanel() {
     <Section
       title="Clipboard"
       hint={`${customs.length}`}
-      tip="Right-click a solid in the scene and choose Save as custom object to put it here. Each tile turns on its own; sweep across one to spin it and look it over. Drag a tile onto the grid to place a copy, and scroll the row sideways for the rest."
+      tip="Right-click a solid in the scene and choose Save as custom object to put it here. Each tile turns on its own; sweep across one to spin it and look it over. Drag a tile onto the grid to place a copy, or drag the red grip on its top right corner to place the same shape as an eraser, and scroll the row sideways for the rest."
       collapsible
       defaultOpen
     >

@@ -53,7 +53,7 @@ console.warn = (...args: unknown[]) => {
   realWarn(...args)
 }
 
-import { ExportTools } from '../src/console/ExportTools'
+import { ExportTools, fileBase } from '../src/console/ExportTools'
 import { Inspector } from '../src/console/Inspector'
 import { NavBar } from '../src/console/NavBar'
 import {
@@ -82,7 +82,9 @@ import { LaserConsole } from '../src/console/LaserConsole'
 import { LatheConsole } from '../src/console/LatheConsole'
 import { BasePanel } from '../src/console/BasePanel'
 import { HollowTool } from '../src/console/HollowTool'
-import { PullTool, PushTool, SmoothTool } from '../src/console/LatheTools'
+import { LatheRulerTool } from '../src/console/LatheRulerTool'
+import { latheRulerLength, latheRulerRide, latheRulerSlide } from '../src/viewport/latheRuler'
+import { PointSculptTool, PullTool, PushTool, SmoothTool } from '../src/console/LatheTools'
 import { CopyPieceButton, PIECE_NAME, pieceName } from '../src/viewport/CopyPieceButton'
 import { LatheViewport } from '../src/viewport/LatheViewport'
 import { StockPanel } from '../src/viewport/StockPanel'
@@ -131,6 +133,7 @@ import { BLOCK_MAX, BLOCK_MIN, DEFAULT_BLOCK, bedIsUncut, useLaser } from '../sr
 import { bedGeometry } from '../src/geometry/laserCut'
 import { BLOCK_NAME, CopyBlockButton, bedName, sizeIn } from '../src/viewport/CopyBlockButton'
 import { ZoomControl } from '../src/viewport/ZoomControl'
+import { ViewResetButton } from '../src/viewport/ViewResetButton'
 import { fitToEnvelope } from '../src/geometry/importers'
 import { registerMesh } from '../src/geometry/meshLibrary'
 import { revolveClay } from '../src/geometry/revolve'
@@ -149,13 +152,19 @@ import {
   freshClay,
   isFresh,
   mold,
+  wallAt,
   widestRadius,
 } from '../src/geometry/clay'
 import { ISLAND_PANELS, armedBrush, armedLatheTool } from '../src/store/toolStore'
+import { SculptPanel } from '../src/viewport/SculptPanel'
+import { useSculptDraft } from '../src/viewport/sculptDraft'
 import { useLathe } from '../src/store/latheStore'
 import {
+  NO_PAN,
+  PAN_LIMIT,
   ZOOM_MAX,
   ZOOM_MIN,
+  clampPan,
   clampZoom,
   clayFrame,
   fitZoom,
@@ -199,6 +208,7 @@ import {
 import { STAGE_CAMERA, groundPlan } from '../src/viewport/Stage'
 import { perspectiveFrame } from '../src/viewport/orthoFrame'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX } from '../src/viewport/pointSnap'
+import { LATHE_SNAP_MAX } from '../src/viewport/latheRuler'
 import { CutPanel } from '../src/viewport/CutPanel'
 import { MarqueeRect } from '../src/viewport/SelectionMarquee'
 import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
@@ -252,7 +262,7 @@ import {
   useDoc,
 } from '../src/store/docStore'
 import { useEvalStatus } from '../src/store/evalStore'
-import { useLibrary } from '../src/store/libraryStore'
+import { templateOf, useLibrary } from '../src/store/libraryStore'
 import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
 import {
   CUT_POSITION_LIMIT,
@@ -1449,6 +1459,45 @@ doc().selectObject(pyramidId)
   // the hover text. Both are in the markup, from the one string.
   shows('the row keeps the whole blurb on hover', panel, 'title="Plain text geometry. Universally readable')
   shows('and shows its first sentence in the row', panel, '>Plain text geometry<')
+
+  // NO HEADING ON IT. The panel is reached by pressing a button that says
+  // Export, so a line at the top saying Export again tells you where you knew
+  // you were -- and that line is worth more as somewhere to type the filename.
+  // The panel keeps the words as its accessible name either way.
+  hides('the panel draws no heading of its own', panel, 'nav-panel-title')
+  shows('but it is still named for a screen reader', panel, 'aria-label="Export scene"')
+
+  // THE NAME BOX STANDS ON THE ROW THE HEADING LEFT, which is why it costs the
+  // panel no height. It arrives already called `Untitled` -- a name a press of
+  // Export would use as it stands, so the panel says what the file will be
+  // called before anything is typed. It is short enough that a focus selects it
+  // whole and the first keystroke replaces it, which is the only reason a box
+  // that starts full is not a box you have to clear.
+  //
+  // The AUTOMATIC name is the other thing it could write, and it stays a
+  // placeholder: it is a description of the scene rather than a name, and it
+  // shows only once the box has been cleared into a state it did not start in.
+  shows('the head row carries a name box instead', panel, 'class="export-name"')
+  shows('and it is labelled for a screen reader', panel, 'aria-label="File name"')
+  shows('and it arrives already named', panel, 'value="Untitled"')
+  shows('with the automatic name offered as the hint', panel, 'placeholder="xiao-shuas-3d-editor-')
+  hides('which is never the value', panel, 'value="xiao-shuas')
+
+  // WHAT THE FILE IS ACTUALLY CALLED. Empty falls back to the automatic name,
+  // so the box is optional and pressing a format still just writes a file; a
+  // typed name is used as typed; and the separators a filename may not contain
+  // are taken out, because a slash in a download name is a browser being told
+  // to write somewhere other than where the user thinks. The extension is never
+  // the caller's business -- `exportSolid` adds it from the format pressed.
+  check('an empty box falls back to the automatic name', fileBase('', 'auto-name') === 'auto-name', fileBase('', 'auto-name'))
+  check('a typed name is what the file is called', fileBase('bracket', 'auto-name') === 'bracket', fileBase('bracket', 'auto-name'))
+  check('a path separator cannot get through', !fileBase('..\\etc\\bracket', 'auto').includes('\\'), fileBase('..\\etc\\bracket', 'auto'))
+  check('nor a forward slash', !fileBase('../bracket', 'auto').includes('/'), fileBase('../bracket', 'auto'))
+  check('a leading dot does not hide the file', !fileBase('.bracket', 'auto').startsWith('.'), fileBase('.bracket', 'auto'))
+  check('a trailing dot is dropped, not left to Windows', !fileBase('bracket.', 'auto').endsWith('.'), fileBase('bracket.', 'auto'))
+  check('a name of nothing but punctuation falls back too', fileBase('///', 'auto-name') === 'auto-name', fileBase('///', 'auto-name'))
+  check('and a name cannot run away with the path', fileBase('x'.repeat(400), 'auto').length <= 64, `${fileBase('x'.repeat(400), 'auto').length}`)
+
   tools().setOpenPanel(null)
 }
 
@@ -2981,6 +3030,139 @@ publish([])
   // walking past, or who has asked for no walking at all.
   shows('with its full name reachable without hovering', panel, 'title="Bracket"')
 
+  // TWO DRAG SOURCES PER TILE, one at each top corner, the way a Solids row
+  // carries a body and a grip. The body adds the object; the grip drops the
+  // same object as an ERASER, so the shelf of things the user built is also the
+  // shelf of the holes their shapes make.
+  shows('and a grip that places it as an eraser', panel, 'custom-erase')
+  check(
+    'one per tile, not one for the shelf',
+    occurrences(panel, 'class="custom-erase"') === library().customs.length,
+    `${occurrences(panel, 'class="custom-erase"')} grips for ${library().customs.length} tiles`
+  )
+  shows('saying what it places', panel, 'Bracket eraser, drag into the scene')
+  shows('and that nothing happens until it is confirmed', panel, 'until you confirm')
+
+  {
+    const saved = library().customs[0].object
+    const wasSelected = primarySelection(doc())
+
+    doc().startPlacingSolidTemplate(saved, true)
+    const armed = doc().drag
+    check(
+      'the grip arms an eraser',
+      armed.kind === 'placing-solid' && armed.template.erase === true,
+      armed.kind,
+    )
+    check(
+      'named for what it takes away',
+      armed.kind === 'placing-solid' && armed.template.name.endsWith(' eraser'),
+      armed.kind === 'placing-solid' ? armed.template.name : armed.kind
+    )
+    // THE WHOLE SHAPE ERASES, not the primitive it was grown from. A hole is
+    // evaluated the way a merged part is, so everything the thumbnail shows is
+    // what comes out of whatever this is aimed at -- which is the entire reason
+    // the grip is here rather than on the Solids rows alone.
+    check(
+      'and erasing with everything the tile shows, not the primitive under it',
+      armed.kind === 'placing-solid' &&
+        saved.features.length + saved.parts.length > 0 &&
+        armed.template.features.length === saved.features.length &&
+        armed.template.parts.length === saved.parts.length,
+      armed.kind === 'placing-solid'
+        ? `${armed.template.features.length}/${armed.template.parts.length} against ${saved.features.length}/${saved.parts.length}`
+        : armed.kind
+    )
+    // Released off the canvas: the gesture cost nothing but the ids it minted.
+    doc().commitPlacingSolid()
+
+    // THE FLAG DECIDES, NOT THE TEMPLATE. An eraser can be right-clicked and
+    // saved while it is still being aimed, so the shelf can hold an object that
+    // is one already -- and a drag from the tile's BODY has to add material
+    // anyway, or that one tile would erase from both of its corners.
+    doc().startPlacingSolidTemplate({ ...saved, erase: true })
+    const body = doc().drag
+    check(
+      'while the body still adds material, even from a tile saved mid-aim',
+      body.kind === 'placing-solid' && !body.template.erase,
+      body.kind
+    )
+    doc().commitPlacingSolid()
+
+    // ACTIVATING A TILE FROM THE KEYBOARD LANDS THE WHOLE OBJECT. There is no
+    // pointer to follow and no release to end the gesture, so the placement is
+    // armed and committed in one go -- and it goes through that path rather
+    // than through `addObject`, which builds from a BASE. It used to land the
+    // bare primitive the object was built on, pockets and merged parts gone:
+    // the one shape on the shelf the thumbnail beside it was not a picture of.
+    const before = doc().doc.objects.length
+    const template = templateOf(saved)
+    doc().startPlacingSolidTemplate(template)
+    doc().updatePlacingSolid([0, 0, 0])
+    doc().commitPlacingSolid()
+    const dropped = doc().doc.objects[doc().doc.objects.length - 1]
+    check(
+      'activating a tile drops the object whole',
+      dropped.features.length === saved.features.length &&
+        dropped.parts.length === saved.parts.length,
+      `${dropped.features.length} sketches, ${dropped.parts.length} parts`
+    )
+    check('as one object', doc().doc.objects.length === before + 1, `${doc().doc.objects.length}`)
+    doc().undo()
+    check('and one undo takes it back', doc().doc.objects.length === before, `${doc().doc.objects.length}`)
+    doc().selectObject(wasSelected)
+  }
+
+  {
+    // WHICH CORNER IS WHICH lives only in the stylesheet. The markup says
+    // nothing about where either control is drawn, so the one thing the eye
+    // actually reads -- the cross on the left, the grip on the right -- would
+    // otherwise be free to swap the first time somebody tidies these rules.
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    const ruleOf = (selector: string): string => css.split(`\n${selector} {`)[1]?.split('}')[0] ?? ''
+    const pxOf = (rule: string, prop: string): number =>
+      Number(new RegExp(`\\n\\s*${prop}:\\s*(-?\\d+)px`).exec(rule)?.[1] ?? NaN)
+
+    const remove = ruleOf('.custom-remove')
+    const erase = ruleOf('.custom-erase')
+    check(
+      'the remove cross hangs off the top left',
+      Number.isFinite(pxOf(remove, 'left')) && !Number.isFinite(pxOf(remove, 'right')),
+      remove.replace(/\s+/g, ' ').trim().slice(0, 60)
+    )
+    check(
+      'and the eraser grip off the top right, opposite it',
+      Number.isFinite(pxOf(erase, 'right')) && !Number.isFinite(pxOf(erase, 'left')),
+      erase.replace(/\s+/g, ' ').trim().slice(0, 60)
+    )
+    // Not peers. One is a grip to go looking for and drag out of; the other
+    // throws the tile away, and the corner caught by accident should be the
+    // harmless one.
+    check(
+      'the grip being the bigger of the two',
+      pxOf(erase, 'width') > pxOf(remove, 'width'),
+      `${pxOf(erase, 'width')}px against ${pxOf(remove, 'width')}px`
+    )
+    // Both out of sight until the tile is pointed at: a shelf of corner chrome
+    // reads as a panel about deleting and erasing, which is not what it is for.
+    check(
+      'and both waiting for the pointer',
+      erase.includes('opacity: 0') &&
+        remove.includes('opacity: 0') &&
+        css.includes('.custom-tile:hover .custom-erase'),
+      ''
+    )
+    // The name is centred on the SQUARE, so it insets by the deeper of the two
+    // corners on both sides rather than by one each -- see `.custom-name`.
+    const name = ruleOf('.custom-name')
+    check(
+      'with the name clearing them both without leaving centre',
+      pxOf(name, 'left') === pxOf(name, 'right') &&
+        pxOf(name, 'left') >= pxOf(erase, 'width') + pxOf(erase, 'right'),
+      `${pxOf(name, 'left')}px inset against a grip reaching ${pxOf(erase, 'width') + pxOf(erase, 'right')}px`
+    )
+  }
+
   // A NAME TOO LONG FOR ITS TILE WALKS PAST WHILE THE POINTER IS ON IT, and the
   // walk is a function of the clock rather than a position nudged along each
   // frame -- so this is checkable without a DOM, which is the reason it was
@@ -4452,12 +4634,29 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // drawn deep inside a fibre tree this headless check cannot mount, so the
   // guard is on the source -- the `<Edges>` block must be gated on the flag,
   // alongside the drag gate that was already there.
+  //
+  // Matched as a PREFIX rather than as the whole condition, because there is
+  // now a third term after it: a triangle ceiling above which a solid goes
+  // without its outline. What this check is for is that the switch reaches the
+  // viewport at all, and that survives another `&&` being added; pinning the
+  // exact text would make it a check on the shape of one line instead.
+  const sceneObjects = readFileSync(
+    new URL('../src/viewport/SceneObjects.tsx', import.meta.url),
+    'utf8'
+  )
   check(
     'and the scene actually gates its edge lines on the switch',
-    readFileSync(new URL('../src/viewport/SceneObjects.tsx', import.meta.url), 'utf8').includes(
-      '{showOutlines && !dragging && ('
-    ),
+    sceneObjects.includes('{showOutlines && !dragging &&'),
     'the switch would hold a state nothing in the viewport reads'
+  )
+  // The ceiling is the other half of that gate and costs the most when it is
+  // quietly dropped: without it a laser-cut piece draws about one outline
+  // segment per triangle, which is a second of the main thread per edit and
+  // twice the solid's own triangles on the GPU, to draw its triangulation.
+  check(
+    'and drops them entirely on a solid too dense for them to describe',
+    sceneObjects.includes('OUTLINE_TRIANGLE_LIMIT'),
+    'a dense import would outline its triangulation'
   )
 
   // It is not an island panel any more, so collapsing the island must leave it
@@ -6005,6 +6204,169 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
   )
   tools().setLatheTool(null)
 
+  // POINT SCULPT: the fourth tool, and the only one on this screen that is not
+  // held against anything. It shares the field with the three brushes -- taking
+  // it up puts a brush down -- because they all claim the same press on the
+  // clay.
+  {
+    tools().setLatheTool('push')
+    tools().setLatheTool('points')
+    check('taking up Point Sculpt puts the brush down', tools().latheTool === 'points', `${tools().latheTool}`)
+    check(
+      'and it is not a brush, so nothing is armed to work the wall',
+      armedLatheTool(useTools.getState()) === null,
+      `${armedLatheTool(useTools.getState())}`
+    )
+    tools().setLatheTool('push')
+    check('and taking a brush back up puts it down', tools().latheTool === 'push', `${tools().latheTool}`)
+
+    tools().setLatheTool('points')
+    tools().setOpenPanel('points')
+    const panel = markupOf('PointSculptTool', PointSculptTool)
+    shows('its panel offers the curve switch', panel, 'Fit to line')
+    // NO SIZE AND NO STRENGTH, which is the whole shape of the tool said in
+    // what is absent: a brush has to be told how much wall it covers and how
+    // fast the clay comes to it, and this one is told by where the points were
+    // put and answers "all of it" to the second.
+    hides('and no brush size, which the points already say', panel, '>Tool size<')
+    hides('nor a strength, since nothing is held', panel, '>Strength<')
+
+    // IT OPENS CURVED where the cutter's opens straight, and the two are their
+    // own switches: a turned profile is a curve almost by definition, and a cut
+    // through a block is not. Setting one must not move the other.
+    check('the lathe opens with the curve on', useTools.getInitialState().sculptFit === true, `${useTools.getInitialState().sculptFit}`)
+    check('where the cutter opens straight', useTools.getInitialState().fitCurve === false, `${useTools.getInitialState().fitCurve}`)
+    const cutterWas = tools().fitCurve
+    tools().setSculptFit(false)
+    check("turning the lathe's curve off leaves the cutter's alone", tools().fitCurve === cutterWas, `${tools().fitCurve}`)
+    tools().setSculptFit(true)
+  }
+
+  // AND ITS APPLY IS STANDING CHROME, not a flyout. An island panel shuts on
+  // any press that lands outside the island, and placing a point IS such a
+  // press -- so a button living under the tool's caret would be shut by the
+  // very act of drawing the line it applies. The cutting bench learned this
+  // first; the panel wears its class so `NavBar`'s one exemption list covers
+  // both rather than growing a second entry to drift from.
+  {
+    tools().setLatheTool('points')
+    useSculptDraft.getState().clear()
+    const empty = markupOf('SculptPanel (nothing drawn)', SculptPanel)
+    shows('the profile panel names what it is about', empty, 'The profile')
+    // TWO BUTTONS AND NOTHING ELSE. The panel used to carry a line of standing
+    // prose -- what to click, how many points, where the handles had gone --
+    // and standing is the word that made it wrong: it was on screen for the
+    // whole sitting, saying what the user knew after the first point, and it
+    // pushed the buttons down the corner to say it. What the tool is and how it
+    // is aimed live in Help, read once rather than glanced past a hundred
+    // times.
+    hides('and asks for nothing in standing prose', empty, 'place a point')
+    check(
+      'so an empty panel is its heading and its two buttons',
+      (empty.match(/<p/g) ?? []).length === 0,
+      `${(empty.match(/<p/g) ?? []).length} paragraphs`
+    )
+
+    useSculptDraft.getState().addPoint([0.3, 0.2])
+    hides('one point adds no commentary either', markupOf('SculptPanel (one point)', SculptPanel), 'One more point')
+
+    useSculptDraft.getState().addPoint([0.9, 0.3])
+    const ready = markupOf('SculptPanel (a line)', SculptPanel)
+    shows('two points make a line to apply', ready, 'Apply profile')
+    hides('and still nothing about where the handles went', ready, 'Click another to adjust it')
+    const applyTag = ready.split('<button').find((part) => part.includes('>Apply profile</button>'))
+    check(
+      'and the button is live',
+      applyTag !== undefined && !applyTag.slice(0, applyTag.indexOf('>')).includes('disabled'),
+      'a line of two points is enough to cut with'
+    )
+
+    // IT COMES AND GOES WITH THE TOOL. With a brush in hand there is no line to
+    // apply and nothing to say, so the corner goes back to being the stock
+    // panel on its own.
+    tools().setLatheTool('push')
+    check('with a brush in hand the profile panel renders nothing', renderToStaticMarkup(createElement(SculptPanel)) === '', 'the corner goes back to being scene')
+    tools().setLatheTool(null)
+    check('and with empty hands too', renderToStaticMarkup(createElement(SculptPanel)) === '', '')
+
+    useSculptDraft.getState().clear()
+  }
+
+  // THE DRAFT IS NOT THE PIECE, which is the line `sculptDraft` is drawn on:
+  // points are placed, dragged and thrown away without the history hearing
+  // about any of it, and only Apply is an act.
+  {
+    const draft = useSculptDraft.getState()
+    draft.clear()
+    draft.addPoint([0.3, 0.2])
+    draft.addPoint([0.9, 0.3])
+    check('a placed point takes the curve\'s own tangent', useSculptDraft.getState().handles.every((h) => h === null), '')
+    draft.moveHandle(0, [0.4, 0.25], 1)
+    check('and aiming one keeps it', useSculptDraft.getState().handles[0] !== null, '')
+    check('while its neighbour goes on being fitted', useSculptDraft.getState().handles[1] === null, '')
+    draft.refitHandle(0)
+    check('handing it back to the curve is the way out', useSculptDraft.getState().handles[0] === null, '')
+    draft.movePoint(1, [1.1, 0.35])
+    check('moving a point moves it', useSculptDraft.getState().points[1][0] === 1.1, `${useSculptDraft.getState().points[1]}`)
+    draft.clear()
+  }
+
+  // ONE TANGENT AT A TIME, and the drawing says which. Six points drawn with
+  // six tangents out is eighteen marks over a line made of six, every bar
+  // across the curve it is bending and every grip the same size as the rest --
+  // so the thing under the pointer is whichever mark is nearest rather than the
+  // one being worked on. Placing selects, and pressing an earlier knot selects
+  // it back; nothing is lost either way, since the handle a point was aimed to
+  // is a property of the point. See `selected` in `sculptDraft`.
+  {
+    const draft = useSculptDraft.getState()
+    draft.clear()
+    check('an empty drawing has nothing in hand', useSculptDraft.getState().selected === null, `${useSculptDraft.getState().selected}`)
+    draft.addPoint([0.3, 0.2])
+    check('the first point is the live one', useSculptDraft.getState().selected === 0, `${useSculptDraft.getState().selected}`)
+    draft.addPoint([0.9, 0.3])
+    check('and the newest point takes the handles off it', useSculptDraft.getState().selected === 1, `${useSculptDraft.getState().selected}`)
+
+    draft.moveHandle(1, [1.0, 0.4], 1)
+    draft.selectPoint(0)
+    check('an earlier point can be taken back up', useSculptDraft.getState().selected === 0, `${useSculptDraft.getState().selected}`)
+    check('and the one put down keeps what it was aimed to', useSculptDraft.getState().handles[1] !== null, 'a tangent is a property of the point, not of the selection')
+
+    draft.selectPoint(7)
+    check('a point that is not there cannot be taken up', useSculptDraft.getState().selected === 0, `${useSculptDraft.getState().selected}`)
+    draft.selectPoint(-1)
+    check('nor can one before the first', useSculptDraft.getState().selected === 0, `${useSculptDraft.getState().selected}`)
+
+    draft.movePoint(0, [0.35, 0.25])
+    check('dragging the live point leaves it live', useSculptDraft.getState().selected === 0, `${useSculptDraft.getState().selected}`)
+
+    draft.clear()
+    check('and Reset leaves nothing in hand', useSculptDraft.getState().selected === null, `${useSculptDraft.getState().selected}`)
+  }
+
+  // EVERY STROKED MARK ON THE LATHE IS NON-SCALING, and this is a source check
+  // because nothing else can catch it. The lathe svg is measured in SCENE
+  // UNITS, so a `stroke-width: 1.5px` in the stylesheet is read as 1.5 UNITS --
+  // about 340 pixels at the opening zoom. A mark that forgets the attribute
+  // renders as a ring the size of the window with the piece somewhere inside
+  // it, and it passes every check that reads geometry or counts elements,
+  // because the markup is right and only the paint is wrong. One grip shipped
+  // that way and was found by looking at the screen.
+  {
+    const layer = readFileSync(new URL('../src/viewport/SculptLayer.tsx', import.meta.url), 'utf8')
+    // The hyphen matters: it takes the MARKS and not the group they sit in,
+    // which carries the bare class and strokes nothing.
+    const marks = layer.split('className="lathe-sculpt-').slice(1)
+    const bare = marks.filter((m) => !m.slice(0, m.indexOf('/>') + 2).includes('non-scaling-stroke'))
+    check(
+      'every mark Point Sculpt draws holds its stroke to the screen',
+      bare.length === 0,
+      bare.length === 0
+        ? `${marks.length} marks, all non-scaling`
+        : `${bare.length} of ${marks.length} would paint in scene units`
+    )
+  }
+
   // THE STOCK IS A CORNER PANEL over the piece, not a lid on a bar button. It
   // was in the bar to begin with, which put a number and the shape it changes
   // at opposite ends of the window; the corner is where the eye already is.
@@ -6374,6 +6736,62 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     )
   }
 
+  // PAN: the other half of the same answer. Zoom says how much of the world the
+  // frame covers; the pan says WHICH part, and without it a zoomed-in view can
+  // only ever look at the one place the frame happens to start -- which on a
+  // tall piece is the foot, forever.
+  {
+    const rest = clayFrame(1)
+    const slid = clayFrame(1, { x: 0.3, y: -0.2 })
+
+    // IT MOVES THE WINDOW, NOT THE DRAWING, which is the whole of the design:
+    // every number the clay is placed against has to come out unchanged, or a
+    // pan would be sliding the piece off its own lathe.
+    check(
+      'a pan moves the frame and nothing else about it',
+      slid.x === rest.x + 0.3 &&
+        slid.y === rest.y - 0.2 &&
+        slid.width === rest.width &&
+        slid.height === rest.height,
+      `${slid.x} , ${slid.y}`
+    )
+    check(
+      'the clay is drawn at exactly the same place either way',
+      slid.base === rest.base && slid.rule === rest.rule,
+      `${slid.base} against ${rest.base}`
+    )
+    check('and no pan is the frame as it always was', clayFrame(1).x === clayFrame(1, NO_PAN).x, '')
+
+    // A LENGTH IN THE WORLD rather than a fraction of the frame, which is what
+    // makes zoom anchor on a fixed point of the SCREEN: two centimetres off the
+    // axis stays two centimetres, so zooming in magnifies the offset exactly as
+    // it magnifies the piece.
+    const near = clayFrame(4, { x: 0.3, y: 0 })
+    check(
+      'a slid view is slid by the same length at every zoom',
+      Math.abs(near.x - -near.width / 2 - 0.3) < 1e-12,
+      `${near.x - -near.width / 2}`
+    )
+
+    // Bounded, because a view can be dragged a long way by accident and empty
+    // space looks the same everywhere. The bound is the tallest lump this app
+    // will make -- anything tighter would be unusable on the pieces that most
+    // need panning, since at the far end of the zoom range one is hundreds of
+    // frames tall.
+    check(
+      'the pan is clamped at both ends and survives nonsense',
+      clampPan({ x: 1e9, y: -1e9 }).x === PAN_LIMIT &&
+        clampPan({ x: 1e9, y: -1e9 }).y === -PAN_LIMIT &&
+        clampPan({ x: Number.NaN, y: 3 }).x === 0,
+      `+/- ${PAN_LIMIT}`
+    )
+    check(
+      'and it reaches past the tallest piece there can be',
+      PAN_LIMIT >= CLAY_HEIGHT_MAX,
+      `${PAN_LIMIT} against ${CLAY_HEIGHT_MAX}`
+    )
+  }
+
   // THE CONTROL IN THE CORNER. The frame no longer moves on its own, so this is
   // the only way to move it -- which makes "is it there, does it read right, and
   // does Fit stand down when there is nothing to fit" the whole of what has to
@@ -6426,6 +6844,83 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     )
 
     tools().setLatheZoom(1)
+
+    // A SLID VIEW IS NEVER A FITTED ONE. Fit's promise is "the piece, on the
+    // screen", and a view dragged two metres off the axis does not keep that
+    // promise however well its zoom is chosen -- so the pan counts toward the
+    // question, and pressing Fit puts the view back over the middle on the way.
+    tools().setLatheZoom(fitZoom(lathe().clay))
+    tools().panLathe(0.9, -0.4)
+    shows(
+      'a view slid off the piece brings Fit back to life',
+      markupOf('ZoomControl (slid)', ZoomControl),
+      'Fit the piece to the frame'
+    )
+    tools().setLatheZoom(1)
+    tools().panLathe(-tools().lathePan.x, -tools().lathePan.y)
+  }
+
+  // THE VIEW RESET, at the top of the corner column: the way back to the view
+  // the screen opened with, which is a different question from Fit's. Fit says
+  // "show me the piece"; this says "show me what I started with", and the two
+  // part company the moment the view can be slid.
+  {
+    tools().setLatheZoom(1)
+    tools().panLathe(-tools().lathePan.x, -tools().lathePan.y)
+
+    // Found by the words on its face rather than by an `aria-label`, because it
+    // has none and should not: the label would be the same string as the text
+    // under it, which tells a screen reader nothing it was not already going to
+    // say. The stock panel's own Reset is named the same way.
+    const cameraDown = (markup: string) => {
+      const tag = markup.split('<button').find((part) => part.includes('>Reset camera</button>'))
+      return tag !== undefined && tag.slice(0, tag.indexOf('>')).includes('disabled=""')
+    }
+
+    const rested = markupOf('ViewResetButton (at rest)', ViewResetButton)
+    shows('the corner offers a camera reset', rested, 'Reset camera')
+    // Dead rather than hidden, the rule both its neighbours and the zoom
+    // control follow: a control that appears the first time you need it is one
+    // nobody knows is there for the one press they will want it for.
+    check('dead while the view is already where it started', cameraDown(rested), '')
+
+    tools().panLathe(0.5, 0.25)
+    check('a pan slides the view', tools().lathePan.x === 0.5 && tools().lathePan.y === 0.25, JSON.stringify(tools().lathePan))
+    check(
+      'and wakes the reset',
+      !cameraDown(markupOf('ViewResetButton (slid)', ViewResetButton)),
+      ''
+    )
+
+    // Deltas accumulate, because a drag is a series of them.
+    tools().panLathe(-0.2, 0.1)
+    near('deltas accumulate', tools().lathePan.x, 0.3, 1e-12)
+    near('on both axes', tools().lathePan.y, 0.35, 1e-12)
+
+    // ONE ACTION FOR BOTH NUMBERS: "I have lost the piece" is one complaint
+    // however it happened, and a button that fixed half of it would leave the
+    // user hunting for the other half.
+    tools().setLatheZoom(16)
+    tools().resetLatheView()
+    check(
+      'and the reset puts the zoom and the pan back together',
+      tools().latheZoom === 1 && tools().lathePan.x === 0 && tools().lathePan.y === 0,
+      `${tools().latheZoom} at ${JSON.stringify(tools().lathePan)}`
+    )
+    check(
+      'leaving it dead again',
+      cameraDown(markupOf('ViewResetButton (reset)', ViewResetButton)),
+      ''
+    )
+
+    // The zoom alone wakes it too -- the view is not where it started either way.
+    tools().setLatheZoom(4)
+    check(
+      'a zoom on its own wakes it as well',
+      !cameraDown(markupOf('ViewResetButton (zoomed)', ViewResetButton)),
+      ''
+    )
+    tools().resetLatheView()
   }
 
   // The silhouette is one path, mirrored from one row of radii: both walls are
@@ -6689,7 +7184,7 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     shows('the panel sets a wall thickness', cup, '>Wall<')
     shows('and each end independently', cup, 'aria-label="Bottom end"')
     shows('both of them', cup, 'aria-label="Top end"')
-    shows('with a unit of its own at the top right', cup, 'nav-panel-right')
+    shows('with a unit of its own at the top right', cup, 'nav-panel-setting')
     check('read in millimetres to start with', tools().hollowSizeUnit === 'mm', tools().hollowSizeUnit)
     shows('and the wall field wears it', cup, '>mm<')
     // WHAT CAME OF IT, which is the only thing on this screen that can say so.
@@ -6760,6 +7255,203 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     )
     lathe().setHollow(null)
     lathe().centreFresh()
+  }
+
+  // THE RULER, which is the modelling screen's tool on a screen with no camera
+  // in it. What is pinned here is the half a headless render can see: that the
+  // button both engages the tool and lays a ruler down, that the list says what
+  // each one reads, and -- the part that matters most -- that the two screens'
+  // rulers are two lists rather than one. What an END catches is arithmetic and
+  // lives in `interaction-check`, which can answer it without a DOM.
+  {
+    tools().setScreen('lathe')
+    lathe().centreFresh()
+
+    const idle = markupOf('LatheRulerTool', LatheRulerTool)
+    shows('the island offers a Ruler', idle, '>Ruler<')
+
+    check('and nothing is measured until it is asked for', tools().latheRulers.length === 0, '')
+
+    // TAKING IT UP EMPTIES THE HAND. A tool in hand puts a ghost under the
+    // pointer and a crosshair over the viewport, both aimed at the very knob
+    // being reached for -- so the screen goes on saying "you are about to cut"
+    // right through a gesture that cuts nothing. `latheTool` is one field, so
+    // whichever of the four was held goes down.
+    tools().setLatheTool('push')
+    tools().setLatheRulerActive(true, lathe().clay)
+    check('arming the Ruler puts down the tool that was in hand', tools().latheTool === null, `${tools().latheTool}`)
+    check('arming it lays the first one down', tools().latheRulers.length === 1, `${tools().latheRulers.length}`)
+    check('selected as it lands', tools().selectedLatheRuler === tools().latheRulers[0].id, `${tools().selectedLatheRuler}`)
+
+    // Point Sculpt goes with the brushes and has to: its press places a knot on
+    // the same drawing a ruler end is grabbed from, and it stands a second
+    // panel in the corner while it is up.
+    tools().setLatheTool('points')
+    tools().setLatheRulerActive(true, lathe().clay)
+    check('Point Sculpt goes down with them', tools().latheTool === null, `${tools().latheTool}`)
+
+    // NOT THE REVERSE: shaping against what you have just measured is the whole
+    // reason the two share a screen, so a tool taken back up leaves every ruler
+    // exactly where it is.
+    tools().setLatheTool('pull')
+    check('but taking a tool back up leaves the rulers alone', tools().latheRulers.length === 1 && tools().latheRulerActive, `${tools().latheRulers.length}`)
+    // And an empty hand means something else while measuring, so the viewport
+    // does not ask for a tool to be taken up.
+    tools().setLatheTool(null)
+    hides(
+      'and with the Ruler up the viewport stops asking for a tool',
+      markupOf('LatheViewport (measuring)', LatheViewport),
+      'then hold the pointer against the clay'
+    )
+    tools().setLatheRulerActive(false, lathe().clay)
+    shows(
+      'while an idle hand with no ruler still gets the hint',
+      markupOf('LatheViewport (idle)', LatheViewport),
+      'then hold the pointer against the clay'
+    )
+    tools().setLatheRulerActive(true, lathe().clay)
+
+    // ACROSS THE PIECE, with an end on each wall, so it arrives measuring
+    // something rather than asking for two placements before it says anything.
+    {
+      const [a, b] = tools().latheRulers[0].ends
+      near('a fresh ruler lies level', a[1], b[1], 1e-12)
+      near('with an end on each wall', a[0], -b[0], 1e-12)
+      near(
+        'so it reads the diameter where it landed',
+        latheRulerLength(tools().latheRulers[0]),
+        wallAt(lathe().clay, a[1]) * 2,
+        1e-9
+      )
+    }
+
+    // AND IT WEARS A HANDLE IN ITS MIDDLE, which is what says the second
+    // gesture is there at all: the band is drawn only while both ends have a
+    // line to ride, and that is the same question the press asks of the same
+    // function. See `latheRulerRide`.
+    shows(
+      'a ruler with both ends on the wall wears a handle in its middle',
+      markupOf('LatheViewport (ruler across the piece)', LatheViewport),
+      'lathe-ruler-hold'
+    )
+    {
+      // Out of level there is no one height for the pair to be moved to, so
+      // there is nothing to take hold of -- and the press that would have moved
+      // it goes to the clay, like every other press on this screen.
+      const only = tools().latheRulers[0]
+      tools().setLatheRulerEnd(only.id, 1, [only.ends[1][0], only.ends[1][1] + 0.1])
+      hides(
+        'while one pulled out of level has none',
+        markupOf('LatheViewport (ruler out of level)', LatheViewport),
+        'lathe-ruler-hold'
+      )
+      // Laid straight again, which is the two-ended write doing what it is for.
+      tools().setLatheRulerEnds(only.id, only.ends)
+      check('and laid level again it is back', latheRulerRide(tools().latheRulers[0], lathe().clay) !== null, '')
+    }
+
+    tools().setOpenPanel('lathe-ruler')
+    const list = markupOf('LatheRulerTool (panel open)', LatheRulerTool)
+    shows('the panel lists what is on the piece', list, '>Ruler 1<')
+    shows('with the reading beside it', list, 'ruler-reading')
+    shows('and a way to lay down another', list, 'Add ruler')
+
+    // TWO LISTS, NOT ONE. The two screens measure different things in different
+    // spaces, and a ruler laid across a solid in a room has no meaning on a
+    // section of clay -- so neither list may leak into the other.
+    const onBench = tools().rulers.length
+    tools().addLatheRuler(lathe().clay)
+    check('a second lands beside the first', tools().latheRulers.length === 2, `${tools().latheRulers.length}`)
+    check("and the bench's rulers are untouched", tools().rulers.length === onBench, `${tools().rulers.length}`)
+    check(
+      'the two lists cannot even share an id',
+      tools().latheRulers.every((r) => !tools().rulers.some((other) => other.id === r.id)),
+      ''
+    )
+    // Lanes: consecutive rulers step up the piece rather than landing on each
+    // other, where the second would look like it never appeared.
+    check(
+      'and the second is at a height of its own',
+      tools().latheRulers[0].ends[0][1] !== tools().latheRulers[1].ends[0][1],
+      ''
+    )
+
+    // PUSHED BY ITS MIDDLE, which is the store's half of the gesture: one
+    // write, both ends, so a level ruler is never a diagonal for a frame. What
+    // the ends land on is `interaction-check`'s business; what matters here is
+    // that the ruler in the list is the one that moved.
+    {
+      const first = tools().latheRulers[0]
+      const ride = latheRulerRide(first, lathe().clay)
+      check('a ruler across the piece can be taken by its middle', ride !== null, '')
+      if (ride !== null) {
+        const up = Math.min(ride.hi, first.ends[0][1] + 0.2)
+        tools().setLatheRulerEnds(first.id, latheRulerSlide(ride, lathe().clay, up, 0).ends)
+        const moved = tools().latheRulers[0]
+        near('both of its ends go to the new height', moved.ends[0][1], up, 1e-9)
+        near('exactly level with each other', moved.ends[1][1], moved.ends[0][1], 1e-12)
+        near(
+          'and it reads the piece where it now lies',
+          latheRulerLength(moved),
+          wallAt(lathe().clay, up) * 2,
+          1e-9
+        )
+        check(
+          'while the ruler beside it stays where it was left',
+          tools().latheRulers[1].ends[0][1] !== moved.ends[0][1],
+          ''
+        )
+
+        // AND IT FOLLOWS THE CURVE, which is the whole of what the gesture is
+        // for. A groove cut into the wall above the ruler, well clear of the
+        // height it is lying at, and then the ruler pushed over it: the ends
+        // have to come in with the wall rather than carry the width they were
+        // laid down at.
+        const groove = Math.min(ride.hi - 0.05, up + 0.2)
+        check('there is room above the ruler to cut one', groove > up + 0.05, `${groove} over ${up}`)
+        lathe().work({ y: groove, radius: 0.2, reach: 0.1, bite: 1, tool: 'push' })
+        const wide = latheRulerLength(tools().latheRulers[0])
+        const over = latheRulerRide(tools().latheRulers[0], lathe().clay)
+        check('the ruler is still on a wall it can ride', over !== null, '')
+        if (over !== null) {
+          tools().setLatheRulerEnds(
+            first.id,
+            latheRulerSlide(over, lathe().clay, groove, 0).ends
+          )
+          const inside = tools().latheRulers[0]
+          near(
+            'pushed over the groove, its ends come in with the wall',
+            latheRulerLength(inside),
+            wallAt(lathe().clay, groove) * 2,
+            1e-9
+          )
+          check(
+            'which is a narrower reading than it had below',
+            latheRulerLength(inside) < wide - 0.1,
+            `${latheRulerLength(inside).toFixed(3)} against ${wide.toFixed(3)}`
+          )
+          near('and it is still exactly level', inside.ends[0][1], inside.ends[1][1], 1e-12)
+          near('with one end either side of the axis', inside.ends[0][0], -inside.ends[1][0], 1e-12)
+        }
+      }
+    }
+
+    // Disarming KEEPS them -- they are measurements of a piece that has not
+    // changed -- and drops only the selection.
+    tools().setLatheRulerActive(false, lathe().clay)
+    check('putting the tool down keeps the rulers', tools().latheRulers.length === 2, `${tools().latheRulers.length}`)
+    check('and drops the selection', tools().selectedLatheRuler === null, `${tools().selectedLatheRuler}`)
+
+    // Deleting one takes the selection with it, or the panel would go on
+    // striping a ruler nothing draws.
+    const doomed = tools().latheRulers[1].id
+    tools().selectLatheRuler(doomed)
+    tools().removeLatheRuler(doomed)
+    check('deleting one takes it off the list', tools().latheRulers.length === 1, `${tools().latheRulers.length}`)
+    check('and takes the selection with it', tools().selectedLatheRuler === null, `${tools().selectedLatheRuler}`)
+
+    tools().setOpenPanel(null)
+    useTools.setState({ latheRulers: [], latheRulerActive: false, selectedLatheRuler: null })
   }
 
   tools().setScreen('modelling')
@@ -7968,7 +8660,16 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       tools().setScreen('lathe')
       tools().setOpenPanel('snap')
       const away = markupOf('SnapTool (lathe)', SnapTool)
-      shows('while the lathe, which has nothing to catch, keeps it dimmed', away, 'class="nav-btn" disabled')
+      // THE LATHE NOW ANSWERS YES TOO, and it is the same question that changed
+      // its answer: it has a drag worth aiming. A ruler's end catches the wall
+      // of the section, the axis, the rim and the plate -- every one of them an
+      // edge worth landing exactly on rather than a pixel away from.
+      hides('and the lathe, which now has a ruler to aim, is live as well', away, 'class="nav-btn" disabled')
+      // Its own number, and in pixels: this view zooms four thousand to one, so
+      // a length in the world would be a third of the frame at one end of that
+      // range and finer than a pixel at the other.
+      shows('with a sensitivity of its own', away, '>Sensitivity<')
+      hides("and not the modelling screen's distance", away, '>Distance<')
 
       tools().setScreen('modelling')
       tools().setOpenPanel('snap')
@@ -7978,19 +8679,28 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         '>Distance<'
       )
 
-      // ONE SWITCH, TWO NUMBERS: setting one screen's reach leaves the other's
-      // exactly where it was, which is the whole of what "independent" buys.
+      // ONE SWITCH, THREE NUMBERS: setting one screen's reach leaves the other
+      // two exactly where they were, which is the whole of what "independent"
+      // buys.
       const world = tools().snapDistance
+      const onLathe = tools().latheSnapDistance
       tools().setLaserSnapDistance(24)
       check('the laser reach is its own number', tools().laserSnapDistance === 24, `${tools().laserSnapDistance}`)
       check("and does not touch the world's", tools().snapDistance === world, `${tools().snapDistance}`)
+      check("nor the lathe's", tools().latheSnapDistance === onLathe, `${tools().latheSnapDistance}`)
       tools().setSnapDistance(0.5)
       check('nor the other way about', tools().laserSnapDistance === 24, `${tools().laserSnapDistance}`)
+      tools().setLatheSnapDistance(31)
+      check('the lathe keeps a third reach of its own', tools().latheSnapDistance === 31, `${tools().latheSnapDistance}`)
+      check('leaving the laser where it stood', tools().laserSnapDistance === 24, `${tools().laserSnapDistance}`)
       // Clamped to the range the panel offers: a snap reaching half the window
       // is a knot that can never be placed anywhere.
       tools().setLaserSnapDistance(9999)
       check('and it is held inside the range on offer', tools().laserSnapDistance === LASER_SNAP_MAX, `${tools().laserSnapDistance}`)
+      tools().setLatheSnapDistance(9999)
+      check('the lathe likewise', tools().latheSnapDistance === LATHE_SNAP_MAX, `${tools().latheSnapDistance}`)
       tools().setLaserSnapDistance(DEFAULT_LASER_SNAP)
+      tools().setLatheSnapDistance(onLathe)
       tools().setSnapDistance(world)
 
       tools().setScreen('laser')
@@ -8226,13 +8936,13 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       shows('in a column with the block', laserView, 'className="laser-corner"')
       check(
         'anchored to the bottom left corner',
-        /.laser-corner {[^}]*left: 12px[^}]*bottom: 12px/.test(sheet),
+        /\.laser-corner[^{]*{[^}]*left: 12px[^}]*bottom: 12px/.test(sheet),
         'left 12, bottom 12'
       )
       check(
         'with the block placed by the column rather than by its own corner',
-        /.laser-corner .stock-panel {[^}]*position: static/.test(sheet),
-        'the lathe keeps its own rule, having no column to sit in'
+        /\.laser-corner \.stock-panel[^{]*{[^}]*position: static/.test(sheet),
+        'both screens stack now, so the column is the override and the corner is the default'
       )
       check(
         'and the cut panel sized to what is in it',

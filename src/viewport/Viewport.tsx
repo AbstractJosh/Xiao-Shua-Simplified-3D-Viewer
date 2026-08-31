@@ -3,7 +3,7 @@ import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { Euler, MOUSE, Mesh, Quaternion, Raycaster, Vector2, Vector3 } from 'three'
-import type { Camera, MeshBasicMaterial } from 'three'
+import type { BufferAttribute, Camera, LineSegments, MeshBasicMaterial } from 'three'
 import {
   MAX_FACE_OFFSET,
   resizeAlongAxis,
@@ -55,6 +55,8 @@ import {
   pointerNdc,
   takePointerTrail,
 } from './picking'
+import { PerfHud, PerfProbe } from './PerfHud'
+import { PERF_ON } from './perfProbe'
 import { dropCacheFor, releaseDropCache } from './dropCache'
 import { ObjectMenu, useObjectMenu } from './ObjectMenu'
 import type { DropCache } from './dropCache'
@@ -1794,6 +1796,79 @@ function SnapMarker() {
   )
 }
 
+/**
+ * The lines drawn between two middles that have lined up.
+ *
+ * THE OTHER HALF OF THE SNAP INDICATOR, and it has to be a second component
+ * because it draws a second kind of thing. `SnapMarker` above marks a POINT
+ * that was landed on; this draws the RELATIONSHIP between two points that were
+ * not landed on at all -- an object whose middle now shares a coordinate with
+ * another object's middle, on one axis or two, with the rest of it wherever the
+ * pointer left it. There is no contact to mark, and a dot at one end names one
+ * of the two things involved.
+ *
+ * Without it the alignment is invisible: the object shifts a little on its own
+ * and nothing on screen says why, which reads as a drag that drifts. See
+ * `alignCentres`.
+ *
+ * ONE FIXED BUFFER FOR THREE SEGMENTS, rewritten in place every frame. There
+ * can never be more -- there are three axes -- and a geometry reallocated per
+ * frame mid-drag is exactly the cost the imperative pattern in this file
+ * exists to avoid. `setDrawRange` hides the segments that are not in use, so an
+ * alignment on one axis draws one line rather than three with two collapsed to
+ * nothing at the origin.
+ */
+function SnapGuides() {
+  const scene = useSceneColors()
+  const lines = useRef<LineSegments>(null)
+  // Three segments, two ends each, three numbers an end.
+  const points = useMemo(() => new Float32Array(3 * 2 * 3), [])
+
+  useFrame(() => {
+    const mesh = lines.current
+    if (!mesh) return
+    const guides = useDoc.getState().drag.kind === 'idle' ? [] : snapIndicator.guides
+    mesh.visible = guides.length > 0
+    if (guides.length === 0) return
+
+    for (let i = 0; i < guides.length && i < 3; i += 1) {
+      const at = i * 6
+      points[at] = guides[i].a.x
+      points[at + 1] = guides[i].a.y
+      points[at + 2] = guides[i].a.z
+      points[at + 3] = guides[i].b.x
+      points[at + 4] = guides[i].b.y
+      points[at + 5] = guides[i].b.z
+    }
+    const attribute = mesh.geometry.getAttribute('position') as BufferAttribute
+    attribute.needsUpdate = true
+    mesh.geometry.setDrawRange(0, Math.min(guides.length, 3) * 2)
+  })
+
+  return (
+    <lineSegments ref={lines} visible={false} renderOrder={20}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[points, 3]} />
+      </bufferGeometry>
+      {/* Through everything in front of it, like the marker: the two middles
+          are INSIDE their solids, so a guide that respected depth would be a
+          line you could never see either end of. Dashed would be truer to what
+          a guide is, but a dashed line needs its distances computed per frame
+          on a geometry that moves every frame -- so it wears the measuring
+          colour instead, which is the same thing the centre marker wears and
+          says the same thing about what it is. */}
+      <lineBasicMaterial
+        color={scene.ruler}
+        depthTest={false}
+        depthWrite={false}
+        toneMapped={false}
+        transparent
+        opacity={0.8}
+      />
+    </lineSegments>
+  )
+}
+
 function Scene({
   controlsRef,
   meshes,
@@ -1816,6 +1891,7 @@ function Scene({
       <Rulers controlsRef={controlsRef} />
       <RotationDial />
       <SnapMarker />
+      <SnapGuides />
       {/* Inside the canvas because it is the camera it reports on and flies.
           What it draws is a canvas of its own, outside -- see `AxisCompass`. */}
       <CompassControl controlsRef={controlsRef} />
@@ -1824,6 +1900,10 @@ function Scene({
       {/* Inside the canvas because it projects each object's gizmo through the
           camera to decide what the box caught. What it draws is outside. */}
       <MarqueeControl />
+      {/* Reads the renderer's own counters once a frame and writes them into
+          `perf`. Mounted conditionally rather than self-gating, so that with
+          the probe off there is not even a frame callback to skip. */}
+      {PERF_ON && <PerfProbe />}
 
       <OrbitControls
         ref={controlsRef as never}
@@ -1961,8 +2041,14 @@ const AXIS_NAMES = ['X', 'Y', 'Z'] as const
  */
 function RotationReadout() {
   const chip = useRef<HTMLDivElement>(null)
+  // A ring turn is a gesture, and gestures are rare; the readout is on screen
+  // for a second or two at a time. Subscribed so the loop exists only while one
+  // is running -- unconditionally, it spent the session writing
+  // `style.display = 'none'` onto the same hidden node sixty times a second.
+  const turning = useDoc((s) => s.drag.kind === 'gizmo')
 
   useEffect(() => {
+    if (!turning) return
     let frame = 0
     let shown = ''
     const tick = () => {
@@ -1985,8 +2071,13 @@ function RotationReadout() {
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [])
+    return () => {
+      cancelAnimationFrame(frame)
+      // The loop is what hides the chip, so leaving without it would strand
+      // whatever the last frame wrote.
+      if (chip.current) chip.current.style.display = 'none'
+    }
+  }, [turning])
 
   return <div className="rotation-chip" ref={chip} style={{ display: 'none' }} />
 }
@@ -2004,9 +2095,14 @@ function DragHint() {
         ? s.drag.position !== null
         : true
   )
-  const solid = useDoc((s) =>
-    s.drag.kind === 'placing-solid' ? solidLabel(s.drag.template.base).toLowerCase() : ''
-  )
+  // Named for what is in hand, eraser included: the ghost went red the moment
+  // one was picked up, and a line reading "drop the sphere" under a red shape
+  // is the hint disagreeing with the picture about what release will do.
+  const solid = useDoc((s) => {
+    if (s.drag.kind !== 'placing-solid') return ''
+    const name = solidLabel(s.drag.template.base).toLowerCase()
+    return s.drag.template.erase ? `${name} eraser` : name
+  })
   const handle = useDoc((s) => {
     if (s.drag.kind === 'gizmo' || s.drag.kind === 'cut-gizmo') return s.drag.handle
     if (s.drag.kind === 'ruler-gizmo') return s.drag.handle
@@ -2270,7 +2366,14 @@ export function Viewport() {
         // A 200,000:1 frustum is far past what a 24-bit depth buffer resolves,
         // so the log buffer is not an optimisation here but the thing that
         // keeps faces from tearing.
-        gl={{ logarithmicDepthBuffer: true }}
+        //
+        // And no alpha channel. React-three-fiber asks for one by default, so
+        // the drawing buffer carries a fourth component the page then composites
+        // the whole canvas through -- for a scene that paints an opaque ground
+        // colour over every pixel before anything else draws. See `Stage`, which
+        // attaches it. Nothing on screen changes; a full-screen blend per frame
+        // stops happening.
+        gl={{ logarithmicDepthBuffer: true, alpha: false }}
         dpr={[1, 2]}
         // The left button is the marquee's, and it clears the selection itself
         // on a press that drew no box -- so only the other buttons are answered
@@ -2294,6 +2397,7 @@ export function Viewport() {
       <RotationReadout />
       <RulerReadouts />
       <DragHint />
+      <PerfHud />
       <ObjectMenu />
     </div>
   )

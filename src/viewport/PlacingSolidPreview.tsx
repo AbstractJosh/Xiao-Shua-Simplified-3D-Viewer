@@ -34,6 +34,19 @@ export function PlacingSolidPreview() {
   const cache = peekDropCache()
   if (!cache || cache.template !== drag.template) return null
 
+  /**
+   * An eraser in flight looks like the eraser it is about to be.
+   *
+   * The ghost used to be one colour whatever was being dragged, so the whole
+   * gesture -- the part where the shape is aimed, which is the part that
+   * matters -- said "material arriving" and only the drop said otherwise. Both
+   * colours are the ones the landed object actually wears: `in` is the eraser's
+   * body (see `EraseBody`) and `eraseEdge` is its outline, so nothing changes
+   * hue on release. A solid keeps `out` for both, as it always has.
+   */
+  const fill = drag.template.erase ? scene.in : scene.out
+  const wire = drag.template.erase ? scene.eraseEdge : scene.out
+
   // Sits at drag.position verbatim, because commitPlacingSolid feeds that same
   // value straight into the new object's transform. Adding anything here -- the
   // ground lift of -bounds().min.y included -- would make the ghost promise a
@@ -47,7 +60,7 @@ export function PlacingSolidPreview() {
     <group position={drag.position}>
       <mesh geometry={cache.geometry} raycast={noRaycast}>
         <meshBasicMaterial
-          color={scene.out}
+          color={fill}
           transparent
           opacity={0.24}
           side={DoubleSide}
@@ -58,7 +71,7 @@ export function PlacingSolidPreview() {
           what makes a bean distinguishable from a cylinder mid-drag. */}
       <mesh geometry={cache.geometry} raycast={noRaycast}>
         <meshBasicMaterial
-          color={scene.out}
+          color={wire}
           wireframe
           transparent
           opacity={0.5}

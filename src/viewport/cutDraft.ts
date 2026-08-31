@@ -1,6 +1,9 @@
 import { create } from 'zustand'
-import { bezierChain, fittedHandles, resample, ropeFollow } from '../geometry/laserCut'
+import { bezierChain, curveHandles } from '../geometry/curve'
+import { resample, ropeFollow } from '../geometry/laserCut'
 import type { FaceAxis, Pt } from '../geometry/laserCut'
+
+export { curveHandles }
 
 /**
  * THE LINE YOU ARE DRAWING, before it is a cut.
@@ -162,24 +165,11 @@ export const useCutDraft = create<DraftState>((set) => ({
     }),
 }))
 
-/**
- * The handle every point is actually drawn and cut with: the one it was aimed
- * to, or the fit where it has not been.
- *
- * ONE PLACE THE TWO ARE RECONCILED, which is why it is a function rather than
- * three call sites each writing `?? fitted[i]`. The line that is cut, the line
- * that is previewed and the grips a hand takes hold of all have to agree about
- * where a tangent points -- a grip drawn from the fit while the cut used
- * something else would be a handle that moves the curve from somewhere other
- * than where it is standing.
- *
- * The fit is computed once for the run rather than per point: it is a function
- * of every point, so asking for one costs what asking for all of them costs.
- */
-export function curveHandles(points: Pt[], handles: (Pt | null)[]): Pt[] {
-  const fitted = fittedHandles(points)
-  return points.map((_, i) => handles[i] ?? fitted[i])
-}
+/* `curveHandles` is re-exported at the top rather than written here: the rule
+   it states -- the aimed handle where there is one, the fit everywhere else --
+   has to hold for the Lathe screen's points as well, and there is no reading of
+   "one place the two are reconciled" that survives two copies of it. See
+   `curve.ts`. */
 
 /**
  * The line a draft actually describes: the one the preview draws and the one

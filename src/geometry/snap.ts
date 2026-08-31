@@ -669,6 +669,105 @@ export function snapTranslation(
   return best
 }
 
+/**
+ * ONE WORLD AXIS LINED UP: which of x, y, z, and the middle it was lined up
+ * with.
+ *
+ * `partner` is kept whole rather than reduced to the one coordinate that
+ * mattered, because the thing worth DRAWING is the line between the two
+ * middles, and a number on an axis cannot say where the other end of it is.
+ */
+export type CentreAxis = { axis: 0 | 1 | 2; partner: Vector3; distance: number }
+
+export type CentreAlignment = {
+  /** Translation to apply so the middles share a coordinate on the caught
+   *  axes. Exactly zero on the axes that did not catch. */
+  delta: Vector3
+  /** Which axes caught, in x, y, z order. Never empty -- no catch is `null`. */
+  axes: CentreAxis[]
+}
+
+/**
+ * LINE ONE SOLID'S MIDDLE UP WITH ANOTHER'S, ONE AXIS AT A TIME.
+ *
+ * The other half of centre snapping, and the half that gets used. The pairing
+ * rule above already lets a middle catch a middle, but only as a whole POINT --
+ * all three coordinates at once, inside one radius -- which is a snap you can
+ * only fire by very nearly burying one solid in another. That is the right
+ * answer for "make these concentric" and the wrong one for what people reach
+ * for far more often, which is "put this over the middle of that": a knob
+ * centred on a box but standing on top of it, a bolt down the axis of a hole
+ * but proud of the face. Both are two axes lined up and the third left exactly
+ * where the pointer put it.
+ *
+ * SO EACH AXIS IS ANSWERED ON ITS OWN. Every axis looks for the nearest other
+ * middle in that one coordinate, and the ones that find something inside `tol`
+ * contribute their offset; the rest contribute nothing and the drag keeps what
+ * it had. Lining up on all three at once is then just the case where all three
+ * found the same neighbour -- which is the concentric snap the whole-point
+ * pairing already does, so this generalises that rather than competing with it.
+ *
+ * NOTHING GATES THE OTHER AXES. A solid ten units above another still lines up
+ * with it in x and z, and it must: that IS the gesture. The cost is that in a
+ * crowded scene a drag finds something to line up with fairly often, which is
+ * what an alignment guide is for -- and why the caught axes are reported rather
+ * than swallowed. The viewport draws one line per axis, so a catch is never a
+ * silent tug on a drag.
+ *
+ * `only` restricts the search to a single axis, for the gizmo's arrows: an
+ * arrow promises that nothing but its own coordinate changes, and an alignment
+ * that moved the other two would break that promise flat.
+ *
+ * SOLID MIDDLES ONLY, never a face's. A face centre is a point ON the skin, and
+ * a body pulled to share a coordinate with one is a body half inside its
+ * neighbour -- the same reason `canPair` keeps a centre off faces.
+ */
+export function alignCentres(
+  centre: Vector3,
+  targets: SnapTarget[],
+  tol: number,
+  only?: 0 | 1 | 2
+): CentreAlignment | null {
+  if (!(tol > 0)) return null
+
+  const delta = new Vector3()
+  const axes: CentreAxis[] = []
+
+  for (const axis of [0, 1, 2] as const) {
+    if (only !== undefined && only !== axis) continue
+    const from = centre.getComponent(axis)
+
+    let nearest: CentreAxis | null = null
+    for (const target of targets) {
+      if (target.kind !== 'centre' || target.of !== 'solid') continue
+      const distance = Math.abs(target.point.getComponent(axis) - from)
+      if (distance > tol) continue
+      // AN AXIS ALREADY LINED UP IS NOT A CATCH, and leaving this out was a bug
+      // with teeth. A drag across the ground never changes height, so two boxes
+      // of the same size standing on it have the same middle-height on every
+      // frame of every drag -- an offset of exactly zero, inside any tolerance,
+      // for the whole gesture. Counted as a catch it lit a guide that never
+      // went out and never meant anything, and on two solids of DIFFERENT
+      // heights whose middles happened to fall within the tolerance it did
+      // worse: it lifted the object off the ground mid-drag to level them.
+      //
+      // An axis that has to move something is the whole of what is worth
+      // reporting. It is also not the flicker it looks like -- the pointer
+      // moves every frame, so an axis the snap is actually holding is being
+      // corrected every frame, and the guide stays lit until the drag leaves.
+      if (distance < 1e-6) continue
+      if (nearest && nearest.distance <= distance) continue
+      nearest = { axis, partner: target.point.clone(), distance }
+    }
+    if (!nearest) continue
+
+    axes.push(nearest)
+    delta.setComponent(axis, nearest.partner.getComponent(axis) - from)
+  }
+
+  return axes.length > 0 ? { delta, axes } : null
+}
+
 /** A lone point, with no body behind it, so it may catch anything -- including
  *  a centre. This is the sketch on its host, the end face, the ruler end. */
 export function snapSinglePoint(

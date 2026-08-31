@@ -306,6 +306,10 @@ export const HELP_SECTIONS: HelpSection[] = [
         steps: [
           { action: 'Drag the grip on a Solids row', result: 'Places the eraser. Aim it as usual.' },
           {
+            action: 'Drag the red corner of a clipboard tile',
+            result: 'Erases with a whole saved object -- pockets, cuts, merged parts and all.',
+          },
+          {
             action: 'Confirm under Position & Rotation',
             result: 'Performs the subtraction. Until then it cuts nothing.',
           },
@@ -330,6 +334,10 @@ export const HELP_SECTIONS: HelpSection[] = [
         ),
         steps: [
           { action: 'Sweep across a tile', result: 'Spins it, so you can look it over.' },
+          {
+            action: "Drag a tile's top right corner",
+            result: 'Places the same object as an eraser instead -- see Erasers.',
+          },
           { action: 'Scroll the row sideways', result: 'Three tiles show at a time.' },
         ],
       },
@@ -643,7 +651,25 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Snap',
         summary:
-          'In the top bar. Its caret sets how close a corner, an edge, a face or a middle has to be before a drag takes it. A solid seeks the scene by its corners, so it lands flush against a neighbour, and by its own middle, so it can be dropped concentric with one.',
+          'In the top bar. Its caret sets how close a corner, an edge, a face or a middle has to be before a drag takes it. A solid seeks the scene by its corners, so it lands flush against a neighbour, and by its own middle, so it can be lined up with one.',
+        notes: [
+          <>
+            <b>Middles line up one axis at a time.</b> Drag a solid so its middle is level with
+            another solid’s in x, y or z and that one coordinate is taken, while the rest stay
+            exactly where you dragged them -- so a knob can sit centred over a box while standing
+            clear above it. A thin line runs between the two middles for every axis that has
+            caught; two lines means two axes, and three means the solids are concentric.
+          </>,
+          <>
+            Landing flush comes first. Where a corner is near enough to catch a neighbour’s face,
+            that is what the drag does, and the middles are left for the space between things --
+            which is where you are aiming when nothing is close enough to sit against.
+          </>,
+          <>
+            An arrow lines up its own axis and no other. Dragging the X arrow can centre two solids
+            in x, and it will never quietly move them in y or z to do it.
+          </>,
+        ],
       },
     ],
   },
@@ -767,6 +793,56 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
       },
       {
+        title: 'Point Sculpt',
+        summary:
+          'The one tool here you do not hold against the wall. Click beside the piece to drop points down its side, and the line through them becomes the profile over the span they cover -- exactly, corners and all.',
+        steps: [
+          { action: 'Click', result: 'Puts a point down at the end of the line, and takes hold of it.' },
+          { action: 'Drag a point', result: 'Moves it. The curve through its neighbours follows.' },
+          {
+            action: 'Click a point',
+            result: 'Makes it the one you are shaping: its handles come out, and the last one’s go in.',
+          },
+          {
+            action: 'Fit to line',
+            result: 'On, a smooth curve through every point; off, straight segments between them.',
+          },
+          {
+            action: 'Drag a handle',
+            result:
+              'Aims the shaped point’s tangent. It keeps what you aimed; the rest stay fitted.',
+          },
+          { action: 'Apply profile', result: 'Cuts the wall to the line. One press is one undo step.' },
+          { action: 'Reset line', result: 'Throws the points away and starts again.' },
+        ],
+        notes: [
+          <>
+            <b>It is the only tool here that can leave a corner.</b> Push, Pull and Smooth all fair
+            the wall as they work it, so a shoulder pushed by hand rounds itself off under the
+            tool. Turn <b>Fit to line</b> off, put two points at the same height, and the step
+            between them comes out exactly as drawn -- which is how you get a square shoulder, a
+            chamfer or a flat-topped bead.
+          </>,
+          <>
+            <b>One point wears its handles at a time</b> -- the one you just placed, or the one you
+            last clicked -- so the bars that bend the curve never pile up over the curve they are
+            bending. Nothing is lost by looking away: every point keeps the tangent you aimed for
+            it, and clicking its knot brings the handles back out where you left them. The filled
+            knot is the one in hand.
+          </>,
+          <>
+            Only the span the points cover is touched: the wall above the topmost point and below
+            the bottom one is left alone, so a foot can be re-cut on a piece whose belly is already
+            right. That is also why it has no Tool size -- where the points went says it.
+          </>,
+          <>
+            <b>Apply</b> and <b>Reset</b> stand in the bottom-left corner rather than under the
+            tool’s own caret, because a press on the drawing would shut a panel hanging off a
+            button -- and placing a point is a press on the drawing.
+          </>,
+        ],
+      },
+      {
         title: 'Hollow',
         summary:
           'At the foot of the island: takes the middle out and leaves a wall. Switch it on and the drawing becomes a section, so you see the bore and the clay either side of it.',
@@ -825,6 +901,53 @@ export const HELP_SECTIONS: HelpSection[] = [
             What it remembers is the WALL. A height, width, base or hollow set afterwards stays
             set: those you can put back by setting them back, where a stroke is a gesture you
             cannot.
+          </>,
+        ],
+      },
+      {
+        title: 'Ruler',
+        summary: (
+          <>
+            The last button on the island. Pressing it lays a ruler straight across the piece,
+            already reading the width there; drag either end by its knob to measure anything else,
+            or push a level one by its middle to walk that measurement up the curve. The caret
+            beside it opens the list, which is where the second one comes from and where any of
+            them is deleted.
+          </>
+        ),
+        steps: [
+          {
+            action: 'An end near an edge',
+            result: 'Lands exactly on it: the outer wall, the cavity wall inside a hollow piece.',
+          },
+          {
+            action: 'An end near the middle',
+            result: 'Takes the axis, which is what makes the reading a radius rather than a width.',
+          },
+          {
+            action: 'An end near the rim or the plate',
+            result: 'Takes that height, so the number agrees with the readout in the corner.',
+          },
+          {
+            action: 'An end nearly level or upright with the other',
+            result: 'Goes exactly level or exactly upright, so a width is a width.',
+          },
+          {
+            action: 'A level ruler by the line between its ends',
+            result:
+              'Slides up and down the piece, each end keeping the surface it was on: the outer wall, or the cavity wall inside a hollow one. It stops where that surface does.',
+          },
+        ],
+        notes: [
+          <>
+            A dashed line shows what an end has caught while you hold it. All of it obeys{' '}
+            <b>Snap</b> in the top bar, and its <b>Sensitivity</b> there is how near is near --
+            in pixels, so the reach is the same under your hand at every zoom.
+          </>,
+          <>
+            Rulers change nothing about the clay, so they are not in the undo history and they
+            are not swept onto the clipboard. They stay where you left them when the tool is put
+            down.
           </>,
         ],
       },
@@ -1012,6 +1135,14 @@ export const HELP_SECTIONS: HelpSection[] = [
             for a CAD solid.
           </>
         ),
+        notes: [
+          <>
+            The box at the top of the menu names the file. Leave it empty and the name shown in it
+            is the one used -- the app, then what is in the scene -- so three exports taken while a
+            shape is being worked on land as three files rather than three copies of one. The
+            extension is never yours to type: it comes from the format you press.
+          </>,
+        ],
       },
       {
         title: 'Undo and redo',
@@ -1107,13 +1238,18 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'The lathe',
         steps: [
+          {
+            action: 'Delete, Backspace',
+            result: 'Takes the lit ruler off the piece. With no ruler lit, nothing.',
+          },
+          { action: 'Esc', result: 'Puts a lit ruler out. The ruler stays; only its highlight goes.' },
           { action: 'Ctrl+Z', result: 'Walks the strokes back, one push or pull at a time.' },
           { action: 'Ctrl+Shift+Z', result: 'And forward again.' },
         ],
         notes: [
           <>
-            The only keys the lathe answers. There is nothing to select and nothing to delete: the
-            way out of a piece gone wrong is <b>Reset</b>, in the corner panel.
+            The clay itself is not deletable and never has been: the way out of a piece gone wrong
+            is <b>Reset</b>, in the corner panel, which says what it will do before it does it.
           </>,
         ],
       },

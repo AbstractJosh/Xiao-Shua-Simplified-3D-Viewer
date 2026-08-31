@@ -892,6 +892,14 @@ body {
 /* The panel's own setting, docked against the close button at the right-hand
    end of the head.
 
+   NAMED FOR WHAT IT IS RATHER THAN FOR WHERE IT SITS, and the rename is the
+   whole of a bug: this was `.nav-panel-right`, which is ALSO the class a panel
+   takes when it opens leftwards off a button near the window's edge. So these
+   three declarations landed on the panel itself, and Snap, Settings and Export
+   were each a centred flex row -- head down the left in a column of its own,
+   controls beside it, and Settings' close cross adrift at the middle of its
+   left edge. See `panelRight` in `NavTool`.
+
    ONE AUTO MARGIN BETWEEN THE TWO OF THEM, and which one has it decides where
    the picker lands. `.nav-panel-close` carries one of its own, and two auto
    margins in a flex row SHARE the slack rather than both pushing right -- so
@@ -902,20 +910,20 @@ body {
    So the auto sits here, and the rule below takes the close button's away
    whenever there is a picker in front of it: the pair travels to the end as
    one, and the setting sits immediately left of the cross. */
-.nav-panel-right {
+.nav-panel-setting {
   margin-left: auto;
   display: flex;
   align-items: center;
 }
 
-.nav-panel-right + .nav-panel-close {
+.nav-panel-setting + .nav-panel-close {
   margin-left: 0;
 }
 
 /* Smaller than a field's own picker. It speaks for a whole panel from a
    heading, so it is typed like the heading rather than like a control in the
    body -- and it must not out-weigh the title it sits beside. */
-.nav-panel-right .seg-btn {
+.nav-panel-setting .seg-btn {
   padding: 2px 7px;
   font-size: var(--t-label);
 }
@@ -1992,15 +2000,18 @@ body {
    -- and laid over the model from OUTSIDE the drag surface, which is what keeps
    a text field out of the middle of a `role="button"`. See `ClipboardPanel`.
 
-   The insets are not symmetric with the padding by accident: the remove button
-   hangs off the top-right corner and reaches 11px back into the tile, so 14px
-   either side clears it with air to spare and leaves the field centred on the
-   square, which is where a title belongs. */
+   BOTH TOP CORNERS ARE TAKEN and they are not the same size: the remove cross
+   reaches 11px back into the tile, the eraser grip opposite it reaches 20px.
+   The inset is the LARGER of the two on both sides rather than one each, so the
+   field stays centred on the square -- a title belongs in the middle of the
+   thing it names, and matching each side to its own corner would have slid it
+   four or five pixels off centre for no gain but width. 24px clears the grip
+   with air to spare. */
 .custom-name {
   position: absolute;
   top: 4px;
-  left: 14px;
-  right: 14px;
+  left: 24px;
+  right: 24px;
   z-index: 1;
   width: auto;
   min-width: 0;
@@ -2048,11 +2059,16 @@ body {
 }
 
 /* Hidden until the tile is under the pointer: a grid of close buttons reads as
-   a grid about deleting things, which is not what the panel is for. */
+   a grid about deleting things, which is not what the panel is for.
+
+   TOP LEFT, opposite the eraser grip. A square has two top corners and the
+   shelf now wants both, so the destructive one takes the side a hand reaching
+   for the other is travelling away from -- and the two never share a corner
+   with a name field trying to fit between them. */
 .custom-remove {
   position: absolute;
   top: -5px;
-  right: -5px;
+  left: -5px;
   /* Over the name, which now reaches along the top of the same square. They are
      inset to clear each other -- see `.custom-name` -- so this only decides what
      happens in the corner they both round off. */
@@ -2085,6 +2101,75 @@ body {
 .custom-remove:hover {
   border-color: var(--danger);
   color: var(--danger);
+}
+
+/* The tile's second drag source: the same object, dropped as an eraser. Hung
+   off the top-right corner the way the cross is hung off the top-left, so the
+   pair reads as two corners of one square rather than as a button and an
+   ornament.
+
+   HALF AGAIN AS BIG AS THE CROSS, at 26px to its 16. They are not peers: this
+   is a grip you go looking for and drag out of, and 16px of it would be the
+   same hairline target the Solids row's grip started life as before it was
+   sized up to 30. The cross opposite stays small on purpose -- it throws the
+   tile away, and the corner you catch by accident should be the harmless one.
+
+   Coloured at rest rather than only on hover, which the cross is not. A grey
+   grip on a corner is decoration until something explains it; this one is the
+   same red as everything else in the app that takes material away -- the
+   Solids grip's hover state, an eraser's body in the scene, the chip on its
+   row in the tree -- so it is recognised rather than discovered. The background
+   is MIXED INTO --panel rather than into transparency because a model turns
+   underneath it, and a tint over a silhouette is a different colour every
+   frame. */
+.custom-erase {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  /* Over the name for the reason the cross is: they are inset to clear each
+     other -- see `.custom-name` -- so this only settles the rounded corner. */
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--erase) 45%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--erase) 16%, var(--panel));
+  color: var(--erase);
+  /* A grip, not a button: the press starts a drag that ends on the canvas, and
+     the cursor says so before the first pixel of travel. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.custom-erase svg {
+  width: 18px;
+  height: 18px;
+}
+
+.custom-tile:hover .custom-erase,
+.custom-erase:focus-visible {
+  opacity: 1;
+}
+
+.custom-erase:hover {
+  border-color: color-mix(in srgb, var(--erase) 70%, transparent);
+  background: color-mix(in srgb, var(--erase) 30%, var(--panel));
+}
+
+.custom-erase:active {
+  cursor: grabbing;
+}
+
+.custom-erase:focus-visible {
+  outline: none;
+  border-color: var(--erase);
 }
 
 /* --- the object menu --- */
@@ -3842,6 +3927,14 @@ body {
    else. */
 .lathe-tool {
   fill: currentColor;
+  /* IT IS THE CURSOR, so it may never be a target. The ghost is drawn at the
+     pointer and painted over everything under it, which in SVG means it wins
+     the hit test against everything under it too -- so without this it takes
+     every press meant for whatever it is being aimed AT. That cost nothing
+     while the only handler was the drawing's own, since the press bubbled
+     there regardless; the moment something on this screen had a handle of its
+     own -- a ruler's knob -- the ghost was sitting on top of it. */
+  pointer-events: none;
   /* Enough to read as a body of colour over --surface-4, little enough that the
      wall's own edge goes on being visible straight through it. Aiming is done
      against the silhouette, so the ghost may never hide it. */
@@ -3851,12 +3944,228 @@ body {
   stroke-opacity: 0.9;
 }
 
+/* POINT SCULPT: the profile being drawn, and the marks that aim it.
+
+   In `--accent` rather than in either of the brushes' two colours, and that is
+   the whole point of the choice. Push wears the colour of material going and
+   Pull the colour of material arriving, because a brush is aimed at a
+   DIRECTION; this tool has no direction -- the line it draws states where the
+   wall goes and is as likely to add as to take away along its length. So it
+   wears the app's colour for a thing being aimed rather than for a thing being
+   done, which is the same token the cut preview wears next door. */
+.lathe-sculpt-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* The far wall: the same line, drawn fainter. It is a consequence rather than
+   something you can take hold of, and at full strength the eye reads the two as
+   a pair of things to aim rather than as one profile seen in section. */
+.lathe-sculpt-ghost {
+  opacity: 0.4;
+}
+
+/* A placed point that is not the one in hand. Hollow, in the ground colour, so
+   a knot sitting on the wall does not dissolve into it and the profile it is on
+   reads straight through the ring. */
+.lathe-sculpt-knot {
+  fill: var(--bg);
+  stroke: var(--accent);
+  /* Close to a hairline, because the dot it rings is only a few pixels across.
+     The first of these strokes was 1.5 and was most of the mark. */
+  stroke-width: 1.25px;
+}
+
+/* THE LIVE POINT: the one wearing its handles, and the only one whose grips
+   answer a press. Filled, which is the same sentence the grips below already
+   say -- hollow is a thing waiting, solid is the thing being aimed -- so which
+   knot is in hand can be read at a glance down a line of six. Pressing any
+   other makes it this one; see `selected` in `sculptDraft`. */
+.lathe-sculpt .live .lathe-sculpt-knot {
+  fill: var(--accent);
+  stroke: var(--bg);
+}
+
+/* The bar a tangent is aimed with, and the two grips on its ends. Fainter than
+   the knot it belongs to: it is scaffolding for the line rather than part of
+   the shape, and it must not compete with the profile it is bending. */
+.lathe-sculpt-bar {
+  stroke: var(--accent);
+  stroke-width: 1px;
+  opacity: 0.5;
+}
+
+.lathe-sculpt-grip {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 1px;
+}
+
+/* A tangent the user has AIMED, which is a different thing from one the curve
+   is still fitting: the first is an answer they gave and the second is one the
+   curve is still making up. Filled rather than hollow, so which is which can be
+   read at a glance across a line of six points. See `handles` in
+   `sculptDraft`. */
+.lathe-sculpt .aimed .lathe-sculpt-grip {
+  fill: var(--accent);
+}
+
+.lathe-sculpt .aimed .lathe-sculpt-bar {
+  opacity: 0.85;
+}
+
 .lathe-tool-push {
   color: var(--in);
 }
 
 .lathe-tool-pull {
   color: var(--out);
+}
+
+/* --- the rulers laid over the section --- */
+
+/* NOTHING IN A RULER TAKES A PRESS EXCEPT ITS HANDLES, which is one rule rather
+   than five and is the right rule: a ruler is an annotation over a piece that is
+   still being worked, so the clay under a line, under a reading or under a
+   snap guide has to stay as reachable as the clay beside it. Two things are the
+   exception and both say so below -- the discs at the ends, which move an end,
+   and the band along the line, which slides the whole ruler and is only there
+   when it can. */
+.lathe-rulers {
+  pointer-events: none;
+}
+
+/* The line itself, in --ruler: the same yellow the modelling screen's rulers
+   wear, because they are the same tool and a measurement that changed colour
+   between screens would read as two different things.
+
+   Thin, and it has to be. A ruler is an annotation over a drawing that is still
+   being worked, and half a dozen of them across a section must leave a section
+   rather than a diagram. The stroke is in CSS pixels with
+   `vector-effect: non-scaling-stroke` on the element, which is how every other
+   line on this screen holds its width -- so a ruler stays a hairline at both
+   ends of a four-thousand-to-one zoom. */
+.lathe-ruler-line {
+  stroke: var(--ruler);
+  stroke-width: 1.6px;
+  stroke-linecap: round;
+}
+
+/* SELECTED: yellow-and-black hazard tape, which is the one thing on screen
+   wearing it. No clay, no tool ghost and no sculpt knot competes with that
+   pattern, so "which of these am I dragging" is answered at a glance -- the
+   argument the modelling ruler makes at length, kept word for word here.
+
+   The dashes are in SCREEN pixels rather than centimetres of clay, which is
+   where this parts company with the modelling one. There the stripes double as
+   graduations; here `non-scaling-stroke` puts dash lengths in screen space, and
+   the graduations are already on the screen anyway -- the turning rings are one
+   per rule of the frame and they are a measure the ruler cannot improve on. */
+.lathe-ruler-on .lathe-ruler-line {
+  stroke-width: 4.5px;
+  stroke-dasharray: 5 5;
+  stroke-linecap: butt;
+}
+
+/* The other half of the stripes. A band UNDER the dashed line rather than a
+   second colour in it, because a dash pattern shows whatever is behind the gaps
+   -- over the clay that is the clay, and the stripes would read as a ruler with
+   holes rather than as hazard tape.
+
+   --panel, which is the token that tracks what the modelling screen's rulers use
+   -- `rulerStripe` in `sceneColors`, a value a canvas needs spelt out because it
+   cannot read a CSS variable. It is near-black in the two dark themes and
+   near-white in the light one, which is the right behaviour rather than a
+   coincidence: the stripe has to be the far end of the ramp FROM the ruler's own
+   yellow, and that yellow is itself dark on a light ground. --bg was the first
+   answer and it is a shade too close to the clay in the light theme, where the
+   stripes stopped reading as stripes. */
+.lathe-ruler-band {
+  stroke: var(--panel);
+  stroke-width: 4.5px;
+  stroke-linecap: butt;
+}
+
+/* The knobs at the ends: filled, so they read as something to take hold of, and
+   rimmed in the ground so one lying over the wall is still plainly a knob and
+   not a kink in the outline. Their RADIUS is set on the element, because it is
+   a fraction of the frame -- see `DOT_OF_FRAME`. */
+.lathe-ruler-end {
+  fill: var(--ruler);
+  stroke: var(--panel);
+  stroke-width: 1px;
+}
+
+/* And the disc that catches the press, which is wider than the knob and drawn
+   in nothing at all. `fill: transparent` rather than `fill: none`: a shape with
+   no fill takes no pointer in its middle, which would leave the grab ring
+   grabbable only on a circumference it does not draw. */
+.lathe-ruler-grab {
+  fill: transparent;
+  /* The one thing in a ruler that IS aimed at -- see `.lathe-rulers`. */
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.lathe-ruler-grab:active {
+  cursor: grabbing;
+}
+
+/* And the band along the line, which is how the WHOLE ruler is taken hold of:
+   pushed up or down the piece with both ends following the surface they are
+   already on. Drawn in nothing at all, like the discs above and by the same
+   trick -- `stroke: transparent` rather than `none`, because a stroke set to
+   none takes no pointer.
+
+   ns-resize rather than the ends' grab hand, and the difference is the gesture
+   rather than decoration: a knob goes anywhere on the drawing, where a ruler
+   held by the middle goes up and down only -- its widths are the piece's to
+   say. A hand cursor would be promising two directions this cannot deliver. */
+.lathe-ruler-hold {
+  fill: none;
+  stroke: transparent;
+  pointer-events: auto;
+  cursor: ns-resize;
+}
+
+/* The guide that says what an end has caught, for as long as it is held.
+
+   Across the whole frame, which is what makes it read as a LINE THE END IS ON
+   rather than as a second measurement: the wall it landed on, the axis it lined
+   up with, or the row its own other end is standing on. Faint and dashed, so it
+   is plainly not part of the piece. The laser cutter draws exactly this when a
+   knot takes a neighbour's row -- see `CutLayer` -- and a user who has met one
+   has met the other. */
+.lathe-ruler-guide {
+  stroke: var(--ruler);
+  stroke-width: 1px;
+  stroke-dasharray: 3 4;
+  opacity: 0.55;
+}
+
+/* The reading, floated off the middle of its line.
+
+   Mono and tabular like every other number in the app, so a length changing
+   under a drag does not shuffle its own width. The halo is the app's own ground
+   painted behind the glyphs -- `paint-order: stroke` on the element puts it
+   BEHIND rather than through them -- which is what lets a number sit over the
+   clay, the rings and the stock ghost at once and stay readable over all three.
+   It is what the modelling screen's chip achieves with a background and a
+   border; a pill would have to be sized to text nobody has measured yet. */
+.lathe-ruler-text {
+  fill: var(--ruler);
+  stroke: var(--panel);
+  stroke-width: 3.5;
+  stroke-linejoin: round;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  /* The number belongs to the ruler, not to the pointer: a press aimed at an
+     end that happens to be under it must reach the end. */
+  pointer-events: none;
+  user-select: none;
 }
 
 /* What is on the lathe, in the corner the modelling screen keeps for what is
@@ -3998,7 +4307,8 @@ body {
    `align-items: start` is what keeps the two their own widths -- the block
    panel is a fixed 232 and the cut panel is as wide as its longest button --
    rather than stretching the narrow one to the wide one's edge. */
-.laser-corner {
+.laser-corner,
+.lathe-corner {
   position: absolute;
   left: 12px;
   bottom: 12px;
@@ -4009,10 +4319,12 @@ body {
   gap: 10px;
 }
 
-/* Inside the column the block panel is placed by the flex box, not by its own
-   corner. Its own rule still stands for the lathe, which has one panel in that
-   corner and no column to put it in. */
-.laser-corner .stock-panel {
+/* Inside either column the stock panel is placed by the flex box, not by its
+   own corner. Both screens stack now -- the lathe gained a second panel with
+   Point Sculpt -- so the absolute rule below is what the panel wears anywhere
+   else, and the column is what overrides it in the two places there is one. */
+.laser-corner .stock-panel,
+.lathe-corner .stock-panel {
   position: static;
   left: auto;
   bottom: auto;
@@ -4030,6 +4342,34 @@ body {
   border: 1px solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
+}
+
+/* The way back to the view the screen opened with, at the top of the same
+   column -- see `ViewResetButton`.
+
+   THE SAME FLOATING SURFACE its two neighbours wear, and for the reason stated
+   above them: three boxes in one corner that did not match would read as three
+   unrelated things rather than as one shelf. It is a panel with no head,
+   because it has nothing to name -- the button says what it does, and a title
+   strip over a single control is a heading for a list of one.
+
+   Tighter padding than the other two, which is what keeps it reading as a
+   button on a shelf rather than as a third panel: it holds one control, so the
+   box is the control's own margin. */
+.view-reset {
+  width: max-content;
+  padding: 6px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--lift-1);
+}
+
+/* Set like the lump's own Reset a panel below, because they are the same kind
+   of press and the eye should not have to ask whether they are. */
+.view-reset-btn {
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
 }
 
 /* The head and the buttons are one panel, not a title with a gap under it. */
@@ -4456,6 +4796,50 @@ body {
   flex: 1 1 auto;
   color: var(--muted);
   font-size: var(--t-label);
+}
+
+/* WHAT THE FILE WILL BE CALLED, on the head row the title used to have.
+
+   The row was already there and, with the heading gone, already empty: Export
+   is reached by pressing a button that says Export, so a panel drawing the word
+   again at the top is a line of chrome telling you where you knew you were.
+   What is worth saying on that line is the one thing about this export the four
+   format rows cannot say. So the box costs the panel no height at all -- it is
+   standing in space the panel was already paying for.
+
+   Monospaced, because it is a filename and because the placeholder under it is
+   the automatic name it stands in for; the two have to read as the same kind of
+   thing or the hint looks like a value already typed. */
+/* Sized as the thing it is: the name the file will carry, and the only control
+   on this panel you can type into. At the label size and two pixels of padding
+   it read as a caption someone had made editable -- the four format rows under
+   it are each taller than the box naming what they write. Body type and a
+   fuller box put it on the same footing as them without making the head row
+   the tallest thing on the panel. */
+.export-name {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  appearance: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--t-body);
+}
+
+.export-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* It FILLS the head rather than docking to the right of it, which is what the
+   slot does by default. A setting beside a title has a title to make room for;
+   this one has an empty line, and a field the width of its own placeholder
+   floating in the middle of it reads as debris rather than as a control. */
+.nav-panel-head:has(.export-name) .nav-panel-setting {
+  flex: 1 1 auto;
 }
 
 /* Only ever on the row being written, and only while it is being written. */
@@ -5697,4 +6081,37 @@ body {
 .ref-ratio-label {
   color: var(--text-3);
   font-size: var(--t-body);
+}
+
+/* The dev-only performance readout. See `perfProbe.ts` for what it measures and
+   why it is a DOM node rather than part of the scene.
+
+   BOTTOM RIGHT, which is the one corner of the viewport nothing else claims:
+   the tools island is top-left, the compass top-right, the copy button and the
+   panels down the right-hand side above the fold. Monospaced and tabular like
+   the rotation chip, because it is the same kind of thing -- a live number the
+   scene is producing -- and because a column of figures that reflows as the
+   digits change is unreadable at sixty hertz.
+
+   Never shipped: the component returns null unless the app was opened at
+   `?perf` in a dev build, so this rule matches nothing in production. */
+.perf-hud {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  margin: 0 14px 14px 0;
+  padding: 6px 10px;
+  background: var(--surface-float);
+  border: 1px solid color-mix(in srgb, var(--text-3) 35%, transparent);
+  border-radius: var(--radius);
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: var(--t-fine);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: pre;
+  text-align: right;
+  /* It is a readout, never a target. */
+  pointer-events: none;
+  z-index: 6;
 }

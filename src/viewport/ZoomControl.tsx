@@ -45,13 +45,22 @@ const FIT_SLOP = 0.02
 export function ZoomControl() {
   const clay = useLathe((s) => s.clay)
   const zoom = useTools((s) => s.latheZoom)
+  const pan = useTools((s) => s.lathePan)
   const zoomLathe = useTools((s) => s.zoomLathe)
   const setLatheZoom = useTools((s) => s.setLatheZoom)
+  const panLathe = useTools((s) => s.panLathe)
 
   const fitted = fitZoom(clay)
   // Compared as a RATIO rather than a difference, because zoom is geometric:
   // a hundredth apart means something quite different at 4% and at 6400%.
-  const fits = Math.abs(fitted / zoom - 1) < FIT_SLOP
+  //
+  // AND THE PAN COUNTS, which it has to the moment the view can be slid: this
+  // button's promise is "the piece, on the screen", and a view dragged two
+  // metres off the axis does not keep that promise however well its zoom is
+  // chosen. So a slid view is never a fitted one, and pressing Fit puts the
+  // view back over the middle of the lathe on the way to fitting it.
+  const centred = pan.x === 0 && pan.y === 0
+  const fits = centred && Math.abs(fitted / zoom - 1) < FIT_SLOP
 
   return (
     <div className="lathe-zoom" role="group" aria-label="Zoom">
@@ -71,7 +80,10 @@ export function ZoomControl() {
       <button
         type="button"
         className="btn lathe-zoom-fit"
-        onClick={() => setLatheZoom(fitted)}
+        onClick={() => {
+          setLatheZoom(fitted)
+          panLathe(-pan.x, -pan.y)
+        }}
         disabled={fits}
         title={fits ? 'The piece already fits the frame' : 'Fit the piece to the frame'}
       >

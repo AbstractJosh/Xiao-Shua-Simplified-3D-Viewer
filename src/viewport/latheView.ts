@@ -1,4 +1,11 @@
-import { CLAY_RINGS, bore, flatFactor, pieceSpan, ringHeight } from '../geometry/clay'
+import {
+  CLAY_HEIGHT_MAX,
+  CLAY_RINGS,
+  bore,
+  flatFactor,
+  pieceSpan,
+  ringHeight,
+} from '../geometry/clay'
 import type { Clay } from '../geometry/clay'
 
 /**
@@ -219,8 +226,56 @@ export type ClayFrame = {
 }
 
 /**
- * The frame at a given zoom -- AND IT IS HANDED NO CLAY, which is the guarantee
- * rather than a convenience.
+ * How far the view has been slid off centre, in scene units.
+ *
+ * IT MOVES THE WINDOW, NOT THE DRAWING, and that is the whole of why it lands
+ * on `x` and `y` and touches nothing else in the frame. Everything on this
+ * screen is placed against `base` and against the axis at x = 0 -- the wall,
+ * the rings, the plate, the stock ghost, a ruler's ends -- so those numbers are
+ * the CONTENT and they must not move when the view does. What a pan changes is
+ * which part of that content the viewBox happens to be looking at.
+ *
+ * In scene units rather than in fractions of the frame, which is what makes it
+ * a pan in the WORLD: slide two centimetres off the axis and it is two
+ * centimetres at every zoom, so zooming in magnifies the offset exactly as it
+ * magnifies everything else. It also fixes what zoom is anchored on. Screen
+ * position is `(worldX - pan.x)/side + 1/2` across and `11/12 - (h + pan.y)/side`
+ * down, so the point that holds still under a zoom is the one currently at the
+ * middle of the frame and eleven twelfths down it -- which at rest is the
+ * origin, the axis meeting the plate. Panned, it is whatever you have put
+ * there, which is the behaviour every zoomable view has.
+ */
+export type LathePan = { x: number; y: number }
+
+/** The view at rest, over the middle of the lathe. */
+export const NO_PAN: LathePan = { x: 0, y: 0 }
+
+/**
+ * How far the view may be slid along either axis.
+ *
+ * The tallest lump this app will make, which is the honest bound: the reason to
+ * pan at all is to reach a part of a piece that is off the edge of the frame,
+ * and at the far end of the zoom range a five-metre piece is hundreds of frames
+ * tall. Anything tighter would be a limit that made the tool useless on exactly
+ * the pieces that need it.
+ *
+ * A bound rather than nothing all the same, because a view can be dragged for a
+ * long time by accident and empty space looks the same everywhere. Past this
+ * there is nothing further to see, and `resetLatheView` is the way back.
+ */
+export const PAN_LIMIT = CLAY_HEIGHT_MAX
+
+/** Every pan that reaches the frame goes through here, so no caller can hand it
+ *  a NaN or a slide off the end of the world. */
+export function clampPan(pan: LathePan): LathePan {
+  const held = (v: number) =>
+    Number.isFinite(v) ? Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, v)) : 0
+  return { x: held(pan.x), y: held(pan.y) }
+}
+
+/**
+ * The frame at a given zoom and pan -- AND IT IS HANDED NO CLAY, which is the
+ * guarantee rather than a convenience.
  *
  * Everything this screen has got wrong about its own view, it got wrong by
  * letting the lump into this function. A signature with no `Clay` in it is a
@@ -232,12 +287,18 @@ export type ClayFrame = {
  * up it, so zooming leaves it where it is on screen and opens room above it.
  * Which is the right anchor for a lathe: the piece stands on the plate, so the
  * plate is the thing that should not move when you go looking for the rim.
+ *
+ * THE PAN LANDS ON `x` AND `y` ALONE. `base` is where the clay's zero is drawn
+ * and `rule` is how the furniture is measured; both are facts about the
+ * drawing, and a pan that moved either would be sliding the piece off its own
+ * lathe rather than sliding the window across it. See `LathePan`.
  */
-export function clayFrame(zoom: number): ClayFrame {
+export function clayFrame(zoom: number, pan: LathePan = NO_PAN): ClayFrame {
   const side = BASE_SPAN / clampZoom(zoom)
+  const slid = clampPan(pan)
   return {
-    x: -side / 2,
-    y: 0,
+    x: -side / 2 + slid.x,
+    y: slid.y,
     width: side,
     height: side,
     base: (side * (FRAME_RULES - PLATE_RULES)) / FRAME_RULES,

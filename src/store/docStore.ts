@@ -314,8 +314,19 @@ type State = {
    * Begin dragging a solid in. The template's own position is ignored -- the
    * drop decides that -- but its rotation and everything hanging off it come
    * along.
+   *
+   * `erase` makes it an ERASER, exactly as it does on `startPlacingSolid` and
+   * for exactly that reason: what lands is the same assembly, aimed the same
+   * way, and only the flag on it differs. A whole custom object erases with
+   * everything it is made of -- merged parts, pockets, cuts, the shape a torch
+   * left behind -- because `subtractHole` evaluates a hole the same way it
+   * evaluates a merged part, so a saved bracket takes a bracket-shaped bite.
+   *
+   * The FLAG DECIDES, not the template: a stored object that was itself saved
+   * mid-aim carries `erase` of its own, and a drag from the tile's body has to
+   * place that shape as a solid rather than as a second eraser.
    */
-  startPlacingSolidTemplate: (template: SceneObject) => void
+  startPlacingSolidTemplate: (template: SceneObject, erase?: boolean) => void
 
   /** Takes a full shape, so the palette can vary polygon side counts. */
   startPlacing: (shape: Shape2D) => void
@@ -691,14 +702,23 @@ export const useDoc = create<State>((set, get) => {
         },
       }),
 
-    startPlacingSolidTemplate: (template) =>
+    startPlacingSolidTemplate: (template, erase = false) =>
       set({
         drag: {
           kind: 'placing-solid',
           // Reminted here rather than on release: the ghost, the drop snap and
           // the object that lands are then all the same object, and a gesture
           // abandoned off-canvas costs nothing but the ids it minted.
-          template: { ...cloneObject(template), transform: { ...template.transform, position: ZERO } },
+          template: {
+            ...cloneObject(template),
+            transform: { ...template.transform, position: ZERO },
+            // Written either way round, never merely set: a template that
+            // arrives already flagged must come out a solid when the body was
+            // dragged, or the shelf would have one tile that erases from both
+            // of its corners.
+            erase: erase || undefined,
+            ...(erase ? { name: `${template.name} eraser` } : {}),
+          },
           position: null,
         },
       }),
