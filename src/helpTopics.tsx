@@ -306,6 +306,10 @@ export const HELP_SECTIONS: HelpSection[] = [
         steps: [
           { action: 'Drag the grip on a Solids row', result: 'Places the eraser. Aim it as usual.' },
           {
+            action: 'Drag the red corner of a clipboard tile',
+            result: 'Erases with a whole saved object -- pockets, cuts, merged parts and all.',
+          },
+          {
             action: 'Confirm under Position & Rotation',
             result: 'Performs the subtraction. Until then it cuts nothing.',
           },
@@ -330,6 +334,10 @@ export const HELP_SECTIONS: HelpSection[] = [
         ),
         steps: [
           { action: 'Sweep across a tile', result: 'Spins it, so you can look it over.' },
+          {
+            action: "Drag a tile's top right corner",
+            result: 'Places the same object as an eraser instead -- see Erasers.',
+          },
           { action: 'Scroll the row sideways', result: 'Three tiles show at a time.' },
         ],
       },
@@ -643,7 +651,25 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Snap',
         summary:
-          'In the top bar. Its caret sets how close a corner, an edge, a face or a middle has to be before a drag takes it. A solid seeks the scene by its corners, so it lands flush against a neighbour, and by its own middle, so it can be dropped concentric with one.',
+          'In the top bar. Its caret sets how close a corner, an edge, a face or a middle has to be before a drag takes it. A solid seeks the scene by its corners, so it lands flush against a neighbour, and by its own middle, so it can be lined up with one.',
+        notes: [
+          <>
+            <b>Middles line up one axis at a time.</b> Drag a solid so its middle is level with
+            another solid’s in x, y or z and that one coordinate is taken, while the rest stay
+            exactly where you dragged them -- so a knob can sit centred over a box while standing
+            clear above it. A thin line runs between the two middles for every axis that has
+            caught; two lines means two axes, and three means the solids are concentric.
+          </>,
+          <>
+            Landing flush comes first. Where a corner is near enough to catch a neighbour’s face,
+            that is what the drag does, and the middles are left for the space between things --
+            which is where you are aiming when nothing is close enough to sit against.
+          </>,
+          <>
+            An arrow lines up its own axis and no other. Dragging the X arrow can centre two solids
+            in x, and it will never quietly move them in y or z to do it.
+          </>,
+        ],
       },
     ],
   },
@@ -883,9 +909,10 @@ export const HELP_SECTIONS: HelpSection[] = [
         summary: (
           <>
             The last button on the island. Pressing it lays a ruler straight across the piece,
-            already reading the width there; drag either end by its knob to measure anything else.
-            The caret beside it opens the list, which is where the second one comes from and where
-            any of them is deleted.
+            already reading the width there; drag either end by its knob to measure anything else,
+            or push a level one by its middle to walk that measurement up the curve. The caret
+            beside it opens the list, which is where the second one comes from and where any of
+            them is deleted.
           </>
         ),
         steps: [
@@ -904,6 +931,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           {
             action: 'An end nearly level or upright with the other',
             result: 'Goes exactly level or exactly upright, so a width is a width.',
+          },
+          {
+            action: 'A level ruler by the line between its ends',
+            result:
+              'Slides up and down the piece, each end keeping the surface it was on: the outer wall, or the cavity wall inside a hollow one. It stops where that surface does.',
           },
         ],
         notes: [
@@ -1103,6 +1135,14 @@ export const HELP_SECTIONS: HelpSection[] = [
             for a CAD solid.
           </>
         ),
+        notes: [
+          <>
+            The box at the top of the menu names the file. Leave it empty and the name shown in it
+            is the one used -- the app, then what is in the scene -- so three exports taken while a
+            shape is being worked on land as three files rather than three copies of one. The
+            extension is never yours to type: it comes from the format you press.
+          </>,
+        ],
       },
       {
         title: 'Undo and redo',

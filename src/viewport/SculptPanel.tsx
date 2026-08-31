@@ -103,31 +103,6 @@ export function SculptPanel() {
 
   const ready = sculptReady({ points, handles }, fit)
 
-  /**
-   * The one line of prose in the corner, and what it says depends on how far
-   * along the drawing is.
-   *
-   * Two points is the whole requirement and an untouched lump gives no clue
-   * that placing one is even the gesture, so while there is no line the panel
-   * that is asking says what it is asking for. Once there IS a line the thing
-   * worth saying is where the handles went: they are on the newest point alone
-   * -- see `selected` in `sculptDraft` -- and somebody who aimed a tangent
-   * three points ago has no way of guessing that pressing its knot brings the
-   * grips back. Nothing to say at all with the curve off, where there are no
-   * tangents to find.
-   *
-   * ALWAYS EXACTLY ONE LINE OR NONE, so the panel does not change height under
-   * the buttons as the drawing grows.
-   */
-  const hint =
-    points.length === 0
-      ? 'Click beside the piece to place a point.'
-      : points.length === 1
-        ? 'One more point.'
-        : fit
-          ? 'Handles follow the newest point. Click another to adjust it.'
-          : null
-
   return (
     <div className="cut-panel">
       {/* Named the way the panel below it is named, because the two are one
@@ -152,12 +127,16 @@ export function SculptPanel() {
           Reset line
         </button>
 
-        {hint && (
-          <p className="cut-status" role="status">
-            {hint}
-          </p>
-        )}
-
+        {/* TWO BUTTONS AND NOTHING ELSE while the drawing is going well. The
+            panel used to carry a line of standing prose -- what to click, how
+            many points, where the handles went -- and standing is the word that
+            makes it wrong: it was on screen for the whole sitting, saying
+            something the user knew after the first point, and it moved the
+            buttons down the corner to say it. The one thing left below them is
+            the receipt, which is not advice and does not stand: it appears only
+            in answer to a press that changed nothing, and it goes on its own.
+            What the tool is and how it is aimed are in Help, where they can be
+            read once rather than glanced past a hundred times. */}
         {showing && status && (
           <p className="cut-status cut-status-bad" role="status">
             {status.text}

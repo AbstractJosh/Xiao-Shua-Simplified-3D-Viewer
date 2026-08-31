@@ -1126,6 +1126,12 @@ export function SettingsTool() {
       label="Settings"
       icon={<SettingsIcon />}
       panelTitle="Settings"
+      // Kept as the panel's name for a screen reader, and taken off the panel
+      // itself along with the close cross: this one is reached by pressing a
+      // cog labelled Settings, so a heading repeating the word and a cross
+      // doing what pressing that cog again does are a row of chrome over two
+      // rows of controls. See `bare`.
+      bare
       align="right"
     >
       {/* Named so the panel can size itself to two rows of short buttons rather

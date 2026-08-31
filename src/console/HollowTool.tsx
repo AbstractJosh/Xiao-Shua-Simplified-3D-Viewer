@@ -110,7 +110,12 @@ export function HollowTool() {
       onToggle={(next) => setHollow(next ? DEFAULT_HOLLOW : null)}
       panelTitle="Hollow"
       panelRight={<UnitPicker unit={sizeUnit} onChange={setSizeUnit} of="Wall thickness" />}
-      tip="Take the middle out and leave a wall. The inside follows the outside, so shaping afterwards thins the wall with it."
+      // NO HOVER BUBBLE, which is the island's own rule -- the one the three
+      // gizmo pickers, Snap and Cut already follow. A tool on the island is
+      // pressed constantly, and a paragraph that appears every time the pointer
+      // crosses it on the way somewhere else is noise rather than help. What
+      // hollowing does is said where it can be read at leisure: in Help, and by
+      // the panel's own note, which reports what the piece actually became.
     >
       <div className="tool-group">
         <NumberField

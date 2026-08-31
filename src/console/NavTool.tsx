@@ -27,6 +27,7 @@ export function NavTool({
   trailing,
   tip,
   panelTitle,
+  bare = false,
   panelRight,
   align = 'left',
   below = false,
@@ -87,7 +88,39 @@ export function NavTool({
   tip?: ReactNode
   panelTitle?: string
   /**
+   * Open this panel with no lid on it -- no heading, and no close cross.
+   *
+   * ONE FLAG RATHER THAN TWO, because it is one idea. A panel here is reached
+   * by pressing a labelled button an inch away, so the heading is a second copy
+   * of the word that was just clicked; and the cross beside it is a third way
+   * to do what pressing that same button again already does. Neither is wrong
+   * on a panel with several groups in it, where the heading says what they have
+   * in common and the cross is the nearest exit from a tall box. On a short one
+   * they are a row of chrome above two rows of controls.
+   *
+   * NOTHING IS TRAPPED BY LOSING THE CROSS. The button that opened the panel
+   * toggles it, Escape closes it, and a press anywhere outside the bar closes
+   * it -- see the listeners in `NavBar`. The cross was the fourth way out, not
+   * the only one.
+   *
+   * The panel keeps its accessible name: that comes from the `aria-label`
+   * below, which reads `panelTitle` whether or not the heading is drawn. And
+   * the head row survives if there is still something to put on it -- a tip or
+   * a `panelRight` -- so this drops a row rather than hiding a control.
+   */
+  bare?: boolean
+  /**
    * A control at the top right of the PANEL, opposite its title.
+   *
+   * IT WEARS `nav-panel-setting` AND NOT `nav-panel-right`, which is what it
+   * used to wear and is a name this file was already using for something else:
+   * the PANEL takes that class when it opens leftwards, four lines below. Both
+   * are in the stylesheet, so the rule laying this slot out as a centred flex
+   * row landed on the whole panel as well -- and every right-opening panel in
+   * the bar became a row, with its head as a narrow column down the left and
+   * its controls beside it. Settings ended up with its close cross floating at
+   * the middle of its left edge. Two things in one file may not share a class
+   * name when one of them is a layout and the other is a slot.
    *
    * `trailing` is the same idea on the button; this is the one on the lid. It
    * exists for a setting that belongs to the whole panel rather than to one row
@@ -189,27 +222,35 @@ export function NavTool({
           role="group"
           aria-label={panelTitle ?? label}
         >
-          <div className="nav-panel-head">
-            <span className="nav-panel-title">{panelTitle ?? label}</span>
-            {tip && <Tip>{tip}</Tip>}
-            {panelRight && <span className="nav-panel-right">{panelRight}</span>}
-            <button
-              type="button"
-              className="nav-panel-close"
-              aria-label={`Close ${label.toLowerCase()} options`}
-              onClick={() => setOpenPanel(null)}
-            >
-              <svg viewBox="0 0 10 10" aria-hidden>
-                <path
-                  d="M2.4 2.4 L7.6 7.6 M7.6 2.4 L2.4 7.6"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
-          </div>
+          {/* Dropped whole when a bare panel has nothing else to carry, rather
+              than left standing empty: an empty flex row still spends its
+              bottom margin, which on a short panel is a visible band of
+              nothing under the lid. */}
+          {(!bare || tip != null || panelRight != null) && (
+            <div className="nav-panel-head">
+              {!bare && <span className="nav-panel-title">{panelTitle ?? label}</span>}
+              {tip && <Tip>{tip}</Tip>}
+              {panelRight && <span className="nav-panel-setting">{panelRight}</span>}
+              {!bare && (
+                <button
+                  type="button"
+                  className="nav-panel-close"
+                  aria-label={`Close ${label.toLowerCase()} options`}
+                  onClick={() => setOpenPanel(null)}
+                >
+                  <svg viewBox="0 0 10 10" aria-hidden>
+                    <path
+                      d="M2.4 2.4 L7.6 7.6 M7.6 2.4 L2.4 7.6"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
+          )}
           {children}
         </div>
       )}

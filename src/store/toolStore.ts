@@ -18,7 +18,8 @@ import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT, SCREEN_SNAPS } from '../screens'
 import type { ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
-import { clampZoom } from '../viewport/latheView'
+import { NO_PAN, clampPan, clampZoom } from '../viewport/latheView'
+import type { LathePan } from '../viewport/latheView'
 import type { Unit, UnitMode } from '../units'
 import type { Axis } from '../geometry/dimensions'
 import type { Vec3 } from '../geometry/types'
@@ -1092,6 +1093,21 @@ export type ToolState = {
    */
   latheZoom: number
   /**
+   * And how far the view has been slid off the middle of the lathe, in scene
+   * units.
+   *
+   * The other half of the same answer. Zoom decides how much of the world the
+   * frame covers; this decides WHICH part, and without it a zoomed-in view can
+   * only ever look at the one place the frame happens to start -- which on a
+   * tall piece is the foot, forever. Beside the zoom for the reason the zoom is
+   * here: it is where you are looking, not what you have made, so it is out of
+   * undo and does not travel with the piece to the clipboard.
+   *
+   * See `LathePan` in `latheView.ts` for what the two numbers mean and why they
+   * are lengths rather than fractions of the frame.
+   */
+  lathePan: LathePan
+  /**
    * How much of the wall each tool covers, and how hard each is leant on.
    *
    * ONE PAIR EACH, not one pair shared, which is the arrangement the two
@@ -1249,6 +1265,25 @@ export type ToolState = {
    */
   zoomLathe: (factor: number) => void
   setLatheZoom: (zoom: number) => void
+  /**
+   * Slide the view, by a DELTA rather than to a point, for the reason the zoom
+   * is a factor: the only gesture that drives it is a drag, and a drag is a
+   * series of deltas. In scene units, so the caller converts the pixels its
+   * pointer moved through the scale the drawing is currently laid out at.
+   */
+  panLathe: (dx: number, dy: number) => void
+  /**
+   * Put the view back: the zoom the screen opens at, over the middle of the
+   * lathe.
+   *
+   * ONE ACTION FOR BOTH NUMBERS, because "I have lost the piece" is one
+   * complaint however it happened -- wheeled in too far, dragged off the edge,
+   * or both -- and a button that fixed half of it would leave the user hunting
+   * for the other half. It is what every other Reset in this app means: not the
+   * best view of what is there, which is what Fit is for, but the view the
+   * screen started with.
+   */
+  resetLatheView: () => void
   setPushReach: (reach: number) => void
   setPushSizeUnit: (unit: Unit) => void
   setPushStrength: (strength: number) => void
@@ -1287,6 +1322,12 @@ export type ToolState = {
   selectLatheRuler: (id: string | null) => void
   /** Write one end's position, in the clay's own terms. */
   setLatheRulerEnd: (id: string, end: LatheRulerEnd, at: LatheEnd) => void
+  /** Write BOTH ends, which is what a ruler slid bodily up the piece does --
+   *  see `latheRulerSlide`. One action rather than two calls to the one above,
+   *  because a ruler written an end at a time is a diagonal for a frame, and a
+   *  level ruler that flickers out of level under the hand holding it level is
+   *  the one thing this gesture exists to prevent. */
+  setLatheRulerEnds: (id: string, ends: [LatheEnd, LatheEnd]) => void
   setLatheSnapDistance: (pixels: number) => void
   /** Record a colour as just used, moving it to the front if it is already
    *  there rather than letting the shelf fill with one repeated swatch. */
@@ -1381,6 +1422,10 @@ export const useTools = create<ToolState>((set) => ({
   sculptFit: true,
   stockOpen: true,
   latheZoom: 1,
+  // Over the middle of the lathe, which is the view the whole frame is drawn
+  // around: the axis down the centre and the plate eleven twelfths of the way
+  // down. See `NO_PAN`.
+  lathePan: NO_PAN,
   pushReach: DEFAULT_LATHE_REACH,
   pullReach: DEFAULT_LATHE_REACH,
   // Wider than the two that cut, because it is a different gesture: a rib is
@@ -1581,6 +1626,11 @@ export const useTools = create<ToolState>((set) => ({
   // that has to honour it rather than here and there again.
   zoomLathe: (factor) => set((s) => ({ latheZoom: clampZoom(s.latheZoom * factor) })),
   setLatheZoom: (zoom) => set({ latheZoom: clampZoom(zoom) }),
+
+  panLathe: (dx, dy) =>
+    set((s) => ({ lathePan: clampPan({ x: s.lathePan.x + dx, y: s.lathePan.y + dy }) })),
+
+  resetLatheView: () => set({ latheZoom: 1, lathePan: NO_PAN }),
   setPushReach: (reach) => set({ pushReach: clamp(reach, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
   setPushSizeUnit: (pushSizeUnit) => set({ pushSizeUnit }),
   setPushStrength: (strength) => set({ pushStrength: clamp(strength, 0, 1) }),
@@ -1656,23 +1706,49 @@ export const useTools = create<ToolState>((set) => ({
   // thing worth reading below is what is DIFFERENT: there is no frame to spawn
   // in, because the piece is the frame, and no end to select, because neither
   // end wears a gizmo.
+  // TAKING UP THE RULER EMPTIES THE HAND, which is the one way this tool is not
+  // simply a layer over the screen.
+  //
+  // Everything about a ruler says it should coexist with the tools: it changes
+  // no clay, it is out of undo, and its knobs stop the press reaching the
+  // drawing, so a tool held while a ruler lies across the piece cannot gouge it
+  // by accident. All of that is still true. What is NOT true is that the two
+  // are comfortable at once. A tool in hand puts a ghost under the pointer and
+  // a crosshair on the whole viewport, and both of them are aimed at the very
+  // knob you are reaching for -- so the screen goes on saying "you are about to
+  // cut" throughout a gesture that cuts nothing.
+  //
+  // `latheTool` is ONE field, so this puts down whichever of the four was held.
+  // Point Sculpt goes with the three brushes and has to: it claims a press on
+  // the drawing to place a knot, which is the same press a ruler end takes, and
+  // it stands a second panel in the corner while it is up.
+  //
+  // NOT THE REVERSE. Taking a tool back up leaves the rulers exactly where they
+  // are -- measure, then shape against what you measured, which is the whole
+  // reason to have both on one screen. Putting the Ruler down does not hand the
+  // tool back either: restoring something the user did not ask for is worse
+  // than leaving the hand empty, and the tool is one click away.
   setLatheRulerActive: (on, clay) =>
     set((s) => {
       if (!on) return { latheRulerActive: false, selectedLatheRuler: null }
-      if (s.latheRulers.length > 0) return { latheRulerActive: true }
+      if (s.latheRulers.length > 0) return { latheRulerActive: true, latheTool: null }
       const ruler = makeLatheRuler(clay)
       return {
         latheRulerActive: true,
+        latheTool: null,
         latheRulers: [ruler],
         selectedLatheRuler: ruler.id,
       }
     }),
 
+  // The same, because this arms the tool too: "Add ruler" from the panel with a
+  // brush in hand is the same act as pressing the button with one.
   addLatheRuler: (clay) =>
     set((s) => {
       const ruler = makeLatheRuler(clay)
       return {
         latheRulerActive: true,
+        latheTool: null,
         latheRulers: [...s.latheRulers, ruler],
         selectedLatheRuler: ruler.id,
       }
@@ -1695,6 +1771,11 @@ export const useTools = create<ToolState>((set) => ({
         const ends: [LatheEnd, LatheEnd] = end === 0 ? [at, r.ends[1]] : [r.ends[0], at]
         return { ...r, ends }
       }),
+    })),
+
+  setLatheRulerEnds: (id, ends) =>
+    set((s) => ({
+      latheRulers: s.latheRulers.map((r) => (r.id === id ? { ...r, ends } : r)),
     })),
 
   setLatheSnapDistance: (pixels) =>

@@ -2,6 +2,7 @@ import { Box3, Vector3 } from 'three'
 import type { BufferGeometry, Matrix4 } from 'three'
 import { endFaceFrame } from '../geometry/prism'
 import {
+  alignCentres,
   collectSnapTargets,
   objectSnapTargets,
   snapAlongAxis,
@@ -9,6 +10,7 @@ import {
   snapTranslation,
 } from '../geometry/snap'
 import type {
+  CentreAlignment,
   SketchCentre,
   SnapEntry,
   SnapHit,
@@ -56,7 +58,28 @@ const targetCache = new Map<string, TargetCache>()
  * is. Every resolve call clears it first, so a gesture that stops snapping
  * stops drawing; the viewport only has to null it when the drag itself ends.
  */
-export const snapIndicator: { hit: SnapHit | null } = { hit: null }
+/**
+ * WHAT THE LAST RESOLVE CAUGHT, for the viewport to draw.
+ *
+ * `hit` is a point that was LANDED on -- a corner on a face, a middle on a
+ * middle -- and the viewport marks it with a dot. `guides` is the other thing a
+ * drag can catch: a middle lined up with another middle on one axis or two,
+ * which is not a landing at all and has no single point to mark. Each guide is
+ * the segment between the two middles, drawn as a line.
+ *
+ * THE LINES ARE NOT DECORATION. An axis alignment moves the object without
+ * anything under the pointer having been touched, and there is no contact to
+ * see afterwards -- so with nothing drawn it reads as the drag drifting on its
+ * own. The dot cannot say it either: what happened is a relationship between
+ * two middles, and a mark at one end of it names only one of them.
+ *
+ * Cleared and set together, so a resolve that catches nothing leaves neither
+ * standing.
+ */
+export const snapIndicator: {
+  hit: SnapHit | null
+  guides: Array<{ a: Vector3; b: Vector3 }>
+} = { hit: null, guides: [] }
 
 // --- Registry ---------------------------------------------------------------
 
@@ -280,6 +303,34 @@ function farthestPointSample(points: Vector3[], limit: number): Vector3[] {
  * sources as they would sit ONCE THE DRAG LANDS: the correction has to be
  * measured from where the solid is going, not from where it currently is.
  */
+/**
+ * Hand an axis alignment to the indicator, and say where it puts the object.
+ *
+ * ONE GUIDE PER AXIS CAUGHT, between the two middles -- and measured from where
+ * the object is ABOUT to be rather than from where the pointer left it, so the
+ * line ends exactly on the middle it lined up with instead of a hair beside it.
+ */
+function applyAlignment(desired: Vec3, centre: Vector3, found: CentreAlignment): Vec3 {
+  const landed = centre.clone().add(found.delta)
+  snapIndicator.guides = found.axes.map((a) => ({ a: landed.clone(), b: a.partner.clone() }))
+  return [desired[0] + found.delta.x, desired[1] + found.delta.y, desired[2] + found.delta.z]
+}
+
+/**
+ * Where a whole solid's drag should land.
+ *
+ * THE LANDING IS TRIED FIRST AND THE ALIGNMENT ONLY IF IT MISSES, and that
+ * order is the whole of how the two live together. A corner catching a face
+ * puts the solid FLUSH against its neighbour: it is the snap that has always
+ * been here, it is what a user is asking for when they drag one body up to
+ * another, and it must not start losing to anything. An axis alignment is what
+ * a drag can still find in open space, where there is nothing near enough to
+ * land on.
+ *
+ * So they never compete for a frame. A frame either lands on something or lines
+ * up with something, and the alignment gets the frames the landing did not
+ * want.
+ */
 function snapBySources(
   geometry: BufferGeometry,
   desired: Vec3,
@@ -289,15 +340,16 @@ function snapBySources(
 ): Vec3 {
   if (targets.length === 0) return desired
 
-  const hit = snapTranslation(
-    dragSources(geometry, objectMatrix({ position: desired, rotation })),
-    targets,
-    tol
-  )
-  if (!hit) return desired
+  const matrix = objectMatrix({ position: desired, rotation })
+  const hit = snapTranslation(dragSources(geometry, matrix), targets, tol)
+  if (hit) {
+    snapIndicator.hit = hit
+    return [desired[0] + hit.delta.x, desired[1] + hit.delta.y, desired[2] + hit.delta.z]
+  }
 
-  snapIndicator.hit = hit
-  return [desired[0] + hit.delta.x, desired[1] + hit.delta.y, desired[2] + hit.delta.z]
+  const centre = localCentreOf(geometry).applyMatrix4(matrix)
+  const found = alignCentres(centre, targets, tol)
+  return found ? applyAlignment(desired, centre, found) : desired
 }
 
 /**
@@ -310,6 +362,7 @@ function snapBySources(
  */
 export function resolveObjectMove(objectId: string, desired: Vec3): Vec3 {
   snapIndicator.hit = null
+  snapIndicator.guides = []
 
   const { snap, snapDistance } = useTools.getState()
   if (!snap) return desired
@@ -340,6 +393,7 @@ export function resolveObjectMove(objectId: string, desired: Vec3): Vec3 {
  */
 export function resolveSolidDrop(geometry: BufferGeometry, desired: Vec3): Vec3 {
   snapIndicator.hit = null
+  snapIndicator.guides = []
 
   const { snap, snapDistance } = useTools.getState()
   if (!snap) return desired
@@ -364,6 +418,7 @@ export function resolveSolidDrop(geometry: BufferGeometry, desired: Vec3): Vec3 
  */
 export function resolvePoint(p: Vector3, excludeObjectId?: string): Vector3 {
   snapIndicator.hit = null
+  snapIndicator.guides = []
 
   const { snap, snapDistance } = useTools.getState()
   if (!snap) return p.clone()
@@ -387,6 +442,7 @@ export function resolvePoint(p: Vector3, excludeObjectId?: string): Vector3 {
  */
 export function resolveAxisMove(objectId: string, desired: Vec3, axis: Vector3): Vec3 {
   snapIndicator.hit = null
+  snapIndicator.guides = []
 
   const { snap, snapDistance } = useTools.getState()
   if (!snap) return desired
@@ -396,10 +452,39 @@ export function resolveAxisMove(objectId: string, desired: Vec3, axis: Vector3):
 
   const matrix = objectMatrix({ position: desired, rotation: entry.transform.rotation })
   const sources = dragSources(entry.geometry, matrix)
+  const targets = snapTargets(objectId)
 
-  const hit = snapAlongAxis(sources, snapTargets(objectId), axis, snapDistance)
-  if (!hit) return desired
+  const hit = snapAlongAxis(sources, targets, axis, snapDistance)
+  if (hit) {
+    snapIndicator.hit = hit
+    return [desired[0] + hit.delta.x, desired[1] + hit.delta.y, desired[2] + hit.delta.z]
+  }
 
-  snapIndicator.hit = hit
-  return [desired[0] + hit.delta.x, desired[1] + hit.delta.y, desired[2] + hit.delta.z]
+  // And the alignment, ON THIS AXIS ALONE. The arrow's whole promise is that one
+  // coordinate changes and the other two do not, so the two it is not dragging
+  // may not be lined up behind the user's back however near a neighbour's middle
+  // happens to be -- see `only` in `alignCentres`. A direction that is not a
+  // world axis has no axis to restrict to and simply does not align; the move
+  // arrows are built from the world frame, so in practice that is none of them.
+  const world = worldAxisOf(axis)
+  if (world === null) return desired
+
+  const centre = localCentreOf(entry.geometry).applyMatrix4(matrix)
+  const found = alignCentres(centre, targets, snapDistance, world)
+  return found ? applyAlignment(desired, centre, found) : desired
+}
+
+/**
+ * Which world axis a direction IS, or null for one that is none of them.
+ *
+ * The tolerance is for the dust a `normalize` leaves behind, NOT for accepting a
+ * direction that merely leans towards an axis. A diagonal has to come back null
+ * and align nothing: lining up the wrong coordinate is worse than lining up
+ * none, because the user cannot see which one it chose.
+ */
+function worldAxisOf(dir: Vector3): 0 | 1 | 2 | null {
+  for (const axis of [0, 1, 2] as const) {
+    if (Math.abs(Math.abs(dir.getComponent(axis)) - 1) < 1e-6) return axis
+  }
+  return null
 }

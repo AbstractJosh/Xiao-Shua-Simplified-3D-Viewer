@@ -23,6 +23,7 @@ import { LatheRulers } from './LatheRulers'
 import { SculptLayer, useSculptGesture } from './SculptLayer'
 import { SculptPanel } from './SculptPanel'
 import { StockPanel } from './StockPanel'
+import { ViewResetButton } from './ViewResetButton'
 import { IslandShell } from './ToolIsland'
 import { ZoomControl } from './ZoomControl'
 
@@ -139,6 +140,9 @@ export function LatheViewport() {
   const clay = useLathe((s) => s.clay)
   const displayUnit = useTools((s) => s.displayUnit)
   const tool = useTools((s) => s.latheTool)
+  // Read for one reason only: empty hands mean something different while the
+  // Ruler is up. See the hint at the bottom of this component.
+  const measuring = useTools((s) => s.latheRulerActive)
   // Only the armed tool's size is subscribed to, because only it is DRAWN. The
   // strength is read at the instant of contact instead -- see the loop below --
   // so turning that dial mid-stroke changes the next frame without making this
@@ -173,11 +177,22 @@ export function LatheViewport() {
    */
   const held = useRef<{ x: number; y: number; radius: number } | null>(null)
 
+  /**
+   * The right-drag that slides the view, or null when nothing is being dragged.
+   *
+   * A ref rather than state, because nothing about it is DRAWN: what the drag
+   * produces is a new pan in the store, and the store is what re-renders. Only
+   * the previous pointer position is kept -- each move is worth its own delta,
+   * so the gesture needs no memory of where it started.
+   */
+  const sliding = useRef<{ id: number; x: number; y: number } | null>(null)
+
   const zoom = useTools((s) => s.latheZoom)
-  // The frame is a function of the ZOOM and of nothing else -- no `clay` in the
-  // call and none in the dependencies -- which is what makes resizing the lump
-  // unable to move the view. See `clayFrame`.
-  const frame = useMemo(() => clayFrame(zoom), [zoom])
+  const pan = useTools((s) => s.lathePan)
+  // The frame is a function of the ZOOM AND THE PAN and of nothing else -- no
+  // `clay` in the call and none in the dependencies -- which is what makes
+  // resizing the lump unable to move the view. See `clayFrame`.
+  const frame = useMemo(() => clayFrame(zoom, pan), [zoom, pan])
   // Point Sculpt listens on the drawing itself rather than through the handlers
   // below, because what its press means is not what theirs means: it takes hold
   // of a knot, or puts a new one down, and never starts a stroke. See
@@ -304,16 +319,62 @@ export function LatheViewport() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  /**
+   * How many scene units a pixel of this element is currently worth.
+   *
+   * The `meet` fit, read for its SCALE rather than for its offsets --
+   * `pointerToClay` inverts the same thing for its position. A drag has to be
+   * measured this way rather than by asking where the pointer now is in the
+   * clay: the pan is what moves the frame, so a delta taken between two
+   * readings of a moving frame would be a delta fed back into itself, and the
+   * view would run away under the hand.
+   */
+  const unitsPerPixel = (rect: DOMRect) => {
+    const scale = Math.min(rect.width / frame.width, rect.height / frame.height)
+    return Number.isFinite(scale) && scale > 0 ? 1 / scale : 0
+  }
+
   const track = (e: ReactPointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
+
+    // THE VIEW FIRST, and it returns: with the right button down the pointer is
+    // moving the window rather than aiming anything, so the ghost has nothing
+    // to follow and `held` must not be rewritten from a frame that is sliding.
+    const slide = sliding.current
+    if (slide && slide.id === e.pointerId) {
+      const per = unitsPerPixel(rect)
+      // NEGATED, which is what makes it feel like dragging the drawing rather
+      // than the window: the hand goes right, so the window goes left and the
+      // piece comes right with the hand. Both axes read the same way, and the
+      // y needs no flip -- screen y and the frame's y both run downward.
+      useTools.getState().panLathe(-(e.clientX - slide.x) * per, -(e.clientY - slide.y) * per)
+      slide.x = e.clientX
+      slide.y = e.clientY
+      return
+    }
+
     const spot = pointerToClay(frame, rect, e.clientX, e.clientY)
     held.current = spot
     setAt(spot)
   }
 
   const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
-    // Left button only, and only with a tool in hand. The right button is left
-    // alone the way it is everywhere else in the app.
+    // THE RIGHT BUTTON SLIDES THE VIEW, which is what it does on the modelling
+    // screen and what it has done in every drawing program the user has met.
+    // It matters more here than there: this frame does not fit itself to the
+    // piece any more -- see `clayFrame` -- so at any zoom past the one that
+    // shows the whole lump, the rim is somewhere off the top of the window and
+    // the wheel alone cannot reach it.
+    //
+    // It is the only gesture on this screen that works with EMPTY HANDS as
+    // readily as with a tool, because it is not aimed at the clay at all.
+    if (e.button === 2) {
+      capture(e, true)
+      sliding.current = { id: e.pointerId, x: e.clientX, y: e.clientY }
+      return
+    }
+
+    // Left button only, and only with a tool in hand.
     const held = useTools.getState().latheTool
     if (e.button !== 0 || held === null) return
     // POINT SCULPT IS NOT HELD AGAINST ANYTHING, so it takes none of what
@@ -343,6 +404,10 @@ export function LatheViewport() {
 
   const stopWorking = (e: ReactPointerEvent<SVGSVGElement>) => {
     capture(e, false)
+    // The slide ends on ANY release, whichever button reports it. A right-drag
+    // that ended while the left button happened to be down would otherwise
+    // leave the view stuck to the pointer with nothing holding it.
+    sliding.current = null
     useLathe.getState().endStroke()
     setWorking(false)
   }
@@ -414,6 +479,10 @@ export function LatheViewport() {
         onPointerUp={stopWorking}
         onPointerCancel={stopWorking}
         onWheel={onWheel}
+        // The right button slides the view here, so it must not also summon the
+        // browser's menu over the drawing being slid. The modelling viewport
+        // does exactly this, for exactly this reason.
+        onContextMenu={(e) => e.preventDefault()}
         // Only meaningful when nothing is captured, which is exactly when it
         // should fire: the ghost belongs to a pointer that is over the lathe.
         onPointerLeave={() => {
@@ -539,7 +608,14 @@ export function LatheViewport() {
             two changes cancelled and nothing on screen moved at all. */}
         <rect
           className="lathe-plate"
-          x={frame.x + frame.width * 0.06}
+          // CENTRED ON THE AXIS rather than measured in from the frame's own
+          // left edge, which is the same number at rest and a different thing
+          // entirely once the view can slide: `frame.x` is where the WINDOW
+          // starts, so a plate measured from it was glued to the screen and
+          // would have travelled with a pan -- a bench that followed the eye
+          // instead of standing still under the piece. Half of 0.88 either side
+          // of x = 0 is exactly where it always was.
+          x={-frame.width * 0.44}
           y={frame.base}
           width={frame.width * 0.88}
           height={frame.rule * 0.42}
@@ -609,8 +685,15 @@ export function LatheViewport() {
       </div>
 
       {/* Empty hands, and the one thing to say about it. It goes the moment a
-          tool is taken up, and never comes back while one is in hand. */}
-      {!tool && (
+          tool is taken up, and never comes back while one is in hand.
+
+          AND NOT WHILE THE RULER IS UP, which is the other way a hand ends up
+          empty and the reason this is two conditions rather than one. Taking up
+          the Ruler puts the tool down -- see `setLatheRulerActive` -- so without
+          this, arming it would summon a line telling you to take up Push, over
+          a screen where you have just said you want to measure. An idle hand
+          and a hand doing something else are not the same state. */}
+      {!tool && !measuring && (
         <p className="viewport-hint">
           Take up <b>Push</b> or <b>Pull</b>, then hold the pointer against the clay
         </p>
@@ -624,7 +707,13 @@ export function LatheViewport() {
           and the profile you are cutting into it, stacked in the order they are
           used. With any other tool it is the stock panel alone, exactly where it
           has always been -- see `.lathe-corner`. */}
+      {/* THREE THINGS NOW, AND THE ORDER IS WHAT THEY COST. The view reset is
+          first because it throws nothing away -- a view is not a piece -- then
+          the line you have drawn, then the shaping itself, which on a screen
+          with no undo is the most expensive press in the app. A hand reaching
+          for "put it back" meets the harmless one first. */}
       <div className="lathe-corner">
+        <ViewResetButton />
         <SculptPanel />
         <StockPanel />
       </div>

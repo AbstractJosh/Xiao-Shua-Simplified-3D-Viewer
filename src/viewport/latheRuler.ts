@@ -1,4 +1,12 @@
-import { CLAY_CLOSED, bore, pieceSpan, ringHeight, wallAt, widestRadius } from '../geometry/clay'
+import {
+  CLAY_CLOSED,
+  CLAY_RINGS,
+  bore,
+  pieceSpan,
+  ringHeight,
+  wallAt,
+  widestRadius,
+} from '../geometry/clay'
 import type { Bore, Clay } from '../geometry/clay'
 
 /**
@@ -180,6 +188,40 @@ function nearest(want: number, targets: number[], tol: number): number | null {
 }
 
 /**
+ * The heights on the piece worth catching, most-wanted first.
+ *
+ * Lifted out of the snap below because TWO gestures want this same list and
+ * they must not drift apart: an end dragged on its own takes its height from
+ * it, and so does a whole ruler slid up the piece. A ruler that clicked onto
+ * the widest ring when it was dragged by an end and sailed straight past it
+ * when it was pushed by the middle would be two tools sharing one set of knobs.
+ *
+ * Handed the span and the cavity rather than reading them off the clay, because
+ * both callers have already asked for them and `bore` walks the wall three
+ * times over to answer.
+ */
+function pieceHeights(
+  clay: Clay,
+  span: { lo: number; hi: number } | null,
+  cavity: Bore | null
+): number[] {
+  // The faceplate, which is the clay's zero whether or not any material reaches
+  // it -- it is what "off the base" is measured from.
+  const heights = [0]
+  if (span !== null) {
+    heights.push(ringHeight(clay, span.lo), ringHeight(clay, span.hi))
+    // Where the piece is widest, which is a height as well as a width.
+    let peak = span.lo
+    for (let i = span.lo; i <= span.hi; i += 1) {
+      if (clay.wall[i] > clay.wall[peak]) peak = i
+    }
+    heights.push(ringHeight(clay, peak))
+  }
+  if (cavity !== null) heights.push(cavity.lo, cavity.hi)
+  return heights
+}
+
+/**
  * Pull an end onto the edges of the piece, onto its centre line, and into line
  * with the end it is tied to.
  *
@@ -256,19 +298,7 @@ export function snapLatheEnd(
   // Upright first, so a ruler that is already nearly level stays level through
   // a drag that passes near something else.
   if (dy < dx) heights.push(other[1])
-  // The faceplate, which is the clay's zero whether or not any material reaches
-  // it -- it is what "off the base" is measured from.
-  heights.push(0)
-  if (span !== null) {
-    heights.push(ringHeight(clay, span.lo), ringHeight(clay, span.hi))
-    // Where the piece is widest, which is a height as well as a width.
-    let peak = span.lo
-    for (let i = span.lo; i <= span.hi; i += 1) {
-      if (clay.wall[i] > clay.wall[peak]) peak = i
-    }
-    heights.push(ringHeight(clay, peak))
-  }
-  if (cavity !== null) heights.push(cavity.lo, cavity.hi)
+  heights.push(...pieceHeights(clay, span, cavity))
 
   const onY = nearest(wantY, heights, tol)
   const y = onY ?? wantY
@@ -295,4 +325,305 @@ export function snapLatheEnd(
   const onX = nearest(wantX, widths, tol)
 
   return { at: [onX ?? wantX, y], onX, onY }
+}
+
+/**
+ * SLIDING THE WHOLE RULER, which is the second thing a hand does with one.
+ *
+ * A ruler laid level across the piece with an end on each wall reads the
+ * diameter THERE, and the question that follows it is always the same one: and
+ * there? and there? Answering it by dragging one end and then the other is two
+ * gestures for one measurement, and both of them have to come out exactly right
+ * or the ruler leaves the level and stops reading a diameter at all. Taken by
+ * the middle instead, it keeps its level for nothing and the ends walk the
+ * curve on their own -- which is what a pair of calipers run up a turned piece
+ * actually does.
+ *
+ * THE ENDS FOLLOW THE LINES THEY WERE ALREADY ON, and that is the whole rule.
+ * On a solid lump both are on the outer wall, so the ruler reads the diameter
+ * all the way up. On a hollow one an end put on the CAVITY wall stays on the
+ * cavity wall: a ruler laid from the outside in goes on reading the thickness
+ * that is left at every height it is pushed to, and one laid across the bore
+ * goes on reading the bore. Nothing in the gesture says which -- it is read off
+ * where the ends are standing at the moment the middle is taken hold of.
+ *
+ * ONLY WHILE IT IS LEVEL AND BOTH ENDS ARE ON SOMETHING. A ruler lying across a
+ * diagonal has no one height to be moved to, and an end standing in mid-air has
+ * no line to follow: there is no honest answer to where it should go, and
+ * inventing one -- keep its width? drop it on the nearest edge? -- would move a
+ * measurement the user placed by hand. Where the rule does not hold there is no
+ * handle in the middle of the ruler at all, and a press there goes to the clay,
+ * which is what a press anywhere else on this screen does.
+ */
+
+/**
+ * Which line of the drawing an end is standing on, and so which one it rides.
+ *
+ * The three things `snapLatheEnd` can put an end ON, and deliberately no fourth
+ * for "in mid-air": an end that is on nothing has nothing to follow.
+ */
+export type LatheHold = 'wall' | 'bore' | 'axis'
+
+/**
+ * What a slide needs to know about a ruler, worked out once as it is taken hold
+ * of: which line each end rides, which side of the axis it rides it on, and how
+ * far up and down the piece the pair of them may go.
+ *
+ * SETTLED AT THE PRESS AND CARRIED, rather than asked again every frame, and
+ * the reason is the same one that makes the ends follow anything at all: what a
+ * ruler is measuring is decided by where its ends were when the hand arrived.
+ * Re-read mid-drag it would be decided by where they have got to, and a ruler
+ * whose ends met the cavity on the way up would change from measuring a wall to
+ * measuring a bore halfway through the gesture that was reading it.
+ */
+export type LatheRide = {
+  /** What each end is standing on, in the ruler's own end order. */
+  holds: [LatheHold, LatheHold]
+  /** The sign each end keeps: -1 for the left of the drawing, +1 for the right.
+   *  A section is symmetrical, so nothing but the sign says which wall of it an
+   *  end belongs to, and an end that changed sides mid-slide would have jumped
+   *  the whole width of the piece. */
+  sides: [number, number]
+  /** The heights the ruler may be slid between, ends included. */
+  lo: number
+  hi: number
+}
+
+/**
+ * How far off a line an end may be and still count as standing on it.
+ *
+ * A LENGTH IN THE CLAY rather than the snap's reach in pixels, which is the one
+ * place in this file that goes the other way from `DEFAULT_LATHE_SNAP`, and on
+ * purpose. The reach answers "did the hand mean to put it here", a question
+ * about a gesture in flight. This answers "is the ruler on the edge", a question
+ * about a drawing standing still -- and it has to have the same answer at every
+ * zoom, or the middle of a ruler would become a handle by leaning in and stop
+ * being one by leaning back out.
+ *
+ * `CLAY_CLOSED` is the app's own smallest dimension: an end this near a line was
+ * put there by the snap or by the spawn, and one further off than the thinnest
+ * thing this app will make is somewhere else on purpose.
+ */
+const ON_LINE = CLAY_CLOSED
+
+/**
+ * How level is level: floating-point slack, not a tolerance.
+ *
+ * The ortho lock writes the other end's height across EXACTLY -- see
+ * `snapLatheEnd` -- and so does a slide, so a ruler that is level is level to
+ * the last bit. A ruler that merely looks level was placed by hand with the snap
+ * down, and lifting it onto the level to hand it a slide would change the
+ * reading it is showing without being asked to.
+ */
+const LEVEL = 1e-9
+
+/**
+ * How far a ruler riding the outer wall may be pushed from the height it is at:
+ * the run of the section that has a wall to ride, and not a hair further.
+ *
+ * NOT SIMPLY THE PIECE'S SPAN, which reaches one ring PAST the material at each
+ * end -- `pieceSpan` keeps a closed ring there deliberately, so the surface runs
+ * out to the axis and a domed top ends in a point rather than on a disc. Slid
+ * onto that ring, a ruler's two ends would meet on the centre line: a reading of
+ * zero, true about the tip of the dome, useless as a measurement, and awkward to
+ * get back from with both knobs in the same place.
+ *
+ * A PINCHED WAIST STOPS IT TOO, for that reason and a second one behind it. The
+ * wall really does close there, so a ruler pushed through would cross a height
+ * at which there is nothing to measure on its way to the far lobe.
+ *
+ * Between rings the wall is a straight line -- that is exactly what `wallAt`
+ * says -- so where it crosses is arithmetic rather than a search.
+ */
+function wallRun(clay: Clay, y: number): { lo: number; hi: number } | null {
+  if (!(wallAt(clay, y) > CLAY_CLOSED)) return null
+  const step = clay.height / (CLAY_RINGS - 1)
+  if (!(step > 0)) return null
+  const here = Math.max(0, Math.min(CLAY_RINGS - 1, Math.floor(y / step)))
+
+  // Up, to the first ring that has closed, and back down to where the wall
+  // crossed between it and the open one below it.
+  let hi = clay.height
+  for (let i = here + 1; i < CLAY_RINGS; i += 1) {
+    if (clay.wall[i] > CLAY_CLOSED) continue
+    const open = clay.wall[i - 1]
+    hi = (i - 1 + (open - CLAY_CLOSED) / (open - clay.wall[i])) * step
+    break
+  }
+
+  // And down. `here` is the ring at or below the height, and the wall is open
+  // there or the guard above would have turned this away.
+  let lo = 0
+  for (let i = here; i >= 0; i -= 1) {
+    if (clay.wall[i] > CLAY_CLOSED) continue
+    const open = clay.wall[i + 1]
+    lo = (i + 1 - (open - CLAY_CLOSED) / (open - clay.wall[i])) * step
+    break
+  }
+
+  return { lo, hi }
+}
+
+/** Which line an end is standing on, or null for one standing in the air.
+ *  NEAREST WINS, ties to the earlier, which is the rule `nearest` follows a few
+ *  lines up: a wall thin enough to have both its faces inside `ON_LINE` of one
+ *  point is a wall that thin, and the end takes the face it is actually nearer. */
+function holdOf(
+  x: number,
+  y: number,
+  clay: Clay,
+  span: { lo: number; hi: number } | null,
+  cavity: Bore | null
+): LatheHold | null {
+  const r = Math.abs(x)
+  let best: LatheHold | null = null
+  let gap = Infinity
+
+  // The outer wall, only where the piece actually reaches -- the same guard
+  // `snapLatheEnd` puts on it, and for the same reason: above the rim `wallAt`
+  // goes on reporting the rim's own radius into thin air.
+  if (span !== null && y >= ringHeight(clay, span.lo) && y <= ringHeight(clay, span.hi)) {
+    const wall = wallAt(clay, y)
+    const d = Math.abs(r - wall)
+    if (wall > CLAY_CLOSED && d <= ON_LINE && d < gap) {
+      gap = d
+      best = 'wall'
+    }
+  }
+
+  // The cavity wall, on a hollow piece and inside the cavity's own span.
+  if (cavity !== null && y >= cavity.lo && y <= cavity.hi) {
+    const inner = boreAt(cavity, y)
+    const d = Math.abs(r - inner)
+    if (inner > 0 && d <= ON_LINE && d < gap) {
+      gap = d
+      best = 'bore'
+    }
+  }
+
+  // The centre line, which is at every height there is: an end on the axis
+  // stays on the axis wherever the ruler is pushed, and a ruler with one there
+  // goes on reading a radius rather than a width.
+  if (r <= ON_LINE && r < gap) {
+    gap = r
+    best = 'axis'
+  }
+
+  return best
+}
+
+/** Where a line stands at a height. A missing surface can only be asked for at
+ *  the ends of the travel, which `latheRulerRide` has already ruled out; nothing
+ *  is the honest answer if one ever gets through. */
+function radiusOn(
+  hold: LatheHold,
+  clay: Clay,
+  span: { lo: number; hi: number } | null,
+  cavity: Bore | null,
+  y: number
+): number {
+  if (hold === 'wall') return span === null ? 0 : wallAt(clay, y)
+  if (hold === 'bore') return cavity === null ? 0 : boreAt(cavity, y)
+  return 0
+}
+
+/**
+ * What the ends of a ruler are standing on -- or null, meaning this is not a
+ * ruler that can be slid.
+ *
+ * The whole of the precondition, in one place and pure, so the viewport can ask
+ * one question twice for two purposes and get one answer: is there a handle in
+ * the middle of this ruler to DRAW, and is there one to TAKE HOLD OF. Two rules
+ * would be two chances for a band that catches presses to sit somewhere no band
+ * was ever drawn.
+ */
+export function latheRulerRide(ruler: LatheRuler, clay: Clay): LatheRide | null {
+  const [a, b] = ruler.ends
+  // Level, or there is no one height for the pair to be moved to.
+  if (Math.abs(a[1] - b[1]) > LEVEL) return null
+  const y = a[1]
+
+  const span = pieceSpan(clay)
+  const cavity = bore(clay)
+
+  const holds: LatheHold[] = []
+  const sides: number[] = []
+  // The stock's own extent, which every ride is inside. An end on the axis
+  // constrains nothing -- the centre line runs the height of the drawing -- and
+  // a ruler still may not be pushed off the top of the piece it is measuring.
+  let lo = 0
+  let hi = clay.height
+
+  for (const end of [a, b]) {
+    const hold = holdOf(end[0], y, clay, span, cavity)
+    if (hold === null) return null
+    holds.push(hold)
+    // Zero counts as the right-hand side, arbitrarily and harmlessly: an end on
+    // the axis is at nothing whichever way its sign points.
+    sides.push(end[0] < 0 ? -1 : 1)
+
+    if (hold === 'wall') {
+      const run = wallRun(clay, y)
+      if (run === null) return null
+      lo = Math.max(lo, run.lo)
+      hi = Math.min(hi, run.hi)
+    }
+    if (hold === 'bore') {
+      if (cavity === null) return null
+      lo = Math.max(lo, cavity.lo)
+      hi = Math.min(hi, cavity.hi)
+    }
+  }
+
+  // A ruler whose ends ride the same line on the same side is a ruler whose
+  // ends are in the same place: it reads nothing now and would go on reading
+  // nothing wherever it was pushed. Both on the axis is the case that turns up
+  // -- the centre line is one line and it has no sides.
+  if (holds[0] === holds[1] && (holds[0] === 'axis' || sides[0] === sides[1])) return null
+
+  // No travel is no gesture, and a handle that cannot move is worse than none:
+  // it takes the press that would otherwise have reached the clay.
+  if (!(hi > lo)) return null
+
+  return { holds: [holds[0], holds[1]], sides: [sides[0], sides[1]], lo, hi }
+}
+
+/**
+ * Slide a ruler to a new height, both ends keeping the line they came in on.
+ *
+ * THE HEIGHT IS THE ONLY THING THE HAND DECIDES. The widths are the piece's to
+ * say -- that is what following the curve means -- so this takes one number, and
+ * the sideways half of the drag is dropped on the floor rather than allowed to
+ * skew a level ruler by a pixel over the length of a gesture.
+ *
+ * IT CATCHES THE SAME HEIGHTS AN END DOES, out of `pieceHeights`, so the rim,
+ * the plate, the widest ring and the ends of the cavity are as findable by
+ * pushing the middle as by dragging an end -- and the widest ring is the one
+ * this gesture is really for, being the answer to "how fat is the belly" and
+ * otherwise a height nobody can point at. Only those inside the travel are
+ * offered: one beyond it would be caught, then clamped away, and the guide would
+ * draw a line the ruler is not on.
+ *
+ * `tol` is a length in the clay, converted from the user's pixels by the caller
+ * exactly as `snapLatheEnd` takes it -- and as there, no reach means no catch.
+ */
+export function latheRulerSlide(
+  ride: LatheRide,
+  clay: Clay,
+  want: number,
+  tol: number
+): { ends: [LatheEnd, LatheEnd]; onY: number | null } {
+  const span = pieceSpan(clay)
+  const cavity = bore(clay)
+
+  const heights = pieceHeights(clay, span, cavity).filter((h) => h >= ride.lo && h <= ride.hi)
+  const onY = tol > 0 ? nearest(want, heights, tol) : null
+  const y = Math.min(ride.hi, Math.max(ride.lo, onY ?? want))
+
+  const end = (i: 0 | 1): LatheEnd => [
+    ride.sides[i] * radiusOn(ride.holds[i], clay, span, cavity, y),
+    y,
+  ]
+
+  return { ends: [end(0), end(1)], onY }
 }

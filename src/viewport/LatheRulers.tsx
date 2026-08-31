@@ -3,8 +3,8 @@ import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import type { Clay } from '../geometry/clay'
 import { snapsHere, useTools } from '../store/toolStore'
 import { formatLength } from '../units'
-import { latheRulerLength, snapLatheEnd } from './latheRuler'
-import type { LatheRuler, LatheRulerEnd } from './latheRuler'
+import { latheRulerLength, latheRulerRide, latheRulerSlide, snapLatheEnd } from './latheRuler'
+import type { LatheRide, LatheRuler, LatheRulerEnd } from './latheRuler'
 import { clayY, pointerToClay } from './latheView'
 import type { ClayFrame } from './latheView'
 
@@ -27,6 +27,13 @@ import type { ClayFrame } from './latheView'
  * chooses a point along it. Here the drawing is flat and the pointer names a
  * point outright, so an end is taken hold of and moved, which is what everybody
  * expected the first tool to do anyway.
+ *
+ * AND IT MAKES A SECOND GESTURE POSSIBLE that the bench has no room for: a
+ * level ruler with both ends on the piece is taken by the LINE and pushed up or
+ * down it, the ends following whatever surface each was already standing on.
+ * The whole of when and where is `latheRulerRide` and `latheRulerSlide` next
+ * door; this file's share is the band that catches the press and the offset
+ * that keeps the ruler where the hand found it.
  *
  * WHAT IT CATCHES lives next door in `latheRuler.ts`, pure and checkable. This
  * file's share of the snap is the one thing that file cannot know: how big the
@@ -56,6 +63,22 @@ const KNOB_OF_FRAME = 0.0105
  *  stands under, so an end can be grabbed by aiming AT it rather than by
  *  hitting it exactly. */
 const GRAB_OF_FRAME = 0.017
+/**
+ * The invisible band along the line that catches a press on the MIDDLE of a
+ * ruler, which is the handle for the whole of it. See `latheRulerRide`.
+ *
+ * Exactly as wide as the discs at the ends are across, so how near is near
+ * enough to grab is one distance over the whole ruler rather than a fat target
+ * at the ends and a thin one between them. It is drawn UNDER them, so an aim at
+ * an end still takes that end: the two overlap by design, and the end is the
+ * finer of the two gestures.
+ *
+ * Which is also why the band is not simply the drawn line made thick. A ruler is
+ * a hairline on purpose -- half a dozen of them over a section have to leave a
+ * section rather than a diagram -- and what a hand can hit is not the size an
+ * eye should be shown.
+ */
+const HOLD_OF_FRAME = 0.034
 /** The reading, sized so it comes out at about eleven pixels in a window this
  *  screen is usually given -- the size the modelling screen's chip is set in. */
 const TEXT_OF_FRAME = 0.0165
@@ -78,8 +101,17 @@ const TEXT_LIFT_OF_FRAME = 0.022
  */
 const TEXT_SPACE = 1000
 
-/** Which end of a ruler is in hand, and which ruler it belongs to. */
-type Grip = { id: string; end: LatheRulerEnd }
+/** Which ruler is in hand, and what of it: one end, or -- at `end: null` --
+ *  the whole thing, taken by the line between them. */
+type Grip = { id: string; end: LatheRulerEnd | null }
+
+/**
+ * The grip, plus the two things a slide carries from the press to every move
+ * after it: the lines its ends ride, settled once and for all at the press (see
+ * `latheRulerRide`), and how far the ruler stood from the pointer when it was
+ * taken hold of, so it does not jump to centre itself under the hand.
+ */
+type Held = Grip & { ride: LatheRide | null; lift: number }
 
 /**
  * One ruler: the line, a knob at each end, and its reading.
@@ -92,21 +124,27 @@ function RulerBody({
   ruler,
   frame,
   chosen,
+  ride,
   handlers,
 }: {
   ruler: LatheRuler
   frame: ClayFrame
   chosen: boolean
-  /** The whole gesture, bound to one end: press, move, release. All four hang
-   *  off the knob itself rather than off a sheet over the drawing, because the
-   *  press takes the pointer CAPTURE -- so every move and the release are
-   *  retargeted here however far the hand has wandered, and a sheet would never
-   *  see them. */
-  handlers: (end: LatheRulerEnd) => {
-    onPointerDown: (e: ReactPointerEvent<SVGCircleElement>) => void
-    onPointerMove: (e: ReactPointerEvent<SVGCircleElement>) => void
-    onPointerUp: (e: ReactPointerEvent<SVGCircleElement>) => void
-    onPointerCancel: (e: ReactPointerEvent<SVGCircleElement>) => void
+  /** What this ruler's ends are standing on, or null for one that cannot be
+   *  slid -- worked out by the caller and handed down rather than asked for
+   *  here, because the press needs the very same answer and two askings are two
+   *  chances for a band that catches presses to sit where none was drawn. */
+  ride: LatheRide | null
+  /** The whole gesture, bound to one end -- or, at `null`, to the line between
+   *  them: press, move, release. All four hang off the shape itself rather than
+   *  off a sheet over the drawing, because the press takes the pointer CAPTURE
+   *  -- so every move and the release are retargeted here however far the hand
+   *  has wandered, and a sheet would never see them. */
+  handlers: (end: LatheRulerEnd | null) => {
+    onPointerDown: (e: ReactPointerEvent<SVGElement>) => void
+    onPointerMove: (e: ReactPointerEvent<SVGElement>) => void
+    onPointerUp: (e: ReactPointerEvent<SVGElement>) => void
+    onPointerCancel: (e: ReactPointerEvent<SVGElement>) => void
   }
 }) {
   const displayUnit = useTools((s) => s.displayUnit)
@@ -155,6 +193,24 @@ function RulerBody({
         y2={by}
         vectorEffect="non-scaling-stroke"
       />
+
+      {/* The handle for the whole ruler: an invisible band along the line, and
+          there only while both ends have a line of their own to ride. Its width
+          is a fraction of the FRAME rather than a stroke in CSS pixels, which is
+          the same guarantee the knobs get and arrived at the same way -- see
+          `HOLD_OF_FRAME`. Before the reading and before the knobs, so both of
+          those still take a press aimed at them. */}
+      {ride && (
+        <line
+          className="lathe-ruler-hold"
+          x1={ax}
+          y1={ay}
+          x2={bx}
+          y2={by}
+          strokeWidth={frame.width * HOLD_OF_FRAME}
+          {...handlers(null)}
+        />
+      )}
 
       {/* The reading, floated off the middle of the line. SVG text rather than
           the DOM chip the modelling screen uses, and that is not an
@@ -241,12 +297,12 @@ export function LatheRulers({
    * appear and go with the gesture. It costs a render per pointer move, which
    * is what this screen already spends on the tool's ghost.
    */
-  const [grip, setGrip] = useState<Grip | null>(null)
+  const [grip, setGrip] = useState<Held | null>(null)
   const [guide, setGuide] = useState<{ x: number | null; y: number | null }>({
     x: null,
     y: null,
   })
-  const held = useRef<Grip | null>(null)
+  const held = useRef<Held | null>(null)
 
   /**
    * Where the pointer is in the clay's terms, and how much of the clay a pixel
@@ -268,10 +324,27 @@ export function LatheRulers({
     return { at: [spot.x, spot.y] as [number, number], scale }
   }
 
-  const grab = (e: ReactPointerEvent<SVGCircleElement>, id: string, end: LatheRulerEnd) => {
+  const grab = (e: ReactPointerEvent<SVGElement>, id: string, end: LatheRulerEnd | null) => {
     // The right button pans and opens menus everywhere else in the app, and a
     // ruler lying across the piece must not be a hole in that.
     if (e.button !== 0) return
+
+    // THE WHOLE RULER, taken by the line between its ends. What it is allowed to
+    // do is settled here, at the press, and carried through the drag -- see
+    // `LatheRide`. A ruler with nothing to ride is not taken hold of at all: no
+    // band is drawn over one, and a press that finds this anyway falls through
+    // to the clay, which is what a press on the clay does.
+    let ride: LatheRide | null = null
+    let lift = 0
+    if (end === null) {
+      const ruler = useTools.getState().latheRulers.find((r) => r.id === id)
+      if (!ruler) return
+      ride = latheRulerRide(ruler, clay)
+      if (!ride) return
+      const read = readPointer(e.clientX, e.clientY)
+      lift = read ? ruler.ends[0][1] - read.at[1] : 0
+    }
+
     // THE PRESS STOPS HERE. The svg underneath takes a left press as a stroke
     // with whatever tool is in hand, so without this, taking hold of a ruler
     // would gouge the piece it was measuring. It is also what lets the ruler
@@ -279,23 +352,27 @@ export function LatheRulers({
     // tool in hand a press on the clay still shapes it, and a press on an end
     // still moves the end.
     e.stopPropagation()
-    // Captured on the knob, so a drag that leaves the drawing keeps working and
-    // -- more to the point -- so the release is heard wherever it happens. An
-    // uncaptured pointer let go outside the element would leave the end stuck
-    // to the cursor. Guarded, because capture is an improvement and the drag is
-    // not: the call throws on a pointer the browser no longer knows about,
-    // which is what a synthetic event is.
+    // Captured on the shape that was pressed, so a drag that leaves the drawing
+    // keeps working and -- more to the point -- so the release is heard wherever
+    // it happens. An uncaptured pointer let go outside the element would leave
+    // the ruler stuck to the cursor. Guarded, because capture is an improvement
+    // and the drag is not: the call throws on a pointer the browser no longer
+    // knows about, which is what a synthetic event is.
     try {
       e.currentTarget.setPointerCapture(e.pointerId)
     } catch {
       // Without capture the drag still works; it simply ends at the edge.
     }
-    held.current = { id, end }
-    setGrip({ id, end })
+    // The same object in both, so what is DRAWN and what is being MOVED cannot
+    // disagree: the ref is what the handlers read, since a closure over the
+    // state would be a frame behind.
+    const taken: Held = { id, end, ride, lift }
+    held.current = taken
+    setGrip(taken)
     useTools.getState().selectLatheRuler(id)
   }
 
-  const move = (e: ReactPointerEvent<SVGCircleElement>) => {
+  const move = (e: ReactPointerEvent<SVGElement>) => {
     const grabbed = held.current
     if (!grabbed) return
     const read = readPointer(e.clientX, e.clientY)
@@ -310,6 +387,19 @@ export function LatheRulers({
     // Off is not a mode inside the arithmetic: with the switch down the reach
     // is simply nothing, and nothing catches. See `snapLatheEnd`.
     const reach = tools.snap && snapsHere(tools) ? tools.latheSnapDistance / read.scale : 0
+
+    // THE WHOLE RULER, slid up or down the piece with its ends on the lines they
+    // came in on. Only the height is taken from the hand -- the widths are the
+    // piece's to say -- and both ends are written in one go, so a level ruler is
+    // never a diagonal for a frame. See `latheRulerSlide`.
+    if (grabbed.end === null) {
+      if (!grabbed.ride) return
+      const slid = latheRulerSlide(grabbed.ride, clay, read.at[1] + grabbed.lift, reach)
+      tools.setLatheRulerEnds(grabbed.id, slid.ends)
+      setGuide((was) => (was.x === null && was.y === slid.onY ? was : { x: null, y: slid.onY }))
+      return
+    }
+
     const other = ruler.ends[grabbed.end === 0 ? 1 : 0]
     const landed = snapLatheEnd(read.at, other, clay, reach)
 
@@ -322,7 +412,7 @@ export function LatheRulers({
     )
   }
 
-  const release = (e: ReactPointerEvent<SVGCircleElement>) => {
+  const release = (e: ReactPointerEvent<SVGElement>) => {
     try {
       if (e.currentTarget.hasPointerCapture(e.pointerId)) {
         e.currentTarget.releasePointerCapture(e.pointerId)
@@ -372,6 +462,20 @@ export function LatheRulers({
           ruler={ruler}
           frame={frame}
           chosen={ruler.id === selected}
+          // Asked afresh every render rather than remembered, because the clay
+          // moves under a ruler that does not: shape the piece where one is
+          // lying and its ends are on nothing any more, so the handle in its
+          // middle has to go with them.
+          //
+          // Except on the one in hand, which keeps the ride it was picked up
+          // with. A handle that vanished from under the hand holding it -- at
+          // the top of the travel, where the wall it is riding runs out -- would
+          // be a ruler that could not be slid back.
+          ride={
+            grip !== null && grip.id === ruler.id && grip.end === null
+              ? grip.ride
+              : latheRulerRide(ruler, clay)
+          }
           handlers={(end) => ({
             onPointerDown: (e) => grab(e, ruler.id, end),
             onPointerMove: move,

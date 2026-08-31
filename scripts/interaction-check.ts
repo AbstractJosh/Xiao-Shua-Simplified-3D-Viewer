@@ -44,28 +44,33 @@ import { MIN_SHAPE, resizeShapeAlong } from '../src/geometry/dimensions'
 import { clampDepth, depthLimits } from '../src/geometry/surfaces'
 import { planeSeparates } from '../src/geometry/cut'
 import {
+  alignCentres,
   objectSnapTargets,
   snapSinglePoint,
   snapTranslation,
   DEFAULT_SNAP_DISTANCE,
 } from '../src/geometry/snap'
-import type { SnapSource } from '../src/geometry/snap'
+import type { SnapSource, SnapTarget } from '../src/geometry/snap'
 import { frameOf, perspectiveFrame, pixelsToWorld, zoomFor } from '../src/viewport/orthoFrame'
 import { GRIP_PX, KNOT_PX, PREVIEW_PX, markScale, ribbon } from '../src/viewport/CutLayer'
 import type { FaceAxis, Pt } from '../src/geometry/laserCut'
 import { KERF } from '../src/geometry/laserCut'
 import { NO_PAN, clampPan, panCorrection, panLimits } from '../src/viewport/facePan'
 import { faceTolerance, sideAlong, snapToPeers } from '../src/viewport/pointSnap'
-import { CLAY_RINGS, bore, freshClay, ringHeight, withWall } from '../src/geometry/clay'
+import { CLAY_RINGS, bore, freshClay, ringHeight, wallAt, withWall } from '../src/geometry/clay'
 import {
   LATHE_RULER_LANES,
   latheRulerLength,
+  latheRulerRide,
+  latheRulerSlide,
   latheRulerSpawn,
   snapLatheEnd,
 } from '../src/viewport/latheRuler'
+import type { LatheEnd, LatheRuler } from '../src/viewport/latheRuler'
 import { pickAnchorAcrossObjects, pickAnchorOnObject, pointerClient } from '../src/viewport/picking'
 import {
   publishScene,
+  resolveAxisMove,
   resolveObjectMove,
   resolveSolidDrop,
   sketchCentres,
@@ -930,6 +935,148 @@ console.log('\n9c. Snapping catches middles as well as corners')
   // Snapping off means off, here as everywhere else.
   useTools.getState().setSnap(false)
   near('with snapping off nothing is pulled', resolveObjectMove('small', [0.1, 0, 0])[0], 0.1, 1e-9)
+  useTools.getState().setSnap(true)
+  publishScene([])
+}
+
+// --- 9d. Lining middles up one axis at a time --------------------------------
+console.log('\n9d. A middle lines up with another middle axis by axis')
+{
+  // THE ENGINE FIRST, on bare targets, because the rule is about arithmetic and
+  // nothing else: each world axis asks on its own whether some other solid's
+  // middle shares that coordinate, and the axes that find one contribute their
+  // offset while the rest contribute nothing at all.
+  const solid = (x: number, y: number, z: number): SnapTarget => ({
+    kind: 'centre',
+    objectId: 'other',
+    of: 'solid',
+    point: new Vector3(x, y, z),
+  })
+
+  const one = alignCentres(new Vector3(0.1, 4, 9), [solid(0, 0, 0)], DEFAULT_SNAP_DISTANCE)
+  check('an axis within reach lines up', one !== null)
+  if (one) {
+    near('taking x to the middle it found', one.delta.x, -0.1, 1e-9)
+    // ALREADY LEVEL IS NOT A CATCH. A ground drag never changes height, so two
+    // boxes of a size standing on it are level on every frame of every drag --
+    // an offset of exactly zero, inside any tolerance. Counted, it lights a
+    // guide that never goes out; worse, on two solids whose middles differ by
+    // less than the tolerance it lifts one off the ground to level them.
+    check(
+      'an axis already lined up is not one of them',
+      alignCentres(new Vector3(4, 0, 9), [solid(0, 0, 0)], DEFAULT_SNAP_DISTANCE) === null,
+      'nothing to move is nothing to report'
+    )
+    // THE WHOLE POINT OF THE FEATURE. A middle four units above another and
+    // nine along from it is not concentric and must not be made concentric --
+    // the other two coordinates are where the pointer put them and stay there.
+    near('and leaving y exactly where it was', one.delta.y, 0, 1e-12)
+    near('and z too', one.delta.z, 0, 1e-12)
+    check('reporting the one axis it caught', one.axes.length === 1 && one.axes[0].axis === 0, `${one.axes.map((a) => a.axis)}`)
+    near('and where the other end of the line is', one.axes[0].partner.y, 0, 1e-12)
+  }
+
+  const two = alignCentres(new Vector3(0.05, 3, -0.07), [solid(0, 0, 0)], DEFAULT_SNAP_DISTANCE)
+  check('two axes can catch at once', two?.axes.length === 2, `${two?.axes.length}`)
+  if (two) {
+    near('x lines up', two.delta.x, -0.05, 1e-9)
+    near('z lines up', two.delta.z, 0.07, 1e-9)
+    // A knob centred on a box but standing clear above it: the gesture this was
+    // built for, and the one the whole-point pairing could never express.
+    near('and the height between them is untouched', two.delta.y, 0, 1e-12)
+  }
+
+  check(
+    'nothing in reach on any axis catches nothing',
+    alignCentres(new Vector3(5, 5, 5), [solid(0, 0, 0)], DEFAULT_SNAP_DISTANCE) === null,
+    ''
+  )
+
+  // The nearest middle per axis, not the first one offered: two neighbours can
+  // each be the better answer on a different axis, and each axis answers alone.
+  const split = alignCentres(
+    new Vector3(0.15, 0.02, 0),
+    [solid(0, 0, 0), solid(0.16, 0.9, 0)],
+    DEFAULT_SNAP_DISTANCE
+  )
+  if (split) {
+    near('x takes the nearer of two middles', split.delta.x, 0.01, 1e-9)
+    near('while y takes the other one', split.delta.y, -0.02, 1e-9)
+  }
+
+  // A FACE middle is a point on the skin, and a body pulled to share a
+  // coordinate with one is a body half inside its neighbour -- the same rule
+  // `canPair` enforces for the whole-point case.
+  const face: SnapTarget = { kind: 'centre', objectId: 'other', of: 'face', point: new Vector3(0, 0, 0) }
+  check(
+    'and a face middle is never lined up with',
+    alignCentres(new Vector3(0.05, 0.05, 0.05), [face], DEFAULT_SNAP_DISTANCE) === null,
+    ''
+  )
+
+  const only = alignCentres(new Vector3(0.05, 0.05, 0.05), [solid(0, 0, 0)], DEFAULT_SNAP_DISTANCE, 1)
+  check('and an arrow lines up its own axis alone', only?.axes.length === 1 && only.axes[0].axis === 1, `${only?.axes.map((a) => a.axis)}`)
+  if (only) near('leaving the axes it is not dragging', Math.abs(only.delta.x) + Math.abs(only.delta.z), 0, 1e-12)
+}
+
+{
+  // AND THE WHOLE GESTURE. A small cube held well above a big one, a hair off
+  // its middle in x: dragging it there must centre it over the big one and
+  // leave the height alone. Nothing else is within reach at that separation --
+  // no corner, no face -- so this is the alignment or it is nothing.
+  resetEvaluator()
+  const SMALL: BaseSolid = { kind: 'box', size: [1, 1, 1] }
+  const doc = scene(object(CUBE, 'big', [0, 0, 0]), object(SMALL, 'small', [0.1, 4, 0]))
+  const evaluated = evaluateDoc(doc)
+  publishScene(
+    doc.objects.map((o) => ({
+      id: o.id,
+      geometry: evaluated.objects.find((e) => e.id === o.id)!.geometry,
+      transform: o.transform,
+      sketches: sketchCentres(o),
+    }))
+  )
+  useTools.getState().setSnap(true)
+  useTools.getState().setSnapDistance(DEFAULT_SNAP_DISTANCE)
+
+  const over = resolveObjectMove('small', [0.1, 4, 0])
+  near('a solid held above another centres over it', over[0], 0, 1e-6)
+  near('and keeps every bit of its height', over[1], 4, 1e-9)
+  // The guides are the only thing on screen that says this happened: there is
+  // no contact to see, and the object shifted without anything under the
+  // pointer being touched. Two of them here -- x was pulled, z was already
+  // lined up -- and each runs between the two middles.
+  // One guide, not two: x had to move and z was already exactly on the middle,
+  // which moves nothing and so says nothing.
+  check('the drag reports the axis it lined up', snapIndicator.guides.length === 1, `${snapIndicator.guides.length}`)
+  check('and marks no landing, because nothing was landed on', snapIndicator.hit === null, `${snapIndicator.hit?.target.kind}`)
+  if (snapIndicator.guides.length === 1) {
+    near('a guide starts at the solid s own middle', snapIndicator.guides[0].a.y, 4, 1e-6)
+    near('and ends at the middle it found', snapIndicator.guides[0].b.y, 0, 1e-9)
+  }
+
+  // OUT OF REACH ON EVERY AXIS, and nothing is touched. 0.25 rather than a
+  // rounder number because it has to clear TWO radii at once: it is more than
+  // the tolerance from the big cube s middle, so no axis lines up, and the small
+  // cube s own face lands 0.25 from the big one s -- a face target is a PLANE
+  // and has no edges, so a corner four units above the cube still catches the
+  // plane of its side if it strays within reach of it.
+  const far = resolveObjectMove('small', [0.25, 4, 0.25])
+  near('a solid lined up with nothing keeps its x', far[0], 0.25, 1e-9)
+  near('and its z', far[2], 0.25, 1e-9)
+  check('with no guides drawn', snapIndicator.guides.length === 0, `${snapIndicator.guides.length}`)
+
+  // THE ARROW KEEPS ITS PROMISE. Dragging along x may change x and nothing
+  // else, however near the other two are to lining up -- so the y and z that
+  // would have caught in a free drag are left alone here.
+  const along = resolveAxisMove('small', [0.1, 4, 0.05], new Vector3(1, 0, 0))
+  near('an x arrow lines the middles up in x', along[0], 0, 1e-6)
+  near('and refuses to touch z, however near it is', along[2], 0.05, 1e-12)
+
+  // Snapping off means off, here as everywhere else.
+  useTools.getState().setSnap(false)
+  near('with snapping off nothing lines up', resolveObjectMove('small', [0.1, 4, 0])[0], 0.1, 1e-9)
+  check('and nothing is drawn', snapIndicator.guides.length === 0, `${snapIndicator.guides.length}`)
   useTools.getState().setSnap(true)
   publishScene([])
 }
@@ -2977,6 +3124,220 @@ console.log("A ruler's end on the lathe catches the edges, the centre, and its o
       [...heights].every((h) => h > 0 && h < 1.5),
       [...heights].join(', ')
     )
+  }
+}
+
+console.log('  ')
+console.log('A level ruler on the lathe is pushed by its middle and its ends follow the piece')
+{
+  const stock = freshClay(1.5, 0.4, null)
+  /** A ruler laid between two points, which is all this file needs one to be. */
+  const lay = (a: LatheEnd, b: LatheEnd): LatheRuler => ({ id: 'r', ends: [a, b] })
+  const reads = (ends: [LatheEnd, LatheEnd]) => latheRulerLength(lay(ends[0], ends[1]))
+
+  // A CONE, 0.4 at the plate and 0.2 at the rim with a straight wall between,
+  // so what the ends should land on at any height is a number anybody can work
+  // out on paper rather than one read back off the code that produced it.
+  const tapered = withWall(
+    stock,
+    stock.wall.map((_, i) => 0.4 - 0.2 * (i / (CLAY_RINGS - 1)))
+  )
+  const wallOf = (y: number) => 0.4 - 0.2 * (y / 1.5)
+
+  // --- WHAT MAY BE PUSHED AT ALL -----------------------------------------
+  {
+    const ride = latheRulerRide(lay(...latheRulerSpawn(0, tapered)), tapered)
+    check('a fresh ruler laid across the piece can be taken by its middle', ride !== null, '')
+    check(
+      'both its ends riding the outer wall',
+      ride?.holds.join(' ') === 'wall wall',
+      `${ride?.holds.join(' ')}`
+    )
+    check('one either side of the axis', ride?.sides.join(' ') === '-1 1', `${ride?.sides.join(' ')}`)
+    // On a piece the wall never closes on, that is the whole of it.
+    near('and it may be pushed from the plate', ride?.lo ?? -1, 0, 1e-12)
+    near('to the rim', ride?.hi ?? -1, 1.5, 1e-12)
+  }
+  {
+    // NOT ONE ACROSS A DIAGONAL. There is no single height for the pair to be
+    // moved to, and lifting it onto the level to invent one would change the
+    // reading a user placed by hand.
+    const askew = latheRulerRide(lay([-wallOf(0.75), 0.75], [wallOf(0.76), 0.76]), tapered)
+    check('a ruler lying across a diagonal has no middle to take hold of', askew === null, `${askew}`)
+  }
+  {
+    // NOR ONE WITH AN END IN MID-AIR: nothing to follow, and no honest guess
+    // about where it should go.
+    const loose = latheRulerRide(lay([-wallOf(0.75), 0.75], [0.2, 0.75]), tapered)
+    check('nor one with an end standing off the piece', loose === null, `${loose}`)
+  }
+  {
+    // NOR A RULER OF NO LENGTH, which is what two ends on the centre line are:
+    // it reads nothing now and would read nothing wherever it was pushed.
+    const nothing = latheRulerRide(lay([0, 0.75], [0, 0.75]), tapered)
+    check('nor one lying on the axis with no length at all', nothing === null, `${nothing}`)
+  }
+
+  // --- WHERE IT GOES ------------------------------------------------------
+  {
+    const ride = latheRulerRide(lay(...latheRulerSpawn(0, tapered)), tapered)
+    if (ride !== null) {
+      // UP THE CURVE. The height is the only thing the hand gives; the widths
+      // are the piece's to say, and on a cone they narrow the whole way.
+      const up = latheRulerSlide(ride, tapered, 1.2, 0)
+      near('pushed up, both ends go to the height asked for', up.ends[0][1], 1.2, 1e-12)
+      near('and stay exactly level with each other', up.ends[1][1], up.ends[0][1], 1e-12)
+      near('the left end landing on the wall up there', up.ends[0][0], -wallOf(1.2), 1e-9)
+      near('the right end on its own side of it', up.ends[1][0], wallOf(1.2), 1e-9)
+      near('so the ruler reads the piece where it now lies', reads(up.ends), wallOf(1.2) * 2, 1e-9)
+      check(
+        'which is a narrower piece than it was measuring before',
+        reads(up.ends) < wallOf(0.75) * 2,
+        `${reads(up.ends).toFixed(3)}`
+      )
+
+      // AND IT STOPS AT THE ENDS OF THE PIECE rather than sailing into the air
+      // above it, where there is no wall for an end to be on.
+      const past = latheRulerSlide(ride, tapered, 9, 0)
+      near('pushed past the rim it stops at the rim', past.ends[0][1], 1.5, 1e-12)
+      near('still on the wall', past.ends[1][0], wallOf(1.5), 1e-9)
+      near(
+        'and pushed under the plate it stops on the plate',
+        latheRulerSlide(ride, tapered, -9, 0).ends[0][1],
+        0,
+        1e-12
+      )
+
+      // NO REACH, NO CATCH: the switch in the bar hands this a zero, and the
+      // ruler goes exactly where it was put. See `snapLatheEnd`.
+      const loose = latheRulerSlide(ride, tapered, 1.1234, 0)
+      near('with the snap down it lands where it was pushed', loose.ends[0][1], 1.1234, 1e-12)
+      check('and catches nothing', loose.onY === null, `${loose.onY}`)
+    }
+  }
+
+  // --- WHAT IT CATCHES ON THE WAY ----------------------------------------
+  {
+    // A BELLY, widest at ring 60. This is the height the gesture exists to
+    // find: "how fat is it at the fattest" is a question about a ring nobody
+    // can point at, and an end dragged on its own already catches it -- so the
+    // middle must too, or the same ruler would behave two ways.
+    const hill = withWall(
+      stock,
+      stock.wall.map((_, i) => (i <= 60 ? 0.2 + 0.2 * (i / 60) : 0.4 - 0.2 * ((i - 60) / 35)))
+    )
+    const peak = ringHeight(hill, 60)
+    const level = wallAt(hill, 0.75)
+    const ride = latheRulerRide(lay([-level, 0.75], [level, 0.75]), hill)
+    check('a ruler on a bellied piece rides its wall', ride !== null, '')
+    if (ride !== null) {
+      const caught = latheRulerSlide(ride, hill, peak - 0.01, 0.02)
+      near('pushed near the widest ring, it clicks onto it', caught.onY ?? -1, peak, 1e-12)
+      near('landing there rather than near it', caught.ends[0][1], peak, 1e-12)
+      near('and reading the piece at its widest', reads(caught.ends), 0.8, 1e-9)
+    }
+  }
+
+  // --- A HOLLOW PIECE -----------------------------------------------------
+  {
+    // THE SURFACE IT WAS ALREADY ON. A bored piece has two walls at every
+    // height, and which of them a ruler is measuring is not the gesture's to
+    // change halfway up.
+    const cup = { ...tapered, hollow: { thickness: 0.1, capTop: false, capBottom: true } }
+    check('the cup really is bored', bore(cup) !== null, '')
+    const boreOf = (y: number) => wallOf(y) - 0.1
+
+    const across = latheRulerRide(lay([-boreOf(0.75), 0.75], [boreOf(0.75), 0.75]), cup)
+    check(
+      'a ruler laid across the cavity rides the cavity',
+      across?.holds.join(' ') === 'bore bore',
+      `${across?.holds.join(' ')}`
+    )
+    if (across !== null) {
+      const up = latheRulerSlide(across, cup, 1.2, 0)
+      near('and pushed up the piece it is still on the inner wall', up.ends[1][0], boreOf(1.2), 1e-9)
+      check(
+        'rather than out on the outside of it',
+        Math.abs(up.ends[1][0] - wallOf(1.2)) > 0.05,
+        `${up.ends[1][0].toFixed(4)}`
+      )
+      // The floor of the cavity is the end of the ride: below it there is no
+      // inner wall for an end to be on at all.
+      near('its travel starts at the cavity floor', across.lo, 0.1, 1e-9)
+      near(
+        'so pushed under it, it stops there',
+        latheRulerSlide(across, cup, -9, 0).ends[0][1],
+        0.1,
+        1e-9
+      )
+    }
+
+    // AND THE MEASUREMENT A HOLLOW PIECE IS REALLY FOR: outer wall to inner
+    // wall, which is the thickness that has been left. One end on each, and
+    // both on the same side of the axis.
+    const thick = latheRulerRide(lay([boreOf(0.75), 0.75], [wallOf(0.75), 0.75]), cup)
+    check(
+      'a ruler laid from the inside out rides one of each',
+      thick?.holds.join(' ') === 'bore wall',
+      `${thick?.holds.join(' ')}`
+    )
+    check('both on the same side of the axis', thick?.sides.join(' ') === '1 1', `${thick?.sides.join(' ')}`)
+    if (thick !== null) {
+      near(
+        'and pushed up a tapering piece it goes on reading the wall',
+        reads(latheRulerSlide(thick, cup, 1.2, 0).ends),
+        0.1,
+        1e-9
+      )
+    }
+  }
+
+  // --- THE CENTRE LINE ----------------------------------------------------
+  {
+    // The axis is at every height there is, so an end on it simply stays on it
+    // while the other walks the wall -- and the ruler goes on reading a RADIUS
+    // rather than a width the whole way up.
+    const radius = latheRulerRide(lay([0, 0.75], [wallOf(0.75), 0.75]), tapered)
+    check(
+      'a ruler from the axis to the wall can be pushed as well',
+      radius?.holds.join(' ') === 'axis wall',
+      `${radius?.holds.join(' ')}`
+    )
+    if (radius !== null) {
+      const up = latheRulerSlide(radius, tapered, 1.2, 0)
+      near('its inner end stays on the centre line', up.ends[0][0], 0, 1e-12)
+      near('and it goes on reading a radius', reads(up.ends), wallOf(1.2), 1e-9)
+    }
+  }
+
+  // --- A DOMED TOP --------------------------------------------------------
+  {
+    // WHERE THE WALL RUNS OUT is where the ride stops, and that is NOT where
+    // the piece is said to end: `pieceSpan` keeps one closed ring past the
+    // material so the surface can run out to a point, and a ruler pushed onto
+    // that ring would have both ends on the axis and read zero.
+    const domed = withWall(
+      stock,
+      stock.wall.map((_, i) => (i <= 60 ? 0.4 : Math.max(0, 0.4 * (1 - (i - 60) / 20))))
+    )
+    const ride = latheRulerRide(lay([-0.4, 0.75], [0.4, 0.75]), domed)
+    check('a ruler on a domed piece rides its wall', ride !== null, '')
+    if (ride !== null) {
+      // The wall crosses the closed mark half a ring above 79, which is where
+      // 0.02 falls to nothing.
+      near('the ride stops where the wall closes', ride.hi, (79.5 * 1.5) / (CLAY_RINGS - 1), 1e-9)
+      check(
+        'short of the ring the piece is said to end on',
+        ride.hi < ringHeight(domed, 80),
+        `${ride.hi.toFixed(4)} against ${ringHeight(domed, 80).toFixed(4)}`
+      )
+      const top = latheRulerSlide(ride, domed, 9, 0)
+      check(
+        'so a ruler pushed as high as it goes still has a length to read',
+        reads(top.ends) > 0,
+        `${reads(top.ends)}`
+      )
+    }
   }
 }
 

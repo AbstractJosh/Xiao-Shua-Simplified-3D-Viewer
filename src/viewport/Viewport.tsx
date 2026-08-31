@@ -3,7 +3,7 @@ import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { Euler, MOUSE, Mesh, Quaternion, Raycaster, Vector2, Vector3 } from 'three'
-import type { Camera, MeshBasicMaterial } from 'three'
+import type { BufferAttribute, Camera, LineSegments, MeshBasicMaterial } from 'three'
 import {
   MAX_FACE_OFFSET,
   resizeAlongAxis,
@@ -1796,6 +1796,79 @@ function SnapMarker() {
   )
 }
 
+/**
+ * The lines drawn between two middles that have lined up.
+ *
+ * THE OTHER HALF OF THE SNAP INDICATOR, and it has to be a second component
+ * because it draws a second kind of thing. `SnapMarker` above marks a POINT
+ * that was landed on; this draws the RELATIONSHIP between two points that were
+ * not landed on at all -- an object whose middle now shares a coordinate with
+ * another object's middle, on one axis or two, with the rest of it wherever the
+ * pointer left it. There is no contact to mark, and a dot at one end names one
+ * of the two things involved.
+ *
+ * Without it the alignment is invisible: the object shifts a little on its own
+ * and nothing on screen says why, which reads as a drag that drifts. See
+ * `alignCentres`.
+ *
+ * ONE FIXED BUFFER FOR THREE SEGMENTS, rewritten in place every frame. There
+ * can never be more -- there are three axes -- and a geometry reallocated per
+ * frame mid-drag is exactly the cost the imperative pattern in this file
+ * exists to avoid. `setDrawRange` hides the segments that are not in use, so an
+ * alignment on one axis draws one line rather than three with two collapsed to
+ * nothing at the origin.
+ */
+function SnapGuides() {
+  const scene = useSceneColors()
+  const lines = useRef<LineSegments>(null)
+  // Three segments, two ends each, three numbers an end.
+  const points = useMemo(() => new Float32Array(3 * 2 * 3), [])
+
+  useFrame(() => {
+    const mesh = lines.current
+    if (!mesh) return
+    const guides = useDoc.getState().drag.kind === 'idle' ? [] : snapIndicator.guides
+    mesh.visible = guides.length > 0
+    if (guides.length === 0) return
+
+    for (let i = 0; i < guides.length && i < 3; i += 1) {
+      const at = i * 6
+      points[at] = guides[i].a.x
+      points[at + 1] = guides[i].a.y
+      points[at + 2] = guides[i].a.z
+      points[at + 3] = guides[i].b.x
+      points[at + 4] = guides[i].b.y
+      points[at + 5] = guides[i].b.z
+    }
+    const attribute = mesh.geometry.getAttribute('position') as BufferAttribute
+    attribute.needsUpdate = true
+    mesh.geometry.setDrawRange(0, Math.min(guides.length, 3) * 2)
+  })
+
+  return (
+    <lineSegments ref={lines} visible={false} renderOrder={20}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[points, 3]} />
+      </bufferGeometry>
+      {/* Through everything in front of it, like the marker: the two middles
+          are INSIDE their solids, so a guide that respected depth would be a
+          line you could never see either end of. Dashed would be truer to what
+          a guide is, but a dashed line needs its distances computed per frame
+          on a geometry that moves every frame -- so it wears the measuring
+          colour instead, which is the same thing the centre marker wears and
+          says the same thing about what it is. */}
+      <lineBasicMaterial
+        color={scene.ruler}
+        depthTest={false}
+        depthWrite={false}
+        toneMapped={false}
+        transparent
+        opacity={0.8}
+      />
+    </lineSegments>
+  )
+}
+
 function Scene({
   controlsRef,
   meshes,
@@ -1818,6 +1891,7 @@ function Scene({
       <Rulers controlsRef={controlsRef} />
       <RotationDial />
       <SnapMarker />
+      <SnapGuides />
       {/* Inside the canvas because it is the camera it reports on and flies.
           What it draws is a canvas of its own, outside -- see `AxisCompass`. */}
       <CompassControl controlsRef={controlsRef} />
@@ -2021,9 +2095,14 @@ function DragHint() {
         ? s.drag.position !== null
         : true
   )
-  const solid = useDoc((s) =>
-    s.drag.kind === 'placing-solid' ? solidLabel(s.drag.template.base).toLowerCase() : ''
-  )
+  // Named for what is in hand, eraser included: the ghost went red the moment
+  // one was picked up, and a line reading "drop the sphere" under a red shape
+  // is the hint disagreeing with the picture about what release will do.
+  const solid = useDoc((s) => {
+    if (s.drag.kind !== 'placing-solid') return ''
+    const name = solidLabel(s.drag.template.base).toLowerCase()
+    return s.drag.template.erase ? `${name} eraser` : name
+  })
   const handle = useDoc((s) => {
     if (s.drag.kind === 'gizmo' || s.drag.kind === 'cut-gizmo') return s.drag.handle
     if (s.drag.kind === 'ruler-gizmo') return s.drag.handle
