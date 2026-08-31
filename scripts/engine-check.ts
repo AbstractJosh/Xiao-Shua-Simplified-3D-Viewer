@@ -47,7 +47,7 @@ import {
 } from '../src/geometry/dimensions'
 import type { Axis } from '../src/geometry/dimensions'
 import { assemblyCentre, scaleAssembly } from '../src/geometry/assembly'
-import { mirrorAssembly } from '../src/geometry/mirror'
+import { mirrorAssembly, mirrorNormal } from '../src/geometry/mirror'
 import {
   CLAY_RINGS,
   bite,
@@ -4003,6 +4003,93 @@ console.log('\nA mirror reflects the whole object and leaves it where it stood')
         drift < 1e-9,
         `worst drift ${drift.toExponential(2)}`
       )
+    }
+  }
+
+  {
+    // WHY TWICE COMES BACK, checked at the joint rather than at the outcome.
+    // The turn that pays for a primitive being reflected in a plane other than
+    // the one asked for is self-cancelling only when the plane used is parallel
+    // or perpendicular to the axis asked for; at any other angle a second press
+    // leaves the object turned by four times the mismatch, and a merged one
+    // walks a little further round the scene on every press after that. Every
+    // faceted primitive therefore has to stand square with its own axes, which
+    // is what `azimuthAlignment` spends the free azimuth of a resting solid on.
+    const faceted: [string, BaseSolid][] = [
+      ...[3, 4, 5, 6, 8].flatMap((sides): [string, BaseSolid][] => [
+        [`${sides}-sided prism`, { kind: 'prism', radius: 0.5, height: 0.9, sides }],
+        [`${sides}-sided pyramid`, { kind: 'pyramid', radius: 0.5, height: 0.9, sides }],
+      ]),
+      ...(['tetrahedron', 'octahedron', 'dodecahedron'] as const).map(
+        (s): [string, BaseSolid] => [s, { kind: 'platonic', solid: s, radius: 0.55 }]
+      ),
+    ]
+    for (const [label, base] of faceted) {
+      // |n . axis| is 1 for a plane parallel to the one asked for and 0 for a
+      // perpendicular one; both cancel, so the distance from the nearer of the
+      // two is how far off square the plane is, and it has to be nothing.
+      const off = ([0, 1, 2] as Axis[]).map((axis) => {
+        const dot = Math.abs(mirrorNormal(base, axis).dot(new Vector3().setComponent(axis, 1)))
+        return Math.min(dot, 1 - dot)
+      })
+      const worst = Math.max(...off)
+      check(
+        `a ${label} is square with its own axes, so a mirror of it undoes itself`,
+        worst < 1e-9,
+        `worst plane sits ${(Math.asin(worst) * (180 / Math.PI)).toFixed(2)} deg off square`
+      )
+    }
+  }
+
+  {
+    // The shape the bug actually took. A lone solid reflected in a leaning plane
+    // only spins in place, since its centre IS its origin and there is nothing
+    // for the leftover turn to swing; a MERGED object's centre sits away from
+    // it, so the same turn carries every part round and the assembly comes back
+    // from two presses somewhere else entirely. A tetrahedron was the one
+    // primitive with no square plane to use, and so the one host this failed on.
+    const hosts: BaseSolid[] = [
+      { kind: 'platonic', solid: 'tetrahedron', radius: 0.55 },
+      { kind: 'platonic', solid: 'dodecahedron', radius: 0.5 },
+      { kind: 'pyramid', radius: 0.5, height: 0.9, sides: 5 },
+      { kind: 'cone', radius: 0.5, height: 1.2 },
+      { kind: 'box', size: [1, 1, 1] },
+    ]
+    /** Every solid in the assembly, where it stands in the object's own frame. */
+    const poses = (o: SceneObject): number[] => {
+      const out: number[] = []
+      const walk = (x: SceneObject, into: Matrix4) => {
+        out.push(...into.elements)
+        for (const p of x.parts) walk(p, into.clone().multiply(objectMatrix(p.transform)))
+      }
+      walk(o, objectMatrix(o.transform))
+      return out
+    }
+    for (const base of hosts) {
+      const label = base.kind === 'platonic' ? base.solid : base.kind
+      const merged = solid(base, {
+        parts: [
+          solid(
+            { kind: 'box', size: [0.3, 0.3, 0.3] },
+            { id: 'part', transform: { position: [0.4, 0.2, 0.1], rotation: [0.1, 0.2, 0.3] } }
+          ),
+        ],
+        transform: { position: [0.5, 0.25, -0.4], rotation: [0.3, 0.9, -0.2] },
+      })
+      const start = poses(merged)
+      for (const axis of [0, 1, 2] as Axis[]) {
+        // Four presses rather than two: a turn that cancels over a pair cancels
+        // over any even count, and one that does not has drifted further by
+        // here, so a fix that merely halved the error would still be caught.
+        let o = merged
+        for (let i = 0; i < 4; i++) o = mirrorAssembly(o, axis)
+        const drift = Math.max(...poses(o).map((v, i) => Math.abs(v - start[i])))
+        check(
+          `a merged ${label} mirrored four times about ${'XYZ'[axis]} is back where it began`,
+          drift < 1e-9,
+          `worst drift ${drift.toExponential(2)}`
+        )
+      }
     }
   }
 }

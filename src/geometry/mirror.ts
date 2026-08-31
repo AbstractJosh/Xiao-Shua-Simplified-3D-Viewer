@@ -3,7 +3,14 @@ import { assemblyCentre } from './assembly'
 import type { Axis } from './dimensions'
 import { mirrorMesh } from './meshLibrary'
 import { endFaceFrame } from './prism'
-import { faceVertices, platonicFaces, prismFaces, pyramidFaces } from './solids'
+import {
+  cornersOfFaces,
+  isMirrorPlane,
+  mirrorPlanes,
+  platonicFaces,
+  prismFaces,
+  pyramidFaces,
+} from './solids'
 import { conform, hostSurfaceFor, surfaceFor } from './surfaces'
 import type { SurfaceDef } from './surfaces'
 import type { BaseSolid, Feature, SceneObject, SurfaceAnchor, Vec2, Vec3 } from './types'
@@ -102,59 +109,7 @@ function cornersOf(base: BaseSolid): Vector3[] | null {
         : base.kind === 'platonic'
           ? platonicFaces(base.solid, base.radius)
           : null
-  if (faces === null) return null
-
-  const corners: Vector3[] = []
-  for (const face of faces) {
-    for (const v of faceVertices(face)) {
-      if (!corners.some((w) => w.distanceToSquared(v) < 1e-12)) corners.push(v)
-    }
-  }
-  return corners
-}
-
-/** How far apart two corners may be and still be the same corner. Relative to
- *  the solid's own reach, since a radius here is a user's number. */
-function tolerance(corners: Vector3[]): number {
-  const reach = Math.max(1, ...corners.map((v) => v.length()))
-  return (1e-6 * reach) ** 2
-}
-
-/** Does reflecting in this plane leave the corner set exactly where it was? */
-function survives(corners: Vector3[], n: Vector3): boolean {
-  const m = reflectionOf(n)
-  const tol = tolerance(corners)
-  return corners.every((v) => {
-    const image = v.clone().applyMatrix4(m)
-    return corners.some((w) => w.distanceToSquared(image) < tol)
-  })
-}
-
-/**
- * Every plane that could possibly be a mirror of this corner set.
- *
- * A reflection that is not the identity has to SWAP at least one pair of
- * corners -- if it fixed them all they would every one lie in the plane, and
- * the solid would be flat. The plane of a swap is the perpendicular bisector of
- * the pair, and since a symmetry fixes the solid's centre, that bisector passes
- * through the origin exactly when the two corners are the same distance from
- * it. So: every equidistant pair, one candidate each. Twenty corners is a
- * dodecahedron, which is the largest of these, so the walk is trivial.
- */
-function candidateNormals(corners: Vector3[]): Vector3[] {
-  const out: Vector3[] = []
-  const tol = tolerance(corners)
-  for (let i = 0; i < corners.length; i++) {
-    for (let j = i + 1; j < corners.length; j++) {
-      const a = corners[i]
-      const b = corners[j]
-      if (Math.abs(a.lengthSq() - b.lengthSq()) > tol) continue
-      const n = new Vector3().subVectors(a, b)
-      if (n.lengthSq() < tol) continue
-      out.push(n.normalize())
-    }
-  }
-  return out
+  return faces === null ? null : cornersOfFaces(faces)
 }
 
 /**
@@ -173,14 +128,26 @@ function candidateNormals(corners: Vector3[]): Vector3[] {
  * along Y reflects in X instead and the object is turned to compensate. What
  * comes out is exactly the reflected cone, standing exactly where the cone was.
  *
+ * NOT ANY PLANE, THOUGH, IF THE PRESS IS TO UNDO ITSELF. The turn that pays for
+ * the mismatch is `R . asked . used`, so pressing the same axis twice leaves the
+ * object turned by the square of it -- which is the identity only when the plane
+ * used is PARALLEL OR PERPENDICULAR to the axis asked for, the two cases where
+ * the mismatch is a half turn or nothing at all. A plane at some other angle
+ * comes back rotated by four times it, and, since the second press then reflects
+ * about an axis the first press moved, a merged object walks its parts round the
+ * scene a little further on every press. The axis planes searched below are all
+ * parallel or perpendicular to each other, so any of them is safe; the fallback
+ * past them is not, and `azimuthAlignment` in `solids.ts` is what keeps every
+ * primitive out of it by standing the solid square with its own axes in the
+ * first place. `engine-check` holds both ends of that: the alignment, and the
+ * press-twice.
+ *
  * The faceted kinds are asked rather than tabulated. A regular n-gon has a
  * mirror plane through every corner and every edge midpoint, so WHICH of the
  * three axis planes happen to be among them depends on the side count and on
  * where the ring starts -- a hexagonal prism survives all three and a pentagonal
  * one does not survive Z. Working that out from the corners it actually has
- * cannot drift from the ring `solids.ts` actually builds, and it covers the
- * platonic solids in the same breath: the tetrahedron survives no axis plane at
- * all, and its real mirrors are three vertical planes at no particular angle.
+ * cannot drift from the ring `solids.ts` actually builds.
  *
  * An imported mesh returns the requested axis and means it: nothing about a
  * model off a file is symmetric, so its triangles are the thing that gets
@@ -204,13 +171,17 @@ export function mirrorNormal(base: BaseSolid, axis: Axis): Vector3 {
     case 'platonic': {
       const corners = cornersOf(base) ?? []
       // The requested plane first, then the other two, so a solid that could
-      // have used the plain axis is never turned for nothing.
+      // have used the plain axis is never turned for nothing. Any of the three
+      // keeps the press self-cancelling; what follows them does not.
       for (const n of [wanted, ...AXIS_NORMALS]) {
-        if (survives(corners, n)) return n.clone()
+        if (isMirrorPlane(corners, n)) return n.clone()
       }
-      for (const n of candidateNormals(corners)) {
-        if (survives(corners, n)) return n
-      }
+      // A leaning plane, reached only by a primitive `azimuthAlignment` could
+      // not stand square -- none of the ones built today. It reflects correctly
+      // and it is the press-twice that suffers, which is the better half to
+      // lose: a mirror that is right once beats one that refuses.
+      const [leaning] = mirrorPlanes(corners)
+      if (leaning !== undefined) return leaning
       // Unreachable for anything `solids.ts` builds -- every one of them is
       // achiral, so a mirror plane exists. Falling back to the axis keeps a
       // future primitive with no symmetry from throwing at the user.

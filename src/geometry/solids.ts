@@ -49,6 +49,25 @@ const X_AXIS = new Vector3(1, 0, 0)
  */
 const ORDER_EPS = 1e-9
 
+/**
+ * Where a face points around Y, as the key the ordering below sorts on.
+ *
+ * `atan2` is cut along -Z: a normal lying on that axis reads -pi or +pi
+ * depending on nothing more than the SIGN OF A ZERO in its x, which is whatever
+ * the cross product that made it happened to round to and which moves with the
+ * radius. Two faces a hair either side of the cut are a hair apart in fact and
+ * a whole turn apart in the key, so the one on it changes ends of the face list
+ * at some arbitrary size -- the same anchor-breaking churn the height tolerance
+ * above exists to prevent, reached the other way.
+ *
+ * Pinned to +pi rather than averaged away, because the two readings name the
+ * SAME direction and the sort only needs them to agree on which.
+ */
+function faceAzimuth(normal: Vector3): number {
+  const a = Math.atan2(normal.x, normal.z)
+  return Math.abs(a) > Math.PI - ORDER_EPS ? Math.PI : a
+}
+
 /** Point on a face at (u,v) in that face's frame. */
 export function facePoint(face: FacePatch, u: number, v: number): Vector3 {
   return face.origin.clone().addScaledVector(face.uDir, u).addScaledVector(face.vDir, v)
@@ -300,10 +319,14 @@ function convexFaces(verts: Vector3[]): FacePatch[] {
   // products happened to land in. That order then moves with the circumradius,
   // which is how a saved `planar-face` anchor ends up naming a different face
   // after nothing more than a resize.
+  //
+  // The azimuth is taken through `faceAzimuth` for the same reason in the other
+  // direction: it is the one key here with a DISCONTINUITY in it, and a face
+  // pointing along -Z sits exactly on it.
   planes.sort((a, b) => {
     const height = b.normal.y - a.normal.y
     if (Math.abs(height) > ORDER_EPS) return height
-    return Math.atan2(a.normal.x, a.normal.z) - Math.atan2(b.normal.x, b.normal.z)
+    return faceAzimuth(a.normal) - faceAzimuth(b.normal)
   })
 
   return planes.map(({ normal, d }) => {
@@ -323,6 +346,125 @@ function convexFaces(verts: Vector3[]): FacePatch[] {
 }
 
 /**
+ * The distinct corners of a set of face patches.
+ *
+ * Deduplicated, because every corner is named once per face that meets there
+ * and the symmetry tests below have to count it once.
+ */
+export function cornersOfFaces(faces: FacePatch[]): Vector3[] {
+  const corners: Vector3[] = []
+  for (const face of faces) {
+    for (const v of faceVertices(face)) {
+      if (!corners.some((w) => w.distanceToSquared(v) < 1e-12)) corners.push(v)
+    }
+  }
+  return corners
+}
+
+/** How far apart two corners may be and still be the same corner. Relative to
+ *  the solid's own reach, since a radius here is a user's number. */
+function cornerTolerance(corners: Vector3[]): number {
+  const reach = Math.max(1, ...corners.map((v) => v.length()))
+  return (1e-6 * reach) ** 2
+}
+
+/** Does reflecting in the plane through the origin with this normal leave the
+ *  corner set exactly where it was? */
+export function isMirrorPlane(corners: Vector3[], n: Vector3): boolean {
+  const tol = cornerTolerance(corners)
+  return corners.every((v) => {
+    const image = v.clone().addScaledVector(n, -2 * v.dot(n))
+    return corners.some((w) => w.distanceToSquared(image) < tol)
+  })
+}
+
+/**
+ * Every plane the corner set is genuinely symmetric about.
+ *
+ * A reflection that is not the identity has to SWAP at least one pair of
+ * corners -- if it fixed them all they would every one lie in the plane, and
+ * the solid would be flat. The plane of a swap is the perpendicular bisector of
+ * the pair, and since a symmetry fixes the solid's centre, that bisector passes
+ * through the origin exactly when the two corners are the same distance from
+ * it. So: every equidistant pair, one candidate each, kept if it really is a
+ * mirror. Twenty corners is a dodecahedron, the largest of these, so the walk
+ * is trivial.
+ */
+export function mirrorPlanes(corners: Vector3[]): Vector3[] {
+  const out: Vector3[] = []
+  const tol = cornerTolerance(corners)
+  for (let i = 0; i < corners.length; i++) {
+    for (let j = i + 1; j < corners.length; j++) {
+      const a = corners[i]
+      const b = corners[j]
+      if (Math.abs(a.lengthSq() - b.lengthSq()) > tol) continue
+      const n = new Vector3().subVectors(a, b)
+      if (n.lengthSq() < tol) continue
+      n.normalize()
+      // A plane is one plane however many pairs of corners name it, and n and
+      // -n are the same plane.
+      if (out.some((w) => Math.abs(Math.abs(w.dot(n)) - 1) < 1e-9)) continue
+      if (isMirrorPlane(corners, n)) out.push(n)
+    }
+  }
+  return out
+}
+
+/** The three axis planes, as the normals that name them. */
+const AXIS_NORMALS = [
+  new Vector3(1, 0, 0),
+  new Vector3(0, 1, 0),
+  new Vector3(0, 0, 1),
+] as const
+
+/** The same angle, brought to the smallest spin that reaches the same PLANE:
+ *  a turn of pi about Y lands a plane's normal back on its own axis. */
+function smallestHalfTurn(angle: number): number {
+  let a = angle
+  while (a > Math.PI / 2) a -= Math.PI
+  while (a <= -Math.PI / 2) a += Math.PI
+  return a
+}
+
+/**
+ * The extra spin about Y that lands one of the solid's OWN mirror planes on one
+ * of its own axis planes.
+ *
+ * The azimuth of a resting solid is free -- dropping a face onto -Y says which
+ * way is down and nothing about which way it faces -- and `setFromUnitVectors`
+ * spends that freedom on whatever the shortest arc happens to be. This spends
+ * it deliberately instead, because the app asks a solid to be symmetric about
+ * its own axes rather than about some plane at 15 degrees to them: the MIRROR
+ * is the caller that cares. `mirrorAssembly` reflects a primitive in a plane
+ * the primitive survives and pays for the difference with a turn of the whole
+ * object, and that turn is only self-cancelling -- press X twice, get the
+ * object back -- when the plane it used is parallel or perpendicular to the
+ * axis asked for. A tetrahedron dropped onto a face by the shortest arc has its
+ * three mirror planes at 45, 105 and 165 degrees, none of them either, so it
+ * came back from a second press rotated by four times the mismatch. Fifteen
+ * degrees of azimuth nobody can see is the whole fix.
+ *
+ * Nothing for a solid already square with its axes, which is every one of them
+ * but the tetrahedron -- the octahedron takes no resting turn at all and the
+ * dodecahedron's shortest arc happens to land square. And nothing, rather than
+ * a guess, for a solid whose mirror planes all lean out of the upright: a spin
+ * about Y cannot bring those onto an axis, and tilting one that rests on a face
+ * to chase symmetry would stand it on an edge.
+ */
+function azimuthAlignment(corners: Vector3[]): Quaternion {
+  const none = new Quaternion()
+  if (AXIS_NORMALS.some((n) => isMirrorPlane(corners, n))) return none
+  const upright = mirrorPlanes(corners).filter((n) => Math.abs(n.y) < 1e-9)
+  if (upright.length === 0) return none
+  // Onto X rather than Z for no reason beyond having to pick one: the two are
+  // the same plane set seen a quarter turn apart.
+  const angle = upright
+    .map((n) => smallestHalfTurn(Math.atan2(n.z, n.x)))
+    .reduce((best, a) => (Math.abs(a) < Math.abs(best) ? a : best))
+  return new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), angle)
+}
+
+/**
  * How far a platonic solid is turned to stand the way a person would set it
  * down, worked out ONCE per kind at unit size.
  *
@@ -334,6 +476,10 @@ function convexFaces(verts: Vector3[]): FacePatch[] {
  *
  * The octahedron gets no turn: its canonical pose already has a symmetry axis
  * along +Y, and tipping it onto a face would only make it look broken.
+ *
+ * THE DROP DECIDES WHICH WAY IS DOWN AND NOTHING ELSE, so the azimuth left over
+ * is spent squaring the solid's own mirror planes with its own axes rather than
+ * left to the shortest arc. See `azimuthAlignment` for why the mirror needs it.
  *
  * Cached, and measured at radius 1, because HOW A SHAPE STANDS IS NOT A
  * FUNCTION OF ITS SIZE. Derived per call from vertices already scaled by the
@@ -348,10 +494,13 @@ const restingTurns = new Map<PlatonicKind, Quaternion>()
 function restingTurn(kind: PlatonicKind): Quaternion {
   const cached = restingTurns.get(kind)
   if (cached) return cached
-  const turn = new Quaternion().setFromUnitVectors(
+  const drop = new Quaternion().setFromUnitVectors(
     convexFaces(platonicVertices(kind, 1))[0].normal,
     new Vector3(0, -1, 0)
   )
+  const dropped = platonicVertices(kind, 1).map((v) => v.applyQuaternion(drop))
+  // Spin after the drop, so the face that was landed on stays landed on.
+  const turn = azimuthAlignment(dropped).multiply(drop)
   restingTurns.set(kind, turn)
   return turn
 }
