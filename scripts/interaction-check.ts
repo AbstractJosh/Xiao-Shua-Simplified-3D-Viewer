@@ -56,6 +56,13 @@ import type { FaceAxis, Pt } from '../src/geometry/laserCut'
 import { KERF } from '../src/geometry/laserCut'
 import { NO_PAN, clampPan, panCorrection, panLimits } from '../src/viewport/facePan'
 import { faceTolerance, sideAlong, snapToPeers } from '../src/viewport/pointSnap'
+import { CLAY_RINGS, bore, freshClay, ringHeight, withWall } from '../src/geometry/clay'
+import {
+  LATHE_RULER_LANES,
+  latheRulerLength,
+  latheRulerSpawn,
+  snapLatheEnd,
+} from '../src/viewport/latheRuler'
 import { pickAnchorAcrossObjects, pickAnchorOnObject, pointerClient } from '../src/viewport/picking'
 import {
   publishScene,
@@ -2809,6 +2816,167 @@ console.log('A Point Cut knot lines up with the knots already placed')
     // points can be placed at half the spacing without being swallowed.
     const [closer] = faceTolerance(10, zoom * 2, [SHEET[0], SHEET[1]])
     near('twice the zoom, half the reach', closer, tu / 2, 1e-12)
+  }
+}
+
+console.log('  ')
+console.log("A ruler's end on the lathe catches the edges, the centre, and its own other end")
+{
+  // A plain cylinder: 1.5 tall, 0.4 from the axis all the way up, so every
+  // number below can be read off the stock rather than off a shaped wall.
+  const stock = freshClay(1.5, 0.4, null)
+  // Two centimetres, which is a fat reach at this size and keeps every case
+  // below a plain statement about which target won rather than a near miss.
+  const TOL = 0.02
+
+  {
+    // THE EDGE. The section's outline is exactly `x = ±wallAt(y)`, so an end
+    // pulled onto it is ON the material rather than near it.
+    const held = snapLatheEnd([0.39, 0.75], [0, 0], stock, TOL)
+    near('an end near the wall lands on it', held.at[0], 0.4, 1e-12)
+    near('and keeps the height it was dragged to', held.at[1], 0.75, 1e-12)
+    check('reporting the line it caught', held.onX === 0.4 && held.onY === null, `${held.onX} / ${held.onY}`)
+  }
+  {
+    // The wall on the side the end is ALREADY ON. A section is symmetrical
+    // about the axis, and an end dragged up the left of the drawing catching
+    // the right-hand wall would jump the whole width of the piece.
+    const held = snapLatheEnd([-0.39, 0.75], [0, 0], stock, TOL)
+    near('the wall it catches is the one it is standing beside', held.at[0], -0.4, 1e-12)
+  }
+  {
+    // THE CENTRE. An end on the axis is what makes a ruler read a RADIUS, and
+    // it is where every height measurement wants to be taken.
+    const held = snapLatheEnd([0.008, 0.75], [0.4, 0.75], stock, TOL)
+    near('an end near the axis takes it', held.at[0], 0, 1e-12)
+  }
+  {
+    // THE RIM AND THE PLATE: the two heights the piece ends at, which are the
+    // numbers the corner readout already shows. A ruler dropped across them has
+    // to agree with it exactly rather than come out a hair under.
+    const rim = snapLatheEnd([0.2, 1.492], [0.2, 0], stock, TOL)
+    near('an end near the rim takes the rim', rim.at[1], 1.5, 1e-12)
+    const base = snapLatheEnd([0.2, 0.006], [0.2, 1.5], stock, TOL)
+    near('and one near the plate takes the plate', base.at[1], 0, 1e-12)
+  }
+  {
+    // A CORNER, which is the whole point of deciding the two axes apart: the
+    // height comes from the rim and the width from the wall, and the end lands
+    // where they meet. A single nearest-POINT snap could give this too; what it
+    // could not give is either half on its own.
+    const held = snapLatheEnd([0.393, 1.494], [0, 0], stock, TOL)
+    near('an end can take its height from the rim', held.at[1], 1.5, 1e-12)
+    near('and its width from the wall', held.at[0], 0.4, 1e-12)
+    check('landing on the corner the two of them imply', held.onX === 0.4 && held.onY === 1.5, '')
+  }
+  {
+    // PERFECTLY LEVEL. The other end's row is a target like any other, which is
+    // what turns two ends on the wall into a true diameter rather than a
+    // measurement taken across a slight diagonal.
+    const held = snapLatheEnd([-0.385, 0.744], [0.4, 0.75], stock, TOL)
+    near('an end nearly level with the other goes exactly level', held.at[1], 0.75, 1e-12)
+    near('and lands on the wall at that height', held.at[0], -0.4, 1e-12)
+    near(
+      'so the ruler reads the diameter and not a hair more',
+      latheRulerLength({ id: 'x', ends: [held.at, [0.4, 0.75]] }),
+      0.8,
+      1e-12
+    )
+  }
+  {
+    // PERFECTLY UPRIGHT, the same rule turned ninety degrees: the other end's
+    // column, which is what makes a height measurement a height rather than a
+    // slight diagonal across one.
+    const held = snapLatheEnd([0.006, 1.494], [0, 0], stock, TOL)
+    near('an end nearly above the other goes exactly above it', held.at[0], 0, 1e-12)
+    near('and takes the rim for its height', held.at[1], 1.5, 1e-12)
+  }
+  {
+    // ONE LOCK AT A TIME, and it is the axis the pair is ALREADY more nearly
+    // aligned on. Both at once would put the end on top of the end it is
+    // measuring from, which is the one arrangement this tool has no use for.
+    // The other end is parked in mid-air here on purpose: sitting on an edge it
+    // would lend its row and its column to the piece's own targets, and the
+    // question would stop being about the ortho lock at all.
+    const held = snapLatheEnd([0.204, 0.758], [0.2, 0.75], stock, TOL)
+    near('the nearer axis is the one that locks', held.at[0], 0.2, 1e-12)
+    check('and the further one is left alone', held.onY === null, `${held.onY}`)
+    near('so the ruler keeps a length', held.at[1], 0.758, 1e-12)
+  }
+  {
+    // THE WALL AS IT STANDS, not as the stock left it. A shaped piece is the
+    // only kind worth measuring, and the wall the end catches has to be the one
+    // on screen.
+    const waisted = withWall(
+      stock,
+      stock.wall.map((r, i) => (i === Math.round((CLAY_RINGS - 1) / 2) ? 0.2 : r))
+    )
+    const held = snapLatheEnd([0.21, ringHeight(waisted, Math.round((CLAY_RINGS - 1) / 2))], [0, 0], waisted, TOL)
+    near('an end at the waist catches the waist', held.at[0], 0.2, 1e-12)
+  }
+  {
+    // THE CAVITY WALL, which is the only way to measure how thick a wall has
+    // actually been left.
+    const cup = { ...stock, hollow: { thickness: 0.1, capTop: false, capBottom: true } }
+    const inner = bore(cup)
+    check('the cup really is bored', inner !== null, '')
+    const held = snapLatheEnd([0.295, 0.75], [0.4, 0.75], cup, TOL)
+    near('an end inside the piece catches the cavity wall', held.at[0], 0.3, 1e-9)
+  }
+  {
+    // NOT ABOVE THE PIECE. `wallAt` clamps to the end rings, so without a guard
+    // the wall would go on being reported in the air over the rim -- a phantom
+    // edge to catch on where there is no material at all.
+    //
+    // Asked of a TAPERED piece, because on a cylinder the wall and the widest
+    // radius are the same number everywhere and the question cannot be put: the
+    // widest IS offered at any height, deliberately, so a neck can be lined up
+    // with the bulge it stands inside. What must not be offered up there is the
+    // rim's own radius, and on this piece the two are 0.2 apart.
+    const tapered = withWall(
+      stock,
+      stock.wall.map((_, i) => 0.4 - 0.2 * (i / (CLAY_RINGS - 1)))
+    )
+    const held = snapLatheEnd([0.198, 1.7], [0, 1.7], tapered, TOL)
+    near('an end in the air above the rim catches no wall', held.at[0], 0.198, 1e-12)
+    check('and nothing is reported as caught', held.onX === null, `${held.onX}`)
+    // While the widest, which is a column rather than an edge, still is.
+    const lined = snapLatheEnd([0.396, 1.7], [0, 1.7], tapered, TOL)
+    near('though the widest of the piece is still a column to line up with', lined.at[0], 0.4, 1e-12)
+  }
+  {
+    // Off is not a mode inside the arithmetic: a reach of nothing catches
+    // nothing, which is what lets the switch in the bar simply pass a zero.
+    const held = snapLatheEnd([0.399, 0.75], [0, 0], stock, 0)
+    near('no reach, no snap', held.at[0], 0.399, 1e-12)
+    check('and nothing caught', held.onX === null && held.onY === null, '')
+  }
+
+  // WHERE A FRESH ONE LANDS: across the piece, an end on each wall, so it
+  // arrives measuring something instead of asking for two placements first.
+  {
+    const [a, b] = latheRulerSpawn(0, stock)
+    near('a fresh ruler lies level', a[1], b[1], 1e-12)
+    near('halfway up the piece', a[1], 0.75, 1e-9)
+    near('with an end on each wall', a[0], -0.4, 1e-12)
+    near('and the other on the far one', b[0], 0.4, 1e-12)
+    near('so it reads the diameter', latheRulerLength({ id: 'x', ends: [a, b] }), 0.8, 1e-12)
+
+    // Consecutive rulers go at different heights, or the second would be
+    // hidden -- exactly -- by the first.
+    const heights = new Set(
+      Array.from({ length: LATHE_RULER_LANES.length }, (_, i) => latheRulerSpawn(i, stock)[0][1])
+    )
+    check(
+      'and every lane is a height of its own',
+      heights.size === LATHE_RULER_LANES.length,
+      `${heights.size} of ${LATHE_RULER_LANES.length}`
+    )
+    check(
+      'none of them lying along the rim or the plate',
+      [...heights].every((h) => h > 0 && h < 1.5),
+      [...heights].join(', ')
+    )
   }
 }
 

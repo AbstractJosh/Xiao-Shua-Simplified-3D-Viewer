@@ -1,6 +1,7 @@
 import { create } from 'zustand'
-import { clampSides, clampWall, freshClay, mold, resize, withWall } from '../geometry/clay'
+import { clampSides, clampWall, freshClay, mold, resize, sculpt, withWall } from '../geometry/clay'
 import type { Clay, Dab, Hollow } from '../geometry/clay'
+import type { Pt } from '../geometry/curve'
 
 /**
  * The lump on the lathe: what the Lathe screen has made.
@@ -80,6 +81,21 @@ type LatheState = {
    * `clay.ts` for what one instant of contact does.
    */
   work: (dab: Dab) => void
+  /**
+   * Re-cut the wall to a drawn line: one press of Point Sculpt.
+   *
+   * ONE ENTRY, WHERE A STROKE IS ALSO ONE. It is not a stroke -- there is no
+   * `beginStroke` under it and no dish measured from anything, because nothing
+   * is being held against the wall -- but it is one ACT in exactly the sense
+   * the history is kept in: the user composed a line, pressed once, and the
+   * piece changed. Placing and dragging the points that led up to it are not in
+   * here at all, and should not be: a draft is not a thing you have made. See
+   * `useSculptDraft`.
+   *
+   * Any stroke in progress is over, for the reason `undo` ends one: the wall a
+   * dish was being measured from has just been replaced under it.
+   */
+  applySculpt: (line: Pt[]) => void
   /** Change the stock, carrying the shape with it -- see `resize`. */
   setHeight: (height: number) => void
   setRadius: (radius: number) => void
@@ -149,6 +165,18 @@ export const useLathe = create<LatheState>((set) => ({
   // arriving between `beginStroke` and its own `set`, and of anything that
   // works the clay without taking hold of it first.
   work: (dab) => set((s) => ({ clay: mold(s.clay, dab, s.stroke ?? s.clay.wall) })),
+  // Remembered BEFORE the cut and only when the cut moves something: `sculpt`
+  // hands back the very lump it was given when the line lands where the wall
+  // already is, and an entry for that would be an undo press that appears to do
+  // nothing. A stroke cannot make that check cheaply -- it is sixty dabs deep
+  // by the time anyone could -- which is why `beginStroke` pays for the entry
+  // up front and this does not have to.
+  applySculpt: (line) =>
+    set((s) => {
+      const clay = sculpt(s.clay, line)
+      if (clay === s.clay) return s
+      return { clay, stroke: null, ...remember(s) }
+    }),
   // Both size fields end the stroke by implication: they can only be reached
   // from a panel, which means the pointer is not on the clay -- and a dish
   // measured from a wall that has since been rescaled is measured from nothing.

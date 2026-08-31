@@ -1,5 +1,8 @@
 import { Mesh, Raycaster, Vector2, Vector3 } from 'three'
 import type { Material, Ray } from 'three'
+import { acceleratedRaycast, computeBoundsTree } from 'three-mesh-bvh'
+import { useDoc } from '../store/docStore'
+import { PERF_ON, notePick } from './perfProbe'
 import { surfaceFor } from '../geometry/surfaces'
 import { toLocalRay, toWorldDir, toWorldPoint } from '../geometry/transform'
 import type { Doc, SceneObject, SurfaceAnchor } from '../geometry/types'
@@ -113,9 +116,78 @@ const probeMesh = new Mesh()
 const IDLE_GEOMETRY = probeMesh.geometry
 const IDLE_MATERIAL: Material | Material[] = probeMesh.material
 
+/**
+ * The probe walks a BOUNDS TREE rather than every triangle in the object.
+ *
+ * Patched onto the instance rather than onto `Mesh.prototype`, because this one
+ * mesh is the only thing in the app that ever raycasts document geometry --
+ * everything below goes through it -- and patching a three prototype to serve
+ * one private object is a change every other mesh in the scene has to read the
+ * release notes for.
+ *
+ * `acceleratedRaycast` falls back to three's own brute-force walk whenever the
+ * geometry has no tree, so this is safe from the first pick: there is no
+ * arrangement of geometry that has to be prepared before it works.
+ *
+ * FIRST HIT ONLY, because the nearest hit is the only one this file has ever
+ * read -- see the `hits[0]` below, which drops the rest. Said here rather than
+ * sorted for afterwards: it is what lets the walk stop at the first leaf it can
+ * prove nothing nearer lies in, and that is most of the saving. Without it the
+ * tree is walked to the end and the results sorted, on a question that was
+ * decided in the first few nodes.
+ */
+probeMesh.raycast = acceleratedRaycast
+probe.firstHitOnly = true
+
+/**
+ * Below this, a tree costs more to build than the walk it saves.
+ *
+ * A box is twelve triangles and a cylinder a hundred and ninety-two; three's
+ * own loop is through those before a tree has finished allocating. The number
+ * is not delicate -- anywhere from a few hundred to a few thousand behaves the
+ * same -- and it is here to keep a scene full of primitives from each paying
+ * for a structure that describes eight triangles.
+ */
+const BVH_FLOOR = 2_000
+
+/**
+ * Give a geometry a bounds tree, if it is worth one and this is a safe moment.
+ *
+ * MOST GEOMETRY ARRIVES ALREADY CARRYING ONE. three-bvh-csg builds a `MeshBVH`
+ * onto the geometry of every brush it feeds to a boolean -- see its
+ * `Brush.prepareGeometry` -- under exactly the property `acceleratedRaycast`
+ * reads. So every step of an object's history except the last one has a tree
+ * already, and this only ever has to cover the final step.
+ *
+ * NOT DURING A STROKE. A melt hands back a fresh geometry for every dab, so a
+ * tree built here would be built again from scratch on the next frame and the
+ * one after -- a hundred and forty thousand triangles re-indexed per dab, which
+ * is far worse than the brute-force walk it replaced. While a stroke runs,
+ * picking does exactly what it did before. The stroke is not the case this
+ * helps; the ghost that tracks the pointer with a brush merely ARMED is, and it
+ * spends one of these every frame.
+ *
+ * The tree is never disposed here, and that is deliberate. These geometries
+ * belong to the evaluator's prefix cache and are borrowed -- see the contract
+ * on `EvalReadout`. A tree is plain typed arrays with nothing on the GPU, so it
+ * is collected with the geometry it hangs off when the cache retires it.
+ */
+function ensureBoundsTree(mesh: Mesh): void {
+  const geometry = mesh.geometry
+  if (geometry.boundsTree) return
+  if (useDoc.getState().drag.kind === 'erode') return
+  const index = geometry.getIndex()
+  const position = geometry.getAttribute('position')
+  if (!position) return
+  if ((index ? index.count : position.count) / 3 < BVH_FLOOR) return
+  computeBoundsTree.call(geometry)
+}
+
 type LocalHit = { point: Vector3; normal: Vector3 }
 
 function raycastLocal(source: Raycaster, mesh: Mesh, ray: Ray): LocalHit | null {
+  const began = PERF_ON ? performance.now() : 0
+  ensureBoundsTree(mesh)
   probeMesh.geometry = mesh.geometry
   // The real material decides back-face culling and, for a grouped geometry,
   // which slots are hit at all; borrowing it keeps picking and rendering from
@@ -128,6 +200,7 @@ function raycastLocal(source: Raycaster, mesh: Mesh, ray: Ray): LocalHit | null 
   probe.far = source.far
 
   const hits = probe.intersectObject(probeMesh, false)
+  notePick(PERF_ON ? performance.now() - began : 0)
 
   // Dropped straight away: holding these would keep an evaluated mesh and its
   // material alive long after the object they belong to has been deleted.

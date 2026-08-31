@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { baseName } from '../console/BasePanel'
 import { HollowTool } from '../console/HollowTool'
-import { PullTool, PushTool, SmoothTool } from '../console/LatheTools'
+import { LatheRulerTool } from '../console/LatheRulerTool'
+import { PointSculptTool, PullTool, PushTool, SmoothTool } from '../console/LatheTools'
 import { bite, bore, isFresh, pieceHeight, widestRadius } from '../geometry/clay'
 import { useLathe } from '../store/latheStore'
 import { armedLatheTool, useTools } from '../store/toolStore'
@@ -18,6 +19,9 @@ import {
   viewBoxOf,
 } from './latheView'
 import { CopyPieceButton } from './CopyPieceButton'
+import { LatheRulers } from './LatheRulers'
+import { SculptLayer, useSculptGesture } from './SculptLayer'
+import { SculptPanel } from './SculptPanel'
 import { StockPanel } from './StockPanel'
 import { IslandShell } from './ToolIsland'
 import { ZoomControl } from './ZoomControl'
@@ -153,6 +157,10 @@ export function LatheViewport() {
    * that follows the pointer costs.
    */
   const [at, setAt] = useState<{ x: number; y: number; radius: number } | null>(null)
+  /** The drawing itself, for the Point Sculpt gesture to hang its press on --
+   *  see `useSculptGesture`, which needs the element to read the pointer back
+   *  into the clay's own terms. */
+  const svgRef = useRef<SVGSVGElement | null>(null)
   /** Whether the tool is against the clay right now. */
   const [working, setWorking] = useState(false)
   /**
@@ -170,6 +178,11 @@ export function LatheViewport() {
   // call and none in the dependencies -- which is what makes resizing the lump
   // unable to move the view. See `clayFrame`.
   const frame = useMemo(() => clayFrame(zoom), [zoom])
+  // Point Sculpt listens on the drawing itself rather than through the handlers
+  // below, because what its press means is not what theirs means: it takes hold
+  // of a knot, or puts a new one down, and never starts a stroke. See
+  // `useSculptGesture`.
+  useSculptGesture(svgRef, frame)
   // THE SECTION rather than the silhouette, because a hollow piece has an
   // inside and this screen is a cut through the middle of it. On a solid piece
   // the two are the same string -- see `sectionPath`.
@@ -253,12 +266,35 @@ export function LatheViewport() {
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return
       // Not while the caret is in a number field -- the stock panel is a
       // window's width from the clay, and undoing a stroke because somebody
       // corrected a typo would be the surprise that stops it being trusted.
+      // Backspace makes this load-bearing rather than merely polite: in a text
+      // field it is how you delete a character.
       const target = e.target as HTMLElement | null
       if (target?.closest?.('input, textarea, [contenteditable="true"]')) return
+
+      // ESCAPE AND DELETE, which this screen used to answer to neither of --
+      // "there is nothing to select and nothing to delete" was true right up
+      // until something on it could be selected. A ruler is that something, and
+      // the two keys mean here exactly what they mean on the bench: put the
+      // handles down, and take that away.
+      if (e.key === 'Escape') {
+        useTools.getState().selectLatheRuler(null)
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Only ever a selected RULER. The piece itself is not deletable and
+        // must not become so by a key held down over the wrong window: the way
+        // out of a lump gone wrong is Reset, which says what it will do.
+        const chosen = useTools.getState().selectedLatheRuler
+        if (chosen === null) return
+        e.preventDefault()
+        useTools.getState().removeLatheRuler(chosen)
+        return
+      }
+
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return
       e.preventDefault()
       const lathe = useLathe.getState()
       if (e.shiftKey) lathe.redo()
@@ -278,7 +314,16 @@ export function LatheViewport() {
   const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     // Left button only, and only with a tool in hand. The right button is left
     // alone the way it is everywhere else in the app.
-    if (e.button !== 0 || useTools.getState().latheTool === null) return
+    const held = useTools.getState().latheTool
+    if (e.button !== 0 || held === null) return
+    // POINT SCULPT IS NOT HELD AGAINST ANYTHING, so it takes none of what
+    // follows: no capture, no stroke, no frame loop. Its press is handled by
+    // `useSculptGesture`, which is listening on this same element and has
+    // already stopped the event by the time this would run -- this guard is
+    // what makes that belt-and-braces rather than load-bearing. Without it a
+    // press would push an undo entry (see `beginStroke`) for a stroke that can
+    // never work anything, since `armedLatheTool` answers null for this tool.
+    if (held === 'points') return
     track(e)
     // Captured, so a stroke that runs off the edge of the lathe keeps working
     // and, more to the point, so the release is heard wherever it happens --
@@ -357,6 +402,7 @@ export function LatheViewport() {
   return (
     <div className={`viewport lathe${tool ? ' lathe-armed' : ''}`}>
       <svg
+        ref={svgRef}
         className="lathe-view"
         viewBox={viewBoxOf(frame)}
         // The frame is fitted inside whatever shape the window leaves, centred,
@@ -501,6 +547,13 @@ export function LatheViewport() {
           vectorEffect="non-scaling-stroke"
         />
 
+        {/* The rulers, over the clay and under the two things that are AIMED.
+            A measurement drawn behind the piece it measures is a measurement
+            you have to move the piece to read; a measurement drawn over the
+            cursor is a cursor you cannot see. Between the two is the whole of
+            where an annotation belongs. See `LatheRulers`. */}
+        <LatheRulers frame={frame} clay={clay} svg={svgRef} />
+
         {/* The tool, where the pointer is: WHICH WAY IT WORKS, said in colour,
             and only loosely how wide it is -- see `GHOST_OF_REACH`. A small
             filled ghost rather than an outline of the tool's footprint, and one
@@ -508,7 +561,7 @@ export function LatheViewport() {
             and the tool, and the tick that used to say where the pointer was
             has nothing left to add. Drawn only while a tool is in hand -- with
             empty hands the pointer is just a pointer. */}
-        {tool && at && (
+        {tool && tool !== 'points' && at && (
           <circle
             className={`lathe-tool lathe-tool-${tool}`}
             cx={at.x}
@@ -518,6 +571,13 @@ export function LatheViewport() {
             aria-hidden
           />
         )}
+
+        {/* The profile being drawn, over everything: it is what you are aiming,
+            and a line under the clay would be invisible exactly where the piece
+            is widest. Point Sculpt wears no tool ghost -- the knots ARE the
+            tool, and a disc following the pointer over them would be a second
+            mark for the same hand. See `SculptLayer`. */}
+        <SculptLayer frame={frame} />
       </svg>
 
       {/* How far the view is zoomed, and the way back to a piece that has run
@@ -559,7 +619,15 @@ export function LatheViewport() {
       {/* How big the lump is, in the corner nearest the piece it describes --
           see `StockPanel`. It was a panel hanging off the top bar, which put
           the number and the shape it changes at opposite ends of the window. */}
-      <StockPanel />
+      {/* A COLUMN NOW, the one the cutting bench already uses, because a second
+          panel wants that corner whenever Point Sculpt is in hand: the lump,
+          and the profile you are cutting into it, stacked in the order they are
+          used. With any other tool it is the stock panel alone, exactly where it
+          has always been -- see `.lathe-corner`. */}
+      <div className="lathe-corner">
+        <SculptPanel />
+        <StockPanel />
+      </div>
 
       {/* And the way out, in the free corner opposite: the piece, swept into a
           solid and put on the clipboard for the modelling screen to paste. */}
@@ -572,18 +640,25 @@ export function LatheViewport() {
 
           THE RULE IS THE ISLAND'S OWN IDIOM, the one the modelling screen draws
           between what acts on a selected object and what puts something new in
-          the scene. Here it separates the two tools that MOVE MATERIAL from
-          everything else: Push and Pull are one behaviour with a sign in front
-          of it, and a column of four switches at one gap reads as a list of
-          unrelated things rather than as a pair and its company. Inert and
-          hidden from the reader -- it separates nothing that is not already two
-          groups in the markup. */}
+          the scene. Here it separates the tools that MOVE MATERIAL from
+          everything else. Push and Pull are one behaviour with a sign in front
+          of it; Point Sculpt is that same act asked for a different way -- you
+          draw the wall you want instead of holding a tool against the one you
+          have -- so it stands with them rather than after them. What is below
+          the rule is everything that shapes nothing: Smooth fairs what the
+          three left, Hollow is a setting, and the Ruler only measures. Inert
+          and hidden from the reader -- it separates nothing that is not already
+          two groups in the markup. */}
       <IslandShell>
         <PushTool />
         <PullTool />
+        <PointSculptTool />
         <div className="island-rule" aria-hidden />
         <SmoothTool />
         <HollowTool />
+        {/* Last, because it is the only thing on this island that changes
+            nothing about the piece. See `LatheRulerTool`. */}
+        <LatheRulerTool />
       </IslandShell>
     </div>
   )

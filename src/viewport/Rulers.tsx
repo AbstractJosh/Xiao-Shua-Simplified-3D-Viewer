@@ -447,7 +447,16 @@ export function RulerReadouts() {
   const selectedRuler = useTools((s) => s.selectedRuler)
   const chips = useRef(new Map<string, HTMLDivElement | null>())
 
+  // Armed on `rulerActive` rather than on nothing at all. The early return
+  // below means this component draws no chips when the tool is down -- but an
+  // effect with an empty dependency list runs above that return, so the loop
+  // used to start on mount and walk every ruler sixty times a second for the
+  // whole session whether or not anything was on screen to write to. The tool
+  // is off far more of the time than it is on, and a frame callback that exists
+  // to update nothing is exactly the cost this imperative seam was built to
+  // avoid.
   useEffect(() => {
+    if (!rulerActive) return
     let frame = 0
     const shown = new Map<string, string>()
     const tick = () => {
@@ -475,7 +484,7 @@ export function RulerReadouts() {
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [])
+  }, [rulerActive])
 
   if (!rulerActive) return null
 

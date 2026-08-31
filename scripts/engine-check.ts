@@ -58,6 +58,7 @@ import {
   pieceSpan,
   resize,
   ringHeight,
+  sculpt,
   wallBounds,
 } from '../src/geometry/clay'
 import type { Clay, Dab } from '../src/geometry/clay'
@@ -97,15 +98,14 @@ import { endFaceFrame } from '../src/geometry/prism'
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
 import { DAB_SPACING, ROUND_MIN } from '../src/store/toolStore'
 import { objectMatrix, relativeTransform } from '../src/geometry/transform'
+import { bezierChain, fittedHandles } from '../src/geometry/curve'
 import { planeSeparates, splitPlanes } from '../src/geometry/cut'
 import { signedVolume } from '../src/geometry/volume'
 import {
   KERF as LASER_KERF,
-  bezierChain,
   carryToBorder,
   cutPieces,
   faceBasis,
-  fittedHandles,
   freshBlock,
   outlineOf,
   pieceVolume,
@@ -4896,6 +4896,192 @@ console.log('\nThe lathe fairs itself and bores itself out')
     // Handed back unchanged when it is the wall the lump already has, so a redo
     // of a stroke that moved nothing cannot make React redraw.
     check('putting back the wall it already has changes nothing', withWall(flared, flared.wall) === flared, '')
+  }
+}
+
+
+// --- Point Sculpt -------------------------------------------------------------
+//
+// The one tool on the lathe that is not a brush. Push, Pull and Smooth all work
+// by holding something against the wall and letting the clay come to it; this
+// states the wall outright, from a line drawn through placed points. So what is
+// checked here is different in kind: not that a stroke stops where the pointer
+// is, but that the line IS the profile -- exactly, over exactly the span it
+// covers, and nowhere else.
+console.log('\nPoint Sculpt states the wall, over the span its line covers')
+{
+  const lump = freshClay(1.5, 0.4)
+  /** A ring's height, as the line has to be drawn in. */
+  const at = (i: number) => ringHeight(lump, i)
+
+  {
+    // THE LINE IS THE WALL, and that is the whole promise. A straight line down
+    // one radius leaves every ring it covers standing at exactly that radius --
+    // not near it, which is what a brush would leave.
+    const cut = sculpt(lump, [
+      [at(20), 0.15],
+      [at(60), 0.15],
+    ])
+    const inside = cut.wall.slice(20, 61)
+    check(
+      'a line at one radius puts every ring it covers exactly there',
+      inside.every((r) => Math.abs(r - 0.15) < 1e-9),
+      `${Math.min(...inside).toFixed(6)}..${Math.max(...inside).toFixed(6)}`
+    )
+  }
+
+  {
+    // AND NOWHERE ELSE. The rest of the wall is not touched, which is what lets
+    // a neck be re-cut on a piece whose belly took ten minutes to get right --
+    // and it is the whole reason this is a tool rather than a reset.
+    const cut = sculpt(lump, [
+      [at(20), 0.15],
+      [at(60), 0.15],
+    ])
+    const below = cut.wall.slice(0, 20)
+    const above = cut.wall.slice(61)
+    check(
+      'and leaves the wall below the line exactly as it was',
+      below.every((r, i) => r === lump.wall[i]),
+      `${below.length} rings`
+    )
+    check(
+      'and the wall above it too',
+      above.every((r, i) => r === lump.wall[i + 61]),
+      `${above.length} rings`
+    )
+  }
+
+  {
+    // IT CAN SHARPEN, which nothing else on this screen can. Every dab relaxes
+    // the window it moved -- see RELAX -- so a brush cannot leave a corner
+    // however hard it is held. A step is two points at one height, and the two
+    // rings either side of it have to stand a step apart.
+    const step = sculpt(lump, [
+      [at(30), 0.35],
+      [at(50), 0.35],
+      [at(50), 0.12],
+      [at(70), 0.12],
+    ])
+    const jump = Math.abs(step.wall[49] - step.wall[51])
+    check(
+      'a step in the line comes out as a step in the wall',
+      jump > 0.2,
+      `${step.wall[49].toFixed(3)} then ${step.wall[51].toFixed(3)}`
+    )
+    // The brushes are held to the opposite promise, and it is worth stating the
+    // two beside each other: this is the tool you reach for BECAUSE the others
+    // fair themselves off.
+    const held = mold(lump, { y: at(50), radius: 0.12, reach: 0.2, bite: 1, tool: 'push' })
+    const brushed = Math.abs(held.wall[49] - held.wall[51])
+    check(
+      'where a brush held at the same place cannot',
+      brushed < jump / 4,
+      `brush leaves ${brushed.toFixed(4)} against the line's ${jump.toFixed(4)}`
+    )
+  }
+
+  {
+    // A CURVE THAT DOUBLES BACK still has to come out as a wall, because a wall
+    // is one radius per ring and there is no such thing as two. The outermost
+    // crossing is the reading -- the material a real tool would leave -- and the
+    // point of checking it is that the alternative is a crash or a hole.
+    const looped = sculpt(lump, [
+      [at(40), 0.1],
+      [at(60), 0.3],
+      [at(40), 0.2],
+      [at(70), 0.25],
+    ])
+    const covered = looped.wall.slice(40, 71)
+    check(
+      'a line that doubles back still leaves one radius per ring',
+      covered.every((r) => Number.isFinite(r) && r >= 0),
+      `${Math.min(...covered).toFixed(3)}..${Math.max(...covered).toFixed(3)}`
+    )
+    // At the height it crosses three times, the wall stands at the furthest of
+    // them rather than at whichever the walk met first.
+    check(
+      'taking the outermost crossing where there are several',
+      looped.wall[40] >= 0.2 - 1e-9,
+      `${looped.wall[40].toFixed(4)}`
+    )
+  }
+
+  {
+    // CLAMPED like every other wholesale write, so a line drawn past the flare
+    // limit or through the axis lands on the piece the stock allows rather than
+    // turning the section inside out. Negative radii are the one that matters:
+    // they wind the sweep the wrong way round.
+    const { min, max } = wallBounds(lump.radius)
+    const wild = sculpt(lump, [
+      [at(10), -5],
+      [at(80), 99],
+    ])
+    check(
+      'a line drawn off the end of the world is clamped to the lump',
+      wild.wall.every((r) => r >= min - 1e-9 && r <= max + 1e-9),
+      `${Math.min(...wild.wall).toFixed(3)}..${Math.max(...wild.wall).toFixed(3)}`
+    )
+  }
+
+  {
+    // A LINE THAT MOVES NOTHING hands back the very lump it was given, the way
+    // `mold` and `withWall` do. It is what lets the panel tell a press that did
+    // nothing from one that did -- see `SculptPanel`, which says so out loud
+    // rather than leaving the button looking broken.
+    const flat = sculpt(lump, [
+      [at(0), lump.radius],
+      [at(CLAY_RINGS - 1), lump.radius],
+    ])
+    check('a line drawn along the wall it already has changes nothing', flat === lump, '')
+    check('and one point is not a line at all', sculpt(lump, [[at(30), 0.2]]) === lump, '')
+    check('nor is none', sculpt(lump, []) === lump, '')
+  }
+
+  {
+    // WHICH WALL YOU DREW ON IS NOT A FACT ABOUT THE PIECE. The screen is a
+    // section, so there are two walls on it to point at, and the knots follow
+    // the pointer onto whichever one was clicked -- see `toClay` in
+    // `SculptLayer`. A turned piece is the same all the way round, so the same
+    // line drawn on the left has to leave the same wall as on the right.
+    const right = sculpt(lump, [
+      [at(25), 0.3],
+      [at(55), 0.12],
+      [at(75), 0.28],
+    ])
+    const left = sculpt(lump, [
+      [at(25), -0.3],
+      [at(55), -0.12],
+      [at(75), -0.28],
+    ])
+    check(
+      'a profile drawn on the far wall leaves the same piece',
+      left.wall.every((r, i) => Math.abs(r - right.wall[i]) < 1e-12),
+      `worst ${Math.max(...left.wall.map((r, i) => Math.abs(r - right.wall[i]))).toExponential(1)}`
+    )
+    // And a line dragged ACROSS the axis pinches the wall to nothing there
+    // rather than jumping between two radii, which is what a tool run through
+    // the centre would really leave.
+    const through = sculpt(lump, [
+      [at(40), -0.25],
+      [at(60), 0.25],
+    ])
+    check(
+      'and one drawn across the axis pinches the wall to nothing',
+      Math.min(...through.wall.slice(40, 61)) < 1e-9,
+      `${Math.min(...through.wall.slice(40, 61)).toExponential(1)}`
+    )
+  }
+
+  {
+    // THE SPAN IS THE LINE'S OWN, not the piece's: a line drawn entirely off the
+    // top of the lump touches no ring, and must not be read as "the whole wall"
+    // by an empty span.
+    const past = sculpt(lump, [
+      [lump.height * 2, 0.1],
+      [lump.height * 3, 0.1],
+    ])
+    check('a line drawn clear of the piece leaves it alone', past === lump, '')
   }
 }
 

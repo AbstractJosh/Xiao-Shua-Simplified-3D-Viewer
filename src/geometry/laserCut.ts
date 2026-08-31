@@ -1,5 +1,6 @@
 import { BufferAttribute, BufferGeometry, Matrix4, Vector3 } from 'three'
 import { SUBTRACTION, csg, disposeBrush, makeBrush } from './brush'
+import type { Pt } from './curve'
 import type { Vec3 } from './types'
 import { signedVolume } from './volume'
 
@@ -39,8 +40,16 @@ import { signedVolume } from './volume'
  * a fraction of ONE rather than a length in scene units.
  */
 
-/** A point on the face being drawn on, in that face's own (u, v). */
-export type Pt = [number, number]
+/**
+ * A point on the face being drawn on, in that face's own (u, v).
+ *
+ * Re-exported rather than declared, since the Lathe screen draws points in a
+ * plane of its own and the pair of numbers is the same pair -- see `curve.ts`,
+ * which is also where the fitting and the Bézier chain went when this stopped
+ * being their only caller. Everything that reads a `Pt` off this file goes on
+ * doing so.
+ */
+export type { Pt }
 
 /** Which face of the block is being drawn on: an axis, and which end of it. */
 export type FaceAxis = { axis: 0 | 1 | 2; sign: 1 | -1 }
@@ -292,71 +301,9 @@ export function carryToBorder(points: Pt[], reach = CARRY): Pt[] {
   ]
 }
 
-/**
- * The handle each point would carry if the curve through them were fitted
- * rather than adjusted -- one half of what makes "Fit to line" and "Manual"
- * the same tool.
- *
- * A uniform Catmull-Rom spline IS a chain of cubic Béziers whose controls sit a
- * sixth of the way along the chord between a point's two neighbours. So the
- * fitted curve and the hand-adjusted one are the same arithmetic given
- * different handles, and switching from Fit to Manual leaves the curve exactly
- * where it was with its handles now showing. Two separate curve types would
- * have made that switch a visible jump.
- *
- * The ends use a one-sided difference, which is what makes the curve leave the
- * first point heading at the second rather than curling.
- */
-export function fittedHandles(points: Pt[]): Pt[] {
-  const n = points.length
-  if (n < 2) return points.map(() => [0, 0] as Pt)
-  return points.map((_, i) => {
-    const before = points[Math.max(0, i - 1)]
-    const after = points[Math.min(n - 1, i + 1)]
-    // Halved at an end, where the difference spans one interval rather than
-    // two, so the handle is the same length per interval everywhere.
-    const span = i === 0 || i === n - 1 ? 3 : 6
-    return scale(sub(after, before), 1 / span)
-  })
-}
-
-/**
- * The curve through a run of points with mirrored handles, as a polyline.
- *
- * MIRRORED IS THE WHOLE OF THE HANDLE MODEL: one offset per point, used
- * forwards out of it and backwards into it, so the curve cannot kink at a point
- * and there is no second handle to keep in step. It is what the tool's sketch
- * asks for -- one straight line through the red dot -- and it halves the state.
- *
- * `perSegment` samples per span. Fixed rather than adaptive because the result
- * is resampled to an even step immediately afterwards anyway; all this has to
- * do is not miss the shape.
- */
-export function bezierChain(points: Pt[], handles: Pt[], perSegment = 16): Pt[] {
-  if (points.length < 2) return points.slice()
-
-  const out: Pt[] = [points[0]]
-  for (let i = 0; i < points.length - 1; i += 1) {
-    const p0 = points[i]
-    const p3 = points[i + 1]
-    const c1 = add(p0, handles[i] ?? [0, 0])
-    // Backwards out of the far point, which is what "mirrored" means.
-    const c2 = sub(p3, handles[i + 1] ?? [0, 0])
-    for (let s = 1; s <= perSegment; s += 1) {
-      const t = s / perSegment
-      const m = 1 - t
-      const a = m * m * m
-      const b = 3 * m * m * t
-      const c = 3 * m * t * t
-      const d = t * t * t
-      out.push([
-        a * p0[0] + b * c1[0] + c * c2[0] + d * p3[0],
-        a * p0[1] + b * c1[1] + c * c2[1] + d * p3[1],
-      ])
-    }
-  }
-  return out
-}
+/* THE FITTING AND THE BEZIER CHAIN MOVED to `curve.ts` when the Lathe screen
+   gained a tool that places points too. Neither ever read a face, a kerf or a
+   block -- see the note at the top of that file. */
 
 /**
  * One step of the rope: where the tool ends up when the pointer has moved.

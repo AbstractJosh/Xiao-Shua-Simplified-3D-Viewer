@@ -55,6 +55,8 @@ import {
   pointerNdc,
   takePointerTrail,
 } from './picking'
+import { PerfHud, PerfProbe } from './PerfHud'
+import { PERF_ON } from './perfProbe'
 import { dropCacheFor, releaseDropCache } from './dropCache'
 import { ObjectMenu, useObjectMenu } from './ObjectMenu'
 import type { DropCache } from './dropCache'
@@ -1824,6 +1826,10 @@ function Scene({
       {/* Inside the canvas because it projects each object's gizmo through the
           camera to decide what the box caught. What it draws is outside. */}
       <MarqueeControl />
+      {/* Reads the renderer's own counters once a frame and writes them into
+          `perf`. Mounted conditionally rather than self-gating, so that with
+          the probe off there is not even a frame callback to skip. */}
+      {PERF_ON && <PerfProbe />}
 
       <OrbitControls
         ref={controlsRef as never}
@@ -1961,8 +1967,14 @@ const AXIS_NAMES = ['X', 'Y', 'Z'] as const
  */
 function RotationReadout() {
   const chip = useRef<HTMLDivElement>(null)
+  // A ring turn is a gesture, and gestures are rare; the readout is on screen
+  // for a second or two at a time. Subscribed so the loop exists only while one
+  // is running -- unconditionally, it spent the session writing
+  // `style.display = 'none'` onto the same hidden node sixty times a second.
+  const turning = useDoc((s) => s.drag.kind === 'gizmo')
 
   useEffect(() => {
+    if (!turning) return
     let frame = 0
     let shown = ''
     const tick = () => {
@@ -1985,8 +1997,13 @@ function RotationReadout() {
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [])
+    return () => {
+      cancelAnimationFrame(frame)
+      // The loop is what hides the chip, so leaving without it would strand
+      // whatever the last frame wrote.
+      if (chip.current) chip.current.style.display = 'none'
+    }
+  }, [turning])
 
   return <div className="rotation-chip" ref={chip} style={{ display: 'none' }} />
 }
@@ -2270,7 +2287,14 @@ export function Viewport() {
         // A 200,000:1 frustum is far past what a 24-bit depth buffer resolves,
         // so the log buffer is not an optimisation here but the thing that
         // keeps faces from tearing.
-        gl={{ logarithmicDepthBuffer: true }}
+        //
+        // And no alpha channel. React-three-fiber asks for one by default, so
+        // the drawing buffer carries a fourth component the page then composites
+        // the whole canvas through -- for a scene that paints an opaque ground
+        // colour over every pixel before anything else draws. See `Stage`, which
+        // attaches it. Nothing on screen changes; a full-screen blend per frame
+        // stops happening.
+        gl={{ logarithmicDepthBuffer: true, alpha: false }}
         dpr={[1, 2]}
         // The left button is the marquee's, and it clears the selection itself
         // on a press that drew no box -- so only the other buttons are answered
@@ -2294,6 +2318,7 @@ export function Viewport() {
       <RotationReadout />
       <RulerReadouts />
       <DragHint />
+      <PerfHud />
       <ObjectMenu />
     </div>
   )

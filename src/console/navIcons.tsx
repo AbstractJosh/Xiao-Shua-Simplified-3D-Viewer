@@ -342,6 +342,35 @@ export function PullIcon() {
  * with less noise in it -- so what the icon has to carry is the difference,
  * which means drawing both.
  */
+/**
+ * Point Sculpt: a profile drawn through placed points, standing beside the
+ * axis it will be turned about.
+ *
+ * THE LATHE'S VERSION OF `PointCutIcon`, and it shares the dots on purpose --
+ * the two tools are one gesture on two screens, and the mark that says "you
+ * place points with this" should be the same mark. What differs is what the
+ * points are drawn ON: the cutter frames them in the square of a face, and this
+ * stands them against a centre line, which is the whole of what the lathe
+ * screen is.
+ *
+ * The curve rather than the polyline the cutter draws, because this one opens
+ * with the fit ON -- see `sculptFit` -- and an icon should show the tool as it
+ * arrives.
+ */
+export function PointSculptIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The axis the piece turns about, as faint here as it is on the screen. */}
+      <path d="M4 2.6v14.8" {...STROKE} opacity="0.45" />
+      {/* The profile: a neck drawn through three points, bellying out below. */}
+      <path d="M8.6 3.2C13.4 6 6.4 8.4 8.8 10.6c2.4 2.2 7 3.4 7 6.2" {...STROKE} />
+      <circle cx="8.6" cy="3.2" r="1.5" fill="currentColor" />
+      <circle cx="8.8" cy="10.6" r="1.9" fill="currentColor" />
+      <circle cx="15.8" cy="16.8" r="1.5" fill="currentColor" />
+    </svg>
+  )
+}
+
 export function SmoothIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden>

@@ -767,6 +767,56 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
       },
       {
+        title: 'Point Sculpt',
+        summary:
+          'The one tool here you do not hold against the wall. Click beside the piece to drop points down its side, and the line through them becomes the profile over the span they cover -- exactly, corners and all.',
+        steps: [
+          { action: 'Click', result: 'Puts a point down at the end of the line, and takes hold of it.' },
+          { action: 'Drag a point', result: 'Moves it. The curve through its neighbours follows.' },
+          {
+            action: 'Click a point',
+            result: 'Makes it the one you are shaping: its handles come out, and the last one’s go in.',
+          },
+          {
+            action: 'Fit to line',
+            result: 'On, a smooth curve through every point; off, straight segments between them.',
+          },
+          {
+            action: 'Drag a handle',
+            result:
+              'Aims the shaped point’s tangent. It keeps what you aimed; the rest stay fitted.',
+          },
+          { action: 'Apply profile', result: 'Cuts the wall to the line. One press is one undo step.' },
+          { action: 'Reset line', result: 'Throws the points away and starts again.' },
+        ],
+        notes: [
+          <>
+            <b>It is the only tool here that can leave a corner.</b> Push, Pull and Smooth all fair
+            the wall as they work it, so a shoulder pushed by hand rounds itself off under the
+            tool. Turn <b>Fit to line</b> off, put two points at the same height, and the step
+            between them comes out exactly as drawn -- which is how you get a square shoulder, a
+            chamfer or a flat-topped bead.
+          </>,
+          <>
+            <b>One point wears its handles at a time</b> -- the one you just placed, or the one you
+            last clicked -- so the bars that bend the curve never pile up over the curve they are
+            bending. Nothing is lost by looking away: every point keeps the tangent you aimed for
+            it, and clicking its knot brings the handles back out where you left them. The filled
+            knot is the one in hand.
+          </>,
+          <>
+            Only the span the points cover is touched: the wall above the topmost point and below
+            the bottom one is left alone, so a foot can be re-cut on a piece whose belly is already
+            right. That is also why it has no Tool size -- where the points went says it.
+          </>,
+          <>
+            <b>Apply</b> and <b>Reset</b> stand in the bottom-left corner rather than under the
+            tool’s own caret, because a press on the drawing would shut a panel hanging off a
+            button -- and placing a point is a press on the drawing.
+          </>,
+        ],
+      },
+      {
         title: 'Hollow',
         summary:
           'At the foot of the island: takes the middle out and leaves a wall. Switch it on and the drawing becomes a section, so you see the bore and the clay either side of it.',
@@ -825,6 +875,47 @@ export const HELP_SECTIONS: HelpSection[] = [
             What it remembers is the WALL. A height, width, base or hollow set afterwards stays
             set: those you can put back by setting them back, where a stroke is a gesture you
             cannot.
+          </>,
+        ],
+      },
+      {
+        title: 'Ruler',
+        summary: (
+          <>
+            The last button on the island. Pressing it lays a ruler straight across the piece,
+            already reading the width there; drag either end by its knob to measure anything else.
+            The caret beside it opens the list, which is where the second one comes from and where
+            any of them is deleted.
+          </>
+        ),
+        steps: [
+          {
+            action: 'An end near an edge',
+            result: 'Lands exactly on it: the outer wall, the cavity wall inside a hollow piece.',
+          },
+          {
+            action: 'An end near the middle',
+            result: 'Takes the axis, which is what makes the reading a radius rather than a width.',
+          },
+          {
+            action: 'An end near the rim or the plate',
+            result: 'Takes that height, so the number agrees with the readout in the corner.',
+          },
+          {
+            action: 'An end nearly level or upright with the other',
+            result: 'Goes exactly level or exactly upright, so a width is a width.',
+          },
+        ],
+        notes: [
+          <>
+            A dashed line shows what an end has caught while you hold it. All of it obeys{' '}
+            <b>Snap</b> in the top bar, and its <b>Sensitivity</b> there is how near is near --
+            in pixels, so the reach is the same under your hand at every zoom.
+          </>,
+          <>
+            Rulers change nothing about the clay, so they are not in the undo history and they
+            are not swept onto the clipboard. They stay where you left them when the tool is put
+            down.
           </>,
         ],
       },
@@ -1107,13 +1198,18 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'The lathe',
         steps: [
+          {
+            action: 'Delete, Backspace',
+            result: 'Takes the lit ruler off the piece. With no ruler lit, nothing.',
+          },
+          { action: 'Esc', result: 'Puts a lit ruler out. The ruler stays; only its highlight goes.' },
           { action: 'Ctrl+Z', result: 'Walks the strokes back, one push or pull at a time.' },
           { action: 'Ctrl+Shift+Z', result: 'And forward again.' },
         ],
         notes: [
           <>
-            The only keys the lathe answers. There is nothing to select and nothing to delete: the
-            way out of a piece gone wrong is <b>Reset</b>, in the corner panel.
+            The clay itself is not deletable and never has been: the way out of a piece gone wrong
+            is <b>Reset</b>, in the corner panel, which says what it will do before it does it.
           </>,
         ],
       },

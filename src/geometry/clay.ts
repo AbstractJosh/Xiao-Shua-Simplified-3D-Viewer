@@ -1,3 +1,4 @@
+import type { Pt } from './curve'
 import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION } from './dimensions'
 
 /**
@@ -848,6 +849,115 @@ export function bore(clay: Clay): Bore | null {
  * being given to it, so a redo of a stroke that moved nothing cannot make React
  * redraw. Same promise as `mold`.
  */
+/**
+ * How far off a crossing may be and still be one, as a share of a segment.
+ *
+ * A ring sitting exactly on the first or last point of a line is the ordinary
+ * case rather than the edge case -- the span is measured FROM those points, so
+ * both ends land on one -- and the parameter along the segment comes out at a
+ * hair either side of 0 or 1 depending on which way the subtraction rounded.
+ * Refusing those would leave the two rings the user aimed most carefully at
+ * untouched.
+ */
+const CROSSING_EPS = 1e-9
+
+/**
+ * How far from the axis the line stands at one height: the OUTERMOST place it
+ * crosses, or null where it does not reach.
+ *
+ * Outermost rather than first or nearest, and that is the whole answer to a
+ * curve that doubles back. A wall is one radius per ring -- see `Clay.wall` --
+ * so a line that loops has to be read as something single-valued, and the
+ * honest reading is the material a real tool would leave: everything inside the
+ * outermost pass has been turned away by it. It also cannot fail, which the
+ * alternatives can -- "the first crossing" depends on which way the line was
+ * drawn, and "reject a curve that doubles back" is a tool that refuses a
+ * perfectly ordinary flick of the wrist.
+ */
+function outermostAt(line: Pt[], height: number): number | null {
+  let out: number | null = null
+  // THE DISTANCE FROM THE AXIS, whichever side of it the line was drawn on. A
+  // wall is a row of radii and a radius has no sign; the drawing has one only
+  // because the screen is a section and there are two walls on it to point at.
+  // See `toClay` in `SculptLayer`, which keeps the side so a knot lands under
+  // the pointer rather than across the piece from it.
+  //
+  // Interpolated BEFORE the sign is dropped, so a segment drawn across the axis
+  // reads as the wall pinching to nothing and opening again rather than as a
+  // jump between two radii -- which is what a tool run through the centre would
+  // actually leave.
+  const keep = (signed: number) => {
+    const r = Math.abs(signed)
+    if (out === null || r > out) out = r
+  }
+  for (let i = 1; i < line.length; i += 1) {
+    const [y0, r0] = line[i - 1]
+    const [y1, r1] = line[i]
+    // A segment lying flat at this height crosses it everywhere along its
+    // length, and the outermost of those is one of its two ends.
+    if (y0 === y1) {
+      if (y0 === height) {
+        keep(r0)
+        keep(r1)
+      }
+      continue
+    }
+    const t = (height - y0) / (y1 - y0)
+    if (t < -CROSSING_EPS || t > 1 + CROSSING_EPS) continue
+    keep(r0 + (r1 - r0) * Math.min(1, Math.max(0, t)))
+  }
+  return out
+}
+
+/**
+ * The wall re-cut to a drawn line: Point Sculpt.
+ *
+ * THE ONE TOOL ON THIS SCREEN THAT IS NOT A BRUSH. Push, Pull and Smooth all
+ * work by holding something against the wall and letting the clay come to it --
+ * see `mold`, and `Dab` for what one instant of that is. This one states the
+ * wall outright: the line drawn through the placed points IS the profile, at
+ * every ring it covers.
+ *
+ * WHICH MEANS IT CAN SHARPEN, and it is the only thing here that can. Every dab
+ * relaxes the window it moved, so a brush cannot leave a corner however hard it
+ * is held -- see `RELAX`. A shoulder, a step, a hard chamfer are shapes this
+ * screen simply could not make until now, and the way to make them is to put
+ * two points down and let the line between them be exactly what it says. So
+ * nothing here relaxes, and that is the feature rather than an omission.
+ *
+ * ONLY THE SPAN THE LINE COVERS, from its lowest point to its highest. The rest
+ * of the wall is not touched, which is what lets a neck be re-cut without
+ * losing the belly under it -- and it is also the reading that makes the tool
+ * usable more than once on a piece. Both ends of the span are butted straight
+ * on to the wall that was already there rather than blended into it: a step
+ * where the line meets the old profile is a shape the user asked for by
+ * stopping the line there, and a tool that quietly faired it away would be
+ * refusing the one thing this tool is for.
+ *
+ * Clamped through `withWall` like every other wholesale write, so a line drawn
+ * past the flare limit or through the axis lands on the piece the stock allows
+ * rather than turning the section inside out.
+ */
+export function sculpt(clay: Clay, line: Pt[]): Clay {
+  if (line.length < 2) return clay
+
+  let lo = Infinity
+  let hi = -Infinity
+  for (const [height] of line) {
+    if (height < lo) lo = height
+    if (height > hi) hi = height
+  }
+
+  const wall = [...clay.wall]
+  for (let i = 0; i < CLAY_RINGS; i += 1) {
+    const y = ringHeight(clay, i)
+    if (y < lo || y > hi) continue
+    const r = outermostAt(line, y)
+    if (r !== null) wall[i] = r
+  }
+  return withWall(clay, wall)
+}
+
 export function withWall(clay: Clay, wall: number[]): Clay {
   const { min, max } = wallBounds(clay.radius)
   const next = new Array<number>(CLAY_RINGS)
