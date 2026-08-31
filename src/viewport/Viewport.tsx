@@ -2,11 +2,10 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { Euler, MOUSE, Mesh, Quaternion, Raycaster, Vector3 } from 'three'
+import { Euler, MOUSE, Mesh, Quaternion, Raycaster, Vector2, Vector3 } from 'three'
 import type { Camera, MeshBasicMaterial } from 'three'
 import {
   MAX_FACE_OFFSET,
-  maxShapeSize,
   resizeAlongAxis,
   resizeShapeAlong,
   scaleShape,
@@ -14,7 +13,13 @@ import {
 import { assemblyAnchor, assemblyHalfExtent } from '../geometry/assembly'
 import type { SnapTarget } from '../geometry/snap'
 import { snapSinglePoint } from '../geometry/snap'
-import { hostSurfaceFor, samePatch, slideAnchor, surfaceFor } from '../geometry/surfaces'
+import {
+  hostSurfaceFor,
+  maxShapeSize,
+  samePatch,
+  slideAnchor,
+  surfaceFor,
+} from '../geometry/surfaces'
 import type { SurfaceDef } from '../geometry/surfaces'
 import { endFaceFrame } from '../geometry/prism'
 import { outlineAxis } from '../geometry/outline'
@@ -32,7 +37,7 @@ import {
   armedBrush,
   useTools,
 } from '../store/toolStore'
-import type { TransformMode } from '../store/toolStore'
+import type { StrokeBrush, TransformMode } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
 import { BrushScopePanel } from './BrushScopePanel'
 import { brushAllows } from './brushTarget'
@@ -40,17 +45,22 @@ import { STAGE_CAMERA, STAGE_MAX_DISTANCE, STAGE_MIN_DISTANCE, Stage } from './S
 import { RulerReadouts, Rulers } from './Rulers'
 import type { ObjectHit } from './picking'
 import {
+  clearPointerTrail,
+  ndcIn,
   pickAnchorAcrossObjects,
   pickAnchorOnObject,
   pickGroundPoint,
   pickPlanePoint,
+  pointerClient,
   pointerNdc,
+  takePointerTrail,
 } from './picking'
 import { dropCacheFor, releaseDropCache } from './dropCache'
 import { ObjectMenu, useObjectMenu } from './ObjectMenu'
 import type { DropCache } from './dropCache'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
 import { AxisCompass, CompassControl } from './AxisCompass'
+import type { Orbit } from './AxisCompass'
 import { SelectionHud } from './SelectionHud'
 import { ToolIsland } from './ToolIsland'
 import { RotationDial } from './RotationDial'
@@ -88,24 +98,25 @@ import {
 } from './snapping'
 
 /**
- * The slice of OrbitControls this file touches: whether it is listening, and
- * which gesture each mouse button asks it for.
+ * The slice of OrbitControls this file touches: everything the compass needs,
+ * plus the one thing only this screen does -- decide which gesture each mouse
+ * button asks for.
+ *
+ * BUILT ON `Orbit` rather than written out again. The ref goes to
+ * `CompassControl`, so the two descriptions have to agree; spelling the shared
+ * fields twice is how they stop agreeing, which is the case `Orbit`'s own note
+ * is about. Adding a field there now reaches here without anyone remembering to
+ * come and add it.
  *
  * Structural rather than the real class, because the ref is handed to drei's
  * component, which is typed loosely enough that naming the class here would buy
- * nothing. Both fields are written imperatively -- `enabled` because a drag has
- * to stop the camera synchronously, inside the press that started it, and the
- * buttons because which one orbits is decided per press.
+ * nothing. `enabled` and the buttons are both written imperatively -- `enabled`
+ * because a drag has to stop the camera synchronously, inside the press that
+ * started it, and the buttons because which one orbits is decided per press.
  */
-type Controls = {
-  enabled: boolean
+type Controls = (NonNullable<Orbit> & {
   mouseButtons: { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null }
-  /** The point the camera orbits, which a pan moves. Read by the compass, whose
-   *  flights turn about whatever the user is actually looking at. */
-  target: Vector3
-  /** Made to re-read the camera after something else has moved it. */
-  update: () => void
-} | null
+}) | null
 type Store = ReturnType<typeof useDoc.getState>
 type DragOf<K extends Drag['kind']> = Extract<Drag, { kind: K }>
 
@@ -255,8 +266,22 @@ function objectGrabOffset(objectId: string, vertical: boolean, measured: Vec3): 
  * `snapTargets(exclude)` filter offers, which is built for the gestures that
  * seek the rest of the scene.
  */
-function ownTargets(objectId: string): SnapTarget[] {
-  return snapTargets().filter((t) => t.objectId === objectId)
+function ownTargets(objectId: string, exceptFeature?: string): SnapTarget[] {
+  return snapTargets().filter((t) => {
+    if (t.objectId !== objectId) return false
+    if (t.kind !== 'centre') return true
+    // The solid's own middle is INSIDE it, and a sketch slides on the skin. On
+    // a thin plate that middle comes within reach of the surface, wins the
+    // snap, and then classifies as no anchor at all -- so the sketch would
+    // quietly stop snapping exactly where the plate is thinnest. Its FACE
+    // middles are on the skin and are the ones worth having.
+    if (t.of === 'solid') return false
+    // A sketch must not offer its own middle either: that is the one target
+    // guaranteed to be in reach, so the drag would be pulled straight back to
+    // where it started the moment it moved off it.
+    if (t.of === 'sketch') return t.featureId !== exceptFeature
+    return true
+  })
 }
 
 /** Drop point for a solid dragged in, resting on the grid under the pointer. */
@@ -292,7 +317,11 @@ function dragPlacingSketch(s: Store, raycaster: Raycaster, meshes: Map<string, M
  * because an anchor lives in the surface's own parameter space where a corner
  * of the solid is not a distinguished value.
  */
-function snappedSketchAnchor(object: SceneObject, raycaster: Raycaster): SurfaceAnchor | null {
+function snappedSketchAnchor(
+  object: SceneObject,
+  raycaster: Raycaster,
+  featureId?: string
+): SurfaceAnchor | null {
   const tools = useTools.getState()
   if (!tools.snap) return null
 
@@ -305,7 +334,7 @@ function snappedSketchAnchor(object: SceneObject, raycaster: Raycaster): Surface
 
   const snap = snapSinglePoint(
     toWorldPoint(object.transform, hit.point),
-    ownTargets(object.id),
+    ownTargets(object.id, featureId),
     tools.snapDistance
   )
   if (!snap) return null
@@ -355,7 +384,7 @@ function dragSketch(
   // frame that fails to snap has to clear last frame's marker itself.
   snapIndicator.hit = null
   const plain = pickAnchorOnObject(raycaster, object, meshes.get(object.id) ?? null)
-  const anchor = snappedSketchAnchor(object, raycaster) ?? plain
+  const anchor = snappedSketchAnchor(object, raycaster, drag.id) ?? plain
   if (anchor) s.moveTo(anchor)
 }
 
@@ -907,7 +936,7 @@ function dragSketchGizmo(
     // dividing by it would send the outline to infinity on the first frame.
     if (grab.radius < 1e-4) return
     s.resizeShapeTo(
-      scaleShape(grab.shape, radius / grab.radius, maxShapeSize(object.base))
+      scaleShape(grab.shape, radius / grab.radius, maxShapeSize(object.base, grab.anchor))
     )
     return
   }
@@ -929,7 +958,7 @@ function dragSketchGizmo(
   // Scale mode: stretch the outline along the arrow rather than sliding it.
   if (handle.mode === 'size') {
     s.resizeShapeTo(
-      resizeShapeAlong(grab.shape, handle.axis, travel, maxShapeSize(object.base))
+      resizeShapeAlong(grab.shape, handle.axis, travel, maxShapeSize(object.base, grab.anchor))
     )
     return
   }
@@ -1188,20 +1217,60 @@ function dragRulerGizmo(drag: DragOf<'ruler-gizmo'>, raycaster: Raycaster): void
 }
 
 /**
- * Where the last dab of the stroke in flight landed, in its object's own space.
+ * Where the last dab of the stroke in flight landed, in its object's own space,
+ * and where on screen the pointer was when the last frame read it.
  *
- * The stroke's only piece of memory, and it exists to space the dabs out: the
- * pointer reports many times per brush width, and laying a dab on every one of
- * them would make how fast you drag the thing that decides how deep the groove
- * goes. See `DAB_SPACING`.
+ * The stroke's only memory, and the two halves answer the two questions a brush
+ * asks between frames: how far the marks have got, and where the hand went to
+ * get there.
  *
- * A module-level ref rather than drag state because it changes several times a
- * second and never needs to be rendered -- the same reason the gizmo grabs and
+ * `lastDab` spaces the dabs out -- the pointer reports many times per brush
+ * width, and laying a dab on every one of them would make how fast you drag the
+ * thing that decides how deep the groove goes. See `DAB_SPACING`.
+ *
+ * `lastNdc` is where the FILL starts. It is the one number the pointer trail
+ * cannot supply: the trail holds the samples since the last frame, and the
+ * segment that has to be filled runs from where the previous frame left off to
+ * the first of them.
+ *
+ * Module-level refs rather than drag state because they change several times a
+ * second and never need to be rendered -- the same reason the gizmo grabs and
  * the snap indicator live out here. Dropped the instant the gesture is not a
  * stroke, so the next press starts by laying one down rather than measuring
  * against wherever the last stroke happened to end.
  */
 let lastDab: Vector3 | null = null
+let lastNdc: Vector2 | null = null
+
+/**
+ * Drop the stroke in flight.
+ *
+ * Called for every frame the gesture is not a stroke, which is where a stroke
+ * ENDS -- there is no other moment that sees it. So the next press starts by
+ * laying a dab down rather than measuring against wherever the last stroke
+ * happened to finish, and the path goes with it: a trail kept across a camera
+ * orbit would have the first frame of the next stroke fill in along wherever
+ * the hand had been in between, and melt a line across it.
+ */
+export function forgetStroke(): void {
+  lastDab = null
+  pauseStroke()
+}
+
+/**
+ * Keep the stroke, lose the path.
+ *
+ * For a pointer that has left the canvas mid-stroke -- out over the console, or
+ * off the window. The gesture is still alive and the last dab still says where
+ * the marks have got to, but where the hand went while it was away is the one
+ * thing the app has no record of. Filling in from where it went out to wherever
+ * it comes back would melt a line along a path nobody drew, so the return is
+ * treated as what it is: a jump, and a single dab where it lands.
+ */
+export function pauseStroke(): void {
+  lastNdc = null
+  clearPointerTrail()
+}
 
 /** The scope question, asked of a hit. See `brushAllows` for the rule itself. */
 function brushTarget(s: Store, hit: ObjectHit | null): string | null {
@@ -1213,61 +1282,319 @@ function brushTarget(s: Store, hit: ObjectHit | null): string | null {
 }
 
 /**
- * Hold the armed brush against whatever is under the pointer.
+ * The most dabs one frame of a stroke may lay.
  *
- * The dab lands where the RAY HITS, which is the surface as it stands this
+ * A ceiling on the CATCHING UP, not on the stroke. Filling a gap costs a
+ * raycast and a dab per step, and the gap is however far the pointer got since
+ * the last frame -- so a frame the browser lost to a collection, a window drag
+ * or a laptop waking up hands this a jump of any size at all, and without a
+ * limit the frame after a stall would try to melt a line across the whole scene
+ * and stall in its turn.
+ *
+ * Set well above what a real flick produces. A pointer crossing the canvas in a
+ * fifth of a second at 60 Hz moves about a sixth of the way per frame, which on
+ * a brush sized to what it is aimed at is a handful of steps; thirty-two is the
+ * runaway, not the fast hand.
+ */
+const MAX_FRAME_DABS = 32
+
+/**
+ * How near the last mark a filled-in dab may land before it is dropped as a
+ * pile-up rather than a step.
+ *
+ * The fill aims for a dab every `DAB_SPACING`, so a step that lands much nearer
+ * than that did not come from the arithmetic -- it came from the surface, which
+ * is not the straight line the steps were measured along. Over a shoulder or
+ * into a hollow two evenly spaced places on screen are not evenly spaced on the
+ * object, and a dab on top of the one before it only deepens it.
+ *
+ * Just under one, rather than one, because the ordinary evenly-spaced step
+ * lands at the spacing itself and must not be thrown away by a float's worth of
+ * rounding.
+ */
+const DAB_CROWD = 0.9
+
+/**
+ * How many places along a path are tried, looking for the object, on the frame
+ * neither end of the stroke was over it. See `dragErode`.
+ */
+const PATH_PROBES = 12
+
+/**
+ * Points a fixed fraction of a screen-space path apart, BY ARC LENGTH, starting
+ * one stride in.
+ *
+ * Along the path rather than across it: the path is the samples the pointer
+ * actually reported, so a flick that curved comes back curved and the dabs are
+ * laid where the hand went, instead of on the chord between the two places two
+ * frames happened to catch it. Straight-line interpolation is what turns a fast
+ * circle into a polygon -- the same artefact as the beading, one level up.
+ *
+ * A STRIDE RATHER THAN AN EVEN DIVISION, and it is the difference between the
+ * marks being a spacing apart and merely being evenly spread. A frame covers
+ * whatever ground it covers, which is not a whole number of spacings; dividing
+ * it evenly puts the dabs slightly closer together than the spacing every
+ * frame, which is the drag-slowly-bite-harder bug the spacing exists to
+ * prevent, arriving by the back door. So the steps are laid at the spacing and
+ * the remainder is simply left: the next frame measures its own gap from the
+ * last mark and takes the leftover up with it.
+ */
+function samplePath(path: Vector2[], stride: number, count: number): Vector2[] {
+  const span: number[] = []
+  let total = 0
+  for (let i = 1; i < path.length; i++) {
+    const d = path[i].distanceTo(path[i - 1])
+    span.push(d)
+    total += d
+  }
+
+  const out: Vector2[] = []
+  if (total <= 0) return out
+  for (let n = 1; n <= count; n++) {
+    let want = total * stride * n
+    let i = 0
+    while (i < span.length - 1 && want > span[i]) {
+      want -= span[i]
+      i++
+    }
+    out.push(path[i].clone().lerp(path[i + 1], span[i] > 0 ? Math.min(want / span[i], 1) : 1))
+  }
+  return out
+}
+
+/**
+ * Hold the armed brush against whatever is under the pointer, and fill in
+ * everything it passed over on the way.
+ *
+ * A STROKE IS A PATH, NOT A SAMPLE. This runs once a frame, and it used to lay
+ * one dab wherever it found the pointer -- so how far apart the marks landed
+ * was how far the pointer had travelled since the last frame, which is the
+ * user's speed times the app's frame time. Drag slowly and the dabs overlapped
+ * into the groove `DAB_SPACING` promises; flick, and they landed a diameter or
+ * more apart and the tool drew a row of separate spherical dents with the
+ * surface between them untouched. All of that is the sampling. The brush was
+ * never discontinuous; the reading of the hand was.
+ *
+ * So the frame is handed the whole path -- `takePointerTrail`, which keeps the
+ * samples the platform received between frames rather than only the newest --
+ * and walks it, laying a dab every `DAB_SPACING` of the way. The stroke a user
+ * gets is then the same stroke whichever speed they drew it at and whatever the
+ * frame rate was, which is what the spacing was always meant to guarantee and
+ * only ever guaranteed for a slow hand.
+ *
+ * IT WALKS THE SCREEN AND RAYCASTS EVERY STEP rather than interpolating between
+ * the two ends in the object's own space, because the straight line between two
+ * points ON a surface runs UNDER it. Anywhere curved, the chord dives into the
+ * solid -- and a dab is a sphere about its centre, so one sunk below the
+ * surface bites deeper than the one the user aimed and on a thin wall burns
+ * through where nothing was pointed. Stepping across the screen and asking the
+ * geometry where each step lands keeps every dab of the fill on the surface,
+ * for the same reason the frame's own dab is put where the ray hits.
+ *
+ * How MANY steps comes from the object and not from the screen: the gap between
+ * the last mark and this one, in the object's own units, over the spacing.
+ * Pixels would make the fill depend on the zoom.
+ *
+ * The dabs land where the RAY HITS, which is the surface as it stands this
  * frame rather than the shape the object started as -- so the brush follows the
  * material as it moves, down under the torch and up under the sculpt tool, and
  * a stroke held in one place goes on working instead of being left hovering
- * over its own crater or buried under its own bead.
+ * over its own crater or buried under its own bead. Within a frame the mesh
+ * does not change, so a fill is measured against the one surface the whole of
+ * that frame's travel was aimed at.
  *
- * It is stored in the object's LOCAL space, like every other coordinate in the
- * document, so a groove survives the object being moved and turned afterwards.
+ * They are stored in the object's LOCAL space, like every other coordinate in
+ * the document, so a groove survives the object being moved and turned
+ * afterwards.
  *
  * A pointer that wanders off the object mid-stroke simply lays nothing down.
  * The gesture stays alive, because the alternative -- ending the stroke -- would
  * make a drag across a gap into two undo steps.
  */
-function dragErode(
+export function dragErode(
   s: Store,
   drag: DragOf<'erode'>,
   raycaster: Raycaster,
-  meshes: Map<string, Mesh>
+  meshes: Map<string, Mesh>,
+  camera: Camera,
+  canvas: HTMLElement
 ): void {
   const object = s.doc.objects.find((o) => o.id === drag.objectId)
   if (!object) return
-
-  // Across every object, then filtered to the one the stroke started on. Asking
-  // only about that object would let the brush reach through a solid standing in
-  // front of it and melt the far one, which is not what the user is looking at.
-  const hit = pickAnchorAcrossObjects(raycaster, s.doc, meshes)
-  if (!hit || hit.objectId !== drag.objectId) return
-
-  const local = toLocalPoint(object.transform, hit.point)
   // Whichever brush is up, and its own three numbers -- see `armedBrush`. The
   // direction the dab is written with is the DRAG's, not this one's, so a
   // stroke stays one kind of mark end to end.
   const brush = armedBrush(useTools.getState())
   if (!brush) return
   const spacing = brush.radius * DAB_SPACING
-  if (lastDab && lastDab.distanceTo(local) < spacing) return
 
-  lastDab = local.clone()
-  s.erodeAt([local.x, local.y, local.z], brush.radius, brush.force, brush.smooth)
+  /** Where a point on screen lands on the object being worked, if it does. */
+  const landing = (ndc: Vector2): Vector3 | null => {
+    raycaster.setFromCamera(ndc, camera)
+    // Across every object, then filtered to the one the stroke started on.
+    // Asking only about that object would let the brush reach through a solid
+    // standing in front of it and melt the far one, which is not what the user
+    // is looking at.
+    const hit = pickAnchorAcrossObjects(raycaster, s.doc, meshes)
+    if (!hit || hit.objectId !== drag.objectId) return null
+    return toLocalPoint(object.transform, hit.point)
+  }
+
+  const lay = (at: Vector3): void => {
+    lastDab = at.clone()
+    s.erodeAt([at.x, at.y, at.z], brush.radius, brush.force, brush.smooth, brush.round)
+  }
+
+  /** A place on the object, put back on screen. */
+  const onScreen = (at: Vector3): Vector2 => {
+    const ndc = toWorldPoint(object.transform, at).project(camera)
+    return new Vector2(ndc.x, ndc.y)
+  }
+
+  /**
+   * How far apart, on screen, two dabs a spacing apart would look from a given
+   * place on the object.
+   *
+   * Measured ACROSS the view -- the camera's own right, stepped by the spacing
+   * -- so it is the size of a dab as the user sees it, at the depth the stroke
+   * is working, under whatever zoom and perspective are in force. It is the one
+   * way to step a path over ground the geometry says nothing about.
+   */
+  const screenSpacing = (from: Vector3): number => {
+    const across = new Vector3()
+      .setFromMatrixColumn(camera.matrixWorld, 0)
+      .multiplyScalar(spacing)
+    const world = toWorldPoint(object.transform, from)
+    const here = world.clone().project(camera)
+    const there = world.add(across).project(camera)
+    return Math.hypot(here.x - there.x, here.y - there.y)
+  }
+
+  // The frame's path: where the stroke had got to, then every sample since.
+  // Converted against one rect, because that is a layout read and there may be
+  // a dozen of them.
+  //
+  // IT BEGINS AT THE LAST MARK rather than at the last frame's pointer, and the
+  // two are not the same place: a frame lays its dabs at the spacing and stops,
+  // which leaves the pointer a little past the last of them. Measuring the fill
+  // from where the pointer got to would spend that remainder every frame, so a
+  // hand moving slowly enough to leave one dab per frame would leave them a
+  // little further apart than a hand moving quickly -- the beading again, small
+  // enough to be a rate rather than a row of dents. Anchored at the mark, the
+  // remainder is simply carried: the next frame measures its own gap from
+  // there and takes it up.
+  //
+  // `lastNdc` is what says the path is CONTINUOUS -- see `pauseStroke`. Without
+  // it the anchor would draw a line from the last mark to wherever the pointer
+  // reappeared.
+  const rect = canvas.getBoundingClientRect()
+  const anchor = lastNdc && lastDab ? onScreen(lastDab) : lastNdc
+  const path: Vector2[] = anchor ? [anchor.clone()] : []
+  const trail = takePointerTrail()
+  for (let i = 0; i < trail.length; i += 2) {
+    const p = ndcIn(rect, trail[i], trail[i + 1])
+    if (p) path.push(p)
+  }
+  // Where the pointer is now, for the frame no move event reached: a brush held
+  // still still has to go on biting.
+  const now = ndcIn(rect, pointerClient.x, pointerClient.y)
+  const last = path[path.length - 1]
+  if (now && !(last && now.equals(last))) path.push(now)
+
+  const end = path[path.length - 1]
+  if (!end) return
+  lastNdc = end.clone()
+
+  const target = landing(end)
+  const previous = lastDab
+
+  // Nothing to walk, only a place. The first frame of a stroke, or one that has
+  // just come back from off the canvas with no record of where the hand went
+  // while it was away -- see `pauseStroke`. One dab where the pointer is, if it
+  // is on anything, which is what this did for every frame before the fill
+  // existed.
+  if (path.length < 2) {
+    if (target && (!previous || previous.distanceTo(target) >= spacing)) lay(target)
+    return
+  }
+
+  let travel = 0
+  for (let i = 1; i < path.length; i++) travel += path[i].distanceTo(path[i - 1])
+  if (travel <= 0) return
+
+  // HOW FAR ALONG THE PATH ONE DAB IS, as a fraction of it.
+  //
+  // Ordinarily from the object: the gap between the last mark and where the
+  // frame ended, in the object's own units, is exactly the ground to be
+  // covered, and pixels would make the fill change with the zoom.
+  //
+  // A frame can end nowhere, though -- a flick that carried off the edge of the
+  // object, or clean past a small one, so that NEITHER end of it is over
+  // anything. That is not an edge case but the beading in its worst form: the
+  // whole crossing happened between two frames, and a tool that reads only the
+  // ends of it leaves the object untouched by a stroke drawn straight across
+  // it. So the path is probed for somewhere it does touch and the spacing is
+  // carried onto the SCREEN there: the same question asked of the projection
+  // instead of the geometry.
+  let stride: number
+  if (target && previous) {
+    const gap = previous.distanceTo(target)
+    // A pointer that has not moved a dab's worth. The gate is the spacing
+    // itself, and it is what keeps a slow drag from biting harder than a quick
+    // one -- the same promise the fill keeps from the other end.
+    if (gap < spacing) return
+    stride = spacing / gap
+  } else if (target) {
+    // The stroke's first mark. There is nothing behind it to fill in from.
+    return lay(target)
+  } else {
+    let from = previous
+    // Stopped at the first place that touches, rather than mapped over the
+    // whole set: each probe is a raycast against every object in the scene.
+    for (let n = 1; !from && n <= PATH_PROBES; n++) {
+      const [probe] = samplePath(path, n / (PATH_PROBES + 1), 1)
+      if (probe) from = landing(probe)
+    }
+    if (!from) return
+    const reach = screenSpacing(from)
+    if (!(reach > 0)) return
+    stride = reach / travel
+  }
+
+  for (const step of samplePath(path, stride, Math.min(Math.floor(1 / stride), MAX_FRAME_DABS))) {
+    // Asked of the geometry per step rather than trusted from the count,
+    // because the fill follows the SURFACE and the surface is not the straight
+    // line the steps were measured along. A step can land nowhere at all, where
+    // there is nothing to mark, or -- see `DAB_CROWD` -- on top of the mark
+    // before it.
+    const at = landing(step)
+    if (!at || (lastDab && lastDab.distanceTo(at) < spacing * DAB_CROWD)) continue
+    lay(at)
+  }
 }
 
 /**
  * The armed brush, drawn where it would bite: a sphere the size of the tool.
  *
- * ITS COLOUR IS WHICH BRUSH IT IS, and it is the app's existing pair rather
- * than a new one: red for material going away, which is what the eraser ghost
- * and the scope panel's tint already mean, and green for material arriving,
- * which is what a pushed-out face already means. A user does not have to learn
- * a second vocabulary to tell the two brushes apart mid-stroke, and the corner
- * panel is tinted to match, so the two things on screen that say what is armed
- * say it the same way. Read from the theme rather than written out here,
- * because the scene has one set of colours per theme and a literal in a
- * viewport component is exactly the drift `sceneColors.ts` exists to stop.
+ * ITS COLOUR IS WHICH BRUSH IT IS, and two of the three are the app's existing
+ * pair rather than a new one: red for material going away, which is what the
+ * eraser ghost and the scope panel's tint already mean, and green for material
+ * arriving, which is what a pushed-out face already means. A user does not have
+ * to learn a second vocabulary to tell those two apart mid-stroke, and the
+ * corner panel is tinted to match, so the two things on screen that say what is
+ * armed say it the same way.
+ *
+ * THE SMOOTHER IS THE THIRD COLOUR, and it has to be a third rather than a
+ * borrowed one: it neither takes material away nor puts any on, and wearing
+ * either of those would be the ghost promising the wrong thing every time it
+ * came up. It is a cool neutral -- see `round` in `sceneColors` -- which is the
+ * one thing in this scene's vocabulary that says "changes the shape without
+ * adding or subtracting", and it is deliberately not the accent, which already
+ * means selected.
+ *
+ * All of them read from the theme rather than written out here, because the
+ * scene has one set of colours per theme and a literal in a viewport component
+ * is exactly the drift `sceneColors.ts` exists to stop.
  *
  * Translucent, and drawn through whatever is in front of it, so you can see how
  * far into the solid the sphere reaches rather than only the cap facing you:
@@ -1288,7 +1615,12 @@ function BrushGhost({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
   const tool = useTools((s) => s.brushTool)
   const erodeRadius = useTools((s) => s.erodeRadius)
   const sculptRadius = useTools((s) => s.sculptRadius)
-  const radius = tool === 'sculpt' ? sculptRadius : erodeRadius
+  const smootherRadius = useTools((s) => s.smootherRadius)
+  // Subscribed rather than taken from `armedBrush`, which builds a fresh object
+  // per call and so can never settle as a selector. Each brush keeps its own
+  // size -- see `sculptRadius` -- so all three are read and one is chosen.
+  const radius =
+    tool === 'sculpt' ? sculptRadius : tool === 'smoother' ? smootherRadius : erodeRadius
   const { camera, gl } = useThree()
   const raycaster = useMemo(() => new Raycaster(), [])
   const ghost = useRef<Mesh>(null)
@@ -1319,7 +1651,7 @@ function BrushGhost({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
     <mesh ref={ghost} visible={false} renderOrder={19}>
       <sphereGeometry args={[1, 24, 16]} />
       <meshBasicMaterial
-        color={tool === 'sculpt' ? scene.out : scene.in}
+        color={tool === 'sculpt' ? scene.out : tool === 'smoother' ? scene.round : scene.in}
         transparent
         opacity={0.28}
         depthTest={false}
@@ -1356,7 +1688,7 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
     // the per-gesture caches are dropped -- before the early returns below,
     // which a released drag takes on its way out.
     clearGrabs(drag.kind)
-    if (drag.kind !== 'erode') lastDab = null
+    if (drag.kind !== 'erode') forgetStroke()
     if (drag.kind !== 'placing-solid') releaseDropCache()
     if (drag.kind === 'idle') {
       snapIndicator.hit = null
@@ -1369,6 +1701,8 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
       // last good spot, so releasing here reads as a cancel.
       if (drag.kind === 'placing') s.updatePlacing(null, null)
       else if (drag.kind === 'placing-solid') s.updatePlacingSolid(null)
+      // A stroke keeps its marks but forgets its path -- see `pauseStroke`.
+      else if (drag.kind === 'erode') pauseStroke()
       snapIndicator.hit = null
       return
     }
@@ -1403,7 +1737,7 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
         dragRulerGizmo(drag, raycaster)
         return
       case 'erode':
-        dragErode(s, drag, raycaster, meshes.current)
+        dragErode(s, drag, raycaster, meshes.current, camera, gl.domElement)
         return
     }
   })
@@ -1422,6 +1756,10 @@ function SnapMarker() {
     vertex: scene.out,
     edge: scene.accent,
     face: scene.sketchIdle,
+    // A centre is an alignment rather than a piece of material, so it wears the
+    // colour the scene already uses for measuring rather than a fourth hue
+    // invented for this marker.
+    centre: scene.ruler,
   }
   const marker = useRef<Mesh>(null)
 
@@ -1505,8 +1843,8 @@ function hintFor(
   valid: boolean,
   solid: string,
   handle: GizmoHandle | null,
-  /** Which brush is mid-stroke, for the one kind that has two of them. */
-  raise: boolean
+  /** Which brush is mid-stroke, for the one kind that has three of them. */
+  brush: StrokeBrush | null
 ): string {
   switch (kind) {
     case 'idle':
@@ -1522,9 +1860,17 @@ function hintFor(
     case 'moving-face':
       return 'Sliding the created face'
     case 'erode':
-      return raise
-        ? 'Drawing material onto the surface -- go over it again to build it up'
-        : 'Melting the surface -- go over it again to sink it further'
+      if (brush === 'sculpt') {
+        return 'Drawing material onto the surface -- go over it again to build it up'
+      }
+      // The one line here that says what a tool will NOT do, and it is the
+      // thing about this brush a user has to be told once: it arrives at a
+      // radius and stays there, so the instinct the other two teach -- go over
+      // it again -- is the wrong one.
+      if (brush === 'smoother') {
+        return 'Rounding the corners off -- they stop at the radius Strength asks for'
+      }
+      return 'Melting the surface -- go over it again to sink it further'
     case 'gizmo':
     case 'cut-gizmo':
       return gizmoHint(handle)
@@ -1670,8 +2016,9 @@ function DragHint() {
     return null
   })
   // Read off the DRAG rather than off the armed tool, so the line describes the
-  // stroke in flight -- see the `erode` drag's `raise`.
-  const raise = useDoc((s) => s.drag.kind === 'erode' && s.drag.raise)
+  // stroke in flight -- see the `erode` drag's `brush`. Null for every other
+  // gesture, which is what `hintFor` switches on.
+  const brush = useDoc((s) => (s.drag.kind === 'erode' ? s.drag.brush : null))
   // The marquee is not one of the document's drags -- drawing a box edits
   // nothing -- so it is asked about separately. Both selectors collapse to a
   // value that changes a handful of times per gesture rather than per move.
@@ -1719,7 +2066,7 @@ function DragHint() {
 
   return (
     <div className={`viewport-hint${valid ? '' : ' viewport-hint-bad'}`}>
-      {hintFor(kind, valid, solid, handle, raise)}
+      {hintFor(kind, valid, solid, handle, brush)}
       <span className="snap-readout" ref={readout} />
     </div>
   )

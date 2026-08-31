@@ -213,6 +213,36 @@ export type CutPlane = { id: string; origin: Vec3; normal: Vec3; side: 1 | -1 }
  * its own -- there is only the whole stroke, and undo is what takes one back --
  * so an id would be a field nothing ever reads.
  */
+/**
+ * HOW MUCH OF THE OBJECT EXISTED when a dab was laid: the length of each list
+ * the build chain walks, at that instant.
+ *
+ * A melt is a fact about a PARTICULAR SURFACE, and the surface it was aimed at
+ * is the one that was on screen at the time. Without this the dabs simply
+ * replayed over whatever the object had become -- so merging a second solid in
+ * melted the newcomer where the old strokes happened to reach, and a boss
+ * extruded out of a torched face came out already torched. Neither was ever
+ * asked for; both were the arithmetic of a stage that ran last no matter what
+ * had been added after it.
+ *
+ * COUNTS RATHER THAN IDS, and one per list rather than a single number. The
+ * chain is ordered -- parts, then features, then cuts, then erasers -- so a
+ * position in it is exactly how far into each of the four you have got, and a
+ * count is the one thing about a list that survives its members being edited.
+ * Ids would have to be reconciled against a list that no longer holds them; an
+ * index into a flattened chain would move the moment a feature was deleted.
+ *
+ * OPTIONAL, and absent means THE WHOLE OBJECT -- which is what every dab meant
+ * before this existed, and what the check scripts still say when they write a
+ * dab by hand. `erodeAt` stamps every real one.
+ */
+export type ErodeStamp = {
+  parts: number
+  features: number
+  cuts: number
+  erased: number
+}
+
 export type ErodeDab = {
   /** Centre of the brush, in the object's local space. */
   at: Vec3
@@ -244,6 +274,43 @@ export type ErodeDab = {
    * mesh of every torched object in the scene.
    */
   raise?: boolean
+  /**
+   * This dab ROUNDS the surface instead of moving it: the Smoother.
+   *
+   * The third brush, and the one that neither takes material away nor puts any
+   * on. What it carries is a TARGET, as a fraction of `radius`: the tightest
+   * radius a corner under the brush is allowed to keep. Anything sharper than
+   * that is eased until it is that round, and anything already rounder -- a
+   * flat face, a gentle curve, a corner this brush has already been over -- is
+   * left exactly where it was. See `roundOff` in `erode.ts`.
+   *
+   * A NUMBER RATHER THAN A FLAG, because unlike `raise` it is not merely which
+   * way the dab points -- it is where the dab STOPS, and a rounding dab with
+   * nothing to stop at would sand the object flat. Present is what makes this a
+   * rounding dab at all: `heat` and `smooth` are then both zero, honestly
+   * rather than as placeholders, since this brush neither bites nor flows.
+   *
+   * THE THIRD MEMBER OF THE ONE LIST, for the reason `raise` is the second:
+   * round a corner and then melt it and you have a melted round; melt it and
+   * then round it and you have a rounded melt. Only the order says which, so
+   * all three brushes lay their marks down the same array.
+   *
+   * Absent rather than zero on the other two brushes' dabs, so a document
+   * nobody has rounded is exactly the document it was before this tool existed
+   * -- which matters here for the reason it matters for `raise`: the
+   * evaluator's cache key is this array stringified.
+   */
+  round?: number
+  /**
+   * Where in the build chain this dab goes -- see `ErodeStamp`.
+   *
+   * Carried by the DAB rather than by the stroke or by the object, for the same
+   * reason `heat` is: a dab is a complete description of what it does, so the
+   * document says what the surface should look like without anyone having to
+   * remember what the object was shaped like at the time. Merge something in
+   * afterwards, or grow a boss, and the strokes already laid down do not move.
+   */
+  stamp?: ErodeStamp
 }
 
 /**
@@ -338,10 +405,16 @@ export type SceneObject = {
    * ONE LIST FOR BOTH, in stroke order, because which came first is what the
    * surface means -- see `ErodeDab.raise`.
    *
-   * The LAST thing applied, after the features, the cuts and the erasers, and
-   * for the same reason those run in that order -- a melt is a fact about the
-   * finished surface, and a boss grown afterwards would be grown out of a face
-   * that had not been melted yet.
+   * APPLIED WHERE IT WAS LAID rather than at a fixed point in the chain: each
+   * dab carries the shape of the object at the instant it was made -- see
+   * `ErodeDab.stamp` -- and the evaluator interleaves the melting with the
+   * building so the two happen in the order the user did them. Melt a face,
+   * grow a boss out of it, melt that: the first melt sees the face and not the
+   * boss, and the second sees both.
+   *
+   * An unstamped dab still runs LAST, after the features, the cuts and the
+   * erasers, which is where every dab used to run and what a hand-written one
+   * still means.
    *
    * Stored as strokes rather than as the melted mesh, which is the same bargain
    * `erased` strikes one line above: freezing the result would leave a base
@@ -403,8 +476,14 @@ export function nextCutId(): string {
  * SET rather than ten numbers: change this and the whole family moves together,
  * a sketch included, instead of a cube drifting away from the sphere it is
  * meant to drop beside.
+ *
+ * Exported, because the palette is no longer the only thing that has to know
+ * how big a thing is around here: the laser cutter's block starts at one span
+ * too. See `DEFAULT_BLOCK`. A screen that picked its own number would be a
+ * screen that disagreed with the rest of the app about the size of a
+ * ten-centimetre cube.
  */
-const DEFAULT_SPAN = 1
+export const DEFAULT_SPAN = 1
 
 /**
  * A fresh sketch lands well inside the face it is dropped on -- under a third

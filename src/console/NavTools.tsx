@@ -16,14 +16,16 @@ import {
   CUT_SIZE_MAX,
   CUT_SIZE_MIN,
   DEFAULT_CUT_PLANE,
+  ROUND_MIN,
   RULER_LENGTH,
   cutPlaneNormal,
-  onDocument,
   rulerLength,
+  snapsHere,
   useTools,
 } from '../store/toolStore'
 import type { CutPlaneState, RulerFrame, TransformMode } from '../store/toolStore'
 import type { Axis } from '../geometry/dimensions'
+import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
 // The camera, read the way the corner compass reads it. This file is where the
 // island's tools are defined; the island itself is a viewport component, and
 // `compassViews` is plain arithmetic with no React and no renderer in it.
@@ -41,6 +43,7 @@ import {
   ScaleIcon,
   SculptIcon,
   SettingsIcon,
+  SmootherIcon,
   SnapIcon,
 } from './navIcons'
 import { UNIT_MODES, formatLength, fromDisplay } from '../units'
@@ -205,16 +208,42 @@ export function MirrorTool() {
   )
 }
 
+/**
+ * Snap: one switch, and the distance that belongs to whichever screen you are
+ * on.
+ *
+ * IT USED TO BE DIMMED ANYWHERE BUT THE MODELLING SCREEN, on the reasoning that
+ * snapping is a rule every drag obeys and a screen with nothing to drag has no
+ * drags to govern. That reading was one screen out of date. The laser cutter
+ * has a drag worth aiming -- a Point Cut's knots line up with the knots already
+ * placed -- so the question the button is really asking is "is there anything
+ * here to catch", which is `snapsHere` and its table in `screens.ts`. The lathe
+ * still answers no, and is still dimmed.
+ *
+ * THE SWITCH IS SHARED AND THE DISTANCE IS NOT, which is the whole of what the
+ * panel below is doing with two fields. Working with snapping on is a
+ * preference and follows you about; how near is near is a fact about what is
+ * being aimed at, and the two screens do not aim at the same kind of thing. One
+ * catches the corner of a solid standing somewhere in a room, so its tolerance
+ * is a length in the world and a millimetre stays a millimetre as you lean in.
+ * The other lines a mark up with another mark on the same flat face, under a
+ * camera that zooms twenty times over, so its tolerance is a distance ON SCREEN
+ * -- which is also the only reading that survives that wheel. See
+ * `laserSnapDistance`, and `pointSnap.ts` for what the number does.
+ *
+ * ONE FIELD AT A TIME rather than both stacked. The panel is opened to answer
+ * "how close is close, here", and a second number that governs a screen you are
+ * not on is one more thing to read past.
+ */
 export function SnapTool() {
   const snap = useTools((s) => s.snap)
   const snapDistance = useTools((s) => s.snapDistance)
+  const laserSnapDistance = useTools((s) => s.laserSnapDistance)
   const setSnap = useTools((s) => s.setSnap)
   const setSnapDistance = useTools((s) => s.setSnapDistance)
-  // Dimmed on a screen that draws no document. Snapping is a rule every drag
-  // obeys, and a screen with nothing to drag has no drags for it to govern --
-  // the switch stays lit, because the rule has not changed, it simply has
-  // nothing to apply to here.
-  const live = useTools(onDocument)
+  const setLaserSnapDistance = useTools((s) => s.setLaserSnapDistance)
+  const live = useTools(snapsHere)
+  const onBlock = useTools((s) => s.screen === 'laser')
 
   return (
     <NavTool
@@ -234,15 +263,29 @@ export function SnapTool() {
           distance is what you came here to read, and a control that disappears
           when the tool is idle reads as a bug. */}
       <fieldset className="tool-group" disabled={!snap}>
-        <NumberField
-          unit
-          label="Distance"
-          value={snapDistance}
-          min={0.005}
-          max={2}
-          step={0.005}
-          onChange={setSnapDistance}
-        />
+        {onBlock ? (
+          <NumberField
+            label="Sensitivity"
+            value={laserSnapDistance}
+            min={LASER_SNAP_MIN}
+            max={LASER_SNAP_MAX}
+            step={1}
+            decimals={0}
+            resetTo={DEFAULT_LASER_SNAP}
+            tip="How near a point has to come to another point's row or column before it lines up with it. In pixels on screen, so it is the same reach under the finger at every zoom -- which a length in the world could not be on a camera that zooms this far."
+            onChange={setLaserSnapDistance}
+          />
+        ) : (
+          <NumberField
+            unit
+            label="Distance"
+            value={snapDistance}
+            min={0.005}
+            max={2}
+            step={0.005}
+            onChange={setSnapDistance}
+          />
+        )}
       </fieldset>
     </NavTool>
   )
@@ -321,10 +364,30 @@ export function cutPlaneSpawn(object: SceneObject | null): CutPlaneState {
 }
 
 /**
- * A bare toggle. Everything the cut needs aiming with lives in the console --
- * its placement in Position & Rotation, the rest in the Cut section -- because
- * a panel hanging off this button covered the one thing a plane is aimed
- * against: the solids it is about to sever.
+ * A switch, and -- once it is armed -- a caret with the two actions behind it.
+ *
+ * The shape every other tool on the island already has: the button arms the
+ * plane, which is the frequent act and stays one click, and the panel beside it
+ * holds what you then do with it. The actions used to hang UNDER the island as
+ * two more rows, which made Cut the one tool whose controls were not where
+ * every other tool's are -- and made the island change height the moment it was
+ * armed, shoving the brushes below it down the screen.
+ *
+ * WHAT IS STILL NOT IN IT is where the plane is. Its position and tilt are in
+ * the console, because a popover hanging off this button covers the one thing a
+ * plane is aimed against: the solids it is about to sever. What is in the panel
+ * is the pair that describe no part of the scene -- fire the cut, or put the
+ * blade back -- so there is nothing behind them worth seeing while they are up.
+ *
+ * THE CARET EXISTS ONLY WHILE IT IS ARMED, because the panel does: disarmed
+ * there is nothing to put in it, and a caret onto an empty box is a control
+ * that lies. `NavTool` works that out from having no children.
+ *
+ * AND ARMING OPENS IT, which no other tool on this island asks for and this one
+ * has to: a cut is fired from a BUTTON rather than by dragging the gizmo, so a
+ * user shown nothing but a plane would have nothing to press. It is what the
+ * rows under the island did by existing. The rule lives in `setCutActive`
+ * rather than in the handler below, so it holds however the tool is put down.
  */
 export function CutTool() {
   const cutActive = useTools((s) => s.cutActive)
@@ -332,15 +395,22 @@ export function CutTool() {
 
   return (
     <NavTool
+      id="cut"
       label="Cut"
       icon={<CutIcon />}
       active={cutActive}
       // Read at the press rather than subscribed to, exactly as the ruler reads
       // its frame: where the blade lands is only a question at the moment it is
       // armed, and a hook on the selection would re-render the island on every
-      // click in the scene.
+      // click in the scene. Arming also OPENS this tool's panel, and the store
+      // does that rather than this handler -- see `setCutActive`.
       onToggle={(on) => setCutActive(on, cutPlaneSpawn(selectedObject(useDoc.getState())))}
-    />
+    >
+      {/* Undefined rather than a component that renders null: `NavTool` decides
+          whether there is a panel from whether it was handed one, and an
+          element that happens to return nothing still counts as a child. */}
+      {cutActive ? <CutActions /> : undefined}
+    </NavTool>
   )
 }
 
@@ -518,6 +588,92 @@ export function SculptTool() {
   )
 }
 
+/**
+ * The Smoother: the same sphere held against a corner, taking the corner off.
+ *
+ * THE THIRD BRUSH AND THE ONE THAT ARRIVES SOMEWHERE. The torch and the sculpt
+ * tool are rates -- hold either against a spot and it keeps going, which is
+ * exactly what makes them brushes and exactly what makes them the wrong tool
+ * for "I want that edge rounded and then I want it to stop". This one converges:
+ * a stroke drives every corner it passes to one radius and leaves it there, and
+ * going over the same edge again leaves the same edge. See `roundOff`.
+ *
+ * TWO DIALS, NOT THREE, and the missing one is Smoothing, which would be this
+ * tool's own name written on a control inside it. The two that are here are the
+ * two that a round has: how much of the corner you are working, and how round.
+ *
+ * STRENGTH IS THE ODD WORD and the honest one available. It is not a force --
+ * nothing here pushes harder than anything else -- it is the radius the corner
+ * is driven to, as a share of the brush. Naming it "Radius" beside a field
+ * called "Brush size" would put two lengths in one panel where only one of them
+ * is a length; naming it "Roundness" is a word for a quality rather than an
+ * amount. Strength is what the other two brushes call the dial in this slot,
+ * doing the same job at a glance -- more of it is more of what the tool does --
+ * and the tooltip is where the rest of it belongs.
+ *
+ * Placed between Cut and the blowtorch in the island rather than beside the
+ * other two brushes, because what a user reaches for it after is a cut: the
+ * sharp arris a blade leaves is the commonest thing in this app that wants
+ * taking off. See `ToolIsland`.
+ */
+export function SmootherTool() {
+  const armed = useTools((s) => s.brushTool === 'smoother')
+  const radius = useTools((s) => s.smootherRadius)
+  const sizeUnit = useTools((s) => s.smootherSizeUnit)
+  const strength = useTools((s) => s.smootherStrength)
+  const setBrushTool = useTools((s) => s.setBrushTool)
+  const setSmootherRadius = useTools((s) => s.setSmootherRadius)
+  const setSmootherSizeUnit = useTools((s) => s.setSmootherSizeUnit)
+  const setSmootherStrength = useTools((s) => s.setSmootherStrength)
+
+  return (
+    <NavTool
+      id="smoother"
+      label="Smoother"
+      icon={<SmootherIcon />}
+      active={armed}
+      onToggle={(on) => setBrushTool(on ? 'smoother' : null)}
+      panelTitle="Smoother"
+      // No hover bubble, which is the island's rule rather than this tool's
+      // preference: every button here is aimed at the scene and pressed
+      // constantly, and a paragraph that appears whenever the pointer crosses
+      // one lands on top of the model it is about to be used on. See
+      // `ModeTool`, where the rule is set out, and the two brushes below,
+      // which carry none either. What the tool does is in Help, and the two
+      // things a first press has to know are on the dots inside the panel.
+    >
+      <div className="tool-group">
+        {/* Pinned to its own unit for the reason the torch's is, and pinned
+            separately so each brush can be read in whatever suits it. See
+            `erodeSizeUnit`. */}
+        <NumberField
+          ownUnit={{ unit: sizeUnit, onChange: setSmootherSizeUnit }}
+          label="Brush size"
+          value={radius}
+          min={BRUSH_RADIUS_MIN}
+          max={BRUSH_RADIUS_MAX}
+          step={0.01}
+          onChange={setSmootherRadius}
+          tip="How much of the corner one pass works. It also sets the widest round available, since Strength is a share of it."
+        />
+        {/* The floor is not zero, and it is geometry rather than taste: a round
+            finer than the triangles under it cannot be shown, and asking for
+            one would spend the whole vertex budget arriving at nothing. The
+            answer to wanting a finer round is a finer brush. See ROUND_MIN. */}
+        <NumberField
+          label="Strength"
+          value={strength}
+          min={ROUND_MIN}
+          max={1}
+          step={0.05}
+          onChange={setSmootherStrength}
+          tip="How round, as a share of the brush: at half, the round is about half the brush across. Passing over again does not round it further."
+        />
+      </div>
+    </NavTool>
+  )
+}
+
 /** `applyCut` takes plain data; the shared solve hands back a three vector. */
 function planeNormal(rotation: Vec3): Vec3 {
   const n = cutPlaneNormal(rotation)
@@ -528,7 +684,7 @@ function planeNormal(rotation: Vec3): Vec3 {
 const RECEIPT_MS = 8000
 
 /**
- * The two things you do to an armed plane, beside the switch that armed it.
+ * The two things you do to an armed plane: the body of the Cut tool's panel.
  *
  * On the island rather than in the console because they are ACTIONS, not
  * settings: the plane is aimed by dragging its gizmo in the viewport, and the
@@ -536,8 +692,16 @@ const RECEIPT_MS = 8000
  * aimed it -- not at the end of a scroll through the panels that describe the
  * document. Over the scene it is shorter still than it was in the bar.
  *
- * They exist only while the tool is armed, so the island is no taller than its
- * two switches for anyone not cutting.
+ * IN THE TOOL'S OWN PANEL, where it used to be two rows hanging under the whole
+ * island. The rows worked, and they were the only controls on this island that
+ * were not behind the caret of the tool they belong to -- so Cut was the one
+ * tool you learned twice, and arming it pushed everything below it down the
+ * column. See `CutTool`, which opens the panel on arming so that nothing is
+ * lost by the move.
+ *
+ * Still its own component, and still `null` when the plane is not armed. It is
+ * the honest statement of what these buttons are: two acts on a plane that
+ * exists, which is a thing to check rather than a thing to arrange for.
  */
 export function CutActions() {
   const cutActive = useTools((s) => s.cutActive)
@@ -596,15 +760,17 @@ export function CutActions() {
   }
 
   return (
-    <div className="nav-cut">
+    <div className="tool-group cut-actions">
       <button
         type="button"
         className="nav-action nav-action-primary"
         disabled={objectCount === 0}
-        // What the button is about to destroy is a sentence, and the island is
-        // 176px wide, so it rides the button itself. The count in the label
-        // carries the part that must not be missed: whether this is about to
-        // cut everything.
+        // What the button is about to destroy rides the button, rather than
+        // standing above it as a line of prose. As prose it was the widest
+        // thing in the panel, and a popover sized to a sentence nobody needs
+        // twice is mostly air: the COUNT in the label already carries the half
+        // that must not be missed -- whether this is about to cut everything --
+        // so the sentence is the elaboration, and elaboration goes in a title.
         title={target}
         onClick={cut}
       >
@@ -627,10 +793,15 @@ export function CutActions() {
         Reset plane
       </button>
 
+      {/* The outcome, under the button that produced it. It was a flyout
+          hanging off the island -- it had to be, with nowhere else to put a
+          sentence -- and inside a panel that is a popover over a popover. The
+          rules it obeys are unchanged: it clears itself after `RECEIPT_MS`, and
+          it goes the moment the plane it describes moves. */}
       {status !== null && (
-        <div className={`nav-flyout${missed ? ' nav-flyout-bad' : ''}`} role="status">
+        <p className={`cut-status${missed ? ' cut-status-bad' : ''}`} role="status">
           {status}
-        </div>
+        </p>
       )}
     </div>
   )

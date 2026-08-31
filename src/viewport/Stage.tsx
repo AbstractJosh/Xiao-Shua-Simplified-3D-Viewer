@@ -14,6 +14,17 @@ import { useSceneColors } from './useSceneColors'
  *
  * Everything here is inside a `<Canvas>` and draws nothing on its own account:
  * a viewport mounts this and then adds whatever it is for.
+ *
+ * THE GROUND CAN BE BOUNDED, and that is the one thing a screen gets to say
+ * about the room. `reach` is how far past the middle the grid is still drawn,
+ * in world units; left off, it never ends. Endless is right where the camera
+ * travels -- the modelling screen orbits a scene and pans across it, and ground
+ * that stopped somewhere would be a wall you could walk to. It is wrong where
+ * the camera does not: under a PROJECTION, distance no longer dims anything, so
+ * an endless grid is drawn at very nearly one brightness all the way to the
+ * edge of the window, and seen edge-on -- which is what a level camera makes of
+ * a ground plane -- it is one hard line straight across the screen with no end
+ * to it. A reach gives that line two ends. See `LaserViewport`.
  */
 
 /**
@@ -36,8 +47,100 @@ const GRID_Y = -0.002
 const GRID_ORDER_COARSE = -2
 const GRID_ORDER_FINE = -1
 
-export function Stage() {
+/**
+ * How far each grid reaches on the endless ground, and how wide a quad the two
+ * of them are ruled onto.
+ *
+ * The fine one gives out at about a metre and a half, which is roughly where
+ * centimetre cells stop being countable and start being moire; the coarse one
+ * carries on to thirty metres. `infiniteGrid` blows the quad up by the fade
+ * itself, so the 24 is a unit of reach rather than a size -- what actually gets
+ * drawn is some 360 units across for the fine grid and 7,000 for the coarse.
+ */
+const PLANE = 24
+const FINE_FADE = 14
+const COARSE_FADE = 300
+
+/**
+ * How much wider than its reach a BOUNDED ground's quad is cut.
+ *
+ * The fade is measured from the point under the CAMERA rather than from the
+ * middle of the plane -- drei projects the camera onto the grid and fades
+ * radially out from there -- so a quad exactly two reaches across would have
+ * its own edge inside the fade circle on any view the camera is not directly
+ * above, and a hard edge is the one thing a fade is for avoiding. Two and a
+ * half leaves the whole circle inside the quad with a standoff's worth to
+ * spare, at the cost of some fragments that discard themselves.
+ */
+const BOUNDED_PLANE = 2.5
+
+/**
+ * Where the fade is measured FROM, which is the other half of what bounding the
+ * ground means.
+ *
+ * Drei fades radially outward from a point, and the point is the camera
+ * projected onto the grid plane scaled by this: one puts it under the camera,
+ * zero puts it at the middle of the world.
+ *
+ * ENDLESS GROUND FADES FROM THE CAMERA, because there is nowhere else for it to
+ * fade from -- a floor with no middle has to dim around whoever is standing on
+ * it, and that is what keeps it from ending in front of a camera that travels.
+ *
+ * A BOUNDED ONE FADES FROM THE MIDDLE, because it has one and the middle is the
+ * whole point: the bed is a patch of ground around the thing standing on it,
+ * and it should be the same patch from every side. Faded from the camera it
+ * would slide about as the view came round -- brightest under the camera, which
+ * on a level view is a standoff's worth OFF the block, so the ground would be
+ * lit in front of the stock and dark behind it. See `LaserViewport`, where the
+ * block never leaves the middle.
+ */
+const FADE_FROM_CAMERA = 1
+const FADE_FROM_MIDDLE = 0
+
+/**
+ * What the two grids are drawn on and where each of them gives out, for a
+ * ground that reaches `reach` -- or for the endless one, when it does not
+ * reach anywhere.
+ *
+ * A function of its own, and exported, for the reason `withLogDepth` is: it is
+ * the whole of the decision, it is arithmetic, and `ui-check` can put a reach
+ * through it and read the answer without a canvas to draw on.
+ *
+ * THE FINE GRID IS CAPPED EVEN WHEN THE REACH IS NOT. Its cells are a
+ * centimetre, and a bed three blocks wide is 150 units across for the largest
+ * stock this app allows: ruled that far the fine grid is moire and nothing
+ * else, and the coarse one is already there to take the ground over. So the
+ * reach can pull it in, but never push it past where it stops being readable.
+ */
+export function groundPlan(reach?: number): {
+  endless: boolean
+  plane: [number, number]
+  fadeFrom: number
+  fineFade: number
+  coarseFade: number
+} {
+  if (reach === undefined) {
+    return {
+      endless: true,
+      plane: [PLANE, PLANE],
+      fadeFrom: FADE_FROM_CAMERA,
+      fineFade: FINE_FADE,
+      coarseFade: COARSE_FADE,
+    }
+  }
+  const side = reach * BOUNDED_PLANE
+  return {
+    endless: false,
+    plane: [side, side],
+    fadeFrom: FADE_FROM_MIDDLE,
+    fineFade: Math.min(reach, FINE_FADE),
+    coarseFade: Math.min(reach, COARSE_FADE),
+  }
+}
+
+export function Stage({ reach }: { reach?: number }) {
   const scene = useSceneColors()
+  const { endless, plane, fadeFrom, fineFade, coarseFade } = groundPlan(reach)
 
   return (
     <>
@@ -80,30 +183,32 @@ export function Stage() {
       <GuideGrid
         renderOrder={GRID_ORDER_FINE}
         position={[0, GRID_Y + 0.0005, 0]}
-        args={[24, 24]}
+        args={plane}
         cellSize={0.1}
         cellThickness={0.6}
         cellColor={scene.gridCell}
         sectionSize={1}
         sectionThickness={1.2}
         sectionColor={scene.gridSection}
-        fadeDistance={14}
+        fadeDistance={fineFade}
+        fadeFrom={fadeFrom}
         fadeStrength={1}
-        infiniteGrid
+        infiniteGrid={endless}
       />
       <GuideGrid
         renderOrder={GRID_ORDER_COARSE}
         position={[0, GRID_Y, 0]}
-        args={[24, 24]}
+        args={plane}
         cellSize={1}
         cellThickness={0.6}
         cellColor={scene.gridCell}
         sectionSize={10}
         sectionThickness={1.4}
         sectionColor={scene.gridSection}
-        fadeDistance={300}
+        fadeDistance={coarseFade}
+        fadeFrom={fadeFrom}
         fadeStrength={0.8}
-        infiniteGrid
+        infiniteGrid={endless}
       />
     </>
   )

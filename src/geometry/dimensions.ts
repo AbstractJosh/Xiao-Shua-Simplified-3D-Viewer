@@ -62,33 +62,12 @@ export const MAX_FACE_OFFSET = 10
 export const MIN_SHAPE = 0.005
 
 /**
- * Sensible upper bound for a sketch on a given solid, so it cannot be grown
- * past the face it sits on.
- *
- * Lives here, beside the solid dimensions, because two places ask: the
- * Inspector's Radius and Width fields, and the sketch gizmo's ring. A bound
- * only one of them honoured would let a drag build a sketch the panel then
- * refused to show.
+ * The upper bound for a sketch is NOT here. It used to be -- one switch over
+ * the eight kinds, reading a radius or a size off the base and shaving a flat
+ * tenth off it -- and that is exactly why it had to leave: how big a sketch may
+ * grow is a question about the FACE it sits on, and a base solid cannot answer
+ * one. See `maxShapeSize` in surfaces.ts, which asks the patch.
  */
-export function maxShapeSize(base: BaseSolid): number {
-  switch (base.kind) {
-    case 'box':
-    // An imported model measures like a box and bounds a sketch like one. It is
-    // the loosest of the eight bounds -- a mesh's actual surface wanders about
-    // inside its box rather than filling it -- but a sketch on one lands on a
-    // DERIVED anchor, which has no face to be clamped to in the first place.
-    case 'mesh':
-      return Math.min(...base.size) / 2
-    case 'sphere':
-    case 'platonic':
-    case 'cylinder':
-    case 'cone':
-    case 'capsule':
-    case 'pyramid':
-    case 'prism':
-      return base.radius * 0.9
-  }
-}
 
 /**
  * Scale a 2D outline about its own centre.

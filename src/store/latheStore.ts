@@ -1,14 +1,6 @@
 import { create } from 'zustand'
-import {
-  clampSides,
-  clampWall,
-  freshClay,
-  mold,
-  profileWall,
-  resize,
-  withWall,
-} from '../geometry/clay'
-import type { Clay, ClayProfile, Dab, Hollow } from '../geometry/clay'
+import { clampSides, clampWall, freshClay, mold, resize, withWall } from '../geometry/clay'
+import type { Clay, Dab, Hollow } from '../geometry/clay'
 
 /**
  * The lump on the lathe: what the Lathe screen has made.
@@ -57,9 +49,9 @@ type LatheState = {
    * that stops people trusting the button.
    *
    * One entry per STROKE rather than per frame: `beginStroke` pushes, and the
-   * sixty dabs that follow it are the one act it opened. The other pushers are
-   * the two acts that throw shaping away wholesale -- `centreFresh` and
-   * `shapeAs` -- which are exactly the presses somebody wants back.
+   * sixty dabs that follow it are the one act it opened. The only other pusher
+   * is `centreFresh`, the one act that throws shaping away wholesale -- which
+   * is exactly the press somebody wants back.
    */
   past: number[][]
   future: number[][]
@@ -116,15 +108,6 @@ type LatheState = {
   setHollow: (hollow: Hollow | null) => void
   /** Take the piece off and centre a fresh lump of the same stock. */
   centreFresh: () => void
-  /**
-   * Load a starting shape onto the lump: the same stock, a new wall.
-   *
-   * THROWS THE SHAPING AWAY, like `centreFresh`, and is offered without a
-   * warning for the same reason that one now is -- it costs one undo entry and
-   * Ctrl+Z is one press. A palette that asked "are you sure" before every tile
-   * would be a palette nobody browses, and browsing is what it is for.
-   */
-  shapeAs: (profile: ClayProfile) => void
   /** Step the wall back one act, or forward again. Inert with nothing to step. */
   undo: () => void
   redo: () => void
@@ -208,12 +191,6 @@ export const useLathe = create<LatheState>((set) => ({
       // also the one press it is safest to make. It used to be irreversible,
       // which is why it was worded as a whole sentence and dimmed on an
       // untouched lump.
-      ...remember(s),
-    })),
-  shapeAs: (profile) =>
-    set((s) => ({
-      clay: withWall(s.clay, profileWall(s.clay, profile)),
-      stroke: null,
       ...remember(s),
     })),
   undo: () =>

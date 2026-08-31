@@ -1,6 +1,5 @@
 import { BasePanel } from './BasePanel'
 import { ClipboardPanel } from './ClipboardPanel'
-import { ProfilePanel } from './ProfilePanel'
 
 /**
  * The console beside the Lathe viewport: what the piece is, and where it goes.
@@ -30,12 +29,6 @@ import { ProfilePanel } from './ProfilePanel'
  * cannot show, so there is nothing for a control over the drawing to sit
  * beside. See `BasePanel`.
  *
- * AND PROFILES UNDER IT, which is the same kind of thing one step further on:
- * Base says what section the wall is swept round, Profiles says what the wall
- * itself starts as. It is last because it is the panel you touch once at the
- * beginning of a piece and then leave, where the base is a switch you may flip
- * at any point and the shelf is where finished pieces go. See `ProfilePanel`.
- *
  * WHERE THE LATHE'S OTHER CONTROLS WENT, since they are still not here: the two
  * tools are on the island over the piece, because they are aimed by pointing
  * at it, and the stock is in a corner panel over the clay, because a size is
@@ -54,7 +47,6 @@ export function LatheConsole() {
     <aside className="console">
       <ClipboardPanel />
       <BasePanel />
-      <ProfilePanel />
     </aside>
   )
 }

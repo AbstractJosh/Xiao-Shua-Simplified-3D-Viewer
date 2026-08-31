@@ -1,12 +1,13 @@
 import { create } from 'zustand'
 import { Euler, Vector3 } from 'three'
 import type { ClayTool } from '../geometry/clay'
-import { BRUSH_SMOOTH_MIN } from '../geometry/erode'
+import { BRUSH_SMOOTH_MIN, ROUND_MIN } from '../geometry/erode'
 import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
+import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
 import { fromDisplay } from '../units'
 import { DEFAULT_HELP_SECTION } from '../helpTopics'
 import type { HelpSectionId } from '../helpTopics'
-import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT } from '../screens'
+import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT, SCREEN_SNAPS } from '../screens'
 import type { ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
@@ -30,17 +31,24 @@ import type { Vec3 } from '../geometry/types'
  * a click does. One field for all of them although they now hang off two
  * containers -- the island over the scene and the bar across the top -- because
  * the rule has not changed: they overlap the same viewport, so one at a time.
- * The cut plane used to have a panel of its own; its controls are in the
- * console now, because a popover hanging off the toolbar covered the only thing
- * a plane can be aimed against.
+ * The cut plane's NUMBERS are still not one of these, and for the reason they
+ * never were: they are in the console, because a popover hanging off the
+ * toolbar covered the only thing a plane can be aimed against. What `cut` holds
+ * is the two ACTIONS -- fire it, or put the blade back -- which describe no
+ * part of the scene and so cover nothing worth seeing. See `CutActions`.
  */
 export type NavPanel =
   | 'snap'
   | 'settings'
   | 'ruler'
+  | 'cut'
   | 'export'
   | 'erode'
   | 'sculpt'
+  // The Smoother's, and NOT `smooth`: that is the Lathe's rib, on a different
+  // screen with a different panel behind it. One id for two panels would have
+  // opened whichever happened to be mounted.
+  | 'smoother'
   | 'help'
   // The Lathe screen's two tools. One field still, and still for the same
   // reason -- a panel is a panel wherever its button is, and two of them open
@@ -53,16 +61,20 @@ export type NavPanel =
   // Not a tool that is aimed, and the only lid on this island that is not: it
   // is a setting for the whole piece with a panel to hold it. See `HollowTool`.
   | 'hollow'
+  // The Laser Cutter's two, which are the same tool wearing two ways of putting
+  // a line on a face. See `LaserTools`.
+  | 'freehand'
+  | 'points'
   | null
 
 /**
  * The panels that hang off buttons INSIDE the tool island, which go off screen
  * with it when it is collapsed.
  *
- * Five, and it is the CONTAINER that decides which rather than the screen: the
- * ruler list, the two modelling brushes' numbers and the two lathe tools' are
- * the panels that hang off buttons over a viewport. Only one island is ever
- * mounted, so the modelling three and the lathe two can share this list
+ * It is the CONTAINER that decides which rather than the screen: the ruler
+ * list, the three modelling brushes' numbers and the two lathe tools' are the
+ * panels that hang off buttons over a viewport. Only one island is ever
+ * mounted, so the modelling four and the lathe two can share this list
  * without ever being on screen together. The unit selector went to the bar
  * first and `snap` followed it, and neither collapses with anything now -- the
  * bar is always there. (The units menu has since become one group inside
@@ -76,12 +88,16 @@ export type NavPanel =
  */
 export const ISLAND_PANELS: NavPanel[] = [
   'ruler',
+  'cut',
   'erode',
   'sculpt',
+  'smoother',
   'push',
   'pull',
   'smooth',
   'hollow',
+  'freehand',
+  'points',
 ]
 
 /** Every bound in this file is applied with it, so a value written by a panel
@@ -113,21 +129,30 @@ export function cutPlaneNormal([rx, ry, rz]: Vec3): Vector3 {
 export { BRUSH_SMOOTH_MIN }
 
 /**
- * Which brush is in the user's hand, if either.
+ * The tightest round the Smoother will make, as a share of its brush.
+ * Re-exported rather than redefined for the reason BRUSH_SMOOTH_MIN is: the
+ * reason for it is geometry -- see the note in `erode.ts` -- and the panel and
+ * the brush must not be able to disagree about where the control bottoms out.
+ */
+export { ROUND_MIN }
+
+/**
+ * Which brush is in the user's hand, if any.
  *
- * ONE FIELD RATHER THAN TWO SWITCHES, and that is not a tidiness argument. The
- * blowtorch and the sculpt tool both claim the same gesture -- a plain left
- * press on a solid, dragged -- so "both armed" is not a state either of them
- * could act on; one of them would silently win, decided by whichever branch a
+ * ONE FIELD RATHER THAN THREE SWITCHES, and that is not a tidiness argument.
+ * The blowtorch, the Smoother and the sculpt tool all claim the same gesture --
+ * a plain left press on a solid, dragged -- so "two armed" is not a state any
+ * of them could act on; one would silently win, decided by whichever branch a
  * press happened to reach first. Held as a mode, the question cannot be asked:
- * arming one is choosing against the other, and no code has to enforce it. It
+ * arming one is choosing against the others, and no code has to enforce it. It
  * is the bargain `transformMode` already strikes for the three gizmos.
  *
  * The other tools stay independent booleans, because they genuinely are: a
  * ruler and an armed cut plane both being up is a scene with a measurement and
  * a blade in it, and neither takes the press off a solid.
  */
-export type BrushTool = 'torch' | 'sculpt' | null
+export type StrokeBrush = 'torch' | 'sculpt' | 'smoother'
+export type BrushTool = StrokeBrush | null
 
 /**
  * Which tool is against the piece, if either. The Lathe screen's whole toolset.
@@ -152,6 +177,65 @@ export type BrushTool = 'torch' | 'sculpt' | null
  * of putting a tool down, and this store has no notion of what a dab does.
  */
 export type LatheTool = ClayTool | null
+
+/**
+ * Which tool is in hand on the Laser Cutter, if any.
+ *
+ * ONE FIELD, and a separate one from `latheTool` and `brushTool`, for the two
+ * reasons those are separate from each other: they all claim the same gesture
+ * -- a left press on the block -- so "both armed" is a state neither could act
+ * on, and they are pointed at a block the other two screens have never heard
+ * of. See `LatheTool`, which sets out the whole argument.
+ *
+ * TWO OF THEM CUT AND ONE DOES NOT, which is the odd one out and worth saying
+ * why. `move` puts no line on the block at all: it is the tool that takes hold
+ * of a REFERENCE, to slide it about its face or pull a corner. It is in this
+ * field rather than in a flag of its own because it claims the same left press
+ * the cutters do -- a press on a picture cannot both start a line and pick the
+ * picture up, and one field is the only way to say that once. It is also what
+ * replaced the padlock: a reference used to be pinned so a cut could be drawn
+ * across it, and a tool you have to be HOLDING to move anything makes the pin
+ * redundant -- with a cutter in hand nothing on the face can be shifted, which
+ * is what the padlock was for.
+ *
+ * EMPTY-HANDED ON ARRIVAL, unlike the lathe, and the difference is what a press
+ * costs. On the lathe a press with a tool in hand moves some clay and the next
+ * press moves it back, so arriving armed saves everyone a click. Here a press
+ * starts a line that has to be finished, aimed and applied; arriving armed
+ * would mean the first press meant to turn the compass left a stroke on the
+ * face instead.
+ */
+export type LaserTool = 'freehand' | 'points' | 'move' | null
+
+/** The two that draw a line. `move` is the third, and it draws nothing. */
+export const isCutTool = (tool: LaserTool): tool is 'freehand' | 'points' =>
+  tool === 'freehand' || tool === 'points'
+
+/* HOW A POINT CUT'S POINTS ARE JOINED UP was three named modes here --
+   Straight, Fit to line, Manual -- and it is one switch now: `fitCurve`. See
+   it below for why, and `cutDraft` for what took the third mode's place. */
+
+/**
+ * How much rope the freehand stabiliser has, at full smoothing, as a fraction
+ * of the block's side.
+ *
+ * An eighth. The tool is dragged along behind the pointer on a rope this long
+ * -- see `ropeFollow` -- so the slack is also the radius of the wobble it
+ * absorbs completely, and an eighth of the block is a generous hand tremor at
+ * any zoom. Past that the line stops feeling attached to the pointer at all.
+ */
+export const MAX_ROPE = 0.125
+
+/**
+ * Where the smoothing dial rests.
+ *
+ * A THIRD ON RATHER THAN OFF. The tool this screen is for is a cutter, and a
+ * cut line that wobbles is a part that does not fit -- so the useful default is
+ * some help rather than none. A third of the rope is enough to take a hand's
+ * tremor out and short enough that the line still arrives where the pointer is
+ * rather than trailing visibly behind it.
+ */
+export const DEFAULT_ROPE = 1 / 3
 
 /**
  * What either tool may be sized to, and where the two of them start.
@@ -182,7 +266,7 @@ export const DEFAULT_LATHE_REACH = 0.25
 export const DEFAULT_LATHE_STRENGTH = 0.6
 
 /**
- * What either brush may be sized to.
+ * What any of the brushes may be sized to.
  *
  * The floor is a millimetre, which is the smallest feature this app can draw at
  * all; the ceiling is a quarter of the five-metre envelope, past which the
@@ -190,7 +274,7 @@ export const DEFAULT_LATHE_STRENGTH = 0.6
  *
  * Shared, and so are the defaults below, because these are facts about the
  * BRUSH -- the sphere, the mesh under it, the range this app's solids live in
- * -- rather than about either tool. What is not shared is where each tool's
+ * -- rather than about any one tool. What is not shared is where each tool's
  * dials happen to be sitting: see `sculptRadius`.
  */
 export const BRUSH_RADIUS_MIN = 0.01
@@ -200,7 +284,7 @@ export const BRUSH_RADIUS_MAX = 12.5
  * How far the pointer travels between one dab and the next, as a fraction of
  * the brush radius.
  *
- * Either tool is a brush, so a stroke is a RUN of overlapping dabs rather than
+ * All three are brushes, so a stroke is a RUN of overlapping dabs rather than
  * one swept shape -- and this is the overlap. A third of a radius means
  * consecutive dabs share most of their area, which is what makes a drag read as
  * one continuous groove or bead rather than a row of dents. Closer would only
@@ -213,6 +297,29 @@ export const DAB_SPACING = 0.34
 /** A brush a third of the span a fresh solid lands at: big enough to see what
  *  it does on a palette cube, small enough to aim at a corner of one. */
 export const DEFAULT_BRUSH_RADIUS = 0.3
+
+/**
+ * Where the SMOOTHER's brush starts: a centimetre, a third of the other two.
+ *
+ * It does not share `DEFAULT_BRUSH_RADIUS` because the three brushes are not
+ * reached for at the same moment. The torch and the sculpt tool are how a shape
+ * is arrived at, so they open wide enough to move a face; the Smoother is
+ * aimed at an edge that is already where it should be, and an edge is a thin
+ * thing. At 3 cm the first press on a palette cube took a bite out of a corner
+ * you can see across the viewport, which reads as a mistake rather than as a
+ * finish.
+ *
+ * A centimetre is also the honest scale for the number beside it. Strength is a
+ * share of this -- see `smootherStrength` -- so the brush is the ceiling on the
+ * round, and 1 cm puts the whole dial over the range a chamfer actually lives
+ * in: about 2.5 mm at the floor to a centimetre wide open.
+ *
+ * And it is the cheap end of the tool. A rounding dab refines the region it
+ * covers to suit the round it is making, so cost goes with the brush -- see
+ * ROUND_MIN. Starting fine means the first stroke anybody draws is the fast
+ * one, and going wider is a deliberate act with a visible price.
+ */
+export const DEFAULT_SMOOTHER_RADIUS = 0.1
 /** Half force, so one pass is plainly a mark and a second pass plainly deepens
  *  it -- the rate is the thing that has to feel right, not the single dab. */
 export const DEFAULT_BRUSH_FORCE = 0.5
@@ -220,6 +327,10 @@ export const DEFAULT_BRUSH_FORCE = 0.5
  *  smoothing the torch sandblasts rather than melting, and the sculpt tool
  *  lays down a ridge with the facets still on it rather than a bead. */
 export const DEFAULT_BRUSH_SMOOTH = 0.7
+/** Half the brush, so the round the Smoother leaves is plainly a round and
+ *  plainly smaller than the sphere that made it -- the two facts a first press
+ *  has to teach. See `smootherStrength`. */
+export const DEFAULT_BRUSH_ROUND = 0.5
 
 /**
  * Bounds on the plane, shared by the panel that types them and the gizmo that
@@ -342,12 +453,17 @@ export function dockIsland(
 /**
  * How many colours the picker remembers, and so how many slots its grid holds.
  *
- * Eight, in two rows of four: enough that a scene built from a handful of
- * colours keeps all of them within reach, and few enough that the grid stays a
- * thing you recognise at a glance rather than a list you read. The slots are
- * drawn whether or not there is a colour in them, so the panel does not change
- * height as the shelf fills -- a control that grows under the pointer is a
- * control you miss.
+ * Eight, in a single row: enough that a scene built from a handful of colours
+ * keeps all of them within reach, and few enough that the shelf stays a thing
+ * you recognise at a glance rather than a list you read. The slots are drawn
+ * whether or not there is a colour in them, so the panel does not change height
+ * as the shelf fills -- a control that grows under the pointer is a control you
+ * miss.
+ *
+ * Eight is also as many as the row holds. It was two rows of four, and the
+ * second row set the height of the whole panel; laid out across instead, the
+ * same eight cost nothing. Raising this number now needs the slots to shrink or
+ * the row to wrap, and a wrap puts the second row back.
  */
 export const RECENT_COLOR_SLOTS = 8
 
@@ -362,10 +478,10 @@ export type EraseScope = 'all' | 'selected'
  * picked -- and answering it with two different vocabularies would be two
  * things for a user to learn where there is only one idea.
  *
- * ONE SETTING FOR BOTH BRUSHES, for the same reason. "Which solids am I working
- * on" is a fact about the job rather than about the tool in your hand, and
- * having to re-narrow it every time you swapped the torch for the sculpt tool
- * would be a way of melting the wrong object.
+ * ONE SETTING FOR ALL THREE BRUSHES, for the same reason. "Which solids am I
+ * working on" is a fact about the job rather than about the tool in your hand,
+ * and having to re-narrow it every time you swapped the torch for the sculpt
+ * tool would be a way of melting the wrong object.
  *
  * Unlike the eraser's, this one is answered while the tool is live rather than
  * before a single confirming press, so it is on screen the whole time a brush
@@ -582,8 +698,45 @@ export type ToolState = {
    * can see happen without turning the camera.
    */
   mirrorAxis: Axis
+  /**
+   * Whether drags snap, wherever there is anything to snap to.
+   *
+   * ONE SWITCH ACROSS THE APP, because it is a way of WORKING rather than a
+   * property of what is being worked on -- somebody who wants their drags to
+   * catch wants that on the bench and at the cutter both, and having to arm it
+   * again on arriving at a screen is how a preference stops feeling like one.
+   * What is not shared is how near is near: see `laserSnapDistance`.
+   */
   snap: boolean
+  /**
+   * How near a drag has to come before the modelling screen's snap catches, as
+   * a length in the WORLD.
+   *
+   * The right kind of number there: what it catches is the corner or the middle
+   * of a solid, and a corner is somewhere in particular however near the camera
+   * happens to stand -- so the tolerance is a distance in the room, and a
+   * millimetre stays a millimetre when you lean in.
+   */
   snapDistance: number
+  /**
+   * And how near a Point Cut's knot has to come to another knot's row or column
+   * before it takes it, in PIXELS on screen.
+   *
+   * ITS OWN NUMBER, and this is the one thing about it worth arguing. Sharing
+   * `snapDistance` would be sharing a length in the world between two screens
+   * that do not mean the same thing by nearness. On the laser cutter there is
+   * nothing in a room to catch: the camera is square on to a flat face, the
+   * whole act is lining one mark up with another mark on that face, and what
+   * makes two marks look aligned is how far apart they are ON SCREEN. It is
+   * also the only reading that survives the wheel -- this camera zooms twenty
+   * times over, and a fixed world tolerance would swallow every neighbouring
+   * point at one end of that range and catch nothing at the other.
+   *
+   * The same choice the knots, the grips and the grab radius already make in
+   * `CutLayer`, for the same reason: these are facts about a hand and a screen.
+   * See `DEFAULT_LASER_SNAP` in `pointSnap.ts`, which owns the range as well.
+   */
+  laserSnapDistance: number
   /** Which unit lengths are SHOWN in. Purely a display choice: nothing in the
    *  document or the geometry changes with it. */
   displayUnit: UnitMode
@@ -713,7 +866,43 @@ export type ToolState = {
   sculptStrength: number
   sculptSmooth: number
 
-  /** What either brush may touch. Shared -- see `BrushScope`. */
+  /**
+   * The Smoother's two dials.
+   *
+   * TWO, NOT THREE, and the missing one is Smoothing -- which would be this
+   * whole tool's own name written on a control inside it. The other two brushes
+   * carry it because for them the flow is a SHARE of what a dab does beside
+   * sinking or raising; here there is nothing beside it, so the question "how
+   * much smoothing" has already been answered by having reached for this tool
+   * at all.
+   *
+   * `smootherStrength` is the one that replaces it, and it is a different KIND
+   * of number from the other two brushes' Strength. Theirs is a rate: how far
+   * one dab moves the surface, held down for longer and the mark goes deeper.
+   * This one is a DESTINATION -- the radius a corner under the brush is driven
+   * to, as a share of `smootherRadius` -- so a stroke arrives somewhere and
+   * stops, and going over the same corner again leaves it as it is. See
+   * `ErodeDab.round`.
+   *
+   * A share of the brush rather than a length of its own, which is what makes
+   * the two dials one gesture instead of two numbers to reconcile: the ghost
+   * sphere on screen is the corner you are working, and Strength is how much of
+   * it to fill. It also means the pair scales together -- halve the brush to get
+   * into a tighter corner and the round it leaves halves with it, which is
+   * almost always what was wanted.
+   *
+   * Its own size rather than the other brushes' shared, for the reason set out
+   * on `sculptRadius`: what differs between the three is not what a dial means
+   * but where you leave it, and taking an edge off is a different job from
+   * blocking a shape out. Here that shows up in the DEFAULT as well as in the
+   * drift -- this one starts at a third of the size the other two do. See
+   * `DEFAULT_SMOOTHER_RADIUS`.
+   */
+  smootherRadius: number
+  smootherSizeUnit: Unit
+  smootherStrength: number
+
+  /** What the armed brush may touch. Shared by all three -- see `BrushScope`. */
   brushScope: BrushScope
 
   /**
@@ -721,17 +910,80 @@ export type ToolState = {
    * `LatheTool`.
    */
   latheTool: LatheTool
+  /** Which cutting tool is in hand on the Laser Cutter. See `LaserTool`. */
+  laserTool: LaserTool
   /**
-   * Whether the lathe's stock panel is open, or shut down to its title strip.
+   * How much rope the freehand stabiliser has, 0 to 1, as a share of
+   * `MAX_ROPE`.
+   *
+   * A dial rather than a switch, because "how much help" is a real question
+   * with a different answer for a straight edge and for a traced curve -- and
+   * because zero is a perfectly good setting that a switch would have made a
+   * second control to find. It is the same shape as the modelling brushes'
+   * Smoothing, which is the other dial in this app that decides how much of the
+   * hand reaches the work.
+   */
+  freehandSmoothing: number
+  /**
+   * Whether a Point Cut runs a smooth curve through its points, or joins them
+   * with straight segments.
+   *
+   * IT WAS THREE MODES AND IS TWO STATES, and the third was never a way of
+   * reading the points at all. Straight was the polyline; Fit was a curve
+   * through every point; Manual was that SAME curve with its tangents exposed
+   * as handles to be aimed. So Fit and Manual differed by who owned the
+   * handles, not by what the line was -- and picking Manual to adjust something
+   * by hand also switched a straight line into a curve, which is the trap: the
+   * one mode named for hand-editing was the one you could not reach from a
+   * straight line.
+   *
+   * With one switch the two questions come apart. Off is straight segments, on
+   * is a smooth curve, and hand-editing is not a mode either way: points are
+   * dragged in both, and with the curve on every point carries a handle you may
+   * aim. A handle you have aimed is kept; the rest go on being fitted. Which is
+   * strictly more than the three modes could say, because "this point's tangent
+   * is mine and that one's is the curve's" had no mode to live in. See
+   * `handles` in `cutDraft`.
+   *
+   * The points survive the switch, because they are what the user placed and
+   * this is only how they are read. Off and on again does not lose a curve, and
+   * does not lose an aimed handle either.
+   *
+   * OFF TO START WITH, which is what it has always opened on: a straight line
+   * between two points is what anybody reaches for first, and it is the mode
+   * where what you placed is exactly what gets cut.
+   */
+  fitCurve: boolean
+  /* AUTO DISCARD USED TO LIVE HERE, one flag shared by both cutting tools: a
+     cut threw its own offcut away as it landed, for anyone trimming a block
+     down to a shape where every cut ends in the same Delete.
+
+     IT WENT WHEN THE OFFCUT STOPPED BEING A VERDICT. The cut used to decide
+     which piece was waste -- the smallest -- so binning it unasked was only
+     ever making the press you were going to make anyway. The cut still makes
+     that guess, but it hands the choice back now: see `choices` in
+     `laserStore`. A switch that throws a piece away before you have looked at
+     which one it picked is not a shortcut through that decision, it is a way
+     to lose the piece you came for -- and undo is a poor answer to something
+     that happens by default. */
+  /**
+   * Whether the stock panel is open, or shut down to its title strip.
    *
    * Here rather than in the component for the reason `islandCollapsed` and
    * `openPanel` are: the panel is driven headlessly in `ui-check`, and a
    * `useState` inside it is state no check and no other part of the app can
    * reach. Chrome, so like everything else in this store it stays out of undo.
    *
-   * Open to start with. It is the only place the size of the lump can be set,
+   * Open to start with. It is the only place the size of the stock can be set,
    * and a control that has to be found before it can be used is one nobody
    * finds -- the corner it stands in is empty scene otherwise.
+   *
+   * ONE FLAG FOR TWO SCREENS, the lathe's lump and the laser cutter's block.
+   * They are the same panel in the same corner doing the same job -- see
+   * `BlockPanel` -- and only one of them is ever mounted, so what is really
+   * being remembered is whether this user works with that corner open. That is
+   * the bargain `islandCollapsed` already strikes, and for the same reason: it
+   * is a fact about the hand, not about the screen.
    */
   stockOpen: boolean
   /**
@@ -822,6 +1074,7 @@ export type ToolState = {
   setMirrorAxis: (axis: Axis) => void
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
+  setLaserSnapDistance: (pixels: number) => void
   setDisplayUnit: (unit: UnitMode) => void
   setTheme: (theme: Theme) => void
   setShowOutlines: (on: boolean) => void
@@ -853,9 +1106,16 @@ export type ToolState = {
   setSculptSizeUnit: (unit: Unit) => void
   setSculptStrength: (strength: number) => void
   setSculptSmooth: (smooth: number) => void
+  setSmootherRadius: (radius: number) => void
+  setSmootherSizeUnit: (unit: Unit) => void
+  setSmootherStrength: (strength: number) => void
   setBrushScope: (scope: BrushScope) => void
   /** Take up a tool, or put the one in your hand down. */
   setLatheTool: (tool: LatheTool) => void
+  /** Take up a cutting tool, or put the one in hand down. */
+  setLaserTool: (tool: LaserTool) => void
+  setFreehandSmoothing: (smoothing: number) => void
+  setFitCurve: (fit: boolean) => void
   setStockOpen: (open: boolean) => void
   /**
    * Zoom the lathe's view, by a FACTOR rather than to a value.
@@ -912,6 +1172,7 @@ export const useTools = create<ToolState>((set) => ({
   mirrorAxis: 0,
   snap: true,
   snapDistance: DEFAULT_SNAP_DISTANCE,
+  laserSnapDistance: DEFAULT_LASER_SNAP,
   // `auto` by default: it reads correctly for a 2 mm boss and a 4 m wall alike,
   // which a fixed unit cannot do across the range the app now allows.
   displayUnit: 'auto',
@@ -950,16 +1211,34 @@ export const useTools = create<ToolState>((set) => ({
   sculptSizeUnit: 'cm',
   sculptStrength: DEFAULT_BRUSH_FORCE,
   sculptSmooth: DEFAULT_BRUSH_SMOOTH,
+  // And the Smoother's two. Its size does NOT start where the other two do: an
+  // edge is a thinner thing than a face, and this brush is the one that is
+  // aimed at edges. See `DEFAULT_SMOOTHER_RADIUS`.
+  smootherRadius: DEFAULT_SMOOTHER_RADIUS,
+  smootherSizeUnit: 'cm',
+  smootherStrength: DEFAULT_BRUSH_ROUND,
   // Everything, matching the eraser's default and for the same reason: the
   // commonest thing to do with a brush is point it at something and pull, and
   // a tool that silently did nothing until you had also selected the right
   // solid would read as broken.
   brushScope: 'all',
 
-  // Empty-handed. The lathe is a screen you arrive at to look at what is on it
-  // as often as to work, and a tool armed before it was picked up would take the
-  // first press meant for nothing in particular and put a dent in the piece.
-  latheTool: null,
+  // PUSH, IN HAND ON ARRIVAL. The lathe is a screen with one thing on it and
+  // one thing to do to it, and the commonest first act on a fresh cylinder is
+  // to take material off -- so the tool that does it is the one already held.
+  // The alternative was arriving empty-handed, which made the first press
+  // anybody made on the clay do nothing at all and read as a screen that was
+  // not working. Putting a tool down is still a press on its lit button.
+  latheTool: 'push',
+  // Empty-handed, unlike the lathe -- see `LaserTool` for why the two screens
+  // answer this differently.
+  laserTool: null,
+  freehandSmoothing: DEFAULT_ROPE,
+  // OFF, because straight is what placing points and joining them up means
+  // before anybody asks for anything else, and because it is the state in which
+  // what you see is exactly what you placed. Curving is a thing you decide
+  // about a line that already exists.
+  fitCurve: false,
   stockOpen: true,
   latheZoom: 1,
   pushReach: DEFAULT_LATHE_REACH,
@@ -1020,6 +1299,13 @@ export const useTools = create<ToolState>((set) => ({
 
   setSnap: (on) => set({ snap: on }),
   setSnapDistance: (d) => set({ snapDistance: Math.max(0, d) }),
+  // Clamped to the range the panel offers rather than only to nothing, because
+  // this one can be typed into as well as dragged and a snap reaching half the
+  // window is a knot that can never be placed anywhere.
+  setLaserSnapDistance: (pixels) =>
+    set({
+      laserSnapDistance: Math.min(LASER_SNAP_MAX, Math.max(LASER_SNAP_MIN, pixels)),
+    }),
     setDisplayUnit: (displayUnit) => set({ displayUnit }),
 
     setTheme: (theme) => set({ theme }),
@@ -1035,11 +1321,25 @@ export const useTools = create<ToolState>((set) => ({
   // goes to the default rather than to the spawn, because the spawn describes a
   // selection that will have moved on by the next arming -- and arming is where
   // it is asked for again.
+  // THE PANEL COMES AND GOES WITH THE PLANE, and it is stated here rather than
+  // in the button for the reason `setIslandCollapsed` states its own rule
+  // here: the invariant is about the state, and the button is only one of the
+  // ways in. Arming OPENS it, which no other tool asks for and this one has to
+  // -- a cut is fired from a button rather than by dragging the gizmo, so a
+  // user shown nothing but a plane would have nothing to press. It is what the
+  // actions did for themselves while they hung under the island.
+  //
+  // Disarming shuts it, but only if it is still the cut's own panel that is
+  // up: closing somebody else's would be this tool reaching outside itself.
   setCutActive: (on, spawn) =>
-    set(
+    set((s) =>
       on
-        ? { cutActive: true, cutPlane: spawn ?? DEFAULT_CUT_PLANE }
-        : { cutActive: false, cutPlane: DEFAULT_CUT_PLANE }
+        ? { cutActive: true, cutPlane: spawn ?? DEFAULT_CUT_PLANE, openPanel: 'cut' }
+        : {
+            cutActive: false,
+            cutPlane: DEFAULT_CUT_PLANE,
+            openPanel: s.openPanel === 'cut' ? null : s.openPanel,
+          }
     ),
 
   setCutPlane: (patch) => set((s) => ({ cutPlane: { ...s.cutPlane, ...patch } })),
@@ -1096,9 +1396,40 @@ export const useTools = create<ToolState>((set) => ({
   setSculptStrength: (strength) => set({ sculptStrength: clamp(strength, 0, 1) }),
   setSculptSmooth: (smooth) => set({ sculptSmooth: clamp(smooth, BRUSH_SMOOTH_MIN, 1) }),
 
+  // The Smoother's two, its size held to the same bounds as the other brushes'
+  // for the same reason: they are one brush's limits, not one tool's.
+  setSmootherRadius: (radius) =>
+    set({ smootherRadius: clamp(radius, BRUSH_RADIUS_MIN, BRUSH_RADIUS_MAX) }),
+  setSmootherSizeUnit: (smootherSizeUnit) => set({ smootherSizeUnit }),
+  // The floor is not zero, and it is geometry rather than taste: a round finer
+  // than the triangles under it cannot be shown, and asking for one spends the
+  // whole vertex budget arriving at nothing. See ROUND_MIN.
+  setSmootherStrength: (strength) => set({ smootherStrength: clamp(strength, ROUND_MIN, 1) }),
+
   setBrushScope: (scope) => set({ brushScope: scope }),
 
   setLatheTool: (latheTool) => set({ latheTool }),
+  // Putting a tool down shuts its panel with it: every control in there is
+  // about a line that is no longer being drawn. Taking one UP opens its panel,
+  // the way arming the cut plane does -- the tool's own Apply lives in there,
+  // and a cut you could draw but not fire would be the panel nobody found.
+  //
+  // MOVE HAS NO PANEL, so it counts as putting the cutter down: it is a tool
+  // with nothing to aim, and leaving the last cutter's panel standing open over
+  // a block you are now dragging pictures about would be a lid with no button
+  // under it.
+  setLaserTool: (laserTool) =>
+    set((s) => ({
+      laserTool,
+      openPanel: isCutTool(laserTool)
+        ? laserTool
+        : s.openPanel === 'freehand' || s.openPanel === 'points'
+          ? null
+          : s.openPanel,
+    })),
+  setFreehandSmoothing: (freehandSmoothing) =>
+    set({ freehandSmoothing: clamp(freehandSmoothing, 0, 1) }),
+  setFitCurve: (fitCurve) => set({ fitCurve }),
   setStockOpen: (stockOpen) => set({ stockOpen }),
   // Clamped in `latheView`, so the range is written down once beside the frame
   // that has to honour it rather than here and there again.
@@ -1215,6 +1546,17 @@ export const useTools = create<ToolState>((set) => ({
 export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.screen]
 
 /**
+ * Is there anything HERE for a snap to catch?
+ *
+ * The question Snap itself is asking, and it stopped being the same question as
+ * `onDocument` the moment the laser cutter's knots learned to line up with each
+ * other. A drag does not need a document to be worth aiming -- see
+ * `SCREEN_SNAPS`, which is where the answer lives so that the day a fourth
+ * screen arrives it is answered there rather than here.
+ */
+export const snapsHere = (s: ToolState): boolean => SCREEN_SNAPS[s.screen]
+
+/**
  * The tool in the user's hand and its two dials, gathered.
  *
  * The lathe half of `armedBrush` below, and read the same way: with
@@ -1240,11 +1582,22 @@ export const armedLatheTool = (s: ToolState): ArmedLatheTool | null => {
 
 export type ArmedBrush = {
   radius: number
-  /** How far one dab moves the surface, 0..1: Heat, or Strength. */
+  /** How far one dab moves the surface, 0..1: Heat, or Strength. Zero for the
+   *  Smoother, which moves nothing of its own. */
   force: number
   smooth: number
   /** Up rather than down -- the sculpt tool. See `ErodeDab.raise`. */
   raise: boolean
+  /**
+   * The radius corners are driven to, as a share of `radius` -- the Smoother,
+   * and `null` for the two brushes that have no such thing.
+   *
+   * It travels with the numbers rather than being re-derived at the far end for
+   * the reason `raise` does: it is what makes these a description of ONE brush
+   * rather than of a size, a force and a smoothing that could belong to any of
+   * the three.
+   */
+  round: number | null
 }
 
 export function armedBrush(s: ToolState): ArmedBrush | null {
@@ -1254,6 +1607,7 @@ export function armedBrush(s: ToolState): ArmedBrush | null {
       force: s.erodeHeat,
       smooth: s.erodeSmooth,
       raise: false,
+      round: null,
     }
   }
   if (s.brushTool === 'sculpt') {
@@ -1262,6 +1616,18 @@ export function armedBrush(s: ToolState): ArmedBrush | null {
       force: s.sculptStrength,
       smooth: s.sculptSmooth,
       raise: true,
+      round: null,
+    }
+  }
+  if (s.brushTool === 'smoother') {
+    // Zero force and zero flow, honestly rather than as placeholders: this
+    // brush neither bites nor pours. Everything it does is in `round`.
+    return {
+      radius: s.smootherRadius,
+      force: 0,
+      smooth: 0,
+      raise: false,
+      round: s.smootherStrength,
     }
   }
   return null

@@ -32,6 +32,18 @@ export type SceneColors = {
   out: string
   /** Mirrors --in: material taken away, and what an eraser wears. */
   in: string
+  /**
+   * Mirrors --round: the shape changed without material going either way.
+   *
+   * The Smoother's, and the third member of a pair that had only ever needed
+   * two. `out` and `in` are a direction -- more material or less -- and that
+   * vocabulary has no word for a tool that eases a corner over and leaves the
+   * solid weighing very nearly what it did. So this is deliberately NEUTRAL in
+   * each theme: cool, unsaturated, and readable against the ground without
+   * claiming to be either of the other two. It is also deliberately not
+   * `accent`, which already means selected everywhere else in the scene.
+   */
+  round: string
   /** Mirrors --danger: the armed cut plane. */
   danger: string
   /** Mirrors --ruler: a measurement laid across the scene. */
@@ -98,6 +110,10 @@ const DARK: SceneColors = {
   accent: '#59a5ff',
   out: '#5fd68a',
   in: '#ff7a66',
+  // A cool steel, a long way round the wheel from both of the above and well
+  // clear of the accent's #59a5ff: over near-black it reads as a tool rather
+  // than as a highlight.
+  round: '#9fc3d8',
   danger: '#e0574a',
   ruler: '#ffd60a',
   rulerStripe: '#20252e',
@@ -140,6 +156,9 @@ const LIGHT: SceneColors = {
   accent: '#0b63ce',
   out: '#0f7a42',
   in: '#c2412c',
+  // The same steel taken well down, because over a pale drafting sheet the
+  // dark half of the range is where a mark has to sit to be seen at all.
+  round: '#3f6a82',
   danger: '#b5352a',
   ruler: '#9a6b00',
   rulerStripe: '#f2f5f9',
@@ -187,6 +206,11 @@ const CYBERPUNK: SceneColors = {
   accent: '#5ef6ff',
   out: '#ffa500',
   in: '#f44638',
+  // Neutral is the one thing this palette has none of: its three bright hues
+  // are all spoken for, and the fourth was already spent on the ruler. So the
+  // Smoother wears the theme's own dark purple lifted into the light -- a grey
+  // that belongs to #140C15 rather than a grey imported from somewhere else.
+  round: '#b9a5c4',
   danger: '#f44638',
   ruler: '#fcee0a',
   rulerStripe: '#2a1016',
@@ -256,6 +280,7 @@ export const SCENE_CSS_VARS: ReadonlyArray<readonly [string, keyof SceneColors]>
   ['--accent', 'accent'],
   ['--out', 'out'],
   ['--in', 'in'],
+  ['--round', 'round'],
   ['--danger', 'danger'],
   ['--ruler', 'ruler'],
   // The sketch outline. It reached the stylesheet when the console grew a panel

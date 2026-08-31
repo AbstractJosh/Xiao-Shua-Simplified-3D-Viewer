@@ -83,6 +83,11 @@
   --accent: #59a5ff;
   --out: #5fd68a;
   --in: #ff7a66;
+  /* The shape changed with the material staying put: the Smoother. --out and
+     --in are a direction, and rounding a corner off is not one, so it needs a
+     word of its own -- a cool neutral, clear of both and clear of the accent.
+     Mirrored in sceneColors.ts, where the ghost sphere reads it. */
+  --round: #9fc3d8;
   --danger: #e0574a;
   /* An eraser is a subtraction, so it wears the colour a subtraction already
      wears: --in is what tints an inward feature in the Inspector and the scene
@@ -242,6 +247,7 @@
   --accent: #0b63ce;
   --out: #0f7a42;
   --in: #c2412c;
+  --round: #3f6a82;
   --danger: #b5352a;
   /* Yellow is the one hue with nowhere to go on white: #ffd60a on a pale ground
      is invisible, and a ruler that cannot be seen is worse than no ruler. It
@@ -321,6 +327,10 @@
   --accent: #5ef6ff;
   --out: #ffa500;
   --in: #f44638;
+  /* Neutral is the one thing this palette has none of, so the Smoother wears
+     the theme's own dark purple lifted into the light rather than a grey
+     borrowed from somewhere else. */
+  --round: #b9a5c4;
   --danger: #f44638;
   /* The one value not in the source theme. It gives three bright hues and this
      app needs four -- an accent, an addition, a subtraction, and a measurement
@@ -1245,6 +1255,10 @@ body {
   --brush-tint: var(--out);
 }
 
+.brush-scope-smoother {
+  --brush-tint: var(--round);
+}
+
 .brush-scope-head {
   font-size: var(--t-label);
   font-weight: 600;
@@ -1579,16 +1593,28 @@ body {
    caught by every drag that started a little too far right. Red, because what
    it places is red, and because nothing else in this panel takes anything
    away. */
+
+/* Square on the row's content height -- the same 30px the solid icon gets, which
+   is the most the grip can take without pushing `--solid-row` past 42px and
+   costing the list one of its four visible rows. The minus inside it was the
+   one glyph in this panel small enough to be missed entirely: at 20px, with the
+   icon drawn at 14, the bar itself came to four and a half pixels of hairline.
+   Width is free -- the label beside it flexes -- so the limit here is purely the
+   row's height, and the grip is sized right up against it.
+
+   `--solid-grip` is what the invisible side-count bands inset themselves by, so
+   it tracks the button: still the button plus the row's right padding, so a
+   sweep for a polygon stops before it reaches the thing that erases. */
 .solid-item {
-  --solid-grip: 26px;
+  --solid-grip: 37px;
 }
 
 .solid-erase {
   position: relative;
   z-index: 1;
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -1604,8 +1630,8 @@ body {
 }
 
 .solid-erase svg {
-  width: 14px;
-  height: 14px;
+  width: 24px;
+  height: 24px;
 }
 
 .solid-item:hover .solid-erase {
@@ -1671,9 +1697,13 @@ body {
   color: var(--erase);
 }
 
+/* 12, not the 15 this was: `EraseIcon` now fills its viewBox instead of
+   sitting in the middle of it, and 12px of the new artwork is the same box
+   on screen as 15px of the old. Nothing about the Subtract header asked to
+   change -- the growth was wanted on the Solids grip, and only there. */
 .erase-mark svg {
-  width: 15px;
-  height: 15px;
+  width: 12px;
+  height: 12px;
 }
 
 .erase-title {
@@ -2135,9 +2165,16 @@ body {
 
 .chip {
   position: relative;
-  /* Square targets: bigger drag surface, and the polygon chip needs the
-     vertical room to split into six readable bands. */
-  aspect-ratio: 1;
+  /* Was square, and was square for one reason: the polygon chip split into six
+     bands that STACKED, and six readable bands need the height. That made a
+     panel of three shapes 181px tall -- as tall as the ten-row Solids list --
+     to buy vertical room only one of the three chips ever used.
+
+     The bands run across the chip now, so the height buys nothing and is set
+     to what the face actually needs. 56px keeps a band 21px wide, which is the
+     size those bands already were in the other direction: the sweep target did
+     not shrink, it turned. */
+  height: 56px;
   padding: 0;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -2157,31 +2194,39 @@ body {
   background: var(--surface-3);
 }
 
-/* Visual content sits under the interactive layer and never intercepts it. */
+/* Visual content sits under the interactive layer and never intercepts it.
+
+   Icon beside the label rather than above it, which is what a chip this shape
+   has room for -- and what a Solids row directly below this panel already
+   does. */
 .chip-face {
   position: absolute;
   inset: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  gap: 8px;
   pointer-events: none;
 }
 
+/* 30, down from 42: the shape has to sit on one line beside its name now. It
+   is the size a Solids row draws its solid at, so the two palettes read as one
+   catalogue rather than as a big one above a small one. */
 .chip-icon {
-  width: 42px;
-  height: 42px;
+  width: 30px;
+  height: 30px;
   transition: color 0.1s;
 }
 
 /* --- polygon chip: six invisible bands --- */
 
+/* A row, not a column. `flex-direction` is left at its default here rather than
+   written out as `row`, because the chip's height is no longer free to hold a
+   column and a stacked layout is not a thing to switch back to. */
 .ngon-bands {
   position: absolute;
   inset: 0;
   display: flex;
-  flex-direction: column;
 }
 
 /* Deliberately edgeless: the bands are felt through the icon changing, not
@@ -2236,69 +2281,6 @@ body {
   color: var(--muted);
   font-size: var(--t-label);
   line-height: 1.45;
-}
-
-/* --- the lathe's starting profiles ---
-
-   Four across, two down. The tiles are TALL, unlike everything else in a
-   console that is roughly square, and that is the point: what they show is a
-   piece standing on a lathe, and a bowl and a goblet are told apart by their
-   proportion before they are told apart by their outline. */
-.profile-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-}
-
-.profile-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 7px 2px 5px;
-  appearance: none;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--muted);
-  font: inherit;
-  font-size: var(--t-label);
-  cursor: pointer;
-  transition: border-color 0.12s, color 0.12s, background 0.12s;
-}
-
-.profile-tile:hover {
-  border-color: var(--line-3);
-  color: var(--text);
-  background: var(--surface-3);
-}
-
-.profile-tile:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* NO CHOSEN STATE, deliberately, and it is the one thing that makes this panel
-   different from Base above it. A profile is not what the piece IS -- it is
-   what the piece STARTED as, and one push later that is no longer true. A lit
-   tile would go on claiming a shape the clay had left. */
-.profile-icon {
-  width: 30px;
-  height: 38px;
-  fill: var(--surface-4);
-  stroke: var(--line-4);
-  stroke-width: 1;
-  stroke-linejoin: round;
-}
-
-.profile-tile:hover .profile-icon {
-  fill: var(--surface-3);
-  stroke: var(--accent);
-}
-
-.profile-name {
-  font-size: 10px;
-  letter-spacing: 0.02em;
 }
 
 /* --- the lathe's base shape: circle, or one of eight polygons ---
@@ -2910,7 +2892,6 @@ body {
   opacity: 0.45;
 }
 
-.cut-status,
 .snap-readout {
   margin: 8px 0 0;
   color: var(--muted);
@@ -2918,6 +2899,32 @@ body {
   font-size: var(--t-label);
   font-variant-numeric: tabular-nums;
   line-height: 1.45;
+}
+
+/* What the last press of Apply cut came to, under the button that produced it.
+   Ordinary text rather than the monospace a readout gets: it is a sentence
+   about the scene, not a number.
+
+   IT DOES NOT GET A VOTE ON THE WIDTH. The panel is sized to its content, and
+   this is the one piece of content that is a sentence -- left to weigh in, a
+   miss would stretch the panel half as wide again for eight seconds and drop
+   it back. Zero width keeps it out of that measurement; the 100% floor gives
+   it the whole panel once the buttons have decided how wide that is, so the
+   sentence wraps inside the box rather than setting it. */
+.cut-status {
+  width: 0;
+  min-width: 100%;
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: var(--t-label);
+  line-height: 1.45;
+}
+
+/* A plane that only grazes a solid is the common miss, and it looks exactly
+   like a broken button unless the tool says so in the colour it says every
+   other refusal in. */
+.cut-status-bad {
+  color: var(--danger);
 }
 
 .snap-readout {
@@ -3242,6 +3249,62 @@ body {
   font-weight: 600;
 }
 
+/* The gestures, as a grid: the verb in a narrow left column, what it does in
+   the right one. This is most of why the screen is short now -- a row is
+   scanned, and the sentence it replaced had to be read to the end to find out
+   whether it was the one you wanted. */
+.help-steps {
+  display: grid;
+  gap: 5px 0;
+  max-width: 68ch;
+  margin: 0 0 2px;
+}
+
+.help-step {
+  display: grid;
+  /* Capped rather than `max-content`: one long term would otherwise set the
+     column for every row and push the results off to the right. */
+  grid-template-columns: minmax(0, 12.5em) minmax(0, 1fr);
+  gap: 14px;
+  align-items: baseline;
+}
+
+.help-step-do {
+  color: var(--text-2);
+  font-size: var(--t-body);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.help-step-is {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-body);
+  line-height: 1.5;
+}
+
+/* A note is the thing you did NOT come looking for -- what will surprise you,
+   not what you asked. The rule down its left edge is what lets the eye skip it
+   on the way to a gesture and come back to it afterwards. */
+.help-note {
+  max-width: 66ch;
+  margin: 10px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-3);
+  color: var(--muted);
+  font-size: var(--t-body);
+  line-height: 1.5;
+}
+
+.help-note + .help-note {
+  margin-top: 6px;
+}
+
+.help-note b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
 @keyframes help-fade-in {
   from {
     opacity: 0;
@@ -3320,6 +3383,18 @@ body {
 
   .help-pane {
     padding: 14px 16px 18px;
+  }
+
+  /* One column, or a 12.5em term leaves the result three words wide. The verb
+     stays bold above what it does, which is the same reading order in less
+     room. */
+  .help-step {
+    grid-template-columns: 1fr;
+    gap: 1px;
+  }
+
+  .help-steps {
+    gap: 8px 0;
   }
 }
 
@@ -3539,12 +3614,6 @@ body {
   flex: 1;
 }
 
-.tool-island .nav-cut {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  margin-left: 0;
-}
 
 /* Panels open ACROSS the scene rather than down it. Hanging below its button
    the way it did in the bar, a 268px panel would cover whatever is under it in
@@ -3571,15 +3640,37 @@ body {
   bottom: 0;
 }
 
-.tool-island-right .nav-flyout {
+/* Except where a tool asks to hang UNDER its button instead -- Point Cut, which
+   sits at the foot of the laser island. The rule above is about not covering
+   the tools further down the column, and at the foot there are none: what is
+   under the last button is scene. Below is where a dropdown belongs, and it
+   keeps the panel out of the middle of the window, which is where a panel
+   standing out sideways lands -- on top of the face the tool is about to draw
+   on. See `below` in `NavTool`.
+
+   After the rules it overrides, and at the same specificity, so source order is
+   what decides it. */
+.tool-island .nav-panel-below {
+  top: calc(100% + 8px);
+  left: 0;
+  right: auto;
+}
+
+/* Dropped in a bottom corner there is no room under the button either, so it
+   goes back over the top of it -- the same flip the side-opening panels make
+   against the near edge, and for the same reason. */
+.tool-island-bottom .nav-panel-below {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+/* And against the right-hand edge it is measured from that edge, so a panel
+   wider than the island opens back across the scene rather than off the window. */
+.tool-island-right .nav-panel-below {
   left: auto;
   right: 0;
 }
 
-.tool-island-bottom .nav-flyout {
-  top: auto;
-  bottom: calc(100% + 7px);
-}
 
 /* --- the lathe ---------------------------------------------------------------
 
@@ -3601,6 +3692,31 @@ body {
    cannot read a custom property -- see `sceneColors.ts`. Nothing on this screen
    is a material, so nothing on this screen needs mirroring, and a theme reaches
    it for free. */
+
+/* THE LASER CUTTER'S GROUND, painted the same colour the scene paints itself.
+
+   It is the canvas's own background that is really on show here -- `Stage`
+   attaches it -- so this is only for the frame or two before WebGL has anything
+   to draw, where an unpainted viewport shows the page behind it and the screen
+   opens with a flash of the wrong grey. The lathe's rule below does the same
+   job for a screen that never had a canvas at all. */
+.laser {
+  background: var(--bg);
+}
+
+/* A cutter is in hand: aim it. The same crosshair the lathe's tools and the
+   modelling brushes take, and on the wrapper rather than the canvas so it also
+   covers the chrome the pointer crosses on the way. */
+.laser-armed {
+  cursor: crosshair;
+}
+
+/* Move is in hand. An open hand rather than a crosshair, because it aims at
+   nothing: what it does is pick things up, and the only two places a press
+   means anything are the picture and its corners. */
+.laser-moving {
+  cursor: grab;
+}
 
 /* The ground the piece stands on: the same near-black the scene's own background
    is painted, so the two screens read as one app rather than as a viewport and
@@ -3703,31 +3819,36 @@ body {
   stroke-width: 1px;
 }
 
-/* The tool, at the pointer: how wide it is, and which way it works.
+/* The tool, at the pointer: which way it works, said in colour.
+
+   A GHOST RATHER THAN AN OUTLINE -- filled, faint, with a firmer rim -- and
+   cursor-sized rather than the width of the tool's reach. See
+   `GHOST_OF_REACH` for why it shrank: a ring as wide as the reach is a shape
+   the hand has to aim past, and it says its piece at the one moment nobody is
+   reading it. Filled, it can be small and still be seen against the clay, which
+   is exactly the trade a cursor wants.
 
    THE COLOUR IS THE DIRECTION, and it is the app's own pair rather than a new
    one -- --in is what every subtraction in this app wears, from an inward
    feature in the Inspector to the eraser, and --out is material added. A user
    who has learnt that red takes away and green puts on in the modelling screen
-   has already learnt this screen's two tools.
+   has already learnt this screen's two tools. Which also means a theme gets the
+   pair for free, and keeps its own mind about them: the red console's --out is
+   its orange, because a green in that window would be the one thing on screen
+   that came from somewhere else.
 
-   `color` on the group and `currentColor` on the marks inside, so the pair of
-   rules that follow set one property each. */
+   `color` set by the pair of rules below and `currentColor` taken by both the
+   fill and the stroke, so each of those rules sets one property and nothing
+   else. */
 .lathe-tool {
-  fill: none;
+  fill: currentColor;
+  /* Enough to read as a body of colour over --surface-4, little enough that the
+     wall's own edge goes on being visible straight through it. Aiming is done
+     against the silhouette, so the ghost may never hide it. */
+  fill-opacity: 0.26;
   stroke: currentColor;
   stroke-width: 1.25px;
-}
-
-.lathe-tool circle {
-  opacity: 0.85;
-}
-
-/* The line the wall is being called to: solid, short, at the pointer itself.
-   The circle says how much wall moves; this says where it is going. */
-.lathe-tool-mark {
-  stroke-width: 2px;
-  stroke-linecap: round;
+  stroke-opacity: 0.9;
 }
 
 .lathe-tool-push {
@@ -3865,6 +3986,57 @@ body {
    beside them, and a panel that sized itself to its contents would be a
    different width per unit -- "1.50 cm" and "15.0 mm" are not the same number
    of characters, and the corner would breathe every time the unit changed. */
+/* The laser screen's bottom-left shelf: what the job is made of, and what is
+   about to be taken out of it.
+
+   A COLUMN, because the block panel collapses. Anything placed above it by a
+   fixed offset would leave a hole when it shut and sit on top of it when it
+   opened, so the gap is the only number and neither panel measures the other.
+   Anchored at the BOTTOM, so the block stays exactly where it has always been
+   and the cut panel grows upward into empty scene as it appears.
+
+   `align-items: start` is what keeps the two their own widths -- the block
+   panel is a fixed 232 and the cut panel is as wide as its longest button --
+   rather than stretching the narrow one to the wide one's edge. */
+.laser-corner {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  gap: 10px;
+}
+
+/* Inside the column the block panel is placed by the flex box, not by its own
+   corner. Its own rule still stands for the lathe, which has one panel in that
+   corner and no column to put it in. */
+.laser-corner .stock-panel {
+  position: static;
+  left: auto;
+  bottom: auto;
+}
+
+/* The same floating surface its neighbour wears, because they are one shelf --
+   a second set of values here is how two panels in one corner quietly stop
+   matching. Sized to what is in it rather than to the block panel's 232: it is
+   a stack of short buttons, and a box built for a field it does not have would
+   be mostly empty. */
+.cut-panel {
+  width: max-content;
+  padding: 8px 10px 10px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--lift-1);
+}
+
+/* The head and the buttons are one panel, not a title with a gap under it. */
+.cut-panel .stock-head {
+  margin-bottom: 8px;
+}
+
 .stock-panel {
   position: absolute;
   left: 12px;
@@ -3941,6 +4113,25 @@ body {
   flex-direction: column;
   align-items: flex-end;
   gap: 6px;
+}
+
+/* DOCKED AGAINST THE COMPASS, for the screen that has one.
+
+   The corner above belongs to the compass wherever there is one, and the laser
+   screen's compass is not decoration -- it is the camera control. So the button
+   moves one place left instead of finding a corner of its own on the far side
+   of the window: the two copy buttons are one control on two screens, and a
+   user who learns where it is on the lathe should find it in the same reach
+   here.
+
+   The offset is the compass's own box plus a gap, written as its parts rather
+   than as the sum, so the day 112 changes there is one number to follow and not
+   a magic 136 to work backwards from. Top-aligned with it, so the two read as
+   one row of chrome rather than two things that happen to be near each other --
+   and the receipt still hangs off the button's right edge, which is now the
+   compass's left. */
+.copy-piece-aside {
+  right: calc(14px + 112px + 10px);
 }
 
 /* Lifted off the scene the way every floating surface here is, and wearing the
@@ -4512,14 +4703,15 @@ body {
 
 /* --- cut actions --- */
 
-/* Anchors the outcome flyout, which hangs below these buttons the way the
-   export receipt hangs below its own. */
-.nav-cut {
-  position: relative;
+/* The body of the Cut tool's panel: the two buttons stacked, each across the
+   full width of the panel. They were a ROW under the island, where they had to
+   share 176px with each other; at the panel's width a stack reads as two
+   things you do rather than as one control split in half, and the destructive
+   one is not the same size as the one that undoes your aiming. */
+.cut-actions {
   display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-left: 2px;
+  flex-direction: column;
+  gap: 6px;
 }
 
 /* Sized like the export buttons, so the bar has one button scale rather than
@@ -4549,6 +4741,28 @@ body {
   cursor: default;
 }
 
+/* A SWITCH drawn as one of these buttons went here, lit when it was on: the
+   laser cutter's Auto discard, and the only setting in a cut panel rather than
+   an action. The switch has gone -- see the note in `toolStore` for why a cut
+   no longer bins a piece unasked -- and the rule went with it rather than being
+   left standing for a class nothing wears. Every cut-panel button is a verb
+   again, which is the shape that panel wanted in the first place. */
+
+/* The three ways Point Cut joins its points up. A segmented control, which is
+   what this app uses wherever a setting has a handful of named values -- the
+   units, the themes, a hollow end. Full width so the three read as one control
+   with one of them chosen, rather than as three buttons that happen to be in a
+   row. */
+.curve-modes {
+  width: 100%;
+}
+
+.curve-modes .seg-btn {
+  flex: 1;
+  padding-inline: 4px;
+  text-align: center;
+}
+
 /* The one destructive button in the bar, so it carries the accent rather than
    sitting at the same weight as Reset. */
 .nav-action-primary {
@@ -4561,15 +4775,6 @@ body {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
   border-color: var(--accent);
   color: var(--accent);
-}
-
-/* The cut's outcome reads as ordinary text, not as the monospaced filename the
-   export receipt reports. */
-.nav-cut .nav-flyout {
-  color: var(--text);
-  font-family: var(--font);
-  font-size: var(--t-label);
-  word-break: normal;
 }
 
 /* The merge button carries its icon inline, where the tool buttons keep theirs
@@ -4621,21 +4826,42 @@ body {
 
 /* Three columns: the ring, the brightness slider beside it, and everything that
    is not a dial -- Apply, the hex field, the shelf of colours already used.
-   `1fr` on the last so the side column takes whatever the two dials leave. */
+
+   All three size to their content, and the LEFTOVER goes into the two gaps
+   rather than into the third column. That is the whole trick here. The side
+   column used to be `1fr` and swallowed the surplus, which made Apply and the
+   hex field wider than the shelf could ever be: eight 26px swatches come to
+   250px and stop there, so a 266px column left them 16px short of the two boxes
+   stacked above them, and the shelf looked like it had lost a slot.
+
+   Sized to content, the column is exactly the shelf's own 250px, the two boxes
+   above it end where the last swatch does, and the surplus shows up where it
+   reads as intent -- as air between the dials and the controls. It also tunes
+   itself: the gaps, not the swatches, absorb the 15px a console scrollbar takes
+   away, so the shelf stays flush and the slots stay 26px either way.
+
+   `gap` is the floor `space-between` distributes on top of, not the final
+   spacing -- expect 22px here at rest, and 14 with a scrollbar out. */
 .picker {
   display: grid;
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto auto auto;
+  justify-content: space-between;
   gap: 14px;
   align-items: start;
 }
 
 /* The two lengths the ring is made of. The knob's radius is derived from them
    in ColorPanel.tsx, which cannot read a custom property -- RING_MID there is
-   1 minus the hole's inset over this width. Change one, change both. */
+   1 minus the hole's inset over this width. Change one, change both.
+
+   92, down from 104, to sit level with the side column now that the shelf is
+   one row. The BAND did not follow it down: 20px is what you actually aim at,
+   and the ring shrank by taking it out of the hole, which is the part of the
+   control nothing is aimed at. */
 .picker-ring {
   position: relative;
-  width: 104px;
-  height: 104px;
+  width: 92px;
+  height: 92px;
   flex: 0 0 auto;
   border-radius: var(--radius-round);
   cursor: crosshair;
@@ -4677,11 +4903,12 @@ body {
 }
 
 /* Upright and the ring's own height, so the two dials read as one instrument
-   rather than a circle with a stray control next to it. */
+   rather than a circle with a stray control next to it. Its WIDTH is left
+   alone: 26px is a pointer target, and it was never what made the panel tall. */
 .picker-bar {
   position: relative;
   width: 26px;
-  height: 104px;
+  height: 92px;
   flex: 0 0 auto;
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -4711,9 +4938,10 @@ body {
 }
 
 /* This column, not the ring, is what sets the panel's height: Apply, the hex
-   field and a two-row shelf stack taller than the dials beside them. Its gap
-   and the shelf's slot size are therefore the two numbers that actually make
-   the panel shorter -- shrinking the ring alone only adds slack beside it. */
+   field and the shelf stack to 93px, and the dials beside them are sized to
+   match rather than the other way round. That is why the shelf losing its
+   second row shortened the panel and the ring following it down cost nothing
+   -- shrinking the ring alone would only have added slack beside this. */
 .picker-side {
   display: flex;
   flex-direction: column;
@@ -4775,14 +5003,22 @@ body {
   outline: none;
 }
 
-/* Two rows of four, at a fixed size rather than stretched across the column:
-   these are swatches to recognise, not buttons to aim at, and four of them
-   sharing 226px would each be half the height of the ring beside them. 26px
-   is still comfortably above a pointer target's floor, and two rows of it is
-   what keeps the shelf from out-measuring the dials. */
+/* One row of eight, at a fixed size rather than stretched across the column:
+   these are swatches to recognise, not buttons to aim at.
+
+   It was two rows of four, and the second row was the tallest thing in the
+   panel -- this column sets the height, so that row cost the whole panel 32px
+   to show colours the first row had room for anyway.
+
+   Eight across at 26px with 6px gaps comes to 250px, and that number is now the
+   width of the whole side column: `.picker` sizes its third column to content,
+   so this rule is what Apply and the hex field are measured against rather than
+   the other way round. The `minmax` is a floor guard only -- the track caps at
+   26px and gives way instead of overflowing, should this column ever be squeezed
+   below its natural width. */
 .picker-recent {
   display: grid;
-  grid-template-columns: repeat(4, 26px);
+  grid-template-columns: repeat(8, minmax(0, 26px));
   gap: 6px;
   margin-top: 2px;
 }
@@ -4963,4 +5199,502 @@ body {
 :root[data-theme='cyberpunk'] .island-head,
 :root[data-theme='cyberpunk'] .subhead {
   letter-spacing: 0.16em;
+}
+
+/* --- reference panel ------------------------------------------------------
+
+   The shelf of drawings on the laser cutter's console, and the little editor
+   that opens over it. The tiles borrow the Clipboard's square-with-hover-
+   buttons shape on purpose: two shelves in one console that mean the same
+   thing -- "here is a thing you can drag onto the scene" -- should look like
+   they do. What is different is what is on the square, and that is the whole
+   of the difference: a Clipboard tile turns a model, a reference tile shows a
+   picture, flat and still, because a drawing that moved would be unreadable. */
+
+.ref-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* The dropdown carries the whole of the navigation between presets, so it gets
+   the room: the two buttons beside it are square and fixed, and it takes what
+   is left. */
+.ref-select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--t-body);
+}
+
+.ref-preset-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.ref-preset-btn:hover:not(:disabled) {
+  border-color: var(--line-3);
+  color: var(--text-1);
+}
+
+.ref-preset-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ref-preset-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The name, on its own row and looking like the field it is. It reads as part
+   of the dropdown above it rather than as a control of its own, which is what
+   it is: the label of the thing currently chosen. */
+.ref-name {
+  width: 100%;
+  height: 24px;
+  margin-bottom: 8px;
+  padding: 0 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-body);
+}
+
+.ref-name:hover {
+  border-color: var(--line-2);
+}
+
+.ref-name:focus {
+  background: var(--surface-3);
+  border-color: var(--accent);
+  color: var(--text-1);
+  outline: none;
+}
+
+/* Three across, exactly as the Clipboard's shelf is, and for the same reason:
+   three is what fits the console's width at a size a picture can be told apart
+   at. Unlike that shelf this one does not scroll -- a preset is three, and the
+   fourth image is a preset away rather than a scroll away. */
+.ref-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.ref-slot {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  /* The same dashed, inert square the Clipboard and the colour shelf use for a
+     place something will go. */
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-4);
+  cursor: pointer;
+}
+
+.ref-slot:hover {
+  border-color: var(--accent);
+  color: var(--text-2);
+}
+
+.ref-slot svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ref-tile {
+  position: relative;
+  min-width: 0;
+}
+
+/* Held down, the tile stands back: what the eye should be following is the
+   dashed outline that has appeared on the block, not the tile it came from. */
+.ref-tile-dragging {
+  opacity: 0.45;
+}
+
+.ref-grab {
+  display: block;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Checkered, so a drawing on transparency reads as one rather than as a
+     picture of the panel behind it. */
+  background-color: var(--surface-3);
+  background-image:
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--text-4) 22%, transparent) 0% 25%,
+      transparent 0% 50%
+    );
+  background-size: 12px 12px;
+  cursor: grab;
+}
+
+.ref-grab:hover {
+  border-color: var(--accent);
+}
+
+/* LIT: this picture is the one in hand. It is the same accent the block draws
+   its outline in, so the tile and the drawing out on the face say "this one"
+   in one colour -- and it is a ring rather than a fill, because what has to
+   stay readable is the picture inside it. */
+.ref-tile-lit .ref-grab {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.ref-tile-lit .ref-tile-name {
+  color: var(--text-2);
+}
+
+.ref-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* CONTAIN, never cover: a reference cropped by its own tile is a tile that
+     lies about what will land on the block. */
+  object-fit: contain;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.ref-thumb-wait {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--surface-3);
+}
+
+.ref-tile-name {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text-4);
+  font-size: var(--t-fine);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The two buttons, in the corner, on hover -- the Clipboard's bargain: a tile
+   is a picture until you point at it, and a picture wearing two permanent
+   buttons is a toolbar. */
+.ref-tile-acts {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.ref-tile:hover .ref-tile-acts,
+.ref-tile:focus-within .ref-tile-acts {
+  opacity: 1;
+}
+
+.ref-act {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  appearance: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-4);
+  cursor: pointer;
+}
+
+.ref-act:hover {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+.ref-act svg {
+  width: 18px;
+  height: 18px;
+}
+
+.ref-note {
+  margin: 8px 0 0;
+  color: var(--in);
+  font-size: var(--t-fine);
+  line-height: 1.4;
+}
+
+/* The file input is never seen: the slots are what is pressed, and a bare
+   "Choose file" button beside them would be a second way to do the same thing
+   with a worse name on it. */
+.ref-file {
+  display: none;
+}
+
+/* --- reference editor ----------------------------------------------------- */
+
+.ref-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: color-mix(in srgb, var(--surface-0) 76%, transparent);
+  animation: help-fade-in 0.12s ease-out;
+}
+
+.ref-editor {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: min(660px, 100%);
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line-3);
+  border-radius: var(--radius);
+  box-shadow: var(--lift-2);
+  animation: help-screen-in 0.14s ease-out;
+}
+
+.ref-editor-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.ref-editor-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: var(--t-base);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The size in pixels, which is the one number worth showing: it is what says
+   whether a crop has thrown away the resolution the drawing needed. */
+.ref-editor-size {
+  flex: none;
+  color: var(--text-4);
+  font-size: var(--t-fine);
+  font-variant-numeric: tabular-nums;
+}
+
+.ref-editor-stage {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  flex: 1;
+  padding: 16px;
+  background: var(--panel-2);
+}
+
+/* The picture's own box: the aspect ratio is set from the picture, so the crop
+   rectangle can be positioned in per-cent and mean the same thing whatever the
+   window is doing. */
+.ref-editor-frame {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  background-color: var(--surface-3);
+  background-image:
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--text-4) 18%, transparent) 0% 25%,
+      transparent 0% 50%
+    );
+  background-size: 16px 16px;
+  touch-action: none;
+}
+
+.ref-editor-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+}
+
+/* Everything OUTSIDE the crop, dimmed by one enormous shadow rather than four
+   rectangles: a crop is a decision about what to lose, and it cannot be judged
+   against a picture that has already lost it. */
+.ref-editor-shade {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.ref-editor-crop {
+  position: absolute;
+  border: 1px solid var(--accent);
+  cursor: move;
+  touch-action: none;
+}
+
+.ref-editor-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  background: var(--accent);
+  border: 1px solid var(--surface-0);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ref-handle-nw {
+  top: -6px;
+  left: -6px;
+  cursor: nwse-resize;
+}
+
+.ref-handle-ne {
+  top: -6px;
+  right: -6px;
+  cursor: nesw-resize;
+}
+
+.ref-handle-se {
+  right: -6px;
+  bottom: -6px;
+  cursor: nwse-resize;
+}
+
+.ref-handle-sw {
+  bottom: -6px;
+  left: -6px;
+  cursor: nesw-resize;
+}
+
+.ref-editor-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line-2);
+}
+
+.ref-tool {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-body);
+  cursor: pointer;
+}
+
+.ref-tool:hover:not(:disabled) {
+  border-color: var(--line-3);
+  color: var(--text-1);
+}
+
+.ref-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ref-tool svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* The same icon turned, rather than a second drawing of it: one flip glyph and
+   one turn glyph, each shown both ways round. */
+.ref-icon-v {
+  transform: rotate(90deg);
+}
+
+.ref-icon-back {
+  transform: scaleX(-1);
+}
+
+.ref-editor-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line-2);
+}
+
+.ref-btn {
+  height: 26px;
+  padding: 0 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-body);
+  cursor: pointer;
+}
+
+.ref-btn:hover {
+  border-color: var(--line-3);
+  color: var(--text-1);
+}
+
+.ref-btn-go {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface-0);
+  font-weight: 600;
+}
+
+/* The crop's shape, above the tools that act on the whole picture. The label
+   names what the switch applies to, since "1:1" beside a Rotate button could
+   as easily be about the picture as about the crop. */
+.ref-editor-ratios {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line-2);
+}
+
+.ref-ratio-label {
+  color: var(--text-3);
+  font-size: var(--t-body);
 }

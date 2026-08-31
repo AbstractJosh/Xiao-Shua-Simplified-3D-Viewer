@@ -55,7 +55,7 @@ const UNIT_STEP = 0.04
  * `.picker-ring` in styles.css, which owns those two lengths and cannot hand a
  * number back to TypeScript: change one, change both.
  */
-const RING_MID = 1 - 20 / 104
+const RING_MID = 1 - 20 / 92
 
 /**
  * The saturation a drag on the ring lands on when the colour it started from

@@ -20,7 +20,6 @@ import {
   NGON_MORPH_MS,
   NGON_NAMES,
   NGON_SIDES,
-  NGON_SIDES_TOP_DOWN,
   ngonPoints,
   ngonRadii,
 } from '../src/console/ngon'
@@ -50,7 +49,7 @@ const ngonChip = (id: string, initial: number) => `
       <span>${NGON_LABEL}</span>
     </div>
     <div class="ngon-bands">
-      ${NGON_SIDES_TOP_DOWN.map(
+      ${NGON_SIDES.map(
         (n) =>
           `<button type="button" class="ngon-band" data-sides="${n}" aria-label="${NGON_NAMES[n]}, ${n} sides"></button>`
       ).join('\n      ')}
@@ -99,7 +98,7 @@ const palette = `
 
 // One chip per band, frozen in that state, annotated by position.
 const states = NGON_SIDES.map((n, i) => {
-  const fromBottom = i + 1
+  const fromLeft = i + 1
   return `
     <figure class="state">
       <div class="chip chip-ngon state-chip">
@@ -108,12 +107,12 @@ const states = NGON_SIDES.map((n, i) => {
           <span>${NGON_NAMES[n]}</span>
         </div>
         <div class="ngon-bands">
-          ${NGON_SIDES_TOP_DOWN.map(
+          ${NGON_SIDES.map(
             (m) => `<div class="ngon-band${m === n ? ' band-lit' : ''}"></div>`
           ).join('')}
         </div>
       </div>
-      <figcaption>band ${fromBottom} from bottom<br /><b>${n} sides</b></figcaption>
+      <figcaption>band ${fromLeft} from left<br /><b>${n} sides</b></figcaption>
     </figure>`
 }).join('')
 
@@ -272,5 +271,5 @@ writeFileSync(outFile, html, 'utf8')
 console.log(`Wrote ${outFile}`)
 console.log(
   `  ${(Buffer.byteLength(html) / 1024).toFixed(1)} KB - ${SOLID_TEMPLATES.length} solids - ` +
-    `bands top-down: ${NGON_SIDES_TOP_DOWN.join(', ')}`
+    `bands left to right: ${NGON_SIDES.join(', ')}`
 )

@@ -19,7 +19,7 @@ import { depthBias } from './depthBias'
 import { FaceHandle } from './FaceHandle'
 import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
-import { publishScene } from './snapping'
+import { publishScene, sketchCentres } from './snapping'
 import { isRightClick, noteRightPress, useObjectMenu } from './ObjectMenu'
 import { brushAllows } from './brushTarget'
 import { useMarquee } from './marquee'
@@ -410,7 +410,16 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     const entries: SnapEntry[] = []
     for (const object of doc.objects) {
       const geometry = geometries.get(object.id)
-      if (geometry) entries.push({ id: object.id, geometry, transform: object.transform })
+      if (!geometry) continue
+      entries.push({
+        id: object.id,
+        geometry,
+        transform: object.transform,
+        // Not in the mesh, so they have to be carried alongside it: a sketch at
+        // depth zero cuts nothing, and its middle is still somewhere a drag
+        // should be able to catch.
+        sketches: sketchCentres(object),
+      })
     }
     publishScene(entries)
 
@@ -479,9 +488,9 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
       // the brush is being dragged across the surface.
       if (controlsRef.current) controlsRef.current.enabled = false
       // WHICH brush is fixed here, at the press, and carried by the drag --
-      // see the `erode` drag's `raise`. Reading it per dab instead would let a
+      // see the `erode` drag's `brush`. Reading it per dab instead would let a
       // stroke change kind halfway along.
-      s.startErode(id, tools.brushTool === 'sculpt')
+      s.startErode(id, tools.brushTool)
       return
     }
 

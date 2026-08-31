@@ -13,10 +13,41 @@ import type { Doc, SceneObject, SurfaceAnchor } from '../geometry/types'
  */
 export const pointerClient = { x: 0, y: 0 }
 
+/**
+ * The POINTER'S PATH since something last read it, in client coordinates, as
+ * flat x,y pairs.
+ *
+ * `pointerClient` is where the pointer is; this is how it got there, and the
+ * difference is the whole of what a brush needs. A frame loop that samples only
+ * the position sees a stroke as a handful of points a frame apart, and HOW FAR
+ * apart is how fast the user was moving -- which is why a quick flick with the
+ * torch used to land as a row of separate imprints with the surface untouched
+ * between them. The gap was never the tool; it was the sampling. See
+ * `dragErode`, which walks this to fill it in.
+ *
+ * Filled from `getCoalescedEvents`, which hands back every sample the platform
+ * received since the last event was dispatched rather than only the newest.
+ * A mouse reporting at 1000 Hz or a pen at 240 puts several of those in every
+ * frame, and they are the actual CURVE of the gesture -- so a fast arc is filled
+ * in as the arc it was, rather than as the straight chord between the two
+ * places a frame happened to catch it.
+ *
+ * Bounded, and emptied by whoever drains it. Nothing outside a stroke wants it,
+ * and a queue nobody reads is a leak that lasts the session -- so the cap is
+ * what makes it safe to record this unconditionally rather than arming it when
+ * a brush comes up.
+ */
+const TRAIL_POINTS = 256
+let trail: number[] = []
+
 if (typeof window !== 'undefined') {
   window.addEventListener(
     'pointermove',
     (e) => {
+      for (const sample of e.getCoalescedEvents?.() ?? [e]) {
+        trail.push(sample.clientX, sample.clientY)
+      }
+      if (trail.length > TRAIL_POINTS * 2) trail = trail.slice(-TRAIL_POINTS * 2)
       pointerClient.x = e.clientX
       pointerClient.y = e.clientY
     },
@@ -24,14 +55,37 @@ if (typeof window !== 'undefined') {
   )
 }
 
-/** Pointer in normalised device coordinates, or null when off-canvas. */
-export function pointerNdc(el: HTMLElement): Vector2 | null {
-  const r = el.getBoundingClientRect()
-  if (r.width === 0 || r.height === 0) return null
-  const x = ((pointerClient.x - r.left) / r.width) * 2 - 1
-  const y = -((pointerClient.y - r.top) / r.height) * 2 + 1
+/** The path since the last call, emptied. */
+export function takePointerTrail(): readonly number[] {
+  const path = trail
+  trail = []
+  return path
+}
+
+/** Drop it. A gesture that is not a stroke has no use for where the pointer has
+ *  been, and starting one on a stale path would smear the first dab across it. */
+export function clearPointerTrail(): void {
+  trail.length = 0
+}
+
+/**
+ * A client point in normalised device coordinates, or null when off-canvas.
+ *
+ * Takes the rect rather than the element because a stroke converts a whole
+ * frame's worth of samples at once, and reading `getBoundingClientRect` per
+ * sample is a layout read per sample.
+ */
+export function ndcIn(rect: DOMRect, clientX: number, clientY: number): Vector2 | null {
+  if (rect.width === 0 || rect.height === 0) return null
+  const x = ((clientX - rect.left) / rect.width) * 2 - 1
+  const y = -((clientY - rect.top) / rect.height) * 2 + 1
   if (x < -1 || x > 1 || y < -1 || y > 1) return null
   return new Vector2(x, y)
+}
+
+/** Pointer in normalised device coordinates, or null when off-canvas. */
+export function pointerNdc(el: HTMLElement): Vector2 | null {
+  return ndcIn(el.getBoundingClientRect(), pointerClient.x, pointerClient.y)
 }
 
 /** A pick resolved against one object. `point` and `normal` are WORLD space;

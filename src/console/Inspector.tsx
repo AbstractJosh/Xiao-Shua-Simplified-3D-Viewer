@@ -1,5 +1,5 @@
-import { MAX_FACE_OFFSET, MIN_SHAPE, maxShapeSize } from '../geometry/dimensions'
-import { depthLimits, hostSurfaceFor } from '../geometry/surfaces'
+import { MAX_FACE_OFFSET, MIN_SHAPE } from '../geometry/dimensions'
+import { depthLimits, hostSurfaceFor, maxShapeSize } from '../geometry/surfaces'
 import { isCurvedAnchor, shapeRadius } from '../geometry/types'
 import type { Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
 import { DEFAULT_FEATURE_DEPTH, selectedFeature, selectedObject, useDoc } from '../store/docStore'
@@ -113,7 +113,10 @@ export function Inspector() {
   // out, which is a question about its LENGTH; a pocket leans exactly as far as
   // a boss of the same depth.
   const tiltLimit = maxTiltDeg(feature.anchor, feature.shape, Math.abs(depth))
-  const sizeLimit = maxShapeSize(object.base)
+  // The anchor is not optional here either, and for the same reason it is not
+  // optional for the depth: a cylinder's cap holds a far bigger sketch than its
+  // wall does, and a slab's broad top is not bounded by how thin the slab is.
+  const sizeLimit = maxShapeSize(object.base, feature.anchor)
   const patch = (p: Partial<Feature>) => patchFeature(object.id, feature.id, p)
   const skipped = failed.includes(feature.id)
 

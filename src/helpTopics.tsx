@@ -1,25 +1,34 @@
 import type { ReactNode } from 'react'
 
 /**
- * What the app does, written out as a book rather than as a list.
+ * What the app does, written to be SCANNED rather than read.
  *
- * WHY THIS IS A MODULE AND NOT MARKUP. It used to be sixty-odd `<li>`s inside
- * `HelpTool`, in the order they happened to be written -- which is the order the
- * features were built rather than any order a person reads in. A list that long
- * has no shape: "how do I melt something" and "how do I pan" sit a line apart,
- * and the only way to find either is to read the whole thing. Pulling the copy
- * out into data is what makes a shape possible -- the screen renders a structure
- * instead of holding one implicitly, and a new tool becomes an entry in a
- * section here rather than a line dropped wherever there was room.
+ * WHY THIS IS DATA AND NOT MARKUP. It used to be sixty-odd `<li>`s inside
+ * `HelpTool`, in the order the features were built. A list that long has no
+ * shape: "how do I melt something" and "how do I pan" sit a line apart, and the
+ * only way to find either is to read the whole thing. Pulling the copy out is
+ * what makes a shape possible -- the screen renders a structure instead of
+ * holding one implicitly.
  *
- * THREE LEVELS, and each has a job. A SECTION is what you are trying to do --
- * get around, build something, melt something -- and it is the level the rail
- * on the left offers, because that is the question somebody opening Help
- * actually has. An ENTRY is one thing the app has: a tool, a gesture, a panel.
- * Its title is the name the app itself uses for it, so the word read here is the
- * word to go looking for on screen. The BODY is what it does and what it will
- * surprise you with -- the second half being the part the old list was best at
- * and the part most help text leaves out.
+ * WHY AN ENTRY IS THREE FIELDS AND NOT ONE BLOB. The paragraphs this replaced
+ * were true and unreadable: each gesture was buried in a sentence that also
+ * explained why the gesture is the way it is, so finding "which button pans"
+ * meant reading nine lines about what a pan is for. The three fields are the
+ * three questions actually asked, in the order they are asked:
+ *
+ *     summary   what is this -- one line, never two
+ *     steps     how do I use it -- one row per gesture, the verb on the left
+ *     notes     what will surprise me -- and nothing else
+ *
+ * The `steps` grid does most of the work. A gesture in a table is found at a
+ * glance; the same gesture in prose has to be parsed. So anything that fits a
+ * row goes in a row, and prose is left to say only what a row cannot.
+ *
+ * THE RULE FOR NOTES, since that field is where the verbosity would come back:
+ * a note earns its place only if a user would otherwise learn the fact by being
+ * surprised by it -- the torch burning through a wall, the brushes being
+ * exclusive, a confirmed sketch not coming back. Design reasoning belongs in a
+ * code comment beside the code, not on this screen.
  *
  * It sits at `src/` rather than under `console/` for the reason `theme.ts` does:
  * the store holds which section is open, and a store reaching down into a
@@ -29,6 +38,14 @@ import type { ReactNode } from 'react'
  * true is a bug in this file rather than a matter of taste.
  */
 
+/** One gesture: what you do, and what it does. */
+export type HelpStep = {
+  /** The gesture or the control, e.g. "Middle-drag" or "Brush size". */
+  action: ReactNode
+  /** What happens. One line. */
+  result: ReactNode
+}
+
 /** One thing the app has, named the way the app names it. */
 export type HelpEntry = {
   /** The subtitle. The app's own word for the thing, so it can be looked for. */
@@ -36,13 +53,16 @@ export type HelpEntry = {
   /**
    * The keyboard shortcut, if it has one, drawn as a chip beside the title.
    *
-   * Beside the name rather than buried in the sentence: a shortcut is the one
-   * part of an entry that is scanned for rather than read, and somebody after
-   * "what is the key for scale" should not have to parse a paragraph for it.
+   * Beside the name rather than inside a sentence: a shortcut is the one part
+   * of an entry that is scanned for and never read.
    */
   key?: string
-  /** What it does, in paragraphs. More than one where there is more to say. */
-  body: ReactNode[]
+  /** What it is, in one line. */
+  summary?: ReactNode
+  /** How it is used, a row per gesture. */
+  steps?: HelpStep[]
+  /** What would otherwise surprise you. Nothing else. */
+  notes?: ReactNode[]
 }
 
 export type HelpSectionId =
@@ -53,8 +73,9 @@ export type HelpSectionId =
   | 'tools'
   | 'sketch'
   | 'lathe'
-  | 'look'
+  | 'reference'
   | 'files'
+  | 'shortcuts'
 
 /** One thing you might be trying to do, and everything that serves it. */
 export type HelpSection = {
@@ -69,69 +90,195 @@ export type HelpSection = {
 /**
  * The sections, in the order the rail shows them.
  *
- * Ordered by when a person meets them rather than by importance. You look
- * before you build, you build before you have anything to select, you select
- * before you can reach a gizmo, and the gizmo is what every tool in Tools then
- * borrows. Files and settings come last because they are the only things here
- * that outlive the document.
+ * Ordered by when a person meets them. You look before you build, you build
+ * before you have anything to select, you select before you can reach a gizmo,
+ * and the gizmo is what every tool in Tools then borrows. Colour and files come
+ * last, being the only things here that outlive the document.
  */
 export const HELP_SECTIONS: HelpSection[] = [
   {
     id: 'view',
-    title: 'Getting around',
-    blurb: 'Which screen you are on, and moving the camera. None of it touches the model.',
+    title: 'Viewports',
+    blurb: 'The three screens, and how to look around each one. None of it touches the model.',
     entries: [
       {
         title: 'Screens',
-        body: [
+        summary: 'The tabs at the left of the top bar swap the viewport and its console together.',
+        steps: [
+          { action: 'Modelling', result: 'The scene: solids, sketches, gizmos and the brushes.' },
+          { action: 'Lathe', result: 'One lump of clay, shaped by pushing and pulling its wall.' },
+          {
+            action: 'Laser Cutter',
+            result: 'One block of stock, seen square on to whichever face you pick.',
+          },
+        ],
+        notes: [
           <>
-            The tabs at the left of the top bar -- <b>Modelling</b> and <b>Lathe</b> -- each
-            hold a viewport and the console that drives it. <b>Click</b> one and both halves of
-            the window change together.
-          </>,
-          <>
-            <b>Modelling</b> is everything described here: the scene, the solids, the gizmo and
-            the tools. <b>Lathe</b> is a screen of its own, where one lump of clay is shaped by
-            pushing and pulling its wall -- see <b>The lathe</b> in the rail. Its console
-            carries <b>Base</b>, which is the lathe's own, and the Clipboard, since what you
-            have saved is yours wherever you are working.
-          </>,
-          <>
-            Everything in the bar that acts on the scene -- <b>Import</b>, <b>Export</b>,{' '}
-            <b>Snap</b>, undo, redo and the counts -- dims on a screen that has no scene to act
-            on. It stays where it is rather than disappearing, so the bar reads the same
-            whichever screen you are on.
+            Import, Export, Snap and the counts dim on any screen with no scene for them to act on,
+            which is both of the ones after Modelling. Undo and redo walk whichever screen you are
+            on. The Clipboard is on all three.
           </>,
         ],
       },
       {
-        title: 'Orbit and zoom',
-        body: [
-          <>
-            <b>Middle-drag</b> anywhere in the scene to swing the camera around what you are
-            looking at, or hold <b>Alt</b> and left-drag if your mouse has no middle button.{' '}
-            <b>Scroll</b> to zoom.
-          </>,
+        title: 'The Modelling layout',
+        summary: 'Four places things live.',
+        steps: [
+          { action: 'Top bar', result: 'Import, Export, Snap, undo, redo and Settings.' },
+          { action: 'Console, on the right', result: 'Clipboard, Solids, Shapes, Colour, Scene.' },
+          { action: 'Tools island', result: 'The gizmos, Mirror, Ruler, Cut and the three brushes.' },
+          { action: 'Bottom right', result: 'Position, rotation and size of what is selected.' },
         ],
       },
       {
-        title: 'Pan',
-        body: [
-          <>
-            <b>Right-drag</b> on empty space to slide the view. On an object, right-click opens
-            its menu instead, so a pan starts from the background.
-          </>,
+        title: 'Orbit, pan and zoom',
+        steps: [
+          {
+            action: 'Middle-drag',
+            result: 'Orbit. Alt+left-drag does the same with no middle button.',
+          },
+          {
+            action: 'Right-drag empty space',
+            result: 'Pan. On an object, right-click opens its menu instead.',
+          },
+          { action: 'Scroll', result: 'Zoom.' },
         ],
       },
       {
         title: 'The axis compass',
-        body: [
+        summary: 'The cube in the corner, saying which way is which.',
+        steps: [
+          { action: 'Drag it', result: 'Orbits by hand: half a turn across the widget.' },
+          { action: 'Click a ball or a face', result: 'Flies square-on to that view.' },
+        ],
+      },
+      {
+        title: 'The laser cutter view',
+        summary:
+          'Square on, always. The camera turns freely while you hold it and comes to rest on the nearest face the moment you let go -- by the compass or by middle-drag, it settles either way, so what you draw on is never foreshortened.',
+        steps: [
+          { action: 'Click a ball or a face', result: 'Flies square-on to that view.' },
+          { action: 'Drag the compass', result: 'Turns by hand, then settles on the nearest face.' },
+          {
+            action: 'Middle-drag',
+            result: 'Orbits, then settles on the nearest face. No Alt+left here -- left draws the cut.',
+          },
+          { action: 'Scroll', result: 'Zoom. It cannot tip the view off a face.' },
+          {
+            action: 'Right-drag',
+            result:
+              'Slides the view across the face, so a zoomed-in corner can be reached. It stops at the edges of the face, and turning to another face puts it back on the middle.',
+          },
+        ],
+        notes: [
           <>
-            The cube in the corner says which way is which. <b>Drag</b> it to orbit by hand --
-            half a turn across the widget, and it turns the camera without moving it.
+            The block is set by <b>The block</b>, bottom left: <b>Width</b>, <b>Height</b> and{' '}
+            <b>Depth</b>, each on its own, so the stock can be a sheet or a bar rather than only a
+            cube. It grows from its own footprint against a camera that stays put, so a bigger
+            block really does look bigger, and cuts already made are carried with it.
           </>,
           <>
-            <b>Click</b> one of its balls or cube faces instead to fly square-on to that view.
+            The same panel holds the two ways back, and each takes only its own.{' '}
+            <b>Reset block</b> puts one uncut ten-centimetre block on the bed and leaves the
+            drawings where they are -- <b>Ctrl+Z</b> gives back the cuts and the size together.{' '}
+            <b>Reset references</b> takes every drawing off the block, in every preset, and leaves
+            the pictures in the Reference panel to be dropped on again. Both are dead while there
+            is nothing for them to do.
+          </>,
+        ],
+      },
+      {
+        title: 'Cutting the block',
+        summary:
+          'Two tools, both drawing one line on the face you are square on to. The line is carried on to the border at both ends, so any stroke goes all the way across, and the cut burns through the whole block.',
+        steps: [
+          { action: 'Freehand', result: 'Drag to draw the line by hand.' },
+          {
+            action: 'Point Cut',
+            result: 'Click to place points, drag one to move it. The line runs through them.',
+          },
+          {
+            action: 'With Snap on',
+            result:
+              "A point placed or dragged lines up with another point's row or column, and a hairline says which it caught. Set the reach under Snap in the bar -- it is in pixels here, and separate from the modelling screen's.",
+          },
+          { action: 'Apply cut', result: 'Burns the line and separates what it crossed.' },
+          { action: 'Reset line', result: 'Throws the drawing away. Escape does the same.' },
+          {
+            action: 'Other piece',
+            result:
+              'Lights the next piece the cut made. With no tool in hand, clicking a piece does the same.',
+          },
+          { action: 'Discard piece', result: 'Throws the lit one away. Del does the same.' },
+        ],
+        notes: [
+          <>
+            The pieces stay exactly where the block was, a kerf apart. One of them is <b>lit</b>,
+            and that is the one <b>Del</b> throws away. It opens on the smaller piece, which is
+            usually the waste -- but not when the cut is what frees the part you are after, so the
+            choice is yours: <b>Other piece</b> steps it with the tool still in hand, and with no
+            tool in hand you can click the piece you mean.
+          </>,
+          <>
+            A cut is BAKED. There is no list to reopen -- <b>Ctrl+Z</b> is the way back, and one cut
+            is one step. Turning the compass to another face clears whatever you were drawing,
+            because a line belongs to the face it was drawn on.
+          </>,
+        ],
+      },
+      {
+        title: 'Steadying the line',
+        summary:
+          'Freehand pulls the tool along behind the pointer on a rope. Small wobbles inside the slack move nothing at all; a long pull is followed exactly.',
+        steps: [
+          { action: 'Smoothing at 0', result: 'The line is exactly where you point.' },
+          { action: 'At a third', result: 'Where it rests. Takes a hand tremor out.' },
+          { action: 'At 1', result: 'An eighth of the block of rope. Slow, and very steady.' },
+        ],
+        notes: [
+          <>
+            What is recorded is where the TOOL went, not where the hand went -- so the line you can
+            see is the line that gets cut.
+          </>,
+        ],
+      },
+      {
+        title: 'Joining up the points',
+        summary:
+          'Fit to line is a switch: off, the points are joined with straight segments; on, a smooth curve runs through them. The points survive it either way.',
+        steps: [
+          { action: 'Fit to line: Off', result: 'Segments from point to point. What you placed is cut.' },
+          { action: 'Fit to line: On', result: 'A smooth curve through every point, with a handle on each.' },
+          { action: 'Drag a point', result: 'Moves it, curve or no curve.' },
+          { action: 'Drag a handle', result: "Aims that point's tangent. It stays where you put it." },
+        ],
+        notes: [
+          <>
+            Turning it on does not make the line jump: an untouched curve is exactly the fit through
+            the points that were already there. A point's two handles stay opposite each other, so
+            the line never kinks where it passes through one.
+          </>,
+          <>
+            A handle you aim is <b>yours</b>, and the points you have not touched go on taking their
+            tangents from the curve -- so shaping one corner by hand does not cost you the fit
+            everywhere else. Moving a point never undoes an aim, and the aim survives the switch
+            being thrown off and back on.
+          </>,
+        ],
+      },
+      {
+        title: 'The lathe view',
+        summary:
+          'Side-on and fixed. What you shape is a profile, so both halves of the drawing are the one wall mirrored about the axis, and there is no camera to fly.',
+        steps: [
+          { action: 'Scroll', result: 'Zoom.' },
+          { action: 'Minus and plus, bottom right', result: 'Step the zoom.' },
+          { action: 'The percentage between them', result: 'Fits the piece to the frame.' },
+        ],
+        notes: [
+          <>
+            The frame never re-fits itself, so a piece made bigger LOOKS bigger. A lump that
+            outgrows the frame hangs off the edge of it until you press the percentage.
           </>,
         ],
       },
@@ -140,55 +287,50 @@ export const HELP_SECTIONS: HelpSection[] = [
 
   {
     id: 'build',
-    title: 'Building the scene',
+    title: 'Building',
     blurb: 'Everything that puts something new in front of the camera.',
     entries: [
       {
         title: 'Solids',
-        body: [
-          <>
-            <b>Drag</b> a solid out of <b>Solids</b> in the console and drop it in the scene.
-          </>,
-          <>
-            <b>Sweep across a row</b> before you drag to choose how many sides its base has. The
-            icon spins through the shapes as you go, so the row is always showing what a drag
-            will place.
-          </>,
+        steps: [
+          { action: 'Drag a row out of Solids', result: 'Drops that solid where you release it.' },
+          {
+            action: 'Sweep across a row first',
+            result: 'Sets how many sides its base has. The icon shows what a drag will place.',
+          },
         ],
       },
       {
         title: 'Erasers',
-        body: [
-          <>
-            <b>Drag the small grip</b> at the right of a Solids row to place that same solid as
-            an <b>eraser</b> -- a red ghost that takes material away rather than adding it.
-          </>,
-          <>
-            Aim it like anything else, then confirm the subtraction under{' '}
-            <b>Position &amp; Rotation</b>. Until you confirm it, it cuts nothing.
-          </>,
+        summary: 'A red ghost solid that takes material away rather than adding it.',
+        steps: [
+          { action: 'Drag the grip on a Solids row', result: 'Places the eraser. Aim it as usual.' },
+          {
+            action: 'Confirm under Position & Rotation',
+            result: 'Performs the subtraction. Until then it cuts nothing.',
+          },
         ],
       },
       {
         title: '2D shapes',
-        body: [
+        summary: (
           <>
-            <b>Drag</b> a shape out of <b>Shapes</b> onto any object. It lands on the surface
-            under the pointer as a sketch, which you then push or pull -- see <b>Sketches</b>.
-          </>,
-        ],
+            Drag a shape out of <b>Shapes</b> onto any object. It lands on the surface under the
+            pointer as a sketch, which you then push or pull -- see <b>Sketches</b>.
+          </>
+        ),
       },
       {
         title: 'The clipboard',
-        body: [
+        summary: (
           <>
-            Objects kept with <b>Save as custom object</b> live in <b>Clipboard</b>, at the top
-            of the console. Drag one back in to place a copy.
-          </>,
-          <>
-            Each tile turns on its own, and <b>sweeping across one</b> spins it so you can look
-            it over. Three show at a time -- <b>scroll the row sideways</b> for the rest.
-          </>,
+            Objects kept with <b>Save as custom object</b>, at the top of the console. Drag one
+            back in to place a copy.
+          </>
+        ),
+        steps: [
+          { action: 'Sweep across a tile', result: 'Spins it, so you can look it over.' },
+          { action: 'Scroll the row sideways', result: 'Three tiles show at a time.' },
         ],
       },
     ],
@@ -196,160 +338,140 @@ export const HELP_SECTIONS: HelpSection[] = [
 
   {
     id: 'select',
-    title: 'Selecting and arranging',
+    title: 'Selecting',
     blurb: 'Choosing what you are working on, and settling what sits where.',
     entries: [
       {
         title: 'Picking things up',
-        body: [
-          <>
-            <b>Click</b> an object to select it. <b>Shift-click</b> to gather several.
-          </>,
-          <>
-            With <b>Move</b> chosen you can also <b>drag</b> an object by its body. Under{' '}
-            <b>Rotate</b> and <b>Scale</b> a press on the body only selects -- those two work
-            through their own handles.
-          </>,
+        steps: [
+          { action: 'Click an object', result: 'Selects it.' },
+          { action: 'Shift-click', result: 'Adds it to the selection.' },
+          {
+            action: 'Drag from empty space',
+            result:
+              'A box, taking every object whose gizmo falls inside. Shift adds rather than replaces.',
+          },
         ],
-      },
-      {
-        title: 'The selection box',
-        body: [
+        notes: [
           <>
-            <b>Drag from empty space</b> for a box. It takes every object whose gizmo falls
-            inside it.
-          </>,
-          <>
-            Hold <b>Shift</b> while you drag and its catch is added to what is already selected,
-            rather than replacing it.
+            Only <b>Move</b> lets you drag an object by its body. Under <b>Rotate</b> and{' '}
+            <b>Scale</b> a press on the body selects and nothing more.
           </>,
         ],
       },
       {
         title: 'Merge',
-        body: [
+        summary: (
           <>
-            Gather objects and press <b>Merge</b> under <b>Scene</b>. They become one object
-            with one gizmo, and undo takes them apart again.
-          </>,
-        ],
+            Gather objects and press <b>Merge</b> under <b>Scene</b>: they become one object with
+            one gizmo. Undo takes them apart again.
+          </>
+        ),
       },
       {
         title: 'Draw order',
-        body: [
+        summary: (
           <>
-            The <b>Scene</b> list is a priority order. Use a row's arrows to move it, and where
-            two objects share a surface the higher one is drawn.
-          </>,
-        ],
+            The <b>Scene</b> list is a priority order. Use a row's arrows to move it; where two
+            objects share a surface, the higher one is drawn.
+          </>
+        ),
       },
       {
         title: 'Copy, paste and save',
-        body: [
-          <>
-            <b>Right-click</b> an object for copy, paste and <b>Save as custom object</b>.
-          </>,
-          <>
-            <b>Ctrl+C</b> and <b>Ctrl+V</b> copy the selected object and paste it beside itself.
-          </>,
+        steps: [
+          { action: 'Ctrl+C, Ctrl+V', result: 'Copies the selection and pastes it beside itself.' },
+          {
+            action: 'Right-click an object',
+            result: 'Copy, paste, and Save as custom object, which sends it to the Clipboard.',
+          },
         ],
       },
       {
         title: 'Delete',
         key: 'Delete',
-        body: [<>Removes whatever is selected -- the ruler, or the sketch, or the object.</>],
+        summary: 'Removes whatever is selected: the object, the sketch, or the ruler.',
       },
     ],
   },
 
   {
     id: 'gizmo',
-    title: 'Moving and shaping',
+    title: 'Move, rotate, scale',
     blurb:
-      'What you do to a selected object. Three gizmos, chosen at the top of the Tools island and worked with a left-drag, and one button that flips the solid outright.',
+      'What you do to a selected object: three gizmos at the top of the Tools island, each worked with a left-drag, and one button that flips the solid outright.',
     entries: [
       {
         title: 'Move',
         key: 'M',
-        body: [
-          <>
-            <b>Drag</b> an arrow to slide along that axis, snapping as it goes.
-          </>,
-          <>
-            Or <b>drag</b> one of the three plane quads -- XY, XZ, YZ -- to slide within that
-            plane. One seen edge-on stands down, so from straight above only the ground is
-            offered.
-          </>,
-          <>
-            Or <b>drag the object itself</b> to slide it along the ground. Move is the only tool
-            where the body drags.
-          </>,
-          <>
-            Hold <b>Shift</b> while moving an object and it lifts instead.
-          </>,
+        steps: [
+          { action: 'Drag an arrow', result: 'Slides along that axis, snapping as it goes.' },
+          {
+            action: 'Drag a plane quad',
+            result: 'Slides within XY, XZ or YZ. One seen edge-on stands down.',
+          },
+          { action: 'Drag the object itself', result: 'Slides it along the ground.' },
+          { action: 'Shift while dragging', result: 'Lifts it instead of sliding it.' },
         ],
       },
       {
         title: 'Rotate',
         key: 'R',
-        body: [
-          <>
-            Three rings, one per plane. Drag the red, green or blue one to turn about X, Y or Z.
-          </>,
-          <>The wedge reads the sweep out in degrees as you go, and it lands on every 45.</>,
+        summary: 'Three rings, one per plane: red turns about X, green about Y, blue about Z.',
+        steps: [
+          {
+            action: 'Drag a ring',
+            result:
+              'Turns about that axis. The wedge reads the sweep in degrees and lands on every 45.',
+          },
         ],
       },
       {
         title: 'Scale',
         key: 'S',
-        body: [
+        steps: [
+          { action: 'Drag the ring', result: 'Scales every dimension at once.' },
+          { action: 'Drag an arrow', result: 'Resizes the one dimension it points along.' },
+        ],
+        notes: [
           <>
-            Drag the ring to scale every dimension at once, or an arrow to resize the one
-            dimension it points along.
-          </>,
-          <>
-            It works in the object's own axes, so a solid you have turned still grows along its
-            own length rather than along the world's.
+            It works in the object's own axes: a solid you have turned grows along its own length,
+            not the world's.
           </>,
         ],
       },
       {
         title: 'Mirror',
-        body: [
+        summary: (
           <>
-            Flips the selected solid, like holding it up to a mirror. The three lettered buttons
-            inside the Mirror tool choose which way: <b>X</b>, <b>Y</b> or <b>Z</b>, coloured to
-            match the gizmo's own arrows. <b>Press one</b> and the solid flips straight away.
-          </>,
+            Flips the selected solid about its <b>own</b> axes, like holding it up to a mirror.
+            Press <b>X</b>, <b>Y</b> or <b>Z</b> inside the tool and it flips straight away.
+          </>
+        ),
+        notes: [
           <>
-            It flips about the object's <b>own</b> axes, the way Scale resizes along them -- so a
-            part you have turned is flipped along its own length rather than along the world's. It
-            stays exactly where it was standing; only which way round it is changes.
-          </>,
-          <>
-            Everything on the solid goes with it: sketches land at the mirror image of where they
-            sat, cuts, torch marks and welded parts too. Press the same axis <b>twice</b> and you
-            are back where you started, and <b>Ctrl+Z</b> undoes a flip like any other edit.
+            It stays exactly where it stood; only which way round it is changes, and sketches,
+            cuts, torch marks and welded parts all flip with it. The same axis twice puts it back.
           </>,
         ],
       },
       {
         title: 'Putting the handles away',
-        body: [
+        steps: [
+          {
+            action: 'Press Rotate or Scale again',
+            result: 'Back to Move, where the app opens. M does the same from either.',
+          },
+          {
+            action: 'Press Move again',
+            result: 'The handles come off the object and all three buttons go dark.',
+          },
+        ],
+        notes: [
           <>
-            Pressing <b>Rotate</b> or <b>Scale</b> again puts you back on <b>Move</b>, which is
-            where the app opens -- or press <b>M</b> to go straight there from either.
-          </>,
-          <>
-            Press <b>Move</b> once more and the handles come off the object altogether, leaving
-            all three buttons dark. The solid stays selected and can still be painted, cut and
-            torched; it just stops being something you can move by accident.
-          </>,
-          <>
-            With the buttons dark it cannot be dragged <b>at all</b>, by its arrows or by its
-            body -- it is pinned while you work on its surface. Its <b>Position</b> and{' '}
-            <b>Rotation</b> can still be typed in the console. Press any of the three to bring
-            the handles back.
+            With them dark the solid cannot be dragged <b>at all</b>, by arrow or by body -- it is
+            pinned while you work on its surface. It can still be painted, cut and torched, and its{' '}
+            <b>Position</b> and <b>Rotation</b> still typed.
           </>,
         ],
       },
@@ -360,140 +482,168 @@ export const HELP_SECTIONS: HelpSection[] = [
     id: 'tools',
     title: 'Tools',
     blurb:
-      'The island over the scene. Move, Rotate, Scale, Mirror, Ruler, Cut and the two brushes live here; Snap is in the top bar, since it is a rule rather than a gizmo.',
+      'The island floating over the scene. Snap is in the top bar instead, because it is a rule every drag obeys rather than a gizmo aimed at one solid.',
     entries: [
       {
         title: 'The Tools island',
-        body: [
-          <>
-            <b>Drag the island by its title</b> to move it. It snaps flush to whichever edge or
-            corner you drop it near, and <b>clicking the title</b> collapses it to that strip.
-          </>,
+        steps: [
+          {
+            action: 'Drag it by its title',
+            result: 'Moves it. It snaps flush to whichever edge or corner you drop it near.',
+          },
+          { action: 'Click the title', result: 'Collapses it to that strip.' },
         ],
       },
       {
         title: 'Blowtorch',
-        body: [
+        summary:
+          'Melts material away: the surface under the brush sinks and flows, so edges round off rather than being bitten out. A red ghost sphere shows where it would land.',
+        steps: [
+          {
+            action: 'Drag across a solid',
+            result: 'Melts. Go over the same place again to sink it further.',
+          },
+          { action: 'Brush size', result: 'How wide the flame is.' },
+          { action: 'Heat', result: 'How hard one pass bites.' },
+          { action: 'Smoothing', result: 'How molten the result looks: low sandblasts, high pours.' },
+          { action: 'Blowtorch melts, bottom left', result: 'Everything, or Selected only.' },
+        ],
+        notes: [
           <>
-            Melts rather than bites. <b>Drag</b> across a solid and the surface under the brush sinks and
-            flows, so edges round off and the mark blends into the face rather than being a bite
-            out of it. A red ghost sphere shows where the brush would land and how big it is; it
-            goes as soon as you press, so nothing covers the surface while it melts.
+            <b>It burns through.</b> Held against a wall thinner than the brush, the surface sags
+            until a hole opens, widening with each pass to about the brush's width and cutting a
+            slot if you drag. The solid stays closed, so it still exports. A wall much thicker than
+            the brush cannot be burnt through -- it only dishes.
           </>,
           <>
-            Its caret holds <b>Brush size</b>, <b>Heat</b> -- how hard one pass bites -- and{' '}
-            <b>Smoothing</b>, which is how molten the result looks: low sandblasts, high pours.
-            Smoothing never goes all the way to nothing, because a point held in the flame with
-            no flow at all sharpens into a spur instead of rounding off.
+            With the torch armed a plain click no longer picks anything up: <b>right-click</b> or{' '}
+            <b>Shift-click</b> to select. Arming it also takes the gizmo off the object and pins it.
           </>,
-          <>
-            Go over the same place again to sink it further. One drag is one undo step, however
-            long you hold it.
-          </>,
-          <>
-            <b>Blowtorch melts</b>, bottom-left of the scene, chooses between <b>Everything</b> and{' '}
-            <b>Selected only</b>. With the torch armed a plain click no longer picks anything up
-            -- <b>right-click</b> or <b>Shift-click</b> to select.
-          </>,
-          <>
-            <b>It burns through.</b> Hold it on a wall thinner than the brush and the surface
-            sags until there is nothing left of it, and then a hole opens -- widening with each
-            pass to about the size of the brush, and cutting a slot if you drag. The rim is a
-            melted lip rather than a drilled edge, and the solid stays closed, so a panel with a
-            hole burnt in it still exports. A wall much thicker than the brush cannot be burnt
-            through: the flame runs out of reach and leaves a dish, so use a bigger brush.
-          </>,
-          <>
-            Arming it takes the gizmo off the selected object on its own, so the arrows are never
-            between the brush and the surface -- and pins the solid while it does, so a stroke
-            that misses cannot shove the thing you were aiming at.
-          </>,
+          <>One drag is one undo step, however long you hold it.</>,
         ],
       },
       {
         title: 'Sculpt',
-        body: [
+        summary:
+          'The blowtorch backwards: the surface rises and flows, drawing material onto the object along the line you pull. A green ghost sphere shows where it would land.',
+        steps: [
+          {
+            action: 'Drag across a solid',
+            result: 'Builds up. Go over the same place again to raise it further.',
+          },
+          {
+            action: 'Brush size, Strength, Smoothing',
+            result: "The torch's three dials doing the same jobs. Each brush keeps its own.",
+          },
+        ],
+        notes: [
           <>
-            The blowtorch backwards. <b>Drag</b> across a solid and the surface under the brush
-            rises and flows, so material is drawn <b>onto</b> the object along the line you
-            pull -- a bead, a ridge, a swelling -- instead of being melted out of it. A green
-            ghost sphere shows where it would land; green is this app's colour for material
-            arriving, the way red is for material going away.
+            <b>Arming any brush puts the others down.</b> At the same settings these two are one
+            brush pointed opposite ways: the bead this raises stands as far proud as the torch's
+            dish lies deep.
           </>,
           <>
-            Its caret holds <b>Brush size</b>, <b>Strength</b> -- how far one pass pushes -- and{' '}
-            <b>Smoothing</b>, exactly the torch's three and doing exactly the same jobs. It keeps
-            its own settings, so a fine carving brush and a fat blocking one both stay dialled in
-            and swapping tools does not resize the one in your hand.
+            <b>Neither brush sharpens.</b> <b>Smoothing</b> rounds a sharp tip or inside corner off
+            faster than either brush can push it, so Sculpt blunts a cone's point and the torch
+            fills a crease rather than deepening it. Turn Smoothing down to keep more of an edge.
+            If rounding an edge is what you actually wanted, the <b>Smoother</b> does it on purpose
+            and stops at a radius you set.
+          </>,
+        ],
+      },
+      {
+        title: 'Smoother',
+        summary:
+          'Rounds corners off. Drag it along an edge and the edge eases into a fillet of the radius Strength asks for, then stops there. A blue ghost sphere shows where it would land.',
+        steps: [
+          {
+            action: 'Drag along an edge',
+            result: 'Rounds it. Going over it again leaves the same round.',
+          },
+          {
+            action: 'Brush size',
+            result: 'How much of the corner one pass works, and the widest round available.',
+          },
+          {
+            action: 'Strength',
+            result: 'How round, as a share of the brush: at half, the round is about half the brush across.',
+          },
+          { action: 'Smoother rounds, bottom left', result: 'Everything, or Selected only.' },
+        ],
+        notes: [
+          <>
+            <b>It arrives and stops.</b> The other two brushes are rates -- hold either against a
+            spot and it keeps going -- so the instinct they teach is to go over a mark again. This
+            one converges: a stroke drives every corner it passes to the radius Strength asks for
+            and leaves it there. To take more off, turn Strength up or use a wider brush.
           </>,
           <>
-            The two are the same brush pointed opposite ways: at the same three settings a bead
-            this raises stands as far proud of the surface as the dish the torch sinks lies below
-            it. <b>Arming either puts the other down.</b>
+            <b>It leaves flat faces alone.</b> Only what is sharper than the target moves, so you
+            can drag sloppily across a panel and change nothing but the edge you were aiming at.
+            Anything already rounder than the target is left as it is, which is also why a second
+            pass does nothing.
           </>,
           <>
-            Go over the same place again to build it up further. One drag is one undo step, and
-            carving over a bead or drawing over a groove does what you would expect -- the marks
-            are kept in the order you made them.
+            <b>Inside corners too.</b> A crease fills out to the same radius a corner eases in to --
+            it is one measurement with two signs.
           </>,
           <>
-            <b>Neither brush sharpens.</b> Point either one at a sharp tip or a sharp inside
-            corner and <b>Smoothing</b> rounds it off faster than the brush can push it, so the
-            sculpt tool blunts a cone's point while packing material around it, and the torch
-            fills a sharp crease rather than deepening it. Turn Smoothing down to keep more of an
-            edge; on any ordinary surface, flat or curved, both work as they say.
+            The most useful thing to point it at is <b>a cut</b>, which is why it sits next to that
+            tool: a blade leaves a sharp arris, and this takes it off.
           </>,
         ],
       },
       {
         title: 'Cut',
-        body: [
+        summary:
+          'Arming Cut drops a plane through the middle of the selected object, level and wide enough to overhang it. With nothing selected it comes up in the middle of the scene.',
+        steps: [
+          {
+            action: 'Move and Rotate',
+            result: 'Aim and tilt the blade with the gizmo it carries.',
+          },
+          { action: 'Scale', result: 'Its ring sizes the guide square.' },
+          { action: 'Apply cut', result: 'Makes the cut.' },
+          { action: 'Reset plane', result: 'Puts the blade back where arming would drop it now.' },
+          { action: 'The caret on Cut', result: "Reopens the tool's panel if you close it." },
+        ],
+        notes: [
           <>
-            Arming <b>Cut</b> drops a plane through the middle of the selected object, level and
-            wide enough to overhang it. With nothing selected it comes up in the middle of the
-            scene.
-          </>,
-          <>
-            The blade carries the same gizmo an object does -- arrows to aim it, rings to tilt
-            it -- and in <b>Scale</b> its ring sizes the guide square.
-          </>,
-          <>
-            <b>Apply cut</b> and <b>Reset plane</b> appear on the island once it is armed.{' '}
-            <b>Reset plane</b> puts the blade back where arming would drop it now.
+            The tool's panel opens beside the island when you arm it, and says what the cut is
+            about to take: the selected object, or every solid if nothing is selected.
           </>,
         ],
       },
       {
         title: 'Ruler',
-        body: [
+        summary:
+          'Lays a 50 mm measuring line across the view, in front of the selected object, with its readout riding the middle of it.',
+        steps: [
+          {
+            action: 'Click a ruler',
+            result: 'Selects it. The end you pressed nearest takes the arrows.',
+          },
+          { action: 'Press the knob at the far end', result: 'Moves the arrows there.' },
+          {
+            action: 'Drag an end',
+            result: 'Snaps to corners, edges and middles -- of a solid, of any flat face, and of any sketch.',
+          },
+          {
+            action: 'The caret beside Ruler',
+            result: 'Lists the rulers: add more, or delete one with its red cross.',
+          },
+        ],
+        notes: [
           <>
-            Lays a 50 mm measuring line across the view, in front of the selected object, with
-            its readout riding the middle of it.
-          </>,
-          <>
-            <b>Click a ruler</b> to select it: it thickens into yellow and black stripes, and
-            the end you pressed nearest takes the arrows. <b>Press the knob</b> at the other end
-            to move the arrows there. Each end snaps to corners and edges as you drag it.
-          </>,
-          <>
-            A ruler's end is a point, so its gizmo stays on <b>Move</b> whichever tool is up --
-            there is nothing about a point to turn or to scale.
-          </>,
-          <>
-            <b>Delete</b> removes the selected ruler, and the <b>caret beside Ruler</b> opens
-            the list, to add more or delete one with its red cross.
+            A ruler's end is a point, so its gizmo stays on <b>Move</b> whichever tool is up.{' '}
+            <b>Delete</b> removes the selected ruler.
           </>,
         ],
       },
       {
         title: 'Snap',
-        body: [
-          <>
-            <b>Snap</b> is in the top bar rather than on the island, because it is not aimed at
-            one solid: it is a rule every drag in the app obeys, whichever gizmo is up.
-          </>,
-          <>Its caret sets how close a corner or an edge has to be before a drag takes it.</>,
-        ],
+        summary:
+          'In the top bar. Its caret sets how close a corner, an edge, a face or a middle has to be before a drag takes it. A solid seeks the scene by its corners, so it lands flush against a neighbour, and by its own middle, so it can be dropped concentric with one.',
       },
     ],
   },
@@ -504,67 +654,54 @@ export const HELP_SECTIONS: HelpSection[] = [
     blurb: 'A 2D shape dropped on a surface, and the solid you push or pull out of it.',
     entries: [
       {
-        title: 'Sliding one',
-        body: [
+        title: 'Placing one',
+        summary: (
           <>
-            <b>Drag</b> a sketch to slide it across its own surface. It stays on the face it
-            landed on, and seeks that face's corners and edges as it goes.
-          </>,
-        ],
+            Drag a shape out of <b>Shapes</b> onto an object. It lands on the face under the
+            pointer and stays on that face.
+          </>
+        ),
       },
       {
         title: 'Its arrows',
-        body: [
-          <>
-            A selected sketch gets three: two along the outline's own edges, and one facing away
-            from the face.
-          </>,
-        ],
-      },
-      {
-        title: 'Depth',
-        body: [
-          <>
-            <b>Drag</b> the arrow facing away from the face to set how far the shape stands out.
-            Push it back through the face to cut inward instead.
-          </>,
+        summary:
+          'A selected sketch gets three: two along the outline’s own edges, and one facing away from the face.',
+        steps: [
+          {
+            action: 'Drag the sketch',
+            result: "Slides across its face, seeking that face's corners, edges and middle -- and the middle of any other sketch on the solid.",
+          },
+          {
+            action: 'Drag the arrow off the face',
+            result: 'Sets how far the shape stands out. Push it back through to cut inward.',
+          },
+          { action: 'Drag the end face', result: 'Leans the extrusion over.' },
         ],
       },
       {
         title: 'Sizing and turning',
-        body: [
-          <>
-            In <b>Scale</b>, drag either edge arrow to stretch the outline along it, or its ring
-            to scale the whole outline -- the same way an object's ring scales the solid.
-          </>,
-          <>
-            In <b>Rotate</b> a sketch gets ONE ring, since it spins in its own face and nowhere
-            else.
-          </>,
-        ],
-      },
-      {
-        title: 'Leaning an extrusion',
-        body: [
-          <>
-            <b>Drag</b> the highlighted end face of an extrusion to lean it over.
-          </>,
+        steps: [
+          { action: 'Scale, an edge arrow', result: 'Stretches the outline along that edge.' },
+          { action: 'Scale, the ring', result: 'Scales the whole outline.' },
+          {
+            action: 'Rotate',
+            result: 'One ring only: a sketch spins in its own face and nowhere else.',
+          },
         ],
       },
       {
         title: 'Confirming it',
-        body: [
+        summary: (
           <>
-            A sketch stays a handle for as long as you leave it one: the orange
-            outline sits on the surface, still draggable, still resizable. When
-            the shape is right, press <b>Confirm extrusion</b> at the top of{' '}
-            <b>Position &amp; Rotation</b>.
-          </>,
+            A sketch stays a draggable handle until you press <b>Confirm extrusion</b> at the top
+            of <b>Position &amp; Rotation</b>.
+          </>
+        ),
+        notes: [
           <>
-            The solid keeps everything the sketch built. What goes is the handle
-            -- the outline stops being drawn in the scene, and the sketch stops
-            being a row under its object in <b>Scene</b>. Like a subtraction it
-            only goes one way, and <b>undo</b> is the way back.
+            The solid keeps everything the sketch built; what goes is the handle -- the outline,
+            and its row under <b>Scene</b>. Like a subtraction it only goes one way, and{' '}
+            <b>undo</b> is the way back.
           </>,
         ],
       },
@@ -574,205 +711,137 @@ export const HELP_SECTIONS: HelpSection[] = [
   {
     id: 'lathe',
     title: 'The lathe',
-    blurb:
-      'A second screen, and a different way of making: one lump of clay, shaped by pushing and pulling its wall.',
+    blurb: 'The second screen: one lump of clay, shaped by pushing and pulling its wall.',
     entries: [
       {
-        title: 'What is on the lathe',
-        body: [
-          <>
-            The <b>Lathe</b> tab opens a lump of clay turning on a faceplate, drawn from the
-            side. What you shape is a profile -- how far the wall stands from the axis at each
-            height -- so the side view hides nothing and there is no camera to fly: the piece
-            sits still, and both walls of the drawing are the one wall, mirrored about the
-            axis.
-          </>,
-          <>
-            The dashed rectangle that appears once you start work is the <b>stock</b>: where
-            the lump began, so you can see what has come off and what has been drawn out past
-            it. The faint rings across the body are a <b>measure</b> -- a fixed distance apart,
-            whatever size the piece is -- so they follow the wall to show the curve you are
-            making, and a lump made taller crosses more of them.
-          </>,
-          <>
-            The frame never re-fits itself. The faceplate, the rings and the edges stay where
-            they are so that a piece getting bigger LOOKS bigger -- a view that resized to suit
-            the lump would cancel out the very change you had just asked for. A lump too big
-            for the frame simply runs off the edge of it; see <b>Zoom and fit</b>.
-          </>,
+        title: 'What you are looking at',
+        summary:
+          'A lump turning on a faceplate, drawn from the side. What you shape is a profile: how far the wall stands from the axis at each height.',
+        steps: [
+          { action: 'The dashed rectangle', result: 'The stock: where the lump began.' },
+          {
+            action: 'The faint rings',
+            result: 'A fixed measure. They follow the wall, so they show the curve you are making.',
+          },
         ],
       },
       {
         title: 'Push and Pull',
-        body: [
+        summary: (
           <>
-            <b>Push</b> takes material away and <b>Pull</b> adds it. They sit above the rule
-            on the island because they are the two that MOVE material; what is below it fairs
-            what they left, or changes the piece rather than shaping it. Take one up, then <b>press and hold</b> against the clay: the
-            wall travels to the pointer and STOPS there, so where you hold is where the wall
-            ends up. Holding longer cannot overshoot -- it only finishes the curve.
-          </>,
-          <>
-            Hold still and the work carries on, because it is the piece that is moving. Move up
-            and down the wall while holding to shape a whole side in one stroke, and work
-            either side of the axis: both are the same wall.
-          </>,
-          <>
-            Each tool has <b>Tool size</b> -- how much of the wall it covers -- and{' '}
-            <b>Strength</b>, which is how fast the wall comes to you rather than how deep it
-            goes. Each remembers its own pair, so a wide tool for the belly and a fine one for
-            the neck stay set as you swap between them. Neither tool works the other's way: a
-            push can never fill a neck back in, which is what makes a missed aim harmless.
-          </>,
+            <b>Push</b> takes material away and <b>Pull</b> adds it. Push is already in your hand
+            when the screen opens; pressing the lit tool puts it down, and with empty hands the
+            clay ignores you.
+          </>
+        ),
+        steps: [
+          {
+            action: 'Press and hold on the clay',
+            result: 'The wall travels to the pointer and stops there. Holding longer only finishes the curve.',
+          },
+          {
+            action: 'Move while holding',
+            result: 'Shapes a whole side in one stroke. Either side of the axis is the same wall.',
+          },
+          { action: 'Tool size', result: 'How much of the wall the tool covers.' },
+          { action: 'Strength', result: 'How fast the wall comes to you, not how deep it goes.' },
         ],
-      },
-      {
-        title: 'Zoom and fit',
-        body: [
+        notes: [
           <>
-            <b>Scroll</b> anywhere over the lathe to zoom, or use the{' '}
-            <b>bottom-right corner</b>: <b>&minus;</b> and <b>+</b> step the view, and the
-            percentage between them is a button -- press it to <b>fit the piece to the frame</b>.
-            The faceplate stays where it is throughout, so zooming opens room above the piece
-            rather than sliding it about.
-          </>,
-          <>
-            Nothing zooms on its own. Set a lump far bigger or smaller than the frame and it
-            will hang off the edge until you go and look, which is deliberate: an automatic
-            zoom is one that moves the picture while your hand is on a slider. Press the
-            percentage and the piece comes back. It dims when there is nothing left to fit.
-          </>,
-        ],
-      },
-      {
-        title: 'The lump',
-        body: [
-          <>
-            The panel in the <b>bottom-left corner</b> sets the stock you are turning:{' '}
-            <b>Height</b> and <b>Width</b>, which are the two sides of the rectangle you start
-            from. Changing either CARRIES THE SHAPE with it -- a piece made wider is the same
-            piece, wider -- so the fields are safe to touch after you have started. Press the
-            title to shut the panel down to its strip and get the corner back.
-          </>,
-          <>
-            <b>Reset</b> throws the shaping away and leaves the stock as it is. It costs one
-            undo step like anything else here, so it is safe to press -- see <b>Undo on the
-            lathe</b>.
+            Each tool remembers its own pair of dials, so a wide tool for the belly and a fine one
+            for the neck both stay set. Neither works the other's way -- a push can never fill a
+            neck back in, which is what makes a missed aim harmless.
           </>,
         ],
       },
       {
         title: 'Smooth',
-        body: [
+        summary:
+          'The third tool, under the rule on the island. It neither adds nor takes away: hold it against a stretch of wall and the ripples a hard push left come out, while the curve they sit on stays.',
+        notes: [
           <>
-            The third tool on the island, under the rule: it neither adds nor takes away, it
-            FAIRS. Hold it against a stretch of wall and the ripples a hard push left come out,
-            while the curve they sit on stays. It is the tool to reach for after the other two,
-            and the whole of what it does is the tidy-up every dab already does, turned up and
-            aimed.
-          </>,
-          <>
-            It does not matter how far from the axis you hold it -- only how far UP. There is
-            nothing to aim at, so the ghost circle is the whole of what you need to see. Its two
-            dials are the pair's: <b>Tool size</b> is how much wall it fairs at once, and it
-            starts wider than the other two, because fairing a side is a longer gesture than
-            aiming at a spot.
+            Only how far UP you hold it matters, not how far from the axis. Its <b>Tool size</b>{' '}
+            starts wider than the other two, because fairing a side is a longer gesture than aiming
+            at a spot.
           </>,
         ],
       },
       {
         title: 'Hollow',
-        body: [
+        summary:
+          'At the foot of the island: takes the middle out and leaves a wall. Switch it on and the drawing becomes a section, so you see the bore and the clay either side of it.',
+        steps: [
+          { action: 'Wall', result: 'How much clay is left, in millimetres.' },
+          {
+            action: 'Bottom, Top',
+            result: 'Open or closed, set apart: a cup, a pipe, a sealed void, or a bell.',
+          },
+        ],
+        notes: [
           <>
-            <b>Hollow</b>, at the foot of the island, takes the middle out and leaves a wall.
-            Switch it on and the drawing changes: the piece is a section, so you see the bore and
-            the clay either side of it. <b>Wall</b> sets how much is left -- read in millimetres,
-            which is the unit the panel opens in and the one at its top right.
-          </>,
-          <>
-            <b>Bottom</b> and <b>Top</b> are set independently, and between them they are every
-            hollow thing there is. Closed underneath and open at the top is a cup; open at both
-            is a pipe; closed at both is a sealed void, which shows only when something cuts it;
-            open underneath and closed at the top is a bell.
-          </>,
-          <>
-            The inside FOLLOWS the outside. It is not a second wall you shape -- it is the wall
-            you can see, offset inward -- so a stroke made after hollowing thins the piece rather
-            than leaving the bore behind. If the piece is too narrow to bore through to an end
-            you asked to be open, the cavity stops where the clay closes and the panel says so.
+            The inside FOLLOWS the outside, so a stroke made after hollowing thins the piece rather
+            than leaving the bore behind. If the clay is too narrow to bore through to an end you
+            asked to be open, the cavity stops there and the panel says so.
           </>,
         ],
       },
       {
-        title: 'Starting from a shape',
-        body: [
+        title: 'The lump',
+        summary:
+          'The bottom-left panel sets the stock you are turning: Height and Width, the two sides of the rectangle you start from.',
+        steps: [
+          {
+            action: 'Height, Width',
+            result: 'Carry the shape with them, so they are safe to touch after you have started.',
+          },
+          { action: 'Reset', result: 'Throws the shaping away and leaves the stock as it is.' },
+          { action: 'Press the title', result: 'Shuts the panel down to its strip.' },
+        ],
+      },
+      {
+        title: 'The base',
+        summary: (
           <>
-            <b>Profiles</b>, at the foot of the console, holds eight shapes to start from: a
-            bowl, a vase, a goblet, a cone, a barrel, a spool, a dome, and the plain cylinder.
-            Press one and the wall becomes it. They keep the stock and the base, and every one of
-            them is somewhere the two tools could have got to on their own -- the point is the
-            minute of careful pushing it saves before the shaping proper starts.
-          </>,
+            <b>Base</b>, under the Clipboard in the console, is what the piece is turned ON: a{' '}
+            <b>Circle</b>, or a <b>Polygon</b> from a triangle to a decagon.
+          </>
+        ),
+        notes: [
           <>
-            It throws away what you have shaped, and asks nothing first, because <b>Ctrl+Z</b>{' '}
-            puts it back. Browse them -- press one, look at it, press the next.
+            Every base has the same profile, so from the side it changes only a fainter dashed line
+            inside the piece: the wall you push is the line the CORNERS follow, and the flats sit
+            closer in. It moves no part of the wall, so a piece can be turned hexagonal and back
+            without losing a stroke.
           </>,
         ],
       },
       {
         title: 'Undo on the lathe',
-        body: [
+        key: 'Ctrl+Z',
+        summary:
+          'Ctrl+Z steps back one stroke and Ctrl+Shift+Z forward again; the bar’s Undo and Redo do the same. A whole stroke is one step however long you held the tool, and so is Reset.',
+        notes: [
           <>
-            <b>Ctrl+Z</b> steps back one stroke and <b>Ctrl+Shift+Z</b> forward again, and the
-            bar's own <b>Undo</b> and <b>Redo</b> do the same. A whole stroke is one step,
-            however long you held the tool down, and <b>Reset</b> and loading a profile are one
-            step each as well.
-          </>,
-          <>
-            What it remembers is the WALL. A height or a width you type afterwards stays typed,
-            and so do the base and the hollow -- those are settings you can put back by setting
-            them back, where a stroke is a gesture you cannot.
-          </>,
-        ],
-      },
-      {
-        title: 'The base it stands on',
-        body: [
-          <>
-            <b>Base</b>, under the Clipboard in the console, is what the piece is turned ON: a{' '}
-            <b>Circle</b>, or a <b>Polygon</b> from a triangle to a decagon. A circle gives you
-            a cylinder-bodied piece, a hexagon a hexagonal prism of the same profile, and so on
-            through the eight.
-          </>,
-          <>
-            It is in the console rather than over the clay because it is the one thing the
-            drawing cannot show: every base has the SAME profile, so a hexagonal piece and a
-            round one are the same shape from the side. What you do see is a fainter dashed
-            line inside the piece -- that is where the flats run. The wall you push and pull is
-            the line the CORNERS follow, and the flats between them sit closer in: nearly
-            touching on a decagon, half way in on a triangle.
-          </>,
-          <>
-            Pick it whenever you like. It moves no part of the wall, so a piece shaped for ten
-            minutes can be turned hexagonal and back without losing a stroke, and the fields in{' '}
-            <b>The lump</b> and <b>Reset</b> both keep it.
+            What it remembers is the WALL. A height, width, base or hollow set afterwards stays
+            set: those you can put back by setting them back, where a stroke is a gesture you
+            cannot.
           </>,
         ],
       },
       {
         title: 'Copy to clipboard',
-        body: [
+        summary: (
           <>
-            The button in the <b>top-right corner</b> sweeps the piece a full turn into a real
-            solid and puts it on the <b>Clipboard</b>: a tile appears in the console beside it,
-            and <b>Ctrl+V</b> on the Modelling screen pastes the same thing into the scene.
-            It is swept on the base you chose -- 64 facets for a round piece, six flats for a
-            hexagon -- and named for it, so a shelf of pieces can be told apart.
-          </>,
+            The button in the top-right corner sweeps the piece a full turn into a real solid and
+            puts it on the <b>Clipboard</b>. <b>Ctrl+V</b> on the Modelling screen pastes it into
+            the scene.
+          </>
+        ),
+        notes: [
           <>
-            What lands there is a mesh, so everything the Modelling screen does works on it --
-            move it, resize it, cut it, mirror it, melt it with the blowtorch, export it. It is
-            a SNAPSHOT: shape the clay further and press the button again for a second copy.
+            It is swept on the base you chose and named for it. What lands is a mesh, so everything
+            the Modelling screen does works on it. It is a SNAPSHOT: shape the clay further and
+            press again for a second copy.
           </>,
         ],
       },
@@ -780,42 +849,133 @@ export const HELP_SECTIONS: HelpSection[] = [
   },
 
   {
-    id: 'look',
-    title: 'Colour and the console',
-    blurb: 'What the scene is painted in, and where the panels that hold it are.',
+    id: 'reference',
+    title: 'Reference images',
+    blurb:
+      'Drawings stuck to the block on the laser cutter, to cut along. The panel is on that screen and nowhere else.',
     entries: [
       {
-        title: 'Colour',
-        body: [
+        title: 'The Reference panel',
+        summary: (
           <>
-            <b>Colour</b> paints the selected objects: turn the ring for the hue, the slider for
-            brightness, then <b>Apply</b>.
+            Under the Clipboard on the Laser Cutter's console: three slots, and one{' '}
+            <b>Opacity</b> for everything in them.
+          </>
+        ),
+        steps: [
+          { action: 'The dropdown', result: 'Which preset is in hand. Up to five of them.' },
+          { action: 'The pencil', result: 'Renames the preset you are on.' },
+          { action: 'Plus, cross', result: 'Adds a preset, or deletes this one and its pictures.' },
+          {
+            action: 'Opacity',
+            result: 'How strongly every reference is drawn. One number, so two drawings read alike.',
+          },
+        ],
+        notes: [
+          <>
+            A preset is a whole set-up rather than a folder: switching takes its references OFF the
+            block and puts the new preset's on. Switching back brings them out again, where they
+            were.
+          </>,
+          <>Nothing here survives a reload. The pictures are held for this sitting only.</>,
+        ],
+      },
+      {
+        title: 'Adding a picture',
+        steps: [
+          { action: 'Click an empty slot', result: 'Opens the file picker.' },
+          { action: 'Pick up to three', result: 'They fill the shelf in the order you chose them.' },
+          { action: 'Drop files on a slot', result: 'Takes a whole selection straight off the desktop.' },
+          { action: 'What it takes', result: 'PNG, JPEG and SVG. An SVG is drawn to pixels on the way in.' },
+        ],
+        notes: [
+          <>
+            A batch starts at the slot you pressed and carries on round the shelf, so three pictures
+            fill all three slots whichever one you started from. Past three the extras are refused
+            rather than landing on a picture that arrived with them.
           </>,
           <>
-            Or type it straight into the <b>hex field</b> under Apply. That is also the way to
-            reach a muted colour, since the ring carries hue alone.
-          </>,
-          <>
-            Applied colours land on the <b>shelf</b> below; click one to load it back into the
-            picker.
+            A picture dropped on a slot that already holds one replaces it, and takes whatever that
+            one had put on the block with it.
           </>,
         ],
       },
       {
-        title: 'The console',
-        body: [
+        title: 'Editing one',
+        summary: 'Point at a tile and two buttons appear: a pencil and a bin.',
+        steps: [
+          { action: 'Flip H, Flip V', result: 'Mirrors what you see, left to right or top to bottom.' },
+          { action: 'Rotate', result: 'A quarter turn, either way.' },
+          { action: 'Drag the rectangle', result: 'Crops. Drag a corner to resize it, the middle to move it.' },
+          {
+            action: 'Crop: 1:1, 4:3, 3:2, 16:9',
+            result: 'Holds the crop to that shape, and takes it at once. Free lets go again.',
+          },
+          { action: 'Whole picture, Reset', result: 'Undoes the crop, or everything.' },
+        ],
+        notes: [
           <>
-            The column on the right holds the scene: <b>Clipboard</b>, <b>Solids</b>,{' '}
-            <b>Shapes</b>, <b>Colour</b> and <b>Scene</b>.
+            Nothing is written over the original: the flip, the turn and the crop are kept beside
+            it, so a crop can be widened again later. <b>Cancel</b> puts back what the picture wore
+            on the way in.
+          </>,
+          <>
+            The size at the top right is what the block will get, in pixels, and it moves as you
+            drag -- so a crop held to <b>1:1</b> is one you can watch reading the same twice.
           </>,
         ],
       },
       {
-        title: 'The selection panels',
-        body: [
+        title: 'Putting one on the block',
+        steps: [
+          { action: 'Drag a tile onto a face', result: 'Lands there, sized to fit the face. Takes up Move as it goes.' },
+          { action: 'Click a tile', result: 'Lights that slot: its copies on the block take handles.' },
+          { action: 'Move', result: 'The tool that takes hold of a reference. Nothing can be cut while it is in hand.' },
+          { action: 'Drag the picture', result: 'Slides it about, never off the edge of its face.' },
+          {
+            action: 'Pull any corner',
+            result: 'Sizes it, with the opposite corner held still. Its own shape is kept, so it cannot be stretched.',
+          },
+          { action: 'Del', result: 'Takes the lit picture off the block, on every face it is on. It stays in the panel.' },
+          { action: 'Esc', result: 'Puts the light out and leaves the picture where it is.' },
+        ],
+        notes: [
           <>
-            Selecting something slides its <b>position, rotation and size</b> into the
-            bottom-right of the viewport. A selected sketch adds its own controls under them.
+            A reference belongs to the face it landed on. To put it on another one, drag the tile
+            out again -- one picture can be on as many faces as you like.
+          </>,
+          <>
+            <b>The handles belong to Move AND to the lit slot.</b> The tool says what you are doing
+            and the panel says which picture you are doing it to, so a face wearing three drawings
+            wears one set of grips rather than three. With any other tool in hand only the outline
+            is left, so that every part of the picture can be drawn across -- and taking up a cutter
+            puts the light out for you.
+          </>,
+          <>
+            <b>Del is the way off the block.</b> The bin on the tile throws the picture away
+            altogether; Del takes it off the faces and leaves it on the shelf to be dropped
+            somewhere else.
+          </>,
+        ],
+      },
+      {
+        title: 'Cutting to one',
+        summary:
+          'The picture is on the surface rather than floating over it, which is what makes it a thing to cut along.',
+        notes: [
+          <>
+            <b>A cut cuts the block, not the drawing.</b> Each piece keeps the part of the picture
+            that is on its own surface, and the rest stays exactly where you put it, hanging where
+            the material used to be -- so a face cut away from another axis does not take your
+            drawing with it, and nothing has to be re-aimed or dropped on again.
+          </>,
+          <>
+            It stays on the plane it was stuck to, and only there. The new faces a cut opens up
+            inside the block come out bare, however square-on to the picture they are -- what you
+            see across a gap is the drawing itself, still where it was.
+          </>,
+          <>
+            <b>Opacity</b> governs the whole of it, on the surface and in the air alike.
           </>,
         ],
       },
@@ -824,63 +984,166 @@ export const HELP_SECTIONS: HelpSection[] = [
 
   {
     id: 'files',
-    title: 'Files and settings',
-    blurb: 'What comes in, what goes out, and the few choices that outlive the document.',
+    title: 'Colour and files',
+    blurb: 'Painting the model, what comes in and goes out, and the settings that outlive it.',
     entries: [
       {
-        title: 'Import',
-        body: [
-          <>
-            <b>Import</b>, beside the app's name, reads GLB, OBJ, STL and STEP. The model lands
-            as one solid you can size, move, cut and merge like anything built here.
-          </>,
+        title: 'Colour',
+        summary: 'Paints the selected objects, from the console.',
+        steps: [
+          { action: 'Ring, then slider', result: 'Hue, then brightness. Press Apply.' },
+          {
+            action: 'The hex field',
+            result: 'Types a colour straight in -- the only way to a muted one, as the ring carries hue alone.',
+          },
+          { action: 'The shelf below', result: 'Applied colours. Click one to load it back.' },
         ],
       },
       {
+        title: 'Import',
+        summary:
+          "Beside the app's name. Reads GLB, OBJ, STL and STEP; the model lands as one solid you can size, move, cut and merge like anything built here.",
+      },
+      {
         title: 'Export',
-        body: [
+        summary: (
           <>
-            <b>Export</b> writes the whole scene: <b>.glb</b>, <b>.obj</b> or <b>.stl</b> for a
-            mesh, <b>.step</b> for a CAD solid.
-          </>,
-        ],
+            Writes the whole scene: <b>.glb</b>, <b>.obj</b> or <b>.stl</b> for a mesh, <b>.step</b>{' '}
+            for a CAD solid.
+          </>
+        ),
       },
       {
         title: 'Undo and redo',
         key: 'Ctrl+Z',
-        body: [
-          <>
-            <b>Undo</b> and <b>Redo</b> in the top bar step through the document's history, and{' '}
-            <b>Ctrl+Z</b> and <b>Ctrl+Shift+Z</b> do the same from the keyboard.
-          </>,
-        ],
+        summary:
+          'Undo and Redo in the top bar step through the document’s history, and Ctrl+Z and Ctrl+Shift+Z do the same from the keyboard.',
       },
       {
         title: 'Units',
-        body: [
+        summary: (
           <>
-            <b>Settings</b>, the cog at the end of the bar, holds <b>Units</b> -- mm, cm, or
-            auto per value. It changes what the numbers are READ in; the model itself never
-            changes.
-          </>,
-        ],
+            <b>Settings</b>, the cog at the end of the bar: mm, cm, or auto per value. It changes
+            what the numbers are READ in, never the model.
+          </>
+        ),
       },
       {
         title: 'Theme',
-        body: [
+        summary:
+          "Which palette the app wears, in the same panel. It repaints the app and never an object's own colour.",
+      },
+      {
+        title: 'Outlines',
+        summary:
+          'The edge lines drawn around every solid, under Theme. Switch them off to see the surfaces bare -- a selected object still glows, so nothing is lost by it.',
+      },
+    ],
+  },
+
+  {
+    id: 'shortcuts',
+    title: 'Shortcuts',
+    blurb: 'Every key the app answers, and where each one means something.',
+    entries: [
+      {
+        title: 'Anywhere',
+        steps: [
+          {
+            action: 'Esc',
+            result: 'Closes the open panel, menu or this screen. In a viewport it puts down whatever is in hand.',
+          },
+          { action: 'Ctrl+Z', result: 'Undo, on the screen you are on: the document, the clay or the cuts.' },
+          {
+            action: 'Ctrl+Shift+Z',
+            result: "Redo, the same way. The bar's two buttons do exactly this.",
+          },
+        ],
+        notes: [
           <>
-            Which palette the app wears, in the same panel. It repaints the app and never an
-            object's own colour, which is something you set and the file records.
+            <b>Ctrl</b> is <b>Cmd</b> on a Mac: every chord here answers either.
+          </>,
+          <>
+            None of them fire while the caret is in a field. A typo corrected in a number box must
+            not undo the last cut.
+          </>,
+          <>
+            Undo never crosses screens -- each walks its own history, and the two in the bar dim on
+            a screen with nothing to walk.
           </>,
         ],
       },
       {
-        title: 'Outlines',
-        body: [
+        title: 'Modelling',
+        steps: [
+          { action: 'M', result: 'Move gizmo. Pressed again it takes the handles off the object.' },
+          { action: 'R', result: 'Rotate gizmo. Pressed again it falls back to Move.' },
+          { action: 'S', result: 'Scale gizmo. Pressed again it falls back to Move.' },
+          {
+            action: 'Delete, Backspace',
+            result: 'Removes what wears the handles: a selected ruler first, then a sketch, then the whole selection.',
+          },
+          {
+            action: 'Esc',
+            result:
+              "Cancels a marquee in flight, drops the selection, and puts the ruler's handles down.",
+          },
+          { action: 'Ctrl+C', result: 'Copies the selected object.' },
+          { action: 'Ctrl+V', result: 'Pastes it beside itself.' },
+          { action: 'Shift+click', result: 'Adds a solid to the selection or takes it out -- in the scene, and in the Scene list.' },
+          { action: 'Shift+drag a solid', result: 'Lifts it instead of sliding it along the ground.' },
+          { action: 'Shift+drag the background', result: 'Marquees, and adds the catch to the selection rather than replacing it.' },
+          { action: 'Alt+left-drag', result: 'Orbits, for a mouse with no middle button.' },
+          { action: 'Enter, Space', result: 'On a palette row: drops that solid on the grid without a drag.' },
+        ],
+        notes: [
           <>
-            The edge lines drawn around every solid, under Theme. Switch them <b>off</b> to see
-            the surfaces bare -- a selected object still glows, so nothing is lost by it.
+            <b>M</b>, <b>R</b> and <b>S</b> are bare rather than chorded, which is where every 3D
+            application puts them -- and they are ignored mid-drag, so a gesture in flight cannot
+            have its gizmo swapped out from under it.
           </>,
+        ],
+      },
+      {
+        title: 'The lathe',
+        steps: [
+          { action: 'Ctrl+Z', result: 'Walks the strokes back, one push or pull at a time.' },
+          { action: 'Ctrl+Shift+Z', result: 'And forward again.' },
+        ],
+        notes: [
+          <>
+            The only keys the lathe answers. There is nothing to select and nothing to delete: the
+            way out of a piece gone wrong is <b>Reset</b>, in the corner panel.
+          </>,
+        ],
+      },
+      {
+        title: 'The laser cutter',
+        steps: [
+          {
+            action: 'Delete, Backspace',
+            result: 'Takes the lit reference off the block. With no slot lit, throws the offcut away.',
+          },
+          { action: 'Esc', result: 'Puts down the line being drawn, and puts a lit reference slot out.' },
+          { action: 'Ctrl+Z', result: 'Walks the cuts back. One cut is one step.' },
+          { action: 'Ctrl+Shift+Z', result: 'And forward again.' },
+        ],
+        notes: [
+          <>
+            <b>Reset block</b> is one step like any other, and undoing it gives back the cuts and
+            the stock's size together.
+          </>,
+        ],
+      },
+      {
+        title: 'Typing in a panel',
+        steps: [
+          { action: 'Enter', result: 'Commits what you typed and leaves the field.' },
+          { action: 'Esc', result: 'Puts back what the field held before you started typing.' },
+          {
+            action: 'Arrow keys',
+            result: 'On the colour ring, steps the hue; on the bar beside it, the brightness.',
+          },
         ],
       },
     ],
@@ -892,7 +1155,6 @@ export const HELP_SECTIONS: HelpSection[] = [
  *
  * The first one, and it stays the first one. Help is read by somebody who has
  * just arrived, and "how do I move the camera" is the question they have before
- * they have anything to move it around. Remembering the last section read would
- * be a preference nobody asked for, and would open the screen mid-thought.
+ * they have anything to move it around.
  */
 export const DEFAULT_HELP_SECTION: HelpSectionId = HELP_SECTIONS[0].id

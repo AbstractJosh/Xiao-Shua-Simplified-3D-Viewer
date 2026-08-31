@@ -221,23 +221,64 @@ export const DEFAULT_CLAY_HEIGHT = 1.5
 export const DEFAULT_CLAY_RADIUS = 0.4
 
 /**
- * How far in and out of the stock the wall may be worked, as fractions of the
- * stock radius.
+ * How far OUT of the stock the wall may be worked, as a fraction of the stock
+ * radius. There is no matching fraction for how far in, and that is the point:
+ * the floor is the axis.
  *
- * BOUNDED, and bounded in both directions, because an unbounded wall breaks the
- * one promise this screen makes about the view: that what you are shaping stays
- * on screen at the size you can see it. The viewport frames the stock times
- * `CLAY_FLARE` and never re-frames -- a view that zoomed out as you pulled
- * would move the piece out from under the tool that was pulling it.
+ * BOUNDED ON THE WAY OUT, because an unbounded wall breaks the one promise this
+ * screen makes about the view: that what you are shaping stays on screen at the
+ * size you can see it. The viewport frames the stock times `CLAY_FLARE` and
+ * never re-frames -- a view that zoomed out as you pulled would move the piece
+ * out from under the tool that was pulling it. Nothing of the sort is at risk
+ * on the way IN. A wall worked toward the axis only ever gets smaller, and the
+ * frame it is drawn in already holds it.
  *
- * The floor is a twentieth rather than zero. A wall pinched to nothing is a
- * piece cut in two, and this model has no way to say that -- the shape is one
- * radius per height, so "no material here" would be a piece with an invisible
- * hinge in it. Left at a twentieth it is a neck you can see, which is what
- * somebody pinching that hard is usually after.
+ * THE FLOOR WAS A TWENTIETH OF THE STOCK, and the argument for it was that a
+ * wall pinched to nothing is a piece cut in two, which one radius per height
+ * cannot say -- so a pinch was left as a neck you could see. What that argument
+ * missed is the far commoner thing it also forbade: a piece that CLOSES. A dome,
+ * a finial, a rounded top, a spinning top, a teardrop -- every one of them is a
+ * wall that reaches the axis and stops, and every one of them was a stub the
+ * width of a pencil instead, because the last twentieth would not go. Turning a
+ * round top is the most ordinary thing anyone does on a lathe, and it was the
+ * one shape this screen could not make.
+ *
+ * So the floor is zero, and the pinched-in-two case is simply allowed: what
+ * comes off it is two lobes meeting at a point, which is a solid of revolution
+ * like any other and is what the same gesture would give you in clay. Note that
+ * a ring AT the axis sweeps to a degenerate band -- see `sweepBand`, which
+ * takes its normals from the profile's slope rather than from the triangles and
+ * so hands back an apex with a real normal on it rather than a NaN.
  */
-export const CLAY_PINCH = 0.05
 export const CLAY_FLARE = 1.9
+
+/**
+ * The radius under which a ring is not clay any more.
+ *
+ * THE TOOL CONVERGES ON THE AXIS RATHER THAN ARRIVING AT IT, and without this
+ * that is a defect you can see. A push aimed at the axis takes a ring to within
+ * a twentieth of a millimetre of nothing and stops, because the relax pass that
+ * keeps the tool from creasing the wall lifts the middle of its dish by a
+ * fraction of the neighbours either side -- see `RELAX`. What is left is a
+ * radius of five hundredths of a millimetre, which is not material by any
+ * measure this app uses, and which the viewport nonetheless draws as a line one
+ * and a half pixels wide: run a tool up the axis and the top of the piece comes
+ * off as a NEEDLE standing on the shoulder you meant to round.
+ *
+ * So a ring worked under a millimetre is snapped to nothing, and the piece is
+ * drawn and swept from the rings that still have material on them. A millimetre
+ * is the app's own floor everywhere else -- `CLAY_RADIUS_MIN`, `CLAY_WALL_MIN`
+ * and the bore's own `BORE_MIN` are all it -- and a radius under it is a piece
+ * two millimetres across, finer than anything this app claims to draw. The
+ * cavity has always done exactly this and said so: "anything under `BORE_MIN`
+ * is pinched shut, and marked so by a zero".
+ *
+ * IT IS THE TOOL'S RULE AND NOT THE MODEL'S. `mold` snaps; `resize` and
+ * `withWall` do not. Scaling a piece down to a tenth would otherwise cut every
+ * stem in it, and undo would put back a wall the clamp had quietly closed --
+ * both of them the app deciding something the hand did not ask for.
+ */
+export const CLAY_CLOSED = MIN_DIMENSION
 
 /** Every bound here is applied with it, so no two callers can disagree. */
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
@@ -250,13 +291,15 @@ const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x
  * would creep outward with every pull -- each stroke raising the ceiling for
  * the next -- and the piece would eventually leave the frame it is drawn in.
  *
- * The floor never drops below a millimetre, which is the smallest feature this
- * app can draw at all: on a thumbnail-sized stock a twentieth of the radius is
- * finer than the screen.
+ * The floor is zero on every stock -- see `CLAY_FLARE` -- so a wall may be
+ * worked all the way to the axis and a piece may close. It is still a bound
+ * rather than nothing, and it is the one that matters most: a radius may not go
+ * NEGATIVE, which would turn the section inside out and wind the sweep the
+ * wrong way round.
  */
 export function wallBounds(radius: number): { min: number; max: number } {
   return {
-    min: Math.max(MIN_DIMENSION, radius * CLAY_PINCH),
+    min: 0,
     max: radius * CLAY_FLARE,
   }
 }
@@ -326,6 +369,59 @@ export function ringHeight(clay: Clay, i: number): number {
 /** The widest the wall stands: what the readout calls the piece's size. */
 export function widestRadius(clay: Clay): number {
   return clay.wall.reduce((a, b) => Math.max(a, b), 0)
+}
+
+/**
+ * The rings the piece is actually made of: where the material starts and where
+ * it stops. Null when the wall has been turned away altogether.
+ *
+ * WHAT THIS IS FOR is the shape a lathe is most often used to make. Round the
+ * top of a piece and the last stretch of the stock's height has no clay on it
+ * at all -- the wall reached the axis somewhere below the rim, and everything
+ * above that is air. The wall is one radius per height and the height is the
+ * STOCK's, so the model has no way to be shorter; what it has instead is a run
+ * of rings at nothing, and this is the function that reads them as air rather
+ * than as a needle of clay standing on the dome.
+ *
+ * ONE CLOSED RING IS KEPT AT EACH END, which is the whole reason this returns a
+ * span rather than a count. The surface has to run OUT to the axis: drawn from
+ * the last ring with material, a domed top ends on a flat disc the width of that
+ * ring, and the dome the hand made comes out with its tip sawn off. Drawn one
+ * ring further, the outline closes on the axis and the piece ends in a point.
+ * That ring is at nothing, so it adds no clay -- it is where the clay ran out.
+ *
+ * THE MIDDLE IS NOT ITS BUSINESS. A piece pinched through the waist has zeros
+ * between two lobes, and both lobes are still the piece: this reads the OUTER
+ * extent, and the section closes through the pinch on its own, at a point on
+ * the axis, which is what a piece pinched in two looks like.
+ */
+export function pieceSpan(clay: Clay): { lo: number; hi: number } | null {
+  let first = -1
+  let last = -1
+  for (let i = 0; i < CLAY_RINGS; i += 1) {
+    if (clay.wall[i] > 0) {
+      if (first < 0) first = i
+      last = i
+    }
+  }
+  if (first < 0) return null
+  return { lo: Math.max(0, first - 1), hi: Math.min(CLAY_RINGS - 1, last + 1) }
+}
+
+/**
+ * How tall the piece IS, which on a lump with a rounded top is not how tall its
+ * stock is.
+ *
+ * The readout's number, and it belongs there for the reason the width beside it
+ * does: both are what the piece has BECOME, where the Stock panel's two fields
+ * are what it was cut from. A readout that went on saying 15 cm after the top
+ * three centimetres had been turned off would be reporting the one number on
+ * this screen the user cannot check by looking.
+ */
+export function pieceHeight(clay: Clay): number {
+  const span = pieceSpan(clay)
+  if (span === null) return 0
+  return ringHeight(clay, span.hi) - ringHeight(clay, span.lo)
 }
 
 /**
@@ -547,6 +643,18 @@ export function mold(clay: Clay, dab: Dab, from: number[] = clay.wall): Clay {
   // two tools answered this above; this is the same promise, asked after the
   // fact because for them the answer is known before the relax and for this one
   // it is not.
+  // AND WHAT HAS CLOSED IS GONE. Last, after the relax rather than before it,
+  // because the relax is the thing that would otherwise lift a closed ring back
+  // off the axis -- and a ring the tool has taken under a millimetre is not a
+  // thin place in the wall, it is a place the wall has run out. See
+  // `CLAY_CLOSED`, and `pieceSpan` for what the drawing and the sweep then do
+  // with it.
+  //
+  // Over the tool's own window and nowhere else, like every other pass in here:
+  // a ring the tool never reached is not the tool's to close, however thin the
+  // stock or an earlier stroke left it.
+  for (let i = lo; i <= hi; i += 1) if (wall[i] < CLAY_CLOSED) wall[i] = 0
+
   if (smoothing && wall.every((r, i) => r === clay.wall[i])) return clay
 
   return { ...clay, wall }
@@ -726,125 +834,15 @@ export function bore(clay: Clay): Bore | null {
 }
 
 /**
- * A SHAPE THE LATHE CAN START FROM: a handful of control points up the piece.
- *
- * Why a table of profiles exists at all. Every piece on this screen begins as
- * the same cylinder, and the first two minutes of every sitting are spent
- * turning that cylinder into roughly the KIND of thing the person came to make
- * -- a bowl is wide and shallow, a vase has a belly and a neck, a goblet has a
- * stem. None of that is the interesting part of the work, and all of it is the
- * part that is hardest with two tools and no reference: getting a stem thin
- * enough without pinching it off is a minute of careful pushing before the
- * shaping proper starts.
- *
- * IN MULTIPLES OF THE STOCK RADIUS rather than in scene units, so a profile is
- * a shape rather than a size: loaded onto a thumbnail-sized lump it makes a
- * thumbnail-sized goblet, and the stock fields go on meaning what they meant.
- * Every value here lives inside `CLAY_PINCH`..`CLAY_FLARE`, which is what the
- * wall may be worked to -- a profile that could not have been reached with the
- * tools would be the app offering a shape it then refuses to let you edit.
- *
- * FEW POINTS, FAIRED ON THE WAY IN. Six or seven pairs describe any of these,
- * and the run between two of them is straight -- so `profileWall` relaxes the
- * sampled row before handing it over, which turns the corners into the curves
- * the numbers were meant to describe. Writing 96 radii per profile by hand
- * would be the same shape and nobody could tune it.
- */
-export type ClayProfile = {
-  id: string
-  label: string
-  /** `[height up the piece 0..1, radius as a multiple of the stock]`, bottom
-   *  first. The first point must sit at 0 and the last at 1. */
-  points: [number, number][]
-}
-
-export const CLAY_PROFILES: ClayProfile[] = [
-  // The stock itself, and it earns its place: it is the way back to a straight
-  // wall without throwing the stock away, and the tile that shows what all the
-  // others are a departure FROM.
-  { id: 'cylinder', label: 'Cylinder', points: [[0, 1], [1, 1]] },
-  { id: 'bowl', label: 'Bowl', points: [[0, 0.55], [0.25, 1.1], [0.6, 1.5], [1, 1.65]] },
-  {
-    id: 'vase',
-    label: 'Vase',
-    points: [[0, 0.7], [0.15, 1.15], [0.38, 1.4], [0.7, 0.72], [0.88, 0.55], [1, 0.78]],
-  },
-  {
-    id: 'goblet',
-    label: 'Goblet',
-    points: [[0, 1.2], [0.08, 1.1], [0.16, 0.28], [0.42, 0.24], [0.6, 0.85], [1, 1.25]],
-  },
-  { id: 'cone', label: 'Cone', points: [[0, 1.55], [1, 0.12]] },
-  { id: 'barrel', label: 'Barrel', points: [[0, 0.85], [0.5, 1.35], [1, 0.85]] },
-  { id: 'spool', label: 'Spool', points: [[0, 1.3], [0.2, 1.25], [0.5, 0.5], [0.8, 1.25], [1, 1.3]] },
-  { id: 'dome', label: 'Dome', points: [[0, 1.25], [0.45, 1.15], [0.8, 0.8], [1, 0.18]] },
-]
-
-/**
- * How many fairing passes a loaded profile gets.
- *
- * Enough to take the corners out of six straight runs and not so many that a
- * goblet's stem is smoothed back into a cone. Each pass is the same Laplacian
- * step `mold` relaxes with, run over the whole wall rather than under a tool.
- */
-const PROFILE_FAIRING = 24
-
-/** The radius a profile asks for at height fraction `t`, before fairing. */
-function sampleProfile(profile: ClayProfile, t: number): number {
-  const points = profile.points
-  for (let i = 1; i < points.length; i += 1) {
-    const [t1, r1] = points[i]
-    if (t > t1 && i < points.length - 1) continue
-    const [t0, r0] = points[i - 1]
-    const span = t1 - t0
-    // Two points at the same height would be a step in the profile, which this
-    // model cannot hold -- one radius per height. Take the upper one.
-    const k = span <= 0 ? 1 : clamp((t - t0) / span, 0, 1)
-    return r0 + (r1 - r0) * k
-  }
-  return points[0][1]
-}
-
-/**
- * A profile, as a wall for this lump: sampled at every ring, faired, and
- * bounded by what the stock allows.
- *
- * Pure and taking the clay rather than reading a store, so `engine-check` can
- * load a vase and measure it. The bounds are the same ones every tool obeys, so
- * a profile lands somewhere the tools can carry on from rather than somewhere
- * only the palette can reach.
- */
-export function profileWall(clay: Clay, profile: ClayProfile): number[] {
-  const { min, max } = wallBounds(clay.radius)
-  const wall = new Array<number>(CLAY_RINGS)
-  for (let i = 0; i < CLAY_RINGS; i += 1) {
-    const t = i / (CLAY_RINGS - 1)
-    wall[i] = clamp(sampleProfile(profile, t) * clay.radius, min, max)
-  }
-
-  // The fairing. Ends held rather than mirrored: the base and the rim are where
-  // the profile SAYS they are -- a foot is meant to be flat and a rim is meant
-  // to be where it is -- and a mirrored end pass walks both of them inward a
-  // little more with every pass.
-  for (let pass = 0; pass < PROFILE_FAIRING; pass += 1) {
-    const from = wall.slice()
-    for (let i = 1; i < CLAY_RINGS - 1; i += 1) {
-      wall[i] = clamp((from[i - 1] + from[i] * 2 + from[i + 1]) / 4, min, max)
-    }
-  }
-  return wall
-}
-
-/**
  * Put a wall back on a lump: the same stock, the same base, another shape.
  *
- * WHAT UNDO IS MADE OF, and what a profile is loaded with. Both are the same
- * act from here -- a row of radii arriving from somewhere other than a tool --
- * and both have to survive the lump having changed since the row was written:
- * an undo entry taken before the stock was narrowed describes a wall past the
- * flare limit of the lump it is being put back on. So every ring is re-clamped
- * on the way in, exactly as `resize` re-clamps on the way through, and a short
- * or missing row falls back to the stock radius rather than to a hole.
+ * WHAT UNDO IS MADE OF: a row of radii arriving from somewhere other than a
+ * tool, which has to survive the lump having changed since the row was
+ * written -- an undo entry taken before the stock was narrowed describes a
+ * wall past the flare limit of the lump it is being put back on. So every ring
+ * is re-clamped on the way in, exactly as `resize` re-clamps on the way
+ * through, and a short or missing row falls back to the stock radius rather
+ * than to a hole.
  *
  * The lump is handed back unchanged when the wall it already has is the wall
  * being given to it, so a redo of a stroke that moved nothing cannot make React

@@ -14,14 +14,16 @@ import type { BrushScope, BrushTool } from '../store/toolStore'
  * time you have opened a panel to check, you have already melted something. So
  * the answer sits in the corner, readable without a click.
  *
- * ONE PANEL FOR BOTH TOOLS, wearing whichever one is up. The setting behind it
- * is shared -- see `BrushScope` -- and two corner panels that said the same
- * thing in different words would be two things to read where there is one fact.
- * What does change is the WORDING and the COLOUR, because those are how the
- * corner says which brush is in your hand: a torch melts and wears the app's
- * red for material going away, a sculpt tool raises and wears its green for
- * material arriving. That is the same pair the ghost sphere over the model is
- * drawn in, so the two halves of "what is armed" agree.
+ * ONE PANEL FOR ALL THREE TOOLS, wearing whichever one is up. The setting
+ * behind it is shared -- see `BrushScope` -- and three corner panels that said
+ * the same thing in different words would be three things to read where there
+ * is one fact. What does change is the WORDING and the COLOUR, because those
+ * are how the corner says which brush is in your hand: a torch melts and wears
+ * the app's red for material going away, a sculpt tool raises and wears its
+ * green for material arriving, and the Smoother -- which does neither -- wears
+ * the cool neutral that means exactly that. Those are the same three the ghost
+ * sphere over the model is drawn in, so the two halves of "what is armed"
+ * agree.
  *
  * BOTTOM-LEFT: the last free corner over the viewport. Bottom-right is the
  * selection panel's, top-right the compass's, and the tool island opens
@@ -53,6 +55,14 @@ const WORDING: Record<
     selected:
       'The sculpt tool draws only on the objects that are selected, and passes over everything else. Click a solid to select it before you start.',
     warn: 'Nothing selected -- the brush will pass over everything.',
+  },
+  smoother: {
+    head: 'Smoother rounds',
+    group: 'What the Smoother rounds',
+    all: 'The Smoother rounds the corners of whatever it is pointed at.',
+    selected:
+      'The Smoother rounds only the objects that are selected, and passes over everything else. Click a solid to select it before you start.',
+    warn: 'Nothing selected -- the Smoother will pass over everything.',
   },
 }
 

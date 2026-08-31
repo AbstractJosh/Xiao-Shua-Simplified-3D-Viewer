@@ -25,6 +25,12 @@ import { mirrorAssembly } from '../geometry/mirror'
 import { baseParams } from '../geometry/dimensions'
 import type { Axis } from '../geometry/dimensions'
 import { carryErosion } from '../geometry/erode'
+// The vocabulary of the brushes is the tool store's, and a stroke is the one
+// thing in this file that has to name it: WHICH brush laid a dab decides what
+// the dab means, so the document cannot keep a private second copy of the list
+// without the two drifting apart the day a fourth brush arrives. A type only,
+// so nothing of that store is pulled in at run time.
+import type { StrokeBrush } from './toolStore'
 import { planeSeparates, splitPlanes } from '../geometry/cut'
 import { evaluateObject, removesMaterial, worldBounds } from '../geometry/evaluate'
 import { relativeTransform, toLocalDir, toLocalPoint } from '../geometry/transform'
@@ -113,14 +119,15 @@ export type Drag =
    * drag because the pointer crossed an edge would put half a groove on a solid
    * the user never aimed at.
    *
-   * `raise` is which brush it is -- the sculpt tool rather than the torch --
-   * and it is fixed at the press for the same reason the target is. It is what
-   * the readout along the bottom of the viewport reads to say which of the two
-   * is happening, and holding it here rather than looking at the armed tool
-   * means a stroke describes itself: nothing a panel does mid-drag can turn a
-   * groove being cut into a bead being drawn.
+   * `brush` is WHICH of the three it is, and it is fixed at the press for the
+   * same reason the target is. It is what the readout along the bottom of the
+   * viewport reads to say what is happening, and it is what decides the shape
+   * of the dab written below -- so holding it here rather than reading the
+   * armed tool means a stroke describes itself: nothing a panel does mid-drag
+   * can turn a groove being cut into a bead being drawn, or either of them into
+   * a corner being rounded.
    */
-  | { kind: 'erode'; objectId: string; raise: boolean; snapshot: boolean }
+  | { kind: 'erode'; objectId: string; brush: StrokeBrush; snapshot: boolean }
   | { kind: 'cut-gizmo'; handle: GizmoHandle }
   /**
    * One end of a ruler being dragged, by the gizmo standing on it.
@@ -417,17 +424,29 @@ type State = {
    */
   applyErase: (eraserId: string, targetObjectIds: string[]) => number
 
-  /** Put a brush down on an object and start a stroke. `raise` picks which
-   *  brush: the sculpt tool draws material on, the torch takes it away. */
-  startErode: (objectId: string, raise: boolean) => void
+  /** Put a brush down on an object and start a stroke. `brush` picks which one:
+   *  the torch takes material away, the sculpt tool draws it on, the Smoother
+   *  rounds off what is already there. */
+  startErode: (objectId: string, brush: StrokeBrush) => void
   /**
    * Lay one dab down, in the object's LOCAL space.
+   *
+   * WHICH OF THE NUMBERS MEAN ANYTHING is decided by the stroke's own brush
+   * rather than by which arguments the caller bothered to fill in -- see
+   * `startErode`. `round` is the Smoother's alone and the other two ignore it;
+   * `heat` and `smooth` are the other two's and the Smoother ignores both.
    *
    * One undo step for the whole stroke, like every other drag here: the history
    * entry is taken on the first dab and the rest fold into it, so a groove is
    * one press of undo rather than one per dab the pointer happened to lay down.
    */
-  erodeAt: (at: Vec3, radius: number, heat: number, smooth: number) => void
+  erodeAt: (
+    at: Vec3,
+    radius: number,
+    heat: number,
+    smooth: number,
+    round?: number | null
+  ) => void
 
   undo: () => void
   redo: () => void
@@ -910,10 +929,10 @@ export const useDoc = create<State>((set, get) => {
     // and a torch that also selected what it touched would move the gizmo onto
     // whatever the user happened to melt -- so putting the brush down and
     // picking a thing up stay two different gestures.
-    startErode: (objectId, raise) =>
-      set({ drag: { kind: 'erode', objectId, raise, snapshot: false } }),
+    startErode: (objectId, brush) =>
+      set({ drag: { kind: 'erode', objectId, brush, snapshot: false } }),
 
-    erodeAt: (at, radius, heat, smooth) => {
+    erodeAt: (at, radius, heat, smooth, round) => {
       const { drag, doc } = get()
       if (drag.kind !== 'erode') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
@@ -923,15 +942,39 @@ export const useDoc = create<State>((set, get) => {
       silent(
         mapObject(drag.objectId, (o) => ({
           ...o,
-          // Which way this dab pushes comes from the GESTURE rather than from
-          // the tool panel, so a stroke is all one kind of mark however long it
-          // is held. And it is written only when it is true: an ordinary torch
-          // dab stays the four fields it has always been, which keeps the
-          // evaluator's cache key -- this array, stringified -- identical for
-          // every object anybody has already melted. See `ErodeDab.raise`.
+          // WHAT KIND OF MARK THIS IS comes from the GESTURE rather than from
+          // the tool panel, so a stroke is all one kind however long it is
+          // held. And the field that says so is written only when it is true:
+          // an ordinary torch dab stays exactly the fields it has always been,
+          // which is what keeps a document nobody has sculpted or rounded from
+          // being invalidated by either tool existing. See `ErodeDab.raise` and
+          // `ErodeDab.round`.
+          //
+          // A rounding dab carries no heat and no smoothing, and those zeroes
+          // are not placeholders: the Smoother neither bites nor pours, so zero
+          // is the honest reading of both however the panel's numbers arrived
+          // here.
+          //
+          // The STAMP is what the object was when the brush touched it -- see
+          // `ErodeStamp`. Taken here, at the dab, rather than once at
+          // `startErode`: it is the same numbers either way, and reading them
+          // off the object the dab is actually being written to is one fewer
+          // place for the two to drift apart.
           erosion: [
             ...(o.erosion ?? []),
-            { at, radius, heat, smooth, ...(drag.raise ? { raise: true } : {}) },
+            {
+              at,
+              radius,
+              ...(drag.brush === 'smoother'
+                ? { heat: 0, smooth: 0, round: round ?? 0 }
+                : { heat, smooth, ...(drag.brush === 'sculpt' ? { raise: true } : {}) }),
+              stamp: {
+                parts: o.parts.length,
+                features: o.features.length,
+                cuts: o.cuts.length,
+                erased: o.erased?.length ?? 0,
+              },
+            },
           ],
         }))
       )

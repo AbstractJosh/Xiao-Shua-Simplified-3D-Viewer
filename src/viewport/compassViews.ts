@@ -73,6 +73,47 @@ export function viewQuaternion(dir: Vector3): Quaternion {
 }
 
 /**
+ * The direction a camera with that orientation is looking FROM: its own +Z,
+ * carried out into the world.
+ *
+ * The very vector `orbitPosition` pushes the camera along, written once so the
+ * two cannot disagree about which way round a view is. It is always a unit
+ * vector, whatever the camera has been through, which is what makes it safe to
+ * ask about when the camera happens to be sitting on its pivot.
+ */
+export function viewDirection(facing: Quaternion): Vector3 {
+  return new Vector3(0, 0, 1).applyQuaternion(facing)
+}
+
+/**
+ * Which of the six views a camera is nearest to already looking from.
+ *
+ * The largest dot product wins, which for six unit axes is simply the largest
+ * component of the view direction -- so the answer is the face of the world the
+ * camera is most nearly square on to. Ties go to whichever comes first in
+ * `COMPASS_VIEWS`, and a tie is a camera sitting exactly on the diagonal
+ * between two views: there is no better answer there than a consistent one.
+ *
+ * Here rather than in the widget because it is the other half of
+ * `viewQuaternion` -- one turns a view into an orientation and this turns an
+ * orientation back into the nearest view -- and because the check suite guards
+ * it without a renderer.
+ */
+export function nearestView(facing: Quaternion): CompassView {
+  const dir = viewDirection(facing)
+  let best = COMPASS_VIEWS[0]
+  let nearest = -Infinity
+  for (const view of COMPASS_VIEWS) {
+    const along = view.dir.dot(dir)
+    if (along > nearest) {
+      nearest = along
+      best = view
+    }
+  }
+  return best
+}
+
+/**
  * Where a camera with that orientation has to stand to be looking at `focus`
  * from `radius` away.
  *
@@ -139,12 +180,25 @@ export const compass: {
    * gesture and the camera would lag the hand.
    */
   turn: { azimuth: number; polar: number }
+  /**
+   * Whether the hand has just come off the compass after a drag, and the scene
+   * has not been told yet.
+   *
+   * A flag rather than a request, because what it reports is a fact about the
+   * GESTURE -- the drag ended -- and what that means is the screen's business
+   * rather than the widget's. On the modelling screen it means nothing at all
+   * and is thrown away; on the laser cutter it is what sends the camera to the
+   * nearest axis view. Writing the meaning into the widget would make the one
+   * compass two compasses.
+   */
+  released: boolean
 } = {
   facing: new Quaternion(),
   eye: new Vector3(),
   focus: new Vector3(),
   request: null,
   turn: { azimuth: 0, polar: 0 },
+  released: false,
 }
 
 /** Ask the camera to fly to a view. Latest wins: a second click mid-flight
@@ -224,6 +278,26 @@ export function takeTurn(): { azimuth: number; polar: number } | null {
   compass.turn.azimuth = 0
   compass.turn.polar = 0
   return { azimuth, polar }
+}
+
+/** Say that a drag on the compass has ended. Only a DRAG: a click flies to a
+ *  view of its own accord, and never leaves the camera between two. */
+export function releaseTurn(): void {
+  compass.released = true
+}
+
+/**
+ * Take the fact that a drag ended, and clear it.
+ *
+ * Consumed on every frame whether or not the screen has any use for it, so it
+ * cannot go stale: a flag left standing by the modelling screen would fire on
+ * the first frame after a switch to a screen that does care, and settle a
+ * camera nobody had touched.
+ */
+export function takeRelease(): boolean {
+  const released = compass.released
+  compass.released = false
+  return released
 }
 
 /**

@@ -2,13 +2,24 @@ import { useEffect } from 'react'
 import { APP_NAME } from '../appInfo'
 import { useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
+import { useLaser } from '../store/laserStore'
 import { useLathe } from '../store/latheStore'
 import { useTools } from '../store/toolStore'
 import { ExportTools } from './ExportTools'
 import { ImportTools } from './ImportTools'
 import { HelpTool, SettingsTool, SnapTool } from './NavTools'
 import { ScreenTabs } from './ScreenTabs'
+import type { ScreenId } from '../screens'
 import { onDocument } from '../store/toolStore'
+
+/**
+ * What undo and redo do on a screen that has no history to walk.
+ *
+ * A shared no-op rather than one built per render, so the buttons' props are
+ * the same objects from one render to the next and the pair does not
+ * re-render for a screen where neither of them can be pressed anyway.
+ */
+const NOTHING = () => {}
 
 /**
  * Object count belongs next to the triangle count, not in the scene tree: it is
@@ -65,9 +76,6 @@ function Rule({ major = false }: { major?: boolean }) {
 export function NavBar() {
   const openPanel = useTools((s) => s.openPanel)
   const setOpenPanel = useTools((s) => s.setOpenPanel)
-  // Whether the screen on show has a document, which is what dims Import,
-  // Export and Snap. See `SCREEN_HAS_DOCUMENT`.
-  const live = useTools(onDocument)
 
   /**
    * UNDO AND REDO BELONG TO THE SCREEN, not to the document.
@@ -81,10 +89,11 @@ export function NavBar() {
    * about the last thing you did, and there is no screen where that question
    * has no answer.
    *
-   * Both stores are subscribed to on both screens, which costs a comparison per
+   * Every store is subscribed to on every screen, which costs a comparison per
    * change to a store the bar is not showing. The alternative -- a hook that
    * picks a store -- is not one React allows.
    */
+  const screen = useTools((s) => s.screen)
   const docUndo = useDoc((s) => s.undo)
   const docRedo = useDoc((s) => s.redo)
   const docPast = useDoc((s) => s.past.length > 0)
@@ -93,11 +102,47 @@ export function NavBar() {
   const latheRedo = useLathe((s) => s.redo)
   const lathePast = useLathe((s) => s.past.length > 0)
   const latheFuture = useLathe((s) => s.future.length > 0)
+  const laserUndo = useLaser((s) => s.undo)
+  const laserRedo = useLaser((s) => s.redo)
+  const laserPast = useLaser((s) => s.past.length > 0)
+  const laserFuture = useLaser((s) => s.future.length > 0)
 
-  const undo = live ? docUndo : latheUndo
-  const redo = live ? docRedo : latheRedo
-  const canUndo = live ? docPast : lathePast
-  const canRedo = live ? docFuture : latheFuture
+  /**
+   * WHICH HISTORY the two buttons walk, per screen.
+   *
+   * A table keyed by `ScreenId` rather than `live ? doc : lathe`, which is
+   * what this was and what stopped being true the moment there were three
+   * screens: "not the modelling screen" meant "the lathe" for exactly as long
+   * as there were only two, and a third would silently have had the bar
+   * stepping a lump of clay it was not showing.
+   *
+   * `null` is a screen with nothing to step, which is not the same as a screen
+   * with an empty stack -- the buttons are dead either way, but one of them
+   * could fill up and the other could not. Nothing answers null today; the
+   * possibility is kept because the honest answer for a screen that builds
+   * nothing is nothing, and a table that could not say so would have to invent
+   * a history for it.
+   *
+   * Every screen that can be undone remembers ONE KIND OF ACT: the document's
+   * whole state, the lathe's wall, the laser's bed. What each of them leaves
+   * out is stated where it is stored -- see `past` in `latheStore` and
+   * `laserStore` -- and the rule is the same in both: a thing you SHAPED is
+   * remembered, and a number you SET is not.
+   */
+  const history: Record<
+    ScreenId,
+    { undo: () => void; redo: () => void; past: boolean; future: boolean } | null
+  > = {
+    modelling: { undo: docUndo, redo: docRedo, past: docPast, future: docFuture },
+    lathe: { undo: latheUndo, redo: latheRedo, past: lathePast, future: latheFuture },
+    laser: { undo: laserUndo, redo: laserRedo, past: laserPast, future: laserFuture },
+  }
+
+  const step = history[screen]
+  const undo = step?.undo ?? NOTHING
+  const redo = step?.redo ?? NOTHING
+  const canUndo = step?.past ?? false
+  const canRedo = step?.future ?? false
 
   // Escape and click-outside for EVERY tool panel, mounted once here because
   // `openPanel` is one field for all of them. The bar is not the only thing
@@ -122,7 +167,12 @@ export function NavBar() {
       // `.help-screen` is the CARD, deliberately not the backdrop behind it:
       // a press on the dark surround finds no card above it, falls through to
       // this, and closes the screen -- which is what a modal surround is for.
-      if (target?.closest?.('.topbar, .tool-island, .help-screen')) return
+      // `.cut-panel` is chrome, not scene. It exists BECAUSE this listener
+      // closes a flyout on any press outside the island -- which is what shut
+      // the Apply button under the first stroke of the line it was going to
+      // apply, see `CutPanel` -- and a press on it must not shut the dial that
+      // aimed the very line it is about to burn.
+      if (target?.closest?.('.topbar, .tool-island, .help-screen, .cut-panel')) return
       setOpenPanel(null)
     }
 

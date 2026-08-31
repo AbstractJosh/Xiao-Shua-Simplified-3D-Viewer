@@ -5,8 +5,13 @@
 
 /**
  * Side counts offered by the polygon chip, ordered as the user reads them off
- * the button: index 0 sits at the BOTTOM. Rare counts (7, 9, 11) are omitted
+ * the button: index 0 sits at the LEFT. Rare counts (7, 9, 11) are omitted
  * rather than diluting the target areas.
+ *
+ * Ascending left to right, which is the same direction the side-count ticks on
+ * a Solids row run in. The two controls are choosing the same polygon, and a
+ * sweep that meant "more sides" in one panel and "fewer" in the other would be
+ * the kind of difference nobody notices until their hand goes the wrong way.
  */
 export const NGON_SIDES = [3, 4, 5, 6, 8, 10]
 
@@ -31,9 +36,6 @@ export const NGON_NAMES: Record<number, string> = {
 }
 
 export const DEFAULT_SIDES = 6
-
-/** Bands are laid out top-down, so the display order is the reverse. */
-export const NGON_SIDES_TOP_DOWN = [...NGON_SIDES].reverse()
 
 const TWO_PI = Math.PI * 2
 

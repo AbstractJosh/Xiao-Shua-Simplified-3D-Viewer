@@ -15,8 +15,8 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
-import { Box3, Matrix4, Quaternion, ShaderLib, Vector3 } from 'three'
-import type { BufferGeometry, WebGLProgramParametersWithUniforms } from 'three'
+import { Box3, Matrix4, PlaneGeometry, Quaternion, ShaderChunk, ShaderLib, Vector3 } from 'three'
+import type { BufferAttribute, BufferGeometry, WebGLProgramParametersWithUniforms } from 'three'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createElement } from 'react'
@@ -66,6 +66,7 @@ import {
   RotateTool,
   ScaleTool,
   SculptTool,
+  SmootherTool,
   SnapTool,
   cutPlaneSpawn,
   rulerFrame,
@@ -77,14 +78,58 @@ import { PlacementPanel } from '../src/console/PlacementPanel'
 import { MergeButton, SceneTree } from '../src/console/SceneTree'
 import { ShapePalette } from '../src/console/ShapePalette'
 import { Console } from '../src/console/Console'
+import { LaserConsole } from '../src/console/LaserConsole'
 import { LatheConsole } from '../src/console/LatheConsole'
 import { BasePanel } from '../src/console/BasePanel'
 import { HollowTool } from '../src/console/HollowTool'
-import { ProfilePanel } from '../src/console/ProfilePanel'
 import { PullTool, PushTool, SmoothTool } from '../src/console/LatheTools'
 import { CopyPieceButton, PIECE_NAME, pieceName } from '../src/viewport/CopyPieceButton'
 import { LatheViewport } from '../src/viewport/LatheViewport'
 import { StockPanel } from '../src/viewport/StockPanel'
+import { BlockPanel } from '../src/viewport/BlockPanel'
+import { FreehandTool, MoveRefTool, PointCutTool } from '../src/console/LaserTools'
+import { ReferencePanel, slotsFor } from '../src/console/ReferencePanel'
+import { ReferenceEditor } from '../src/console/ReferenceEditor'
+import {
+  MAX_PLACEMENTS,
+  MAX_PRESETS,
+  SLOTS_PER_PRESET,
+  activePreset,
+  flipCrop,
+  turnCrop,
+  useReference,
+  visiblePlacements,
+} from '../src/store/referenceStore'
+import type { Placement } from '../src/store/referenceStore'
+import {
+  CROP_RATIOS,
+  aspectOf,
+  clampCrop,
+  fitCrop,
+  fractionRatio,
+  isReferenceFile,
+  moveCrop,
+  resizeCrop,
+  turnedSize,
+} from '../src/console/referenceImage'
+import {
+  CORNERS,
+  FACES,
+  MIN_DECAL,
+  clampCentre,
+  coversPoint,
+  dropSize,
+  faceFrame,
+  faceOffset,
+  faceOfNormal,
+  placementRect,
+  pointUv,
+  resizeFromCorner,
+} from '../src/viewport/decalPlacement'
+import { useCutDraft, draftLine, draftReady } from '../src/viewport/cutDraft'
+import { BLOCK_MAX, BLOCK_MIN, DEFAULT_BLOCK, bedIsUncut, useLaser } from '../src/store/laserStore'
+import { bedGeometry } from '../src/geometry/laserCut'
+import { BLOCK_NAME, CopyBlockButton, bedName, sizeIn } from '../src/viewport/CopyBlockButton'
 import { ZoomControl } from '../src/viewport/ZoomControl'
 import { fitToEnvelope } from '../src/geometry/importers'
 import { registerMesh } from '../src/geometry/meshLibrary'
@@ -96,7 +141,6 @@ import {
   CLAY_RADIUS_MAX,
   CLAY_RADIUS_MIN,
   CLAY_RINGS,
-  CLAY_PROFILES,
   CLAY_SIDES,
   DEFAULT_CLAY_HEIGHT,
   DEFAULT_CLAY_RADIUS,
@@ -107,8 +151,7 @@ import {
   mold,
   widestRadius,
 } from '../src/geometry/clay'
-import type { ClayProfile } from '../src/geometry/clay'
-import { armedLatheTool } from '../src/store/toolStore'
+import { ISLAND_PANELS, armedBrush, armedLatheTool } from '../src/store/toolStore'
 import { useLathe } from '../src/store/latheStore'
 import {
   ZOOM_MAX,
@@ -146,18 +189,28 @@ import {
   depthBias,
   withDepthBias,
 } from '../src/viewport/depthBias'
+import {
+  BLOCK_STANDOFF,
+  CLOSEST_FRAME,
+  OPENING_FRAME,
+  OPENING_SHARE,
+  WIDEST_FRAME,
+} from '../src/viewport/LaserViewport'
+import { STAGE_CAMERA, groundPlan } from '../src/viewport/Stage'
+import { perspectiveFrame } from '../src/viewport/orthoFrame'
+import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX } from '../src/viewport/pointSnap'
+import { CutPanel } from '../src/viewport/CutPanel'
 import { MarqueeRect } from '../src/viewport/SelectionMarquee'
 import { MARQUEE_SLOP, useMarquee } from '../src/viewport/marquee'
 import { SolidList, SolidPalette } from '../src/console/SolidPalette'
 import { NGON_LABEL } from '../src/console/ngon'
 import { SOLID_TEMPLATES, restingSides } from '../src/console/solidIcons'
 import { SOLID_SIDES } from '../src/console/solidMorph'
-import { UNIT_MODES, fromDisplay, resolveUnit, stepIn, toDisplay } from '../src/units'
+import { UNIT_MODES, fromDisplay, resolveUnit, stepIn, suffixOf, toDisplay } from '../src/units'
 import {
   MAX_FACE_OFFSET,
   MAX_SIZE,
   MIN_DIMENSION,
-  maxShapeSize,
   resizeAlongAxis,
   scaleShape,
   scaleUniform,
@@ -178,7 +231,7 @@ import {
 } from '../src/geometry/assembly'
 import { turnedRotation } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
-import { hostSurfaceFor, slideAnchor, surfaceFor } from '../src/geometry/surfaces'
+import { hostSurfaceFor, maxShapeSize, slideAnchor, surfaceFor } from '../src/geometry/surfaces'
 import {
   DEFAULT_OBJECT_COLOR,
   cloneObject,
@@ -207,10 +260,13 @@ import {
   DEFAULT_CUT_PLANE,
   DEFAULT_BRUSH_FORCE,
   DEFAULT_BRUSH_RADIUS,
+  DEFAULT_BRUSH_ROUND,
+  DEFAULT_SMOOTHER_RADIUS,
   DEFAULT_BRUSH_SMOOTH,
   BRUSH_RADIUS_MAX,
   BRUSH_RADIUS_MIN,
   BRUSH_SMOOTH_MIN,
+  ROUND_MIN,
   ISLAND_MARGIN,
   ISLAND_SNAP,
   RECENT_COLOR_SLOTS,
@@ -332,6 +388,8 @@ const doc = () => useDoc.getState()
 const library = () => useLibrary.getState()
 const tools = () => useTools.getState()
 const lathe = () => useLathe.getState()
+const laser = () => useLaser.getState()
+const draft = () => useCutDraft.getState()
 const rad = (deg: number) => (deg * Math.PI) / 180
 
 /**
@@ -697,9 +755,10 @@ doc().selectObject(pyramidId)
   // is noise rather than help.
   hides('and no hover bubble', cut, 'nav-tip')
   hides('nor does snap', markupOf('SnapTool (no tip)', SnapTool), 'nav-tip')
-  // The toolbar button is now nothing but a switch: no caret, no panel, and
-  // therefore nothing of its own hanging over the viewport.
-  hides('and carries no panel at all', cut, 'nav-caret')
+  // DISARMED IT IS A BARE SWITCH. The caret comes with the panel, and the
+  // panel is the two things you do to a plane that exists -- so there is
+  // nothing behind it until one does.
+  hides('and carries no caret while it is disarmed', cut, 'nav-caret')
   // Not `markupOf`, which counts an empty render as a failure: rendering
   // nothing at all is exactly the claim here, and it is a stronger one than
   // "the markup happens not to contain a button".
@@ -864,11 +923,115 @@ doc().selectObject(pyramidId)
     check(`${section.id} has entries`, section.entries.length > 0, String(section.entries.length))
     for (const entry of section.entries) {
       shows(`${section.id}: ${entry.title} is titled`, page, `${entry.title}`)
+      // A heading with nothing under it is the failure mode a help screen
+      // actually has -- and now that an entry can say what it is in a summary
+      // OR show how it works in steps, "nothing under it" means neither.
       check(
-        `${section.id}: ${entry.title} has a description under it`,
-        entry.body.length > 0,
-        String(entry.body.length)
+        `${section.id}: ${entry.title} says something under it`,
+        Boolean(entry.summary) || (entry.steps?.length ?? 0) > 0,
+        `summary: ${Boolean(entry.summary)}, steps: ${entry.steps?.length ?? 0}`
       )
+      // Both halves of a gesture row, or the grid draws a term with an empty
+      // column beside it -- which reads as a missing line rather than a short
+      // one. Notes are the field verbosity would creep back into, so they are
+      // held to being present-or-absent rather than long.
+      for (const step of entry.steps ?? []) {
+        check(
+          `${section.id}: ${entry.title} pairs a gesture with what it does`,
+          Boolean(step.action) && Boolean(step.result),
+          String(step.action)
+        )
+      }
+    }
+  }
+
+  // --- THE SHORTCUTS PAGE IS A TABLE OF EVERY KEY --------------------------
+  //
+  // A page that lists SOME of the shortcuts is worse than no page at all: it is
+  // read as the whole set, so a key missing from it is a key nobody finds. Two
+  // things are held to that here, and both are the kind of drift a reader would
+  // never notice.
+  //
+  // FIRST, EVERY KEY CHIP ELSEWHERE IN HELP IS IN THE TABLE. A topic that shows
+  // a shortcut beside its title is documenting one, and this page has to carry
+  // it too -- otherwise the two halves of Help disagree about what the app
+  // answers, and the table is the half that looks complete.
+  {
+    const shortcuts = HELP_SECTIONS.find((s) => s.id === 'shortcuts')
+    check('there is a shortcuts page', Boolean(shortcuts), HELP_SECTIONS.map((s) => s.id).join(', '))
+    /** Every key named in the left-hand column, split on the commas it uses to
+     *  offer two keys for one act. */
+    const listed = new Set(
+      (shortcuts?.entries ?? [])
+        .flatMap((entry) => entry.steps ?? [])
+        .flatMap((step) => String(step.action).split(',').map((k) => k.trim().toLowerCase()))
+    )
+    /** What the table calls a key, against what the source calls it. */
+    const asListed = (key: string) => (key.toLowerCase() === 'escape' ? 'esc' : key.toLowerCase())
+
+    // EVERY BARE KEY THE VIEWPORTS LISTEN FOR, read out of their source rather
+    // than from a list kept here -- a list would drift the first time a screen
+    // learned a key, which is the whole failure this page exists to prevent.
+    // The chords are checked by name below: `Ctrl+Z` is written in the source
+    // as a `toLowerCase()` against a modifier and is not a literal to scrape.
+    const heard = new Map<string, string>()
+    for (const file of ['Viewport', 'LatheViewport', 'LaserViewport']) {
+      const source = readFileSync(new URL(`../src/viewport/${file}.tsx`, import.meta.url), 'utf8')
+      // The lathe answers only a chord, so it contributes nothing here and that
+      // is not a fault: what would be a fault is the scrape finding nothing
+      // ANYWHERE, which is why the guard is on the total.
+      for (const [, key] of source.matchAll(/e\.key === '([^']+)'/g)) heard.set(key, file)
+    }
+    check('the viewports were read for the keys they answer', heard.size > 0, [...heard.keys()].join(', '))
+    for (const [key, file] of heard) {
+      check(
+        `the table names ${key}, which ${file} answers`,
+        listed.has(asListed(key)),
+        [...listed].join(' | ')
+      )
+    }
+
+    // And the three bare letters, read off the very map the handler switches
+    // on, so a fourth gizmo key would have to be documented to pass.
+    const modeKeys = [
+      ...readFileSync(new URL('../src/viewport/Viewport.tsx', import.meta.url), 'utf8')
+        .split('export const MODE_KEYS')[1]
+        .split('}')[0]
+        .matchAll(/(\w+): '/g),
+    ].map((m) => m[1])
+    check('the gizmo keys were found to check against', modeKeys.length === 3, modeKeys.join(', '))
+    for (const key of modeKeys) {
+      check(`the table names ${key}, which picks a gizmo`, listed.has(key.toLowerCase()), [...listed].join(' | '))
+    }
+
+    const chips = HELP_SECTIONS.filter((s) => s.id !== 'shortcuts')
+      .flatMap((s) => s.entries)
+      .map((e) => e.key)
+      .filter((key): key is string => Boolean(key))
+    check('and Help has key chips to be held against it', chips.length > 0, `${chips.length}`)
+    for (const chip of chips) {
+      check(
+        `the table carries ${chip}, which a topic shows as a shortcut`,
+        listed.has(chip.toLowerCase()),
+        [...listed].join(' | ')
+      )
+    }
+
+    // SECOND, EVERY SCREEN THAT ANSWERS A KEY HAS A ROW HERE. Named rather than
+    // counted, because the failure this guards is a whole screen's worth of
+    // keys going undocumented when one is added -- which is exactly what
+    // happened to this page's own subject before it existed.
+    const pages = (shortcuts?.entries ?? []).map((e) => e.title)
+    for (const where of ['Anywhere', 'Modelling', 'The lathe', 'The laser cutter']) {
+      check(`the table covers ${where}`, pages.includes(where), pages.join(', '))
+    }
+
+    // And the keys the source actually listens for, spot-checked against the
+    // table: the three chords, the two destructive keys and the three bare
+    // gizmo letters. A key handled in a viewport and absent here is the drift
+    // this whole page exists to stop.
+    for (const key of ['esc', 'ctrl+z', 'ctrl+shift+z', 'ctrl+c', 'ctrl+v', 'delete', 'backspace', 'm', 'r', 's', 'enter']) {
+      check(`the table names ${key}`, listed.has(key), [...listed].join(' | '))
     }
   }
 
@@ -919,7 +1082,13 @@ doc().selectObject(pyramidId)
   // torch backwards, and arming it puts the torch down.
   shows('Help explains the sculpt tool', toolsPage, 'Sculpt')
   shows('says which way it works', toolsPage, 'onto')
-  shows('and that the two brushes are exclusive', toolsPage, 'puts the other down')
+  shows('and that the brushes are exclusive', toolsPage, 'puts the others down')
+  // And the third, whose surprise is the opposite of the other two's: it stops.
+  // A user who has learned "go over it again" from the torch will try it here
+  // first, so the page has to say plainly that it does nothing.
+  shows('Help explains the Smoother', toolsPage, 'Smoother')
+  shows('says it arrives at a radius and stops', toolsPage, 'It arrives and stops.')
+  shows('and that it leaves flat faces alone', toolsPage, 'It leaves flat faces alone.')
 
   // The three gizmo keys, now drawn as chips beside the names rather than
   // spelled into the sentence -- which is the point of the chip: it is the part
@@ -1583,8 +1752,9 @@ tools().setCutActive(true)
 // The prism is 0.9 tall and rests on the grid, so this plane is halfway up it.
 tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 {
-  // Arming puts the two ACTIONS on the island, a short travel from the gizmo
-  // that just aimed the plane. The plane's numbers stay in the console.
+  // Arming puts the two ACTIONS behind the tool's own caret, a short travel
+  // from the gizmo that just aimed the plane. The plane's numbers stay in the
+  // console.
   const panel = markupOf('CutActions (armed)', CutActions)
   hides('the actions carry no placement of their own', panel, '>Position<')
   // The guide square is sized by the gizmo's ring alone now; it was the last
@@ -1608,6 +1778,41 @@ tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
   shows('it says what it will cut', panel, 'Cuts the selected object')
   shows('and offers the button', panel, '>Apply cut</button>')
   shows('and the one that re-aims the plane', panel, '>Reset plane</button>')
+
+  // AND THEY ARE A DROPDOWN OFF THE CUT BUTTON, like every other tool's
+  // controls on this island -- not two rows hanging under the whole of it,
+  // which is what made arming the tool shove the column about.
+  const armedTool = markupOf('CutTool (armed)', CutTool)
+  shows('an armed cut grows a caret of its own', armedTool, 'nav-caret')
+  check(
+    'and arming opened its panel, so the button that fires it is up',
+    tools().openPanel === 'cut',
+    `${tools().openPanel}`
+  )
+  shows('which is where Apply cut lives', armedTool, '>Apply cut</button>')
+  shows('in a panel of its own', armedTool, 'class="nav-panel"')
+  // Nothing hangs under the island any more, so it is the same height armed or
+  // not and the brushes below Cut stay where the hand left them.
+  hides(
+    'and nothing hangs under the island',
+    markupOf('ToolIsland (cut armed)', ToolIsland),
+    'class="nav-cut"'
+  )
+
+  // PUTTING THE TOOL DOWN TAKES THE PANEL WITH IT, and it is the STORE that
+  // says so rather than the button -- the same rule `setIslandCollapsed`
+  // states in the same place, and for the same reason: the invariant is about
+  // the state, and the button is only one of the ways in.
+  tools().setCutActive(false)
+  check('disarming shuts the panel', tools().openPanel === null, `${tools().openPanel}`)
+  // But only its OWN. A tool that closed whatever happened to be open would be
+  // reaching outside itself.
+  tools().setOpenPanel('snap')
+  tools().setCutActive(false)
+  check('and leaves another panel alone', tools().openPanel === 'snap', `${tools().openPanel}`)
+  tools().setOpenPanel(null)
+  tools().setCutActive(true)
+  tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 
   // Deselect and the button says out loud that it is about to cut everything.
   // On a 176px island the target sentence lives in a title; the COUNT does not,
@@ -5017,7 +5222,7 @@ console.log('\nThe erode tool says what it will melt before it melts it')
     const erosionOf = () => doc().doc.objects.find((o) => o.id === torched)?.erosion ?? []
     const entries = doc().past.length
 
-    doc().startErode(torched, false)
+    doc().startErode(torched, 'torch')
     check('the torch takes its own drag kind', doc().drag.kind === 'erode', doc().drag.kind)
     for (let i = 0; i < 6; i++) {
       doc().erodeAt([-0.5 + i * 0.2, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
@@ -5180,7 +5385,7 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
     const marksOf = () => doc().doc.objects.find((o) => o.id === clay)?.erosion ?? []
     const entries = doc().past.length
 
-    doc().startErode(clay, true)
+    doc().startErode(clay, 'sculpt')
     check('a sculpt stroke takes the same drag kind', doc().drag.kind === 'erode', doc().drag.kind)
     for (let i = 0; i < 4; i++) {
       doc().erodeAt([-0.3 + i * 0.2, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
@@ -5196,7 +5401,7 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
 
     // A torch stroke over the top goes in the SAME list, after them. Two lists
     // could not say which came first, and which came first is the surface.
-    doc().startErode(clay, false)
+    doc().startErode(clay, 'torch')
     doc().erodeAt([0, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
     doc().endDrag()
     const marks = marksOf()
@@ -5205,7 +5410,7 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
 
     // The direction is the GESTURE's. Nothing the panel does mid-stroke can
     // turn a bead being drawn into a groove being cut.
-    doc().startErode(clay, true)
+    doc().startErode(clay, 'sculpt')
     tools().setBrushTool('torch')
     doc().erodeAt([0.4, 1, 0], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
     doc().endDrag()
@@ -5217,6 +5422,165 @@ console.log('\nThe sculpt tool is the torch backwards, and says so')
     )
 
     doc().removeObject(clay)
+  }
+}
+
+// --- The Smoother -----------------------------------------------------------
+console.log('\nThe Smoother is the brush that arrives somewhere and stops')
+{
+  const smoother = markupOf('SmootherTool', SmootherTool)
+  shows('the Smoother is in the island', smoother, 'Smoother')
+  shows('and rests disarmed', smoother, 'aria-pressed="false"')
+  // NO HOVER BUBBLE, which is the island's rule rather than this tool's
+  // preference -- every button here is aimed at the scene and pressed
+  // constantly, so a paragraph that appears whenever the pointer crosses one
+  // lands on top of the model it is about to work. Checked against the two
+  // brushes beside it, so the claim is "the same as its neighbours" rather than
+  // a string that happens to be absent today. See `ModeTool`.
+  hides('it carries no hover bubble', smoother, 'nav-tip')
+  hides('nor does the blowtorch', markupOf('ErodeTool (bubble)', ErodeTool), 'nav-tip')
+  hides('nor the sculpt tool', markupOf('SculptTool (bubble)', SculptTool), 'nav-tip')
+
+  // TWO DIALS, NOT THREE. The missing one is Smoothing, which on this tool
+  // would be its own name written on a control inside it: there is nothing here
+  // for smoothing to be a share OF.
+  tools().setOpenPanel('smoother')
+  const panel = markupOf('SmootherTool (open)', SmootherTool)
+  shows('its panel offers a brush size', panel, '>Brush size<')
+  shows('and a strength', panel, '>Strength<')
+  hides('and no smoothing, which would be its own name', panel, '>Smoothing<')
+  hides('nor heat, which is the torch\'s metaphor', panel, '>Heat<')
+  shows('the size owns its unit, as the other brushes\' do', panel, 'aria-label="Brush size unit"')
+  hides('and never offers auto', panel, '>auto<')
+
+  // ITS OWN PANEL ID, and this is the check that says why it could not simply
+  // be called `smooth`: that name belongs to the Lathe's rib, on another screen
+  // with another panel behind it, and one id for two panels would have opened
+  // whichever happened to be mounted.
+  check('the Smoother owns its own panel id', tools().openPanel === 'smoother', `${tools().openPanel}`)
+  check('which is not the lathe rib\'s', ISLAND_PANELS.includes('smooth') && ISLAND_PANELS.includes('smoother'), '')
+
+  // Its panel hangs off a button inside the island, so the island shutting has
+  // to shut it -- the bug `ISLAND_PANELS` exists to prevent. See the torch's.
+  tools().setIslandCollapsed(true)
+  check('collapsing the island shuts the Smoother panel', tools().openPanel === null, `${tools().openPanel}`)
+  tools().setIslandCollapsed(false)
+  check('and it does not spring back', tools().openPanel === null, `${tools().openPanel}`)
+  tools().setOpenPanel(null)
+
+  // ONE BRUSH AT A TIME, now three of them. Nothing enforces it: the store
+  // holds a single mode, so arming any is choosing against the others.
+  tools().setBrushTool('torch')
+  tools().setBrushTool('smoother')
+  check('arming the Smoother puts the torch down', tools().brushTool === 'smoother', `${tools().brushTool}`)
+  tools().setBrushTool('sculpt')
+  check('and arming the sculpt tool puts the Smoother down', tools().brushTool === 'sculpt', `${tools().brushTool}`)
+  shows(
+    'the island shows the Smoother unlit while another brush is up',
+    markupOf('SmootherTool (sculpt armed)', SmootherTool),
+    'aria-pressed="false"'
+  )
+  tools().setBrushTool(null)
+
+  // ITS OWN DIALS, held to the brush's bounds rather than the tool's -- the
+  // same bargain the sculpt tool strikes.
+  tools().setSmootherRadius(999)
+  check('the Smoother size is held to the same ceiling', tools().smootherRadius === BRUSH_RADIUS_MAX, `${tools().smootherRadius}`)
+  tools().setSmootherRadius(-4)
+  check('and the same floor', tools().smootherRadius === BRUSH_RADIUS_MIN, `${tools().smootherRadius}`)
+  tools().setSmootherStrength(5)
+  check('strength is a ratio', tools().smootherStrength === 1, `${tools().smootherStrength}`)
+  // The floor is geometry rather than taste: a round finer than the triangles
+  // under it cannot be shown, and asking for one spends the whole vertex budget
+  // arriving at nothing. The answer to wanting a finer round is a finer brush.
+  tools().setSmootherStrength(0)
+  check('and it bottoms out above zero', tools().smootherStrength === ROUND_MIN, `${tools().smootherStrength}`)
+  tools().setSmootherRadius(0.9)
+  check('the torch keeps its own size through all of that', tools().erodeRadius === DEFAULT_BRUSH_RADIUS, `${tools().erodeRadius}`)
+  check('and the sculpt tool keeps its own', tools().sculptRadius === DEFAULT_BRUSH_RADIUS, `${tools().sculptRadius}`)
+  tools().setSmootherRadius(DEFAULT_SMOOTHER_RADIUS)
+  tools().setSmootherStrength(DEFAULT_BRUSH_ROUND)
+
+  // AND IT OPENS FINER THAN THE OTHER TWO, which is the one place the three
+  // brushes' defaults are deliberately not the same number. The torch and the
+  // sculpt tool are how a shape is arrived at and open wide enough to move a
+  // face; this one is aimed at an edge, and an edge is a thin thing. Pinned
+  // rather than left to drift, because the bounds and the clamps are shared and
+  // nothing else in the code would notice this going back to 3 cm.
+  check('the Smoother opens at a centimetre', DEFAULT_SMOOTHER_RADIUS === 0.1, `${DEFAULT_SMOOTHER_RADIUS}`)
+  check(
+    'which is finer than the brushes that move the surface',
+    DEFAULT_SMOOTHER_RADIUS < DEFAULT_BRUSH_RADIUS,
+    `${DEFAULT_SMOOTHER_RADIUS} against ${DEFAULT_BRUSH_RADIUS}`
+  )
+
+  // WHAT THE ARMED BRUSH HANDS THE STROKE. One place knows which dials to read,
+  // and the Smoother is the entry that could most easily be wrong: it must send
+  // no bite and no flow, or the dab would melt as well as round.
+  tools().setBrushTool('smoother')
+  const armed = armedBrush(tools())
+  check('the armed Smoother reports its own radius', armed?.radius === DEFAULT_SMOOTHER_RADIUS, `${armed?.radius}`)
+  check('with no bite', armed?.force === 0, `${armed?.force}`)
+  check('and no flow', armed?.smooth === 0, `${armed?.smooth}`)
+  check('and the round it is driving at', armed?.round === DEFAULT_BRUSH_ROUND, `${armed?.round}`)
+  check('while the torch reports no round at all', (tools().setBrushTool('torch'), armedBrush(tools())?.round) === null, '')
+  tools().setBrushTool(null)
+
+  // THE STROKE AS THE DOCUMENT SEES IT. The third brush writes the SAME list as
+  // the other two, in the order the marks were made -- a groove melted across a
+  // rounded edge and an edge rounded across a groove are different surfaces.
+  {
+    const edge = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1.5, 0])
+    const marksOf = () => doc().doc.objects.find((o) => o.id === edge)?.erosion ?? []
+    const entries = doc().past.length
+
+    doc().startErode(edge, 'smoother')
+    check('a Smoother stroke takes the same drag kind', doc().drag.kind === 'erode', doc().drag.kind)
+    for (let i = 0; i < 4; i++) {
+      doc().erodeAt([-0.3 + i * 0.2, 1, 1], DEFAULT_SMOOTHER_RADIUS, 0, 0, 0.5)
+    }
+    doc().endDrag()
+    check('it lays a dab per step', marksOf().length === 4, `${marksOf().length}`)
+    check(
+      'and costs one undo entry, like every other drag',
+      doc().past.length === entries + 1,
+      `${doc().past.length - entries}`
+    )
+    check('every dab of it carries a round', marksOf().every((d) => d.round === 0.5), JSON.stringify(marksOf()[0]))
+    // Zero heat and zero smoothing are not placeholders: this brush neither
+    // bites nor pours, so zero is the honest reading of both.
+    check('and neither bites nor pours', marksOf().every((d) => d.heat === 0 && d.smooth === 0), JSON.stringify(marksOf()[0]))
+    check('and none of them raises', marksOf().every((d) => d.raise === undefined), JSON.stringify(marksOf()[0]))
+
+    // A torch stroke over the top goes in the same list, after them.
+    doc().startErode(edge, 'torch')
+    doc().erodeAt([0, 1, 1], DEFAULT_BRUSH_RADIUS, 0.6, 0.7)
+    doc().endDrag()
+    const marks = marksOf()
+    check('all three brushes write one list', marks.length === 5, `${marks.length}`)
+    // ABSENT RATHER THAN ZERO on a dab from another brush, which is what keeps
+    // the evaluator's cache key -- this array, stringified -- from being
+    // invalidated on every torched object by this tool merely existing.
+    check(
+      'and a torch dab carries no round field at all',
+      marks[4].round === undefined,
+      JSON.stringify(marks[4])
+    )
+
+    // WHICH BRUSH IS THE GESTURE'S. Nothing the panel does mid-stroke can turn
+    // a corner being rounded into a groove being cut.
+    doc().startErode(edge, 'smoother')
+    tools().setBrushTool('torch')
+    doc().erodeAt([0.4, 1, 1], DEFAULT_SMOOTHER_RADIUS, 0.9, 0.9, 0.5)
+    doc().endDrag()
+    tools().setBrushTool(null)
+    check(
+      'a stroke keeps the brush it started with',
+      marksOf()[5].round === 0.5 && marksOf()[5].heat === 0,
+      JSON.stringify(marksOf()[5])
+    )
+
+    doc().removeObject(edge)
   }
 }
 
@@ -5617,6 +5981,15 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     check('the closed one stayed closed', !markup.includes('>Strength<'), '')
   }
   tools().setOpenPanel(null)
+
+  // PUSH IS IN HAND ON ARRIVAL, so the first press anybody makes on the clay
+  // does something. Read off the store's own initial state rather than the
+  // live one, which every check above this has been arming and disarming.
+  check(
+    'the lathe opens with Push in hand',
+    useTools.getInitialState().latheTool === 'push',
+    `${useTools.getInitialState().latheTool}`
+  )
 
   // ARMING ONE DISARMS THE OTHER, and nothing enforces it: the store holds ONE
   // tool. Pressing the lit tool puts it down, which is how a press on the clay
@@ -6303,28 +6676,6 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
     const undoBtn = bar.slice(bar.indexOf('Undo (Ctrl+Z)') - 200, bar.indexOf('Undo (Ctrl+Z)'))
     check('undo is live on the lathe once there is a stroke to walk back', !undoBtn.includes('disabled'), undoBtn.slice(-90))
 
-    // THE PALETTE. Eight shapes, each one loadable, each one costing an entry.
-    const palette = markupOf('ProfilePanel', ProfilePanel)
-    shows('the console offers a palette of profiles', palette, '>Profiles<')
-    for (const profile of CLAY_PROFILES) {
-      shows(`including a ${profile.label.toLowerCase()}`, palette, `>${profile.label}<`)
-    }
-    check(
-      'each one drawn as its own silhouette rather than as a word',
-      (palette.match(/class="profile-icon"/g) ?? []).length === CLAY_PROFILES.length,
-      `${(palette.match(/class="profile-icon"/g) ?? []).length} icons`
-    )
-    // NO CHOSEN STATE. A profile is what the piece STARTED as, and one push
-    // later that is not true any more -- see `ProfilePanel`.
-    hides('and none of them lit as the current one', palette, 'profile-tile-on')
-
-    const before = lathe().past.length
-    const vase = CLAY_PROFILES.find((p) => p.id === 'vase') as ClayProfile
-    lathe().shapeAs(vase)
-    check('loading a profile shapes the piece', !isFresh(lathe().clay), '')
-    check('and costs one entry, so Ctrl+Z puts back what was there', lathe().past.length === before + 1, '')
-    check('the stock is kept', lathe().clay.radius === 0.4 && lathe().clay.height === 1.5, `${lathe().clay.radius}`)
-
     // THE BORE. A toggle with two settings and a note that says what actually
     // came of them.
     lathe().setHollow(null)
@@ -6413,6 +6764,1914 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
 
   tools().setScreen('modelling')
   tools().setLatheTool(null)
+}
+
+// --- the laser cutter screen -------------------------------------------------
+//
+// The third screen. Nothing is cut on it yet, so what is worth pinning is the
+// SHAPE of it: one block of stock, a console carrying the shelf and nothing
+// else, the island standing empty in the corner the cutting tools will arrive
+// in, and the bar's two history buttons keeping their hands off a screen with
+// no history. How the camera settles onto a face is arithmetic and lives in
+// `interaction-check`, which can answer it without a renderer -- and so is what
+// a projection buys over a lens. What is pinned HERE is the screen's own choice
+// of frame, which is a choice rather than a theorem.
+console.log('\nThe laser cutter: one block, one console, and a camera that only rests on a face')
+{
+  tools().setScreen('laser')
+
+  // THE CONSOLE IS THE SHELF AND NOTHING ELSE. The Clipboard crosses every
+  // screen because what you have saved is yours rather than the scene's; the
+  // modelling console's other four all describe a document this screen does not
+  // draw, and Base belongs to the lathe's piece.
+  {
+    const console_ = markupOf('LaserConsole', LaserConsole)
+    shows('the laser console keeps the clipboard', console_, '>Clipboard<')
+    for (const panel of ['Solids', 'Shapes', 'Color', 'Scene', 'Base']) {
+      hides(`and not ${panel}`, console_, `>${panel}<`)
+    }
+  }
+
+  // THE CAMERA IS A PROJECTION, and a projection has to be told how much world
+  // to show: there is no field of view to hold the scale, so the three numbers
+  // below are what hold it instead. Two of the three are read off the room --
+  // the frames its lens would have thrown at either end of its own dolly -- and
+  // the one it opens on is this screen's own choice, stated as a share of the
+  // block rather than as a distance. What is checked is that all three still
+  // land where the app's own block range needs them to.
+  {
+    near(
+      'the screen opens with the default block across three fifths of the window',
+      DEFAULT_BLOCK / OPENING_FRAME,
+      OPENING_SHARE,
+      1e-12
+    )
+    // The share is the choice; that it is a good deal nearer than the third of
+    // the window this screen used to open on is the point of it.
+    check(
+      'which is nearer than the shot the room would have framed',
+      OPENING_FRAME < perspectiveFrame(BLOCK_STANDOFF, STAGE_CAMERA.fov),
+      `${OPENING_FRAME.toFixed(3)} against ${perspectiveFrame(BLOCK_STANDOFF, STAGE_CAMERA.fov).toFixed(3)}`
+    )
+    check(
+      'the wheel can nearly fill the window with the smallest block there is',
+      CLOSEST_FRAME > BLOCK_MIN && CLOSEST_FRAME < BLOCK_MIN * 2,
+      `${((BLOCK_MIN / CLOSEST_FRAME) * 100).toFixed(0)}% of the window`
+    )
+    check(
+      'and stand the largest one off with ground all round it',
+      WIDEST_FRAME > BLOCK_MAX * 2 && WIDEST_FRAME < BLOCK_MAX * 10,
+      `${((BLOCK_MAX / WIDEST_FRAME) * 100).toFixed(0)}% of the window`
+    )
+    check(
+      'with the frame it opens on between the two ends',
+      CLOSEST_FRAME < OPENING_FRAME && OPENING_FRAME < WIDEST_FRAME,
+      `${CLOSEST_FRAME.toFixed(3)} < ${OPENING_FRAME.toFixed(3)} < ${WIDEST_FRAME.toFixed(1)}`
+    )
+    // The standoff no longer frames anything, so the one thing left to ask of it
+    // is that the camera is set down OUTSIDE the block it opens on -- past the
+    // corner, not merely past the face.
+    check(
+      'and the camera set down clear of the corner of the block it opens on',
+      BLOCK_STANDOFF > DEFAULT_BLOCK * Math.sqrt(3) / 2,
+      `${BLOCK_STANDOFF} against ${((DEFAULT_BLOCK * Math.sqrt(3)) / 2).toFixed(3)}`
+    )
+
+    // And that the canvas actually asks for the projection these numbers are
+    // for. A line of its own, so a comment mentioning the word cannot pass for
+    // the prop.
+    const source = readFileSync(new URL('../src/viewport/LaserViewport.tsx', import.meta.url), 'utf8')
+    check('the laser canvas asks for a projection', /\n\s+orthographic\r?\n/.test(source))
+    hides('and asks for no log depth buffer', source, 'logarithmicDepthBuffer')
+
+    // WHICH IS NOT AN OVERSIGHT: three stands its own log depth down for any
+    // camera that is not a lens, so on this screen the flag would buy a
+    // `gl_FragDepth` write per fragment and nothing else. Read from three's own
+    // chunks, the same bargain drei's grid strikes below -- a three that stopped
+    // asking the question would leave that reasoning quietly false, and the one
+    // screen without the flag would be the one paying for it.
+    check(
+      'three still asks which kind of camera it is drawing for',
+      ShaderChunk.logdepthbuf_vertex.includes('isPerspectiveMatrix( projectionMatrix )')
+    )
+    check(
+      'and still writes the hardware depth when the answer is no lens',
+      ShaderChunk.logdepthbuf_fragment.includes('vIsPerspective == 0.0 ? gl_FragCoord.z')
+    )
+
+    // THE GROUND IS CUT DOWN TO THE BED, which is the other thing a projection
+    // forces. Nothing dims with distance under one, so an endless grid arrives
+    // at the edge of the window at very nearly the brightness it has under the
+    // block -- and level with the block it is edge-on, which makes that one
+    // hard line clean across the screen. This screen asks the room for a reach
+    // instead, and it is the only screen that does.
+    shows('the laser screen bounds its own ground', source, '<Stage reach={')
+
+    // AND THAT THE WAY OFF THE SCREEN IS ACTUALLY ON IT. The button renders on
+    // its own -- checked below -- which proves nothing about whether anything
+    // mounts it, and a copy button nobody can reach is the same as no copy
+    // button. Beside the compass, which is the corner it shares: the lathe's
+    // twin has that corner to itself because the lathe has no compass wanting
+    // it. See `CopyBlockButton`.
+    shows('and mounts the way off it', source, '<CopyBlockButton />')
+    shows('next to the compass it makes room for', source, '<AxisCompass />')
+
+    // AND THE OTHER HALF OF THE WHEEL. A projection cannot be walked closer, so
+    // a zoom carries the edges of the face -- where a cut is aimed -- outside
+    // the window, and the only way back to them is to slide the view. The right
+    // button is the one this screen had spare: the left draws and the middle
+    // orbits. What the pan is BOUNDED by is arithmetic and lives in
+    // `interaction-check`; what is pinned here is that the screen wires it.
+    shows('the right button pans', source, 'RIGHT: MOUSE.PAN')
+    hides('and the pan is not switched off under it', source, 'enablePan={false}')
+    shows('with the clamp that keeps it on the face mounted', source, '<PanAcrossFace')
+    // In the plane of the FACE rather than of the ground, which is the whole of
+    // what the clamp assumes: up on a side view has to be up the block.
+    shows('and panning in the plane of the screen', source, 'screenSpacePanning')
+
+    // A RIGHT-DRAG THAT BEGAN OVER A PICTURE MUST NOT ALSO MOVE THE PICTURE.
+    // Three's controls listen on the canvas itself, so a decal handler that
+    // took every button would slide the view and the reference at once --
+    // `stopPropagation` is fiber's own traversal and does not reach them.
+    const decals = readFileSync(new URL('../src/viewport/ReferenceDecals.tsx', import.meta.url), 'utf8')
+    check(
+      'and every grab on a reference is left-button only',
+      (decals.match(/startGrab\(/g) ?? []).length ===
+        (decals.match(/e\.button !== 0/g) ?? []).length,
+      `${(decals.match(/startGrab\(/g) ?? []).length} grabs, ${(decals.match(/e\.button !== 0/g) ?? []).length} guards`
+    )
+    const modelling = readFileSync(new URL('../src/viewport/Viewport.tsx', import.meta.url), 'utf8')
+    shows(
+      'and the modelling screen, which travels, does not',
+      modelling,
+      '<Stage />'
+    )
+  }
+
+  // WHAT A REACH DOES TO THE TWO GRIDS. Arithmetic, so it is asked of the
+  // function rather than of a canvas -- see `groundPlan`.
+  {
+    const endless = groundPlan()
+    check('left alone the ground never ends', endless.endless)
+    near('with the fine grid giving out at a metre and a half', endless.fineFade, 14, 1e-12)
+    near('and the coarse one at thirty', endless.coarseFade, 300, 1e-12)
+    // A floor with no middle dims around whoever is standing on it.
+    near('and both of them dimming around the camera', endless.fadeFrom, 1, 1e-12)
+
+    // The bed the laser screen opens on: three default blocks.
+    const bed = groundPlan(DEFAULT_BLOCK * 3)
+    check('a reach ends it', !bed.endless)
+    near('the fine grid fades out at the reach', bed.fineFade, 3, 1e-12)
+    near('and so does the coarse one', bed.coarseFade, 3, 1e-12)
+    // A bed HAS a middle, and it is the same patch of ground from every side --
+    // faded from the camera it would be bright in front of the block and dark
+    // behind it, and would slide as the view came round.
+    near('and the patch is centred on the bed rather than on the camera', bed.fadeFrom, 0, 1e-12)
+
+    // WHICH IS THE WHOLE POINT OF A REACH: a fade that completes INSIDE the
+    // quad it is ruled on is a ground with no edge to it. The fade is measured
+    // from the camera projected onto the plane rather than from the middle of
+    // it, so half the quad has to clear the reach by a margin rather than
+    // exactly.
+    for (const span of [BLOCK_MIN, DEFAULT_BLOCK, BLOCK_MAX]) {
+      const plan = groundPlan(span * 3)
+      check(
+        `the ground under a ${span} block fades out well inside its own quad`,
+        plan.plane[0] / 2 > Math.max(plan.fineFade, plan.coarseFade) * 1.2,
+        `${(plan.plane[0] / 2).toFixed(2)} against ${Math.max(plan.fineFade, plan.coarseFade).toFixed(2)}`
+      )
+      // And the cap holds at the top end, where three blocks is 150 units and
+      // a centimetre grid ruled that far is moire rather than ground.
+      check(
+        `and its centimetre cells stop before they turn to moire -- ${span}`,
+        plan.fineFade <= 14,
+        `${plan.fineFade.toFixed(2)} units`
+      )
+    }
+  }
+
+  // THE BLOCK IS THE LATHE'S CORNER PANEL, worn by a second screen: same
+  // classes, same corner, same collapse idiom. A second stylesheet block
+  // describing the same 232px panel is how two corners quietly stop matching.
+  {
+    const panel = markupOf('BlockPanel', BlockPanel)
+    shows('the corner panel names what it is about', panel, 'The block')
+    shows('and it is the stock panel, not a second one like it', panel, 'stock-panel')
+    // THREE FIELDS, ONE PER AXIS. It was one -- a cube's Side -- and that was
+    // the wrong shape for a bed: stock is a sheet, a bar or a block, and which
+    // of those it is is the first decision of the job. A cube is three equal
+    // numbers, typed.
+    for (const field of ['Width', 'Height', 'Depth']) {
+      shows(`it sets ${field}`, panel, `>${field}<`)
+    }
+    hides('and no longer offers one Side for all three', panel, '>Side<')
+
+    // TWO WAYS BACK, BECAUSE THE SCREEN CARRIES TWO THINGS: a block that gets
+    // cut, and drawings stuck to it that were never part of it. One button
+    // answering both would mean throwing away an hour of cuts to clear a
+    // drawing, or losing the drawings to get a fresh block -- each the wrong
+    // half of what was asked for. So each names what it takes, and neither
+    // touches the other's.
+    {
+      const ref = () => useReference.getState()
+      /** Whether a button carrying this word is greyed. */
+      const isDown = (markup: string, word: string): boolean => {
+        const tag = markup.split('<button').find((part) => part.includes(`>${word}<`))
+        return tag !== undefined && tag.slice(0, tag.indexOf('>')).includes('disabled=""')
+      }
+
+      shows('it offers a way back for the block', panel, '>Reset block<')
+      shows('and one for the references', panel, '>Reset references<')
+
+      // DEAD WITH NOTHING TO DO, rather than hidden: a control that appears
+      // only once you have made a mess is one nobody knows about until after
+      // the press they wanted it for.
+      laser().resetBlock()
+      ref().clearPlacements()
+      const asFound = markupOf('BlockPanel (as found)', BlockPanel)
+      check('the block reset is dead on a screen as it was found', isDown(asFound, 'Reset block'), 'should be disabled')
+      check('and so is the reference one with a bare block', isDown(asFound, 'Reset references'), 'should be disabled')
+
+      // A cut and a resize, which are the two things "reset block" undoes.
+      laser().setDim(0, 0.35)
+      laser().cut([[0.3, -0.3], [0.3, 0.3]], { axis: 2, sign: 1 })
+      check('a cut leaves more than one piece on the bed', laser().pieces.length > 1, `${laser().pieces.length}`)
+      const dirty = markupOf('BlockPanel (cut and resized)', BlockPanel)
+      check('and the block reset comes alive', !isDown(dirty, 'Reset block'), 'should be enabled')
+
+      laser().resetBlock()
+      check('which puts one whole block back', laser().pieces.length === 1, `${laser().pieces.length}`)
+      check(
+        'at the size it arrived at',
+        laser().dims.every((d) => d === DEFAULT_BLOCK),
+        laser().dims.join(' x ')
+      )
+
+      // AND IT IS UNDOABLE, WITH THE SIZE. It is the most destructive button on
+      // the screen, so Ctrl+Z has to give back everything it took -- the cuts
+      // and the stock they were made in. The size is in that one step and in no
+      // other, so an ordinary resize is still not something undo walks.
+      laser().undo()
+      check('undo gives the cut pieces back', laser().pieces.length > 1, `${laser().pieces.length}`)
+      near('and the stock they were cut from', laser().dims[0], 0.35, 1e-12)
+      laser().redo()
+      check('redo takes them away again', laser().pieces.length === 1, `${laser().pieces.length}`)
+      near('and puts the default stock back', laser().dims[0], DEFAULT_BLOCK, 1e-12)
+
+      // An ordinary resize is NOT in the history, which is the rule the one
+      // exception above is an exception to: the reset carries a size because it
+      // CHANGES one, and typing in a field never does.
+      const steps = laser().past.length
+      laser().setDim(1, 0.2)
+      check('a resize on its own puts no step in the history', laser().past.length === steps, `${laser().past.length - steps}`)
+      laser().setDim(1, DEFAULT_BLOCK)
+
+      // THE REFERENCES COME OFF THE BLOCK AND STAY ON THE SHELF, which is the
+      // whole difference between this button and the bin on a tile.
+      ref().putImage(0, { name: 'plan.png', src: 'data:,', width: 400, height: 200 })
+      const drawing = activePreset(ref()).slots[0]!
+      ref().startDrag(drawing.id)
+      ref().dragOver({ face: '+z', u: 0, v: 0 })
+      ref().dropDrag({ w: 0.4, h: 0.2 })
+      // A second preset with a decal of its own, standing for every drawing the
+      // eye cannot see: a reset that cleared only the visible ones would leave
+      // a block that goes bare and then wears drawings again when the dropdown
+      // moves.
+      const held = ref().activePresetId
+      ref().addPreset()
+      ref().putImage(0, { name: 'detail.png', src: 'data:,', width: 200, height: 200 })
+      const second = activePreset(ref()).slots[0]!
+      ref().startDrag(second.id)
+      ref().dragOver({ face: '-x', u: 0, v: 0 })
+      ref().dropDrag({ w: 0.3, h: 0.3 })
+      ref().choosePreset(held)
+      check('two presets, each with a drawing on the block', ref().placements.length === 2, `${ref().placements.length}`)
+
+      const wearing = markupOf('BlockPanel (references on the block)', BlockPanel)
+      check('the reference reset comes alive', !isDown(wearing, 'Reset references'), 'should be enabled')
+
+      ref().clearPlacements()
+      check('and it takes every drawing off, in every preset', ref().placements.length === 0, `${ref().placements.length}`)
+      check(
+        'while the pictures stay on the shelf to be dropped again',
+        ref().presets.flatMap((p) => p.slots).filter(Boolean).length === 2,
+        `${ref().presets.flatMap((p) => p.slots).filter(Boolean).length}`
+      )
+      check('and the block it was clearing is untouched', laser().pieces.length === 1, `${laser().pieces.length}`)
+
+      // Left exactly as it was found, for everything below: the shelf empty,
+      // the bed whole, and the history with nothing in it -- a step left here
+      // would light Undo in the bar and be read downstream as this screen
+      // having work to walk back.
+      while (ref().presets.length > 1) ref().removePreset(ref().presets[1].id)
+      for (const slot of [0, 1, 2]) {
+        const image = activePreset(ref()).slots[slot]
+        if (image) ref().removeImage(image.id)
+      }
+      laser().resetBlock()
+      laser().past.length = 0
+      laser().future.length = 0
+    }
+
+    // It shuts to its title strip, and it shares that with the lathe's -- one
+    // flag, because only one of them is ever mounted and what is remembered is
+    // whether this user works with the corner open. See `stockOpen`.
+    shows('the panel can be shut', panel, 'collapse-btn')
+    shows('and says so where a reader can hear it', panel, 'aria-expanded="true"')
+    tools().setStockOpen(false)
+    const shut = markupOf('BlockPanel (shut)', BlockPanel)
+    shows('shut, it is the strip and nothing else', shut, 'stock-panel-shut')
+    hides('with the fields gone', shut, '>Width<')
+    tools().setStockOpen(true)
+  }
+
+  // THREE NUMBERS, EACH CLAMPED, and clamped to the range a box in a DOCUMENT
+  // lives in -- a millimetre to five metres. A block that could be cut here and
+  // not built next door would be a block the clipboard could not carry across.
+  {
+    check(
+      'the block starts a cube of one span',
+      laser().dims.every((d) => d === DEFAULT_BLOCK),
+      `${laser().dims.join(' x ')}`
+    )
+    check(
+      'which is the size the palette drops a cube at',
+      DEFAULT_BLOCK === 1,
+      `${DEFAULT_BLOCK}`
+    )
+    check(
+      'and it is the range a box in the document has',
+      BLOCK_MIN === MIN_DIMENSION && BLOCK_MAX === MAX_SIZE,
+      `${BLOCK_MIN}..${BLOCK_MAX}`
+    )
+    // EACH AXIS ON ITS OWN, which is the whole of what three fields buy: a
+    // sheet is a block whose depth was set and whose other two were not.
+    laser().setDim(0, 2)
+    check(
+      'width is set without touching the others',
+      laser().dims[0] === 2 && laser().dims[1] === DEFAULT_BLOCK && laser().dims[2] === DEFAULT_BLOCK,
+      `${laser().dims.join(' x ')}`
+    )
+    laser().setDim(1, 0.3)
+    laser().setDim(2, 1.5)
+    check(
+      'and so are height and depth',
+      laser().dims[1] === 0.3 && laser().dims[2] === 1.5,
+      `${laser().dims.join(' x ')}`
+    )
+    laser().setDim(0, BLOCK_MAX * 10)
+    check('a side past the ceiling is held at it', laser().dims[0] === BLOCK_MAX, `${laser().dims[0]}`)
+    laser().setDim(0, 0)
+    check('and one under the floor at that', laser().dims[0] === BLOCK_MIN, `${laser().dims[0]}`)
+    // Handing back the very state it holds when nothing changes, so a clamped
+    // value that lands where it already was does not redraw the scene.
+    const held = laser()
+    laser().setDim(0, BLOCK_MIN)
+    check('setting a side it already has changes nothing', laser() === held, '')
+    for (const axis of [0, 1, 2] as const) laser().setDim(axis, DEFAULT_BLOCK)
+  }
+
+  // --- reference images ------------------------------------------------------
+  //
+  // Drawings stuck to the block to cut along. Three things are worth holding to
+  // account here, and they are the three that cannot be seen from a screenshot:
+  // the SHELF (three slots, up to five presets, and a preset that hides its own
+  // decals when you switch away), the PICTURE ARITHMETIC (a crop that survives
+  // being turned, an aspect that survives a crop), and the PROJECTION -- which
+  // is the whole reason a cut cuts the drawing too, and the one part of a
+  // shader a headless check can actually hold to account, because the rule it
+  // applies is written twice on purpose: once in GLSL and once in TypeScript.
+  console.log('\nReference images: a shelf, a crop, and a picture that is ON the surface')
+  {
+    const reference = () => useReference.getState()
+
+    // THE PANEL IS ON THE LASER CONSOLE AND NOWHERE ELSE. A reference is a
+    // thing you follow with a tool: the lathe has no face to lay one on, and
+    // the modelling screen has a document full of surfaces that would each need
+    // their own answer to what a cut does to a picture.
+    {
+      const laserSide = markupOf('LaserConsole (with references)', LaserConsole)
+      shows('the laser console carries the reference shelf', laserSide, '>Reference<')
+      hides('the modelling console does not', markupOf('Console', Console), '>Reference<')
+      hides('nor does the lathe', markupOf('LatheConsole', LatheConsole), '>Reference<')
+    }
+
+    // EMPTY, IT IS STILL THE SHELF: three slots standing where the pictures
+    // will go, the same bargain the Clipboard strikes one panel up.
+    {
+      const panel = markupOf('ReferencePanel (empty)', ReferencePanel)
+      const slots = panel.split('ref-slot').length - 1
+      check(`it stands ${SLOTS_PER_PRESET} empty slots`, slots === SLOTS_PER_PRESET, `${slots}`)
+      // AND FILLS THEM IN ONE GO. The shelf holds three, so the picker takes
+      // three: without this the dialog keeps the first file of a selection and
+      // says nothing, which is a panel you have to use three times to learn.
+      shows('and its picker takes a whole selection at once', panel, 'multiple=""')
+      shows('with a preset to put them in', panel, 'aria-label="Preset"')
+      shows('one that can be renamed', panel, 'aria-label="Rename this preset"')
+      shows('one that can be added to', panel, 'aria-label="Add a preset"')
+      shows('and one opacity for all of them', panel, '>Opacity<')
+      check(
+        'the last preset cannot be deleted',
+        panel.includes('aria-label="Delete this preset"') && /Delete this preset"[^>]*disabled/.test(panel),
+        'the delete button should be disabled with one preset left'
+      )
+    }
+
+    // FIVE PRESETS, AND THE FIFTH IS THE LAST. The plus is disabled at the cap
+    // rather than hidden, so the ceiling can be seen before it is hit -- and
+    // the store refuses past it too, which is the half a stale render cannot
+    // get round.
+    {
+      for (let i = reference().presets.length; i < MAX_PRESETS; i++) reference().addPreset()
+      check(
+        `five presets is the most there can be`,
+        reference().presets.length === MAX_PRESETS,
+        `${reference().presets.length}`
+      )
+      reference().addPreset()
+      check(
+        'and asking for a sixth does nothing',
+        reference().presets.length === MAX_PRESETS,
+        `${reference().presets.length}`
+      )
+      const full = markupOf('ReferencePanel (five presets)', ReferencePanel)
+      check(
+        'the plus says so rather than lying',
+        /Add a preset"[^>]*disabled/.test(full),
+        'the add button should be disabled at the cap'
+      )
+      // Named lowest-unused, so deleting one frees its name rather than leaving
+      // a hole and offering "Preset 6" next.
+      const names = reference().presets.map((p) => p.name)
+      check('each preset arrives named', names.every(Boolean) && new Set(names).size === names.length, names.join(', '))
+      while (reference().presets.length > 1) reference().removePreset(reference().presets[1].id)
+      reference().removePreset(reference().presets[0].id)
+      check(
+        'the last one stays whatever is asked',
+        reference().presets.length === 1,
+        `${reference().presets.length}`
+      )
+    }
+
+    // --- THREE AT ONCE, AND WHERE THEY LAND ---------------------------------
+    //
+    // A plan, an elevation and a detail are chosen in one breath, so the picker
+    // takes them in one breath. Which slot each ends up in is the part with an
+    // off-by-one in it -- the batch starts at whichever plus was pressed and
+    // wraps round the end of a shelf of three -- so it is arithmetic in a pure
+    // function rather than a loop buried in a handler. See `slotsFor`.
+    {
+      check(
+        'one picture goes where it was asked for',
+        slotsFor(1, 1).join() === '1',
+        slotsFor(1, 1).join()
+      )
+      check(
+        'three from the first slot fill the shelf in order',
+        slotsFor(0, 3).join() === '0,1,2',
+        slotsFor(0, 3).join()
+      )
+      // THE WRAP, which is the whole reason this is not just `from + i`: three
+      // pictures fill three slots whichever plus was pressed, rather than the
+      // answer depending on which of three identical buttons was nearest.
+      check(
+        'and three from the last one wrap round to the front',
+        slotsFor(2, 3).join() === '2,0,1',
+        slotsFor(2, 3).join()
+      )
+      check('two from the middle take the middle and the end', slotsFor(1, 2).join() === '1,2', slotsFor(1, 2).join())
+      // Never more than the shelf holds: a fourth would land back on the first
+      // and replace a picture that arrived in the same gesture.
+      check(
+        `never more than the ${SLOTS_PER_PRESET} there are`,
+        slotsFor(0, 9).length === SLOTS_PER_PRESET,
+        `${slotsFor(0, 9).length}`
+      )
+      check('and nothing at all for nothing chosen', slotsFor(2, 0).length === 0, `${slotsFor(2, 0).length}`)
+      // Every slot exactly once, from every starting point: the shelf can never
+      // be filled with the same picture twice by one batch.
+      for (let from = 0; from < SLOTS_PER_PRESET; from++) {
+        const filled = slotsFor(from, SLOTS_PER_PRESET)
+        check(
+          `a full batch from slot ${from + 1} touches every slot once`,
+          new Set(filled).size === SLOTS_PER_PRESET,
+          filled.join()
+        )
+      }
+    }
+
+    // A picture, without a browser to decode one: the store takes the numbers
+    // an upload produces, and nothing below this line needs the pixels.
+    const picture = { name: 'plan.png', src: 'data:,', width: 400, height: 200 }
+
+    // WHAT A PRESET SWITCH DOES TO THE BLOCK. It is a whole set-up, not a
+    // folder: its decals go with it and come back with it. Anything else and a
+    // preset would be a way to lose work by pressing a dropdown.
+    {
+      reference().putImage(0, picture)
+      const image = activePreset(reference()).slots[0]
+      check('a picture lands in the slot it was put in', Boolean(image), `${image?.name}`)
+
+      reference().startDrag(image!.id)
+      reference().dragOver({ face: '+z', u: 0, v: 0 })
+      reference().dropDrag({ w: 0.4, h: 0.2 })
+      check('and drops onto the face it was dragged to', reference().placements.length === 1, `${reference().placements.length}`)
+      check('where it is drawn', visiblePlacements(reference()).length === 1, '')
+
+      const first = reference().activePresetId
+      reference().addPreset()
+      check(
+        'switching preset takes it off the block',
+        visiblePlacements(reference()).length === 0 && reference().placements.length === 1,
+        `${visiblePlacements(reference()).length} of ${reference().placements.length}`
+      )
+      reference().choosePreset(first)
+      check('and switching back brings it out again', visiblePlacements(reference()).length === 1, '')
+
+      // A DRAG RELEASED OFF THE BLOCK IS A DRAG ABANDONED, not a drop at the
+      // last place the pointer was over one.
+      reference().startDrag(image!.id)
+      reference().dragOver(null)
+      reference().dropDrag({ w: 0.4, h: 0.2 })
+      check('a release off the block places nothing', reference().placements.length === 1, `${reference().placements.length}`)
+
+      // A GRAB IS A GRAB, whichever gesture it is, and both kinds name the same
+      // decal. The corner comes with the size grab because the arithmetic below
+      // cannot anchor anything without knowing which corner is in hand.
+      const decal = reference().placements[0]
+      reference().startGrab({ id: decal.id, mode: 'move' })
+      check('a reference can be picked up to slide', reference().grab?.mode === 'move', `${reference().grab?.mode}`)
+      reference().endGrab()
+      reference().startGrab({ id: decal.id, mode: 'size', corner: { su: -1, sv: 1 } })
+      check(
+        'and by any of its corners to size',
+        reference().grab?.mode === 'size',
+        `${reference().grab?.mode}`
+      )
+      reference().endGrab()
+      // The id comes off a handle, and a handle can outlive its picture by one
+      // render: a grab on a decal that has gone is refused rather than kept.
+      reference().startGrab({ id: 'gone', mode: 'move' })
+      check('a grab on a decal that is not there is refused', reference().grab === null, `${reference().grab?.id}`)
+      tools().setLaserTool(null)
+
+      // Emptying a slot takes what it put on the block with it: a decal whose
+      // picture is gone is a rectangle nobody can see or reach.
+      reference().removeImage(image!.id)
+      check('deleting a picture takes its decals too', reference().placements.length === 0, `${reference().placements.length}`)
+    }
+
+    // THE CEILING THE SHADER CAN PAINT. Refused at the store rather than
+    // dropped silently by the GPU, which is the failure that would have
+    // somebody cutting to a drawing that is not there.
+    {
+      reference().putImage(0, picture)
+      const image = activePreset(reference()).slots[0]!
+      for (let i = 0; i < MAX_PLACEMENTS + 3; i++) {
+        reference().startDrag(image.id)
+        reference().dragOver({ face: FACES[i % 6], u: 0, v: 0 })
+        reference().dropDrag({ w: 0.2, h: 0.1 })
+      }
+      check(
+        'a preset holds no more decals than can be painted',
+        reference().placements.length === MAX_PLACEMENTS,
+        `${reference().placements.length} of ${MAX_PLACEMENTS}`
+      )
+      reference().removeImage(image.id)
+    }
+
+    // --- A LIT SLOT, AND THE WAY OFF THE BLOCK ------------------------------
+    //
+    // TWO THINGS THAT ARE ONE THING. The panel had no way to say WHICH picture
+    // you meant -- Move armed every decal on the block at once -- and no way to
+    // take one off a face at all: the only exit was deleting the file and
+    // uploading it again. Lighting a slot answers both. It is what the handles
+    // hang on, and it is what Delete acts on.
+    {
+      reference().putImage(0, picture)
+      const image = activePreset(reference()).slots[0]!
+      // The same drawing on two faces, which is the case the light exists for:
+      // one slot, several decals, one thing to say about all of them.
+      for (const face of ['+z', '-x'] as const) {
+        reference().startDrag(image.id)
+        reference().dragOver({ face, u: 0, v: 0 })
+        reference().dropDrag({ w: 0.4, h: 0.2 })
+      }
+      check('one picture can be on two faces at once', reference().placements.length === 2, `${reference().placements.length}`)
+
+      check('nothing is lit to begin with', reference().highlightId === null, `${reference().highlightId}`)
+      reference().highlight(image.id)
+      check('pressing a tile lights its slot', reference().highlightId === image.id, `${reference().highlightId}`)
+      // The light points at a picture, so a picture that is not on the shelf
+      // cannot be lit: it would arm handles on nothing and aim Delete at
+      // nothing.
+      reference().highlight('gone')
+      check('a slot that holds nothing cannot be lit', reference().highlightId === image.id, `${reference().highlightId}`)
+
+      // DELETE TAKES IT OFF THE BLOCK, ALL OF IT, AND LEAVES IT ON THE SHELF.
+      // The bin on the tile is the other verb and still throws the file away;
+      // this is the one that was missing.
+      reference().clearPlacementsOf(image.id)
+      check(
+        'the lit picture comes off every face at once',
+        reference().placements.length === 0,
+        `${reference().placements.length}`
+      )
+      check(
+        'and stays in the panel to be dropped again',
+        activePreset(reference()).slots[0]?.id === image.id,
+        `${activePreset(reference()).slots[0]?.name}`
+      )
+      check('with the light still on it', reference().highlightId === image.id, `${reference().highlightId}`)
+
+      // A grab is a hand on a rectangle. Taking the rectangle away has to take
+      // the hand with it, or the next pointer move writes to a decal that is
+      // not there.
+      reference().startDrag(image.id)
+      reference().dragOver({ face: '+z', u: 0, v: 0 })
+      reference().dropDrag({ w: 0.4, h: 0.2 })
+      reference().startGrab({ id: reference().placements[0].id, mode: 'move' })
+      reference().clearPlacementsOf(image.id)
+      check('and the hand that was holding it lets go', reference().grab === null, `${reference().grab?.id}`)
+
+      // THE PANEL SAYS WHICH ONE IS LIT. A light that only the block can see is
+      // one you cannot find on a face you have turned away from.
+      reference().startDrag(image.id)
+      reference().dragOver({ face: '+z', u: 0, v: 0 })
+      reference().dropDrag({ w: 0.4, h: 0.2 })
+      reference().highlight(image.id)
+      const litPanel = markupOf('ReferencePanel (a lit slot)', ReferencePanel)
+      shows('the lit tile says so', litPanel, 'ref-tile-lit')
+      shows('and says it to a screen reader too', litPanel, 'aria-pressed="true"')
+      reference().highlight(null)
+      hides('and an unlit one does not', markupOf('ReferencePanel (nothing lit)', ReferencePanel), 'ref-tile-lit')
+
+      // A SWITCH PUTS THE LIGHT OUT. The pictures of a preset you are not
+      // holding are neither on the block nor in the panel, so a light left on
+      // one would arm Delete against nothing.
+      reference().highlight(image.id)
+      const held = reference().activePresetId
+      reference().addPreset()
+      check('switching preset puts the light out', reference().highlightId === null, `${reference().highlightId}`)
+      reference().choosePreset(held)
+      reference().removePreset(reference().presets[1].id)
+
+      // And so does throwing the picture away, which is the other way its slot
+      // can stop holding what the light is on.
+      reference().highlight(image.id)
+      reference().removeImage(image.id)
+      check('deleting the picture puts it out as well', reference().highlightId === null, `${reference().highlightId}`)
+    }
+
+    // WHERE THE LIGHT IS READ, and it is read in two places a headless check
+    // cannot render: the handles are three.js objects and the key handler is a
+    // window listener inside a canvas component. So the source is held to the
+    // rule instead, the way the shader is below.
+    {
+      const decals = readFileSync(new URL('../src/viewport/ReferenceDecals.tsx', import.meta.url), 'utf8')
+      check(
+        'the handles need BOTH the tool and the lit slot',
+        decals.includes('const armed = moving && lit'),
+        'Move in hand used to arm every decal on the block at once'
+      )
+      const viewport = readFileSync(new URL('../src/viewport/LaserViewport.tsx', import.meta.url), 'utf8')
+      check(
+        'Delete takes the lit picture off the block before it throws the offcut away',
+        viewport.includes('clearPlacementsOf(lit)') && viewport.includes('discardOffcut()'),
+        'the thing wearing the highlight is the thing the key acts on'
+      )
+      check(
+        'and taking up a cutter puts the light out',
+        /isCutTool\(tool\)\)\s*useReference\.getState\(\)\.highlight\(null\)/.test(viewport),
+        'grips on a face are holes where a cut cannot be started'
+      )
+    }
+
+    // THE EDITOR is nothing at all until a picture is opened in it, the way the
+    // help screen is: it covers the app, so it must not exist unasked.
+    {
+      check(
+        'the editor renders nothing until a picture is opened',
+        renderToStaticMarkup(createElement(ReferenceEditor)) === '',
+        renderToStaticMarkup(createElement(ReferenceEditor)).slice(0, 40)
+      )
+      reference().putImage(0, picture)
+      const image = activePreset(reference()).slots[0]!
+      reference().openEditor(image.id)
+      const editor = markupOf('ReferenceEditor (open)', ReferenceEditor)
+      shows('opened, it is a modal dialog', editor, 'role="dialog"')
+      shows('named for the picture in it', editor, 'plan.png')
+      shows('with the two flips', editor, 'Flip H')
+      shows('the turn', editor, 'Rotate')
+      shows('a crop to drag', editor, 'ref-editor-crop')
+      shows('and a way to take the crop off again', editor, 'Whole picture')
+      // The ratio switch, and it is the app's own segmented control rather than
+      // a second thing that looks like one.
+      shows('a shape to hold the crop to', editor, 'aria-label="Crop ratio"')
+      shows('offered as the switch every other choice-of-one uses', editor, 'class="seg"')
+      for (const { label } of CROP_RATIOS) {
+        shows(`${label} is one of them`, editor, `>${label}</button>`)
+      }
+      check(
+        'and it opens on Free, a picture having arrived with no shape asked of it',
+        /seg-btn seg-active[\s\S]{0,200}?>Free<\/button>/.test(editor) &&
+          editor.split('seg-active').length - 1 === 1,
+        'exactly one ratio should be armed, and it should be Free'
+      )
+      reference().openEditor(null)
+      reference().removeImage(image.id)
+    }
+
+    // --- the picture arithmetic ---------------------------------------------
+    //
+    // The crop is stored in the frame the picture is SHOWN in, which is the
+    // frame it was dragged in -- so a turn afterwards has to carry it round or
+    // the rectangle lands somewhere nobody pointed at.
+    {
+      const crop = { x: 0.1, y: 0.2, w: 0.5, h: 0.3 }
+      const round = turnCrop(crop, 4)
+      check(
+        'four quarter turns put a crop back where it started',
+        Math.abs(round.x - crop.x) < 1e-9 && Math.abs(round.y - crop.y) < 1e-9,
+        `${round.x}, ${round.y}`
+      )
+      const quarter = turnCrop(crop, 1)
+      check(
+        'and one turn swaps its sides',
+        quarter.w === crop.h && quarter.h === crop.w,
+        `${quarter.w} x ${quarter.h}`
+      )
+      const flipped = flipCrop(flipCrop(crop, 'x'), 'x')
+      check('two flips are none', Math.abs(flipped.x - crop.x) < 1e-9, `${flipped.x}`)
+
+      // A corner drag rebuilds the rectangle from the corner that did NOT move,
+      // so dragging past the far side flips it through rather than collapsing
+      // it to nothing.
+      const pulled = resizeCrop({ x: 0.2, y: 0.2, w: 0.4, h: 0.4 }, 'se', 0.9, 0.8)
+      check(
+        'a corner drag anchors the opposite corner',
+        Math.abs(pulled.x - 0.2) < 1e-9 && Math.abs(pulled.w - 0.7) < 1e-9,
+        `${pulled.x} + ${pulled.w}`
+      )
+      const past = resizeCrop({ x: 0.4, y: 0.4, w: 0.2, h: 0.2 }, 'se', 0.1, 0.1)
+      check(
+        'and dragged past it, the rectangle flips through',
+        past.x < 0.4 && past.w > 0,
+        `${past.x} + ${past.w}`
+      )
+      const shoved = moveCrop({ x: 0.6, y: 0.6, w: 0.3, h: 0.3 }, 0.9, 0.9)
+      check(
+        'a crop cannot be slid off the picture',
+        shoved.x <= 0.7 + 1e-9 && shoved.y <= 0.7 + 1e-9,
+        `${shoved.x}, ${shoved.y}`
+      )
+      const thin = clampCrop({ x: 0.5, y: 0.5, w: 0, h: 0 })
+      check('nor cropped to nothing', thin.w > 0 && thin.h > 0, `${thin.w} x ${thin.h}`)
+
+      const turned = turnedSize(400, 200, 1)
+      check('a quarter turn swaps the pixels too', turned.width === 200 && turned.height === 400, `${turned.width} x ${turned.height}`)
+      check(
+        'and the aspect follows the crop, since the block lays it out by shape',
+        Math.abs(
+          aspectOf({ width: 400, height: 200, edit: { flipX: false, flipY: false, turns: 1, crop: null } }) - 0.5
+        ) < 1e-9,
+        ''
+      )
+    }
+
+    // --- holding the crop to a shape ----------------------------------------
+    //
+    // THE WHOLE POINT IS PIXELS, NOT FRACTIONS. A crop is stored as a fraction
+    // of a picture that has a shape of its own, so half by half of a 400 x 200
+    // drawing is 200 x 100 -- and a control that set w = h would offer a
+    // "square" that is nothing of the kind. `fractionRatio` is the conversion,
+    // and it is the one thing here that a wrong answer would make invisible:
+    // the crop would look plausible and the picture would land on the block the
+    // wrong shape.
+    {
+      const shownAspect = 400 / 200
+      const square = fractionRatio(1, shownAspect)
+      check('a square of pixels is not a square of fractions', square === 0.5, `${square}`)
+
+      const fitted = fitCrop({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, square)
+      check(
+        'and a crop fitted to it comes out square in pixels',
+        Math.abs(fitted.w * 400 - fitted.h * 200) < 1e-9,
+        `${fitted.w * 400} x ${fitted.h * 200}`
+      )
+      check(
+        'fitting SHRINKS rather than grows, so nothing cropped out comes back',
+        fitted.w <= 0.8 + 1e-9 && fitted.h <= 0.8 + 1e-9,
+        `${fitted.w} x ${fitted.h}`
+      )
+      check(
+        'and keeps the middle it was aimed at',
+        Math.abs(fitted.x + fitted.w / 2 - 0.5) < 1e-9 && Math.abs(fitted.y + fitted.h / 2 - 0.5) < 1e-9,
+        `${fitted.x + fitted.w / 2}, ${fitted.y + fitted.h / 2}`
+      )
+      // Pressed with nothing cropped, the button crops: that is the gesture it
+      // exists for -- open a picture, press 1:1, nudge the square about.
+      const fromWhole = fitCrop({ x: 0, y: 0, w: 1, h: 1 }, square)
+      check(
+        'pressed on an uncropped picture it makes the crop',
+        fromWhole.w < 1 && Math.abs(fromWhole.w * 400 - fromWhole.h * 200) < 1e-9,
+        `${fromWhole.w} x ${fromWhole.h}`
+      )
+      const wide = fitCrop({ x: 0, y: 0, w: 1, h: 1 }, 4)
+      check(
+        'a ratio wider than the picture is capped by the picture',
+        wide.w <= 1 && wide.h <= 1,
+        `${wide.w} x ${wide.h}`
+      )
+
+      // A LOCKED CORNER DRAG. The anchor holds, the shape holds, and the
+      // rectangle stops at the edge of the picture rather than going over it.
+      const held = resizeCrop({ x: 0.2, y: 0.2, w: 0.2, h: 0.2 }, 'se', 0.9, 0.25, square)
+      check(
+        'a locked drag keeps the shape it was given',
+        Math.abs(held.w / held.h - square) < 1e-9,
+        `${held.w / held.h} vs ${square}`
+      )
+      check(
+        'and the corner that was not dragged stays put',
+        Math.abs(held.x - 0.2) < 1e-9 && Math.abs(held.y - 0.2) < 1e-9,
+        `${held.x}, ${held.y}`
+      )
+      check(
+        'while the far side follows whichever way was pulled further',
+        held.w > 0.2,
+        `${held.w}`
+      )
+      const stopped = resizeCrop({ x: 0.2, y: 0.2, w: 0.2, h: 0.2 }, 'se', 1, 1, square)
+      check(
+        'a locked drag past the edge stops at it',
+        stopped.x + stopped.w <= 1 + 1e-9 && stopped.y + stopped.h <= 1 + 1e-9,
+        `${stopped.x + stopped.w}, ${stopped.y + stopped.h}`
+      )
+      check(
+        'still holding its shape',
+        Math.abs(stopped.w / stopped.h - square) < 1e-9,
+        `${stopped.w / stopped.h}`
+      )
+      // Free is still free: the ratio is optional and its absence is the old
+      // behaviour exactly.
+      const free = resizeCrop({ x: 0.2, y: 0.2, w: 0.2, h: 0.2 }, 'se', 0.9, 0.25)
+      check(
+        'and with no ratio the corner goes where it was put',
+        Math.abs(free.w - 0.7) < 1e-9 && Math.abs(free.h - 0.05) < 1e-9,
+        `${free.w} x ${free.h}`
+      )
+    }
+
+    // WHAT THE PANEL TAKES. By type where the browser gives one and by
+    // extension where it does not -- a file dragged from some desktops arrives
+    // with an empty type, and refusing a .png because of that is a rejection
+    // nobody can act on.
+    {
+      check('a PNG is taken', isReferenceFile({ name: 'a.png', type: 'image/png' }), '')
+      check('an SVG is taken', isReferenceFile({ name: 'a.svg', type: 'image/svg+xml' }), '')
+      check('a typeless .jpeg is taken on its name', isReferenceFile({ name: 'a.jpeg', type: '' }), '')
+      check('a PDF is not', !isReferenceFile({ name: 'a.pdf', type: 'application/pdf' }), '')
+      check('nor a model', !isReferenceFile({ name: 'a.stl', type: '' }), '')
+    }
+
+    // --- where the picture actually is --------------------------------------
+    //
+    // The block is a box standing ON the bed, so every face frame is derived
+    // from three sides and a footprint centred on the origin. These are the
+    // numbers the shader is handed; if they are wrong the picture is somewhere
+    // else, and no screenshot of one face would say which.
+    {
+      const dims: [number, number, number] = [1.6, 0.8, 0.4]
+      for (const face of FACES) {
+        const frame = faceFrame(face, dims)
+        // A RIGHT-HANDED FRAME on every face, or the picture arrives mirrored
+        // on half of them -- which is the bug you only notice after cutting.
+        const cross: [number, number, number] = [
+          frame.u[1] * frame.v[2] - frame.u[2] * frame.v[1],
+          frame.u[2] * frame.v[0] - frame.u[0] * frame.v[2],
+          frame.u[0] * frame.v[1] - frame.u[1] * frame.v[0],
+        ]
+        const dot = cross[0] * frame.normal[0] + cross[1] * frame.normal[1] + cross[2] * frame.normal[2]
+        check(`${face}: right and up cross to its own normal`, Math.abs(dot - 1) < 1e-9, `${dot}`)
+        const depth =
+          frame.centre[0] * frame.normal[0] +
+          frame.centre[1] * frame.normal[1] +
+          frame.centre[2] * frame.normal[2]
+        check(`${face}: its plane is where its middle is`, Math.abs(depth - frame.depth) < 1e-9, `${depth} vs ${frame.depth}`)
+        check(
+          `${face}: a normal off the block finds it again`,
+          faceOfNormal(frame.normal) === face,
+          `${faceOfNormal(frame.normal)}`
+        )
+      }
+      check('and a slanted surface is no face at all', faceOfNormal([0.7, 0.7, 0]) === null, '')
+
+      // A DROP FITS THE FACE AND KEEPS ITS SHAPE. A reference stretched out of
+      // aspect is a drawing that would be cut wrong.
+      const drop = dropSize('+z', dims, 2)
+      check('a dropped picture keeps its aspect', Math.abs(drop.w / drop.h - 2) < 1e-9, `${drop.w / drop.h}`)
+      check(
+        'and lands inside the face it was dropped on',
+        drop.w <= dims[0] && drop.h <= dims[1],
+        `${drop.w} x ${drop.h} on ${dims[0]} x ${dims[1]}`
+      )
+      const held = clampCentre(99, 99, drop.w, drop.h, '+z', dims)
+      check(
+        'a picture cannot be dragged off the edge',
+        held.u + drop.w / 2 <= dims[0] / 2 && held.v + drop.h / 2 <= dims[1] / 2,
+        `${held.u}, ${held.v}`
+      )
+
+      // Where the pointer lands on a face, and back again.
+      const there = faceOffset([0.3, 0.5, dims[2] / 2], '+z', dims)
+      check(
+        'a point on a face reads as an offset from its middle',
+        Math.abs(there.u - 0.3) < 1e-9 && Math.abs(there.v - (0.5 - dims[1] / 2)) < 1e-9,
+        `${there.u}, ${there.v}`
+      )
+
+      // A CORNER PULL, WITH THE OPPOSITE CORNER NAILED DOWN. This is the whole
+      // of what "size it from any corner" means, and it is four claims: the
+      // anchor holds, the shape holds, the picture stays on the face, and
+      // dragging past the anchor never turns it inside out. None of them are
+      // things an eye catches on a screenshot of one frame.
+      {
+        const start: Placement = {
+          id: 'd', presetId: 'p', imageId: 'i', face: '+z',
+          u: 0, v: 0, w: 0.4, h: 0.2,
+        }
+        const aspect = 2
+        // Every corner, so none of the four is the one that was never tried.
+        for (const corner of CORNERS) {
+          const anchorU = start.u - (corner.su * start.w) / 2
+          const anchorV = start.v - (corner.sv * start.h) / 2
+          // Pulled a little way further out along the corner's own diagonal.
+          const out = resizeFromCorner(
+            start,
+            corner,
+            { u: anchorU + corner.su * 0.6, v: anchorV + corner.sv * 0.3 },
+            aspect,
+            dims
+          )
+          const name = `${corner.su > 0 ? 'right' : 'left'} ${corner.sv > 0 ? 'top' : 'bottom'}`
+          check(
+            `pulling the ${name} corner leaves the opposite one where it was`,
+            Math.abs(out.u - (corner.su * out.w) / 2 - anchorU) < 1e-9 &&
+              Math.abs(out.v - (corner.sv * out.h) / 2 - anchorV) < 1e-9,
+            `${out.u - (corner.su * out.w) / 2}, ${out.v - (corner.sv * out.h) / 2}`
+          )
+          check(
+            `and the ${name} pull keeps the picture's own shape`,
+            Math.abs(out.w / out.h - aspect) < 1e-9,
+            `${out.w / out.h}`
+          )
+          check(`and grows it`, out.w > start.w, `${out.w} from ${start.w}`)
+
+          // PAST THE ANCHOR AND OUT THE OTHER SIDE. The picture goes small and
+          // stays on the side it started; it does not flip through the anchor.
+          const through = resizeFromCorner(
+            start,
+            corner,
+            { u: anchorU - corner.su * 0.5, v: anchorV - corner.sv * 0.25 },
+            aspect,
+            dims
+          )
+          check(
+            `dragging the ${name} corner past its anchor never flips the picture`,
+            through.w >= MIN_DECAL &&
+              Math.sign(through.u - anchorU || corner.su) === corner.su &&
+              Math.sign(through.v - anchorV || corner.sv) === corner.sv,
+            `${through.u - anchorU}, ${through.v - anchorV}`
+          )
+
+          // AND IT STOPS AT THE EDGE, measured from the anchor rather than from
+          // the middle: the room to grow into is what lies between the nailed
+          // corner and the far side.
+          const far = resizeFromCorner(start, corner, { u: corner.su * 99, v: corner.sv * 99 }, aspect, dims)
+          check(
+            `a ${name} pull off the edge of the world stops at the face`,
+            Math.abs(far.u) + far.w / 2 <= dims[0] / 2 + 1e-9 &&
+              Math.abs(far.v) + far.h / 2 <= dims[1] / 2 + 1e-9,
+            `${Math.abs(far.u) + far.w / 2} of ${dims[0] / 2}`
+          )
+        }
+
+        // A picture already against the edge can still be grown INWARD, which
+        // is the case one corner alone could never serve: nailed at the right
+        // edge, only the left-hand corners have anywhere to go.
+        const flush: Placement = { ...start, u: dims[0] / 2 - 0.2 - 0.01 }
+        const inward = resizeFromCorner(flush, { su: -1, sv: -1 }, { u: -0.5, v: -0.3 }, aspect, dims)
+        check(
+          'a picture against one edge can still be grown from a corner facing the other way',
+          inward.w > flush.w,
+          `${inward.w} from ${flush.w}`
+        )
+      }
+    }
+
+    // --- THE PICTURE IS ON THE SURFACE, AND STAYS WHERE IT WAS PUT ----------
+    //
+    // The claim the whole feature rests on, and the reason the decal is painted
+    // by the block's own material rather than drawn as a quad on the face: the
+    // question is asked of the SURFACE, so material that survives a cut still
+    // carries its part of the picture, on the surface, where it can be cut
+    // along.
+    //
+    // WHAT A CUT NO LONGER DOES IS TAKE THE DRAWING AWAY. A face cut off from
+    // another axis used to take its reference with it -- the picture can only
+    // be painted where the block is -- which left somebody who had just squared
+    // a drawing up with nothing to cut the rest of it by. A reference is what
+    // you are working FROM rather than part of the piece, so the same picture
+    // is also drawn as a quad on its own plane, sunk a hair into the block so
+    // that the block hides it wherever the block still exists. See
+    // `DecalGhosts`. The projection rule below is unchanged: it is what decides
+    // where the picture is ON the material, and the ghost is what carries it
+    // across the gap.
+    //
+    // `coversPoint` is that question in TypeScript, and the shader asks it in
+    // GLSL a few lines apart -- so this is a check of the rule rather than of
+    // the pixels, and the source assertion below is what keeps the two honest.
+    {
+      const dims: [number, number, number] = [1, 1, 1]
+      const rect = placementRect(
+        { id: 'd', presetId: 'p', imageId: 'i', face: '+z', u: 0, v: 0, w: 0.4, h: 0.2 },
+        dims
+      )
+      const front: [number, number, number] = [0, 0.5, 0.5]
+      check('a point under the picture is covered', coversPoint(rect, front, [0, 0, 1]), '')
+      check(
+        'a point beside it on the same face is not',
+        !coversPoint(rect, [0.45, 0.5, 0.5], [0, 0, 1]),
+        ''
+      )
+      // The face a cut leaves INSIDE the block: parallel to the picture, square
+      // on to it, and bare. Without the plane test the projection would print
+      // the drawing on it like a slide projector shining through a hole.
+      check(
+        'a parallel face a cut opened up inside the block is bare',
+        !coversPoint(rect, [0, 0.5, 0.1], [0, 0, 1]),
+        ''
+      )
+      check(
+        'and a face at right angles to it is bare',
+        !coversPoint(rect, [0.5, 0.5, 0.5], [1, 0, 0]),
+        ''
+      )
+      // Which way up the picture goes: v counts DOWN the image, the way a
+      // texture and a canvas are both indexed.
+      const topLeft = pointUv(rect, [-0.2, 0.6, 0.5])
+      check(
+        'the top left of the rectangle is the top left of the picture',
+        Math.abs(topLeft.x) < 1e-9 && Math.abs(topLeft.y) < 1e-9,
+        `${topLeft.x}, ${topLeft.y}`
+      )
+
+      const shader = readFileSync(new URL('../src/viewport/decalMaterial.ts', import.meta.url), 'utf8')
+      check(
+        'the shader asks the same three questions the check just did',
+        shader.includes('dot(refN, uDecalNormal[i]) < 0.999') &&
+          shader.includes('PLANE_EPSILON') &&
+          shader.includes('uv.x < 0.0 || uv.x > 1.0'),
+        'the projection rule has to be the one written down in decalPlacement'
+      )
+      check(
+        'and it paints into the diffuse colour, so a reference takes the light',
+        shader.includes('diffuseColor.rgb = mix('),
+        'painted after the lighting it would glow in the shadows'
+      )
+      const decals = readFileSync(new URL('../src/viewport/ReferenceDecals.tsx', import.meta.url), 'utf8')
+      check(
+        'the texture is not flipped, since the projection reads v down the picture',
+        decals.includes('flipY = false'),
+        'left flipped, every reference lands upside down'
+      )
+      // THE GHOST, and the three things that make it read as one drawing rather
+      // than as a second copy of it. It sits BELOW the surface, so the block
+      // hides it wherever the block is left; it writes no depth, so what is
+      // behind it is still drawn; and it faces outward only, so a hole cut in
+      // the face in front does not show it back to front.
+      check(
+        'the ghost is sunk into the block, which is what lets the surface hide it',
+        decals.includes('const SINK = PLANE_EPSILON * 2') &&
+          decals.includes('rect.centre[0] - rect.normal[0] * SINK'),
+        'standing it proud would draw it over the painted picture instead of behind'
+      )
+      check(
+        'and it is a picture rather than a wall',
+        decals.includes('depthWrite={false}') && decals.includes('side={FrontSide}') &&
+          decals.includes('raycast={noRaycast}'),
+        'a drawing in mid-air must not take a pointer or hide what is behind it'
+      )
+      check(
+        'and its quad reads v down the picture, like the projection',
+        decals.includes('uv.setY(i, 1 - uv.getY(i))'),
+        "planeGeometry's own v runs up it, so the ghost would land upside down"
+      )
+
+      // AND THE SAME PICTURE, THE SAME WAY UP -- which is the claim the two
+      // string matches above cannot make on their own. The ghost is built here
+      // exactly as the component builds it, and every corner of it is asked
+      // where the SHADER would read the picture at that point: agreement means
+      // one drawing carrying on across the gap rather than a second copy of it
+      // arriving mirrored or upside down. On all six faces, because the frames
+      // differ and three of them are the ones a hand-written rotation gets
+      // wrong.
+      const quad = new PlaneGeometry(1, 1)
+      const quadUv = quad.attributes.uv
+      for (let i = 0; i < quadUv.count; i++) quadUv.setY(i, 1 - quadUv.getY(i))
+      let worst = 0
+      for (const face of FACES) {
+        const rect = placementRect(
+          { id: 'g', presetId: 'p', imageId: 'i', face, u: 0.05, v: -0.02, w: 0.4, h: 0.2 },
+          [1, 2, 3]
+        )
+        const turn = new Quaternion().setFromRotationMatrix(
+          new Matrix4().makeBasis(
+            new Vector3(...rect.u),
+            new Vector3(...rect.v),
+            new Vector3(...rect.normal)
+          )
+        )
+        const corners = quad.attributes.position
+        for (let i = 0; i < corners.count; i++) {
+          const at = new Vector3(corners.getX(i) * rect.w, corners.getY(i) * rect.h, 0)
+            .applyQuaternion(turn)
+            .add(new Vector3(...rect.centre))
+          const read = pointUv(rect, [at.x, at.y, at.z])
+          worst = Math.max(worst, Math.abs(read.x - quadUv.getX(i)), Math.abs(read.y - quadUv.getY(i)))
+        }
+      }
+      check(
+        'so the ghost and the painted picture are the same picture, on every face',
+        worst < 1e-9,
+        `worst corner disagreement ${worst}`
+      )
+      check(
+        'and it is turned by the face own axes, which is what makes that true',
+        decals.includes('makeBasis(') && decals.includes('geometry={GHOST_QUAD}'),
+        'no ordering of Euler angles is right for all six faces'
+      )
+    }
+  }
+
+  // UNDO AND REDO KEEP THEIR HANDS OFF. They walk whichever screen is up -- see
+  // `NavBar` -- and this screen has no history, so they are dead. The failure
+  // this guards is the one the old `live ? doc : lathe` had waiting: a third
+  // screen silently stepping the lump of clay it is not showing.
+  {
+    // A lathe with something on its stack, so a pair of buttons wired to the
+    // wrong screen would be visibly live rather than merely wrong.
+    lathe().beginStroke()
+    lathe().work({ y: 0.75, radius: 0.2, reach: 0.3, bite: 1, tool: 'push' })
+    lathe().endStroke()
+    check('the lathe has a stroke to walk back', lathe().past.length > 0, `${lathe().past.length}`)
+
+    const bar = markupOf('NavBar (laser)', NavBar)
+    shows('the bar lights the laser tab', bar, 'aria-current="page">Laser Cutter<')
+    for (const label of ['Import', 'Export', 'Snap', 'Undo', 'Redo']) {
+      shows(`${label} is still in the bar`, bar, `>${label}<`)
+    }
+    // Counted the way the lathe's are: what matters is that everything acting
+    // on something this screen has not got stands down together.
+    const down = (bar.match(/disabled=""/g) ?? []).length
+    check(
+      'and the controls with nothing to act on stand down together',
+      down >= 4,
+      `${down} disabled: Import, Export, undo and redo`
+    )
+
+    // SNAP IS NO LONGER ONE OF THEM, and that is the change rather than an
+    // accident of counting. It used to stand down here on the strength of being
+    // one of the six controls that mean nothing without a document -- but what
+    // Snap governs is a DRAG landing on something worth landing on, and this
+    // screen has one: a Point Cut's knots line up with the knots already
+    // placed. The question is `snapsHere`, not `onDocument`, and the lathe --
+    // which really has nothing to catch -- still answers no.
+    {
+      // Restored at the end: this block leaves the laser screen and comes back,
+      // and `setScreen` shuts whatever panel was open on the way -- which the
+      // cut-tool checks further down are relying on being up.
+      const wasOpen = tools().openPanel
+      tools().setOpenPanel('snap')
+      const here = markupOf('SnapTool (laser)', SnapTool)
+      hides('Snap is live on the laser screen', here, 'class="nav-btn" disabled')
+      // AND ITS OWN NUMBER, which is the other half of it. The modelling
+      // screen's distance is a length in the world -- right for catching the
+      // corner of a solid standing somewhere in a room. This one lines a mark
+      // up with a mark on the same flat face under a camera that zooms twenty
+      // times over, so it is a distance on screen, and one number could not
+      // have suited both.
+      shows('with a sensitivity of its own', here, '>Sensitivity<')
+      hides("and not the modelling screen's distance", here, '>Distance<')
+
+      tools().setScreen('lathe')
+      tools().setOpenPanel('snap')
+      const away = markupOf('SnapTool (lathe)', SnapTool)
+      shows('while the lathe, which has nothing to catch, keeps it dimmed', away, 'class="nav-btn" disabled')
+
+      tools().setScreen('modelling')
+      tools().setOpenPanel('snap')
+      shows(
+        'and the modelling screen still reads a length in the world',
+        markupOf('SnapTool (modelling)', SnapTool),
+        '>Distance<'
+      )
+
+      // ONE SWITCH, TWO NUMBERS: setting one screen's reach leaves the other's
+      // exactly where it was, which is the whole of what "independent" buys.
+      const world = tools().snapDistance
+      tools().setLaserSnapDistance(24)
+      check('the laser reach is its own number', tools().laserSnapDistance === 24, `${tools().laserSnapDistance}`)
+      check("and does not touch the world's", tools().snapDistance === world, `${tools().snapDistance}`)
+      tools().setSnapDistance(0.5)
+      check('nor the other way about', tools().laserSnapDistance === 24, `${tools().laserSnapDistance}`)
+      // Clamped to the range the panel offers: a snap reaching half the window
+      // is a knot that can never be placed anywhere.
+      tools().setLaserSnapDistance(9999)
+      check('and it is held inside the range on offer', tools().laserSnapDistance === LASER_SNAP_MAX, `${tools().laserSnapDistance}`)
+      tools().setLaserSnapDistance(DEFAULT_LASER_SNAP)
+      tools().setSnapDistance(world)
+
+      tools().setScreen('laser')
+      tools().setOpenPanel(wasOpen)
+    }
+    lathe().undo()
+    lathe().centreFresh()
+    lathe().past.length = 0
+    lathe().future.length = 0
+  }
+
+  // The screen is a TOOL setting like every other: switching to it must not
+  // land in the document's history.
+  {
+    const entries = doc().past.length
+    tools().setScreen('modelling')
+    tools().setScreen('laser')
+    check('arriving costs no undo entries', doc().past.length === entries, `${doc().past.length - entries}`)
+  }
+
+  // --- the laser cutter's tools ---------------------------------------------
+  //
+  // TWO WAYS OF PUTTING ONE LINE ON ONE FACE, and everything after the line
+  // exists is shared between them -- how it is carried to the border, how it is
+  // swept, what a cut leaves behind. So what is worth pinning here is the shape
+  // of the pair: that each is a tool on the island with a panel of its own, that
+  // the panel carries the same three acts, and that the one setting that is
+  // about the CUT rather than about the drawing is one flag both of them read.
+  // The arithmetic is `engine-check`'s, which can cut a block without a window.
+  //
+  // AND MOVE, which is a third tool in the same field and cuts nothing. What is
+  // worth pinning about it is precisely that it is in the same field: the whole
+  // reason the padlock could be taken off every decal is that holding one tool
+  // means not holding the other, so a cutter in hand cannot shift a drawing and
+  // Move in hand cannot burn one.
+  console.log('\nThe laser cutter tools: one line two ways, and one that cuts nothing')
+  {
+    tools().setScreen('laser')
+    tools().setLaserTool(null)
+    draft().clear()
+
+    const free = markupOf('FreehandTool', FreehandTool)
+    const point = markupOf('PointCutTool', PointCutTool)
+    shows('the island offers Freehand', free, '>Freehand<')
+    shows('and Point Cut', point, '>Point Cut<')
+
+    // EMPTY-HANDED ON ARRIVAL, unlike the lathe. A press with a tool in hand
+    // starts a line that has to be finished, aimed and applied; arriving armed
+    // would mean the first press meant for the compass left a stroke on the face.
+    check('and neither is in hand on arrival', tools().laserTool === null, `${tools().laserTool}`)
+    hides('so neither button is lit', free + point, 'nav-group nav-group-active')
+
+    // NO HOVER BUBBLE ON ANY OF THE THREE, the bargain Snap and Cut already
+    // strike next door: this island has three buttons and every one of them is
+    // reached for constantly, so a paragraph that appears each time the pointer
+    // crosses one is noise. Checked rather than trusted, because a `tip` prop is
+    // one word to add back and nothing on screen would object.
+    hides('Freehand carries no hover bubble', free, 'nav-tip')
+    hides('nor does Point Cut', point, 'nav-tip')
+
+    // Taking one up opens its panel, the way arming the cut plane does: the
+    // tool's own Apply lives in there, and a cut you could draw but not fire
+    // would be the panel nobody found.
+    tools().setLaserTool('freehand')
+    check('taking one up opens its panel', tools().openPanel === 'freehand', `${tools().openPanel}`)
+    tools().setLaserTool('points')
+    check('and taking the other up moves the panel with it', tools().openPanel === 'points', `${tools().openPanel}`)
+    check('one tool at a time, because the store holds one', tools().laserTool === 'points', `${tools().laserTool}`)
+    tools().setLaserTool(null)
+    check('putting it down shuts the panel', tools().openPanel === null, `${tools().openPanel}`)
+
+    // MOVE, the third tool, and every claim about it is about the field it
+    // shares with the other two.
+    {
+      const reference = () => useReference.getState()
+      /** Whether the island's Move button is greyed. By the button carrying the
+       *  word rather than by attribute order -- see `buttonIsDown`, which does
+       *  the same thing for a button that has an `aria-label` to go on. */
+      const moveIsDown = (markup: string): boolean => {
+        const tag = markup.split('<button').find((part) => part.includes('>Move<'))
+        return tag !== undefined && tag.slice(0, tag.indexOf('>')).includes('disabled=""')
+      }
+
+      // Dimmed with nothing on the block: the button is what says the gesture
+      // exists, so it stays on the island rather than appearing once you have
+      // already worked out how to place a reference.
+      for (const placement of [...reference().placements]) reference().removePlacement(placement.id)
+      const bare = markupOf('MoveRefTool (nothing on the block)', MoveRefTool)
+      shows('the island offers Move', bare, '>Move<')
+      check('dimmed while no reference is on the block', moveIsDown(bare), 'should be disabled')
+
+      reference().putImage(0, { name: 'plan.png', src: 'data:,', width: 400, height: 200 })
+      const drawing = activePreset(reference()).slots[0]!
+      reference().startDrag(drawing.id)
+      reference().dragOver({ face: '+z', u: 0, v: 0 })
+      reference().dropDrag({ w: 0.4, h: 0.2 })
+      const live = markupOf('MoveRefTool (a reference on the block)', MoveRefTool)
+      check('and live once there is one', !moveIsDown(live), 'should be enabled')
+      hides('and it carries no hover bubble either', bare + live, 'nav-tip')
+
+      // ONE FIELD, so taking Move up puts the cutter down -- which is the whole
+      // of what the padlock used to be for.
+      tools().setLaserTool('freehand')
+      tools().setLaserTool('move')
+      check('taking Move up puts the cutter down', tools().laserTool === 'move', `${tools().laserTool}`)
+      check('and shuts the panel that cutter had open', tools().openPanel === null, `${tools().openPanel}`)
+      tools().setLaserTool('points')
+      check('and taking a cutter up puts Move down', tools().laserTool === 'points', `${tools().laserTool}`)
+
+      // NO PANEL, and it is the only tool on this island without one: there is
+      // nothing to aim, so there is no caret and nothing for the island to shut.
+      tools().setLaserTool('move')
+      hides('Move carries no caret', markupOf('MoveRefTool (armed)', MoveRefTool), 'nav-caret')
+      shows('but it is lit while in hand', markupOf('MoveRefTool (lit)', MoveRefTool), 'nav-group nav-group-active')
+
+      reference().removeImage(drawing.id)
+      tools().setLaserTool(null)
+    }
+
+    // Both panels are on the ISLAND's list, or the island cannot shut them --
+    // the button goes off screen with the body and the panel springs back open
+    // from a click nobody made. See `ISLAND_PANELS`.
+    for (const id of ['freehand', 'points'] as const) {
+      check(
+        `the island can shut the ${id} panel`,
+        ISLAND_PANELS.includes(id),
+        ISLAND_PANELS.includes(id) ? 'on the list' : 'MISSING from ISLAND_PANELS'
+      )
+    }
+
+    tools().setLaserTool('freehand')
+    const armed = markupOf('FreehandTool (armed)', FreehandTool)
+    shows('the armed tool is lit', armed, 'nav-group nav-group-active')
+
+    // ONE DIAL, and it is the one thing Freehand has that Point Cut does not.
+    shows('Freehand carries a smoothing dial', armed, '>Smoothing<')
+    hides('and Point Cut does not', markupOf('PointCutTool (armed)', PointCutTool), '>Smoothing<')
+
+    // FIT TO LINE IS A SWITCH, and it was three named modes: Straight, Fit to
+    // line, Manual. The third was never a third way of joining points -- it was
+    // the fitted curve with its tangents handed over to be aimed, so it and Fit
+    // differed by who owned the handles rather than by what the line was. What
+    // that bundling cost is the trap the switch undoes: the one mode named for
+    // hand-editing was the one you could not reach from a straight line.
+    //
+    // Both states named, in the app's own yes-or-no idiom -- the same one
+    // Outlines and the hollow ends use. `On | Off` with one lit says what the
+    // alternative IS, which an empty tickbox leaves you to infer.
+    tools().setLaserTool('points')
+    const modes = markupOf('PointCutTool (fit)', PointCutTool)
+    shows('Point Cut asks whether the line is fitted', modes, '>Fit to line<')
+    for (const label of ['On', 'Off']) {
+      shows(`and names the ${label} state`, modes, `>${label}<`)
+    }
+    hides('with no third mode left to pick', modes, '>Manual<')
+    check('it rests with the curve off', tools().fitCurve === false, `${tools().fitCurve}`)
+    shows('and that state is the lit one', modes, 'seg-btn seg-active" aria-pressed="true')
+
+    // THE SAME THREE ACTS FOR BOTH TOOLS, written once and shown once -- in a
+    // panel of their own over the scene rather than inside either tool's
+    // flyout. See below for why that had to move.
+    const panelOf = (tool: 'freehand' | 'points') => {
+      tools().setLaserTool(tool)
+      return tool === 'freehand'
+        ? markupOf('FreehandTool (acts)', FreehandTool)
+        : markupOf('PointCutTool (acts)', PointCutTool)
+    }
+    for (const [name, markup] of [
+      ['Freehand', panelOf('freehand')],
+      ['Point Cut', panelOf('points')],
+    ] as const) {
+      hides(`${name} does not carry Apply itself`, markup, '>Apply cut<')
+      hides(`nor Reset -- ${name}`, markup, '>Reset line<')
+      // AUTO DISCARD IS GONE, and its absence is worth a check rather than a
+      // deletion: it binned a piece before the user had looked at which one the
+      // cut had picked, and the cut's pick is a guess now rather than a
+      // verdict. See the note where the flag used to be in `toolStore`, and
+      // `choices` in `laserStore` for what replaced it.
+      hides(`${name} offers no auto discard`, markup, 'Auto discard')
+      hides(`nor any switch at all -- ${name}`, markup, 'nav-action-switch')
+    }
+
+    // A TOOL YOU AIM BY DRAWING CANNOT KEEP ITS ACTIONS IN A FLYOUT, which is
+    // the whole reason this panel exists. `NavBar`'s outside-press listener
+    // closes an open island panel on any pointerdown that is not inside the
+    // island -- that is what makes every flyout in the app dismiss by clicking
+    // away -- and drawing a cut IS a pointerdown on the canvas. So the button
+    // that applied the line was shut by the act of drawing the line, every
+    // time, with nothing on screen saying why. See `CutPanel`.
+    for (const cutter of ['freehand', 'points'] as const) {
+      tools().setLaserTool(cutter)
+      const panel = markupOf(`CutPanel (${cutter})`, CutPanel)
+      shows(`with ${cutter} in hand the cut panel can fire a cut`, panel, '>Apply cut<')
+      shows(`and throw the drawing away -- ${cutter}`, panel, '>Reset line<')
+    }
+
+    // AND IT GOES WITH THE TOOL, which is what makes it a popup rather than a
+    // fourth permanent panel: with no line to apply the corner is scene again.
+    tools().setLaserTool(null)
+    check(
+      'with empty hands the cut panel renders nothing',
+      renderToStaticMarkup(createElement(CutPanel)) === '',
+      'the corner goes back to being scene'
+    )
+    // MOVE IS IN THE SAME FIELD AS THE CUTTERS but is not one: it takes hold of
+    // a reference rather than the block, and there is no line in hand to burn.
+    tools().setLaserTool('move')
+    check(
+      'nor with Move in hand, which cuts nothing',
+      renderToStaticMarkup(createElement(CutPanel)) === '',
+      'Move holds a picture, not a line'
+    )
+
+    // AND A PRESS ON IT MUST NOT SHUT THE DIAL THAT AIMED THE LINE. It is
+    // chrome, not scene -- so it joins the bar, the island and the help card on
+    // the one list of places a press does not dismiss a flyout.
+    {
+      const navbar = readFileSync(new URL('../src/console/NavBar.tsx', import.meta.url), 'utf8')
+      shows('a press on the cut panel leaves an open flyout alone', navbar, '.cut-panel')
+    }
+
+    // MOUNTED IN THE BOTTOM-LEFT COLUMN, above the block. A panel nothing
+    // renders is the same as no panel, and the column is what lets the two
+    // stack without either measuring the other -- the block panel collapses,
+    // so a fixed offset above it would gap when shut and overlap when open.
+    {
+      const laserView = readFileSync(
+        new URL('../src/viewport/LaserViewport.tsx', import.meta.url),
+        'utf8'
+      )
+      const sheet = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+      shows('the screen mounts the cut panel', laserView, '<CutPanel />')
+      shows('in a column with the block', laserView, 'className="laser-corner"')
+      check(
+        'anchored to the bottom left corner',
+        /.laser-corner {[^}]*left: 12px[^}]*bottom: 12px/.test(sheet),
+        'left 12, bottom 12'
+      )
+      check(
+        'with the block placed by the column rather than by its own corner',
+        /.laser-corner .stock-panel {[^}]*position: static/.test(sheet),
+        'the lathe keeps its own rule, having no column to sit in'
+      )
+      check(
+        'and the cut panel sized to what is in it',
+        /.cut-panel {[^}]*width: max-content/.test(sheet),
+        'a stack of short buttons, not a 232px box'
+      )
+    }
+
+    // AND POINT CUT'S PANEL HANGS UNDER ITS BUTTON, where every other island
+    // panel opens out to the side. The side is right for a tool with buttons
+    // beneath it in the column -- a dropped panel would cover them, which is
+    // why the island opens sideways at all -- and Point Cut is the LAST tool in
+    // that column, so there is nothing under it but scene. Below is where a
+    // dropdown belongs, and it keeps the deeper of the two cut panels out of
+    // the middle of the window, which is the face being drawn on.
+    shows(
+      'Point Cut drops its panel under the button',
+      panelOf('points'),
+      'nav-panel nav-panel-below'
+    )
+    hides('while Freehand keeps to the side', panelOf('freehand'), 'nav-panel-below')
+
+    // With the rules to place it, and the two flips a corner needs: no room
+    // under the button in a bottom corner, and measured from the near edge
+    // against a right-hand one.
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    check(
+      'and the island has somewhere to put it',
+      css.includes('.tool-island .nav-panel-below') &&
+        css.includes('.tool-island-bottom .nav-panel-below') &&
+        css.includes('.tool-island-right .nav-panel-below'),
+      'placed, flipped up in a bottom corner, and anchored to a right-hand edge'
+    )
+
+    // APPLY IS DEAD WITH NOTHING DRAWN, which is the honest reading of a button
+    // that would otherwise fire a cut with no line in it.
+    draft().clear()
+    tools().setLaserTool('points')
+    shows('Apply is dead with nothing drawn', markupOf('CutPanel (empty)', CutPanel), '>Apply cut</button>')
+    check('because the draft is not ready', !draftReady(draft(), false), '')
+
+    // TWO POINTS IS THE WHOLE REQUIREMENT, and the panel says so while it is
+    // waiting -- an empty face does not.
+    draft().begin({ axis: 2, sign: 1 }, 'points')
+    shows(
+      'and the panel asks for the first point',
+      markupOf('PointCutTool (none)', PointCutTool),
+      'Click the face to place the first point.'
+    )
+    draft().addPoint([-0.2, -0.2])
+    shows('then for one more', markupOf('PointCutTool (one)', PointCutTool), 'One more point.')
+    draft().addPoint([0.2, 0.2])
+    check('with two, there is a line to cut with', draftReady(draft(), true), '')
+
+    // THE PREVIEW AND THE CUT ARE ONE FUNCTION, so the tool cannot burn
+    // something other than what it drew. What that buys is checked here: the
+    // switch is two readings of the SAME points, and the points survive it.
+    {
+      const straight = draftLine(draft(), false)
+      const curved = draftLine(draft(), true)
+      check('with the curve off the line is the points themselves', straight.length === 2, `${straight.length}`)
+      check('and with it on, a curve sampled through them', curved.length > 8, `${curved.length}`)
+      check('the points survive the switch', draft().points.length === 2, `${draft().points.length}`)
+    }
+
+    // AIMING A HANDLE IS PER POINT, which is the whole of what replaced the
+    // third mode. A point holds a null until its handle is aimed, so an untouched
+    // run is exactly the fit and one aimed tangent does not cost the fit on
+    // every other point -- a sentence the three modes had nowhere to put.
+    {
+      draft().clear()
+      draft().begin({ axis: 2, sign: 1 }, 'points')
+      for (const at of [[-0.3, -0.3], [0, 0.1], [0.3, -0.3]] as [number, number][]) {
+        draft().addPoint(at)
+      }
+      check('a placed point takes the curve own tangent', draft().handles.every((h) => h === null), JSON.stringify(draft().handles))
+      const fitted = draftLine(draft(), true)
+
+      // Aim the middle one, and only the middle one.
+      draft().moveHandle(1, [0.2, 0.4], 1)
+      check('aiming one hands that tangent over', draft().handles[1] !== null, JSON.stringify(draft().handles[1]))
+      check('and leaves its neighbours to the fit', draft().handles[0] === null && draft().handles[2] === null, '')
+      const aimed = draftLine(draft(), true)
+      check(
+        'which changes the line it draws',
+        aimed.some((q, i) => Math.hypot(q[0] - fitted[i][0], q[1] - fitted[i][1]) > 1e-6),
+        ''
+      )
+
+      // MOVING A POINT DOES NOT UNDO THE AIM, and that is the difference the old
+      // Fit mode could not express: there, a drag refitted every handle and threw
+      // the shaping away.
+      const kept = draft().handles[1]
+      draft().movePoint(0, [-0.35, -0.25])
+      check('and a drag elsewhere leaves it exactly alone', JSON.stringify(draft().handles[1]) === JSON.stringify(kept), '')
+      check('while the unaimed ones follow the points', draft().handles[0] === null, '')
+
+      // AND THERE IS A ROAD BACK, or aiming a handle would be a trap: the only
+      // other way to a fitted tangent would be to delete the point.
+      draft().refitHandle(1)
+      check('a handle can be given back to the curve', draft().handles[1] === null, '')
+
+      // The aim survives the switch being thrown, so turning the curve off to
+      // reposition something and on again does not throw the shaping away.
+      draft().moveHandle(1, [0.2, 0.4], 1)
+      const through = draftLine(draft(), true)
+      check('and the switch does not lose one', draftLine(draft(), false).length === 3, '')
+      check(
+        'nor change the curve it comes back to',
+        draftLine(draft(), true).every((q, i) => Math.hypot(q[0] - through[i][0], q[1] - through[i][1]) < 1e-12),
+        ''
+      )
+      draft().clear()
+      draft().begin({ axis: 2, sign: 1 }, 'points')
+      draft().addPoint([-0.2, -0.2])
+      draft().addPoint([0.2, 0.2])
+    }
+
+    // A DRAFT BELONGS TO ONE FACE. Turning the compass elsewhere has to drop it:
+    // a line the user can no longer see, with Apply still willing to burn it, is
+    // the one failure here that destroys work rather than merely surprising.
+    check('and it knows which face it is on', draft().face?.axis === 2, `${draft().face?.axis}`)
+    draft().begin({ axis: 0, sign: 1 }, 'points')
+    check('starting on another face clears it', draft().points.length === 0, `${draft().points.length}`)
+
+    // THE OFFCUT ROW appears only after a cut that left one, and it is the
+    // Delete key's twin -- see `LaserViewport` for the key.
+    laser().freshStock()
+    tools().setLaserTool('freehand')
+    {
+      const clean = markupOf('CutPanel (clean)', CutPanel)
+      hides('no offcut, no row', clean, '>Discard piece<')
+      hides('and nothing to step between', clean, '>Other piece<')
+    }
+    // A cut a third of the way across, so the two pieces are plainly different
+    // sizes and "the smaller one" means something.
+    laser().cut([[0.3, -0.3], [0.3, 0.3]], { axis: 2, sign: 1 })
+    check('a cut leaves a piece lit', laser().offcut !== null, laser().offcut ?? 'nothing lit')
+    {
+      const after = markupOf('CutPanel (offcut)', CutPanel)
+      shows('and the panel offers to throw it away', after, '>Discard piece<')
+      shows('and to light the other one instead', after, '>Other piece<')
+    }
+
+    // WHICH PIECE IS THE USER'S TO SAY, and this is the whole of what changed.
+    // The cut still guesses -- the smallest, which is right for most cuts --
+    // but a cut that frees the part you want from the stock around it makes the
+    // KEEPER the small one, and a screen that only ever lit the sliver would be
+    // offering to bin the thing you came for.
+    {
+      check('both pieces are on offer', laser().choices.length === 2, `${laser().choices.length}`)
+      const byId = (id: string | null) => laser().pieces.find((p) => p.id === id)
+      const opened = byId(laser().offcut)
+      const other = laser().pieces.find((p) => p.id !== laser().offcut)
+      check(
+        'the choice opens on the smaller of them',
+        opened !== undefined && other !== undefined && opened.volume < other.volume,
+        `${opened?.volume.toFixed(4)} against ${other?.volume.toFixed(4)}`
+      )
+      // Biggest first, so stepping is stepping down in size and wraps back to
+      // the top.
+      laser().nextOffcut()
+      check(
+        'and steps onto the bigger one',
+        laser().offcut === other?.id,
+        `${byId(laser().offcut)?.volume.toFixed(4)}`
+      )
+      laser().nextOffcut()
+      check('wrapping back round', laser().offcut === opened?.id, '')
+
+      // The direct way to say it, which is what a click on a piece calls.
+      laser().markOffcut(other!.id)
+      check('a piece can be named outright', laser().offcut === other?.id, '')
+      // And a piece this cut did not make is not on offer -- the press that
+      // lands on an older sliver does nothing rather than something surprising.
+      laser().markOffcut('piece-does-not-exist')
+      check('while a piece that is not on offer is refused', laser().offcut === other?.id, '')
+
+      // NOT AN UNDO STEP, either way of saying it: nothing has been destroyed,
+      // both pieces are still on the bed, and a history that stepped through
+      // every change of mind would bury the cut under them.
+      const steps = laser().past.length
+      laser().nextOffcut()
+      laser().markOffcut(other!.id)
+      check('and changing your mind is not an act to walk back', laser().past.length === steps, `${laser().past.length - steps}`)
+
+      // Put it back on the smaller one for what follows.
+      laser().markOffcut(opened!.id)
+    }
+
+    const before = laser().pieces.length
+    laser().discardOffcut()
+    check('which it does', laser().pieces.length === before - 1, `${laser().pieces.length}`)
+    check('and nothing is left lit', laser().offcut === null, '')
+    // And the offer is spent with it: the pair it was a choice between is
+    // broken, and what is left is one piece rather than a decision.
+    check('nor anything left to choose between', laser().choices.length === 0, `${laser().choices.length}`)
+
+    // BAKED, so the way back is the history rather than a list of cuts. One cut
+    // is one step, and so is throwing an offcut away -- it destroys work too.
+    laser().undo()
+    check('undo puts the offcut back', laser().pieces.length === before, `${laser().pieces.length}`)
+    laser().undo()
+    check('and again gives back the whole block', laser().pieces.length === 1, `${laser().pieces.length}`)
+    check('which is a whole block', laser().pieces[0].volume > 0.99, laser().pieces[0].volume.toFixed(4))
+    laser().redo()
+    check('redo cuts it again', laser().pieces.length === 2, `${laser().pieces.length}`)
+
+    // A MISS COSTS NOTHING, not even an undo step: an entry for an act that did
+    // nothing is an undo press that appears to do nothing too.
+    {
+      const steps = laser().past.length
+      const pieces = laser().pieces.length
+      const split = laser().cut([[3, -0.3], [3, 0.3]], { axis: 2, sign: 1 })
+      check('a line clear of the bed reports no split', split === 0, `${split}`)
+      check('and leaves the pieces alone', laser().pieces.length === pieces, `${laser().pieces.length}`)
+      check('and the history alone', laser().past.length === steps, `${laser().past.length - steps}`)
+    }
+
+    // THE BAR'S TWO BUTTONS WALK THIS SCREEN NOW, which is the fix the third
+    // screen forced: `live ? doc : lathe` meant "not modelling" was "the lathe"
+    // for exactly as long as there were two screens.
+    {
+      const bar = markupOf('NavBar (laser, cut)', NavBar)
+      check(
+        'undo is live on the laser screen once there is a cut to walk back',
+        !/>Undo<[\s\S]{0,60}disabled/.test(bar) && laser().past.length > 0,
+        `${laser().past.length} steps`
+      )
+    }
+
+    laser().freshStock()
+    laser().past.length = 0
+    laser().future.length = 0
+    tools().setLaserTool(null)
+    draft().clear()
+  }
+
+  // THE WAY OFF THE LASER CUTTER, which is the lathe's door in the same words:
+  // what is on the bed becomes a solid on the clipboard. What is worth pinning
+  // is the three things a screenshot cannot show -- that an uncut block arrives
+  // as a BOX rather than as twelve triangles pretending to be one, that a cut
+  // bed arrives at the size the block was set to rather than as the unit cube
+  // it is stored as, and that the pictures stuck to the block are left behind.
+  console.log('\nCopying off the laser cutter: the bed, at its own size, without the pictures')
+  {
+    const corner = markupOf('CopyBlockButton', CopyBlockButton)
+    shows('the corner offers the copy', corner, 'Copy to clipboard')
+    check(
+      'in the same words the lathe uses',
+      corner.includes('Copy to clipboard') &&
+        markupOf('CopyPieceButton', CopyPieceButton).includes('Copy to clipboard'),
+      'one control on two screens'
+    )
+    check(
+      'docked against the compass rather than in its corner',
+      corner.includes('copy-piece-aside'),
+      'the lathe has no compass to make room for'
+    )
+    check(
+      'and says nothing until it has something to report',
+      !corner.includes('copy-piece-note'),
+      'no receipt before the first press'
+    )
+
+    // AN UNCUT BLOCK IS A BOX. Pressed for real, through the same calls the
+    // button makes.
+    {
+      laser().freshStock()
+      for (const [axis, side] of ([[0, 2], [1, 0.5], [2, 1.5]] as const)) {
+        laser().setDim(axis, side)
+      }
+      check('the bed reads as uncut', bedIsUncut(laser().pieces), `${laser().pieces.length} pieces`)
+
+      const { dims, pieces } = laser()
+      const solid = {
+        ...makeObject({ kind: 'box', size: [dims[0], dims[1], dims[2]] }, [0, dims[1] / 2, 0]),
+        // Over `makeObject`'s own answer, which for a box is the shape's name
+        // and would lose where the thing came from. See `CopyBlockButton`.
+        name: bedName(1, true),
+      }
+      library().copyObject(solid)
+      library().renameCustom(library().saveCustom(solid), bedName(pieces.length, true))
+      const copied = library().clipboard
+      check(
+        'an uncut block crosses as a box, not as a mesh of one',
+        copied?.base.kind === 'box',
+        `${copied?.base.kind}`
+      )
+      const size = copied?.base.kind === 'box' ? copied.base.size : [0, 0, 0]
+      check(
+        'at the three sides the block was set to',
+        size[0] === 2 && size[1] === 0.5 && size[2] === 1.5,
+        size.join(' x ')
+      )
+      check(
+        'standing on the ground',
+        copied !== null && Math.abs(copied.transform.position[1] - 0.25) < 1e-9,
+        `${copied?.transform.position.join(', ')}`
+      )
+      check('named for what it is', copied?.name === BLOCK_NAME, `${copied?.name}`)
+      check(
+        'and it lands on the shelf as well as in the paste buffer',
+        library().customs.some((c) => c.name === BLOCK_NAME),
+        library().customs.map((c) => c.name).join(', ') || 'nothing on the shelf'
+      )
+
+      // THE RECEIPT SAYS ONE UNIT, not three. `formatLength` resolves a unit
+      // per value, so in auto a 20 cm side beside a 5 mm one would print two
+      // different units inside one size -- and even where they agreed, the
+      // suffix would be said three times over.
+      const mixed: Vec3 = [2, 0.005, 1.5]
+      const said = sizeIn(mixed, resolveUnit(Math.max(...mixed), 'auto'))
+      // Three numbers and ONE word: anything else means a unit crept in beside
+      // a side rather than standing once at the end of all three.
+      check(
+        'the receipt gives the three sides one unit between them',
+        /^[0-9. ]+ x [0-9. ]+ x [0-9. ]+ [a-z]+$/.test(said),
+        said
+      )
+      check(
+        'which is the one the longest side asked for',
+        said.endsWith(suffixOf(resolveUnit(2, 'auto'))),
+        said
+      )
+    }
+
+    // A CUT BED IS A MESH, at the size the block was set to. The pieces are
+    // stored in block space -- a unit cube -- so this is the one place the
+    // three sides are baked in, and getting it wrong would hand the document a
+    // piece a tenth of the size it was cut at.
+    {
+      const split = laser().cut(
+        [
+          [-1, 0],
+          [1, 0],
+        ],
+        { axis: 2, sign: 1 }
+      )
+      check('a line across the face cuts it', split === 1, `${split}`)
+      check('the bed no longer reads as uncut', !bedIsUncut(laser().pieces), '')
+
+      const { dims, pieces } = laser()
+      const merged = bedGeometry(
+        pieces.map((p) => p.geometry),
+        dims
+      )
+      const box = new Box3().setFromBufferAttribute(
+        merged.getAttribute('position') as BufferAttribute
+      )
+      const span = box.getSize(new Vector3())
+      // The kerf is a slot burnt out of the MIDDLE, so the block's outline
+      // survives it whole: both halves are still there and still where they
+      // were. What the cut costs shows up in the volume, not in the extent.
+      check(
+        'the merged bed measures the block, not the unit cube it is stored as',
+        Math.abs(span.x - dims[0]) < 1e-4 &&
+          Math.abs(span.y - dims[1]) < 1e-4 &&
+          Math.abs(span.z - dims[2]) < 1e-4,
+        `${span.x.toFixed(3)} x ${span.y.toFixed(3)} x ${span.z.toFixed(3)}`
+      )
+      const left = pieces.reduce((sum, p) => sum + p.volume, 0)
+      check(
+        'with the kerf missing out of the middle of it',
+        left < 1 && 1 - left < 0.05,
+        `${(1 - left).toFixed(4)} of the block burnt away`
+      )
+
+      const entry = registerMesh(merged, bedName(pieces.length, false))
+      const { size } = fitToEnvelope(entry.natural)
+      const solid = makeObject(
+        { kind: 'mesh', meshId: entry.id, label: entry.label, size },
+        [0, size[1] / 2, 0]
+      )
+      library().copyObject(solid)
+      const copied = library().clipboard
+      check(
+        'a cut bed crosses as a mesh, which is what the scene can already hold',
+        copied?.base.kind === 'mesh',
+        `${copied?.base.kind}`
+      )
+      // The envelope never has to shrink a block, because the block's own range
+      // IS the document's -- which is what keeps this round trip exact and the
+      // normals with it.
+      check(
+        'at the size it was cut, untouched by the envelope',
+        Math.abs(size[0] - dims[0]) < 1e-4 && Math.abs(size[2] - dims[2]) < 1e-4,
+        size.map((n) => n.toFixed(3)).join(' x ')
+      )
+      check(
+        'and its name says how many pieces came across',
+        bedName(2, false) === 'Cut pieces (2)' && bedName(1, false) === 'Cut piece',
+        bedName(pieces.length, false)
+      )
+    }
+
+    // THE PICTURES ARE LEFT BEHIND. A reference is a thing to cut TO, the way a
+    // pencil line on stock is; a photograph welded to a face would be the one
+    // part of the piece that could never be machined off. It is left behind by
+    // construction -- decals are their own layer over the pieces rather than
+    // part of them -- and this is what holds that to account: laying one on the
+    // block must not change a single triangle of what the copy takes.
+    {
+      const { dims, pieces } = laser()
+      const trisOf = () => {
+        const geometry = bedGeometry(
+          pieces.map((p) => p.geometry),
+          dims
+        )
+        const count = geometry.getAttribute('position').count / 3
+        geometry.dispose()
+        return count
+      }
+      const bare = trisOf()
+
+      useReference.getState().putImage(0, { name: 'plan.png', src: 'data:,', width: 400, height: 200 })
+      const image = activePreset(useReference.getState()).slots[0]
+      useReference.getState().startDrag(image!.id)
+      useReference.getState().dragOver({ face: '+z', u: 0, v: 0 })
+      useReference.getState().dropDrag({ w: 0.4, h: 0.2 })
+      check(
+        'a picture is on the block',
+        visiblePlacements(useReference.getState()).length > 0,
+        `${visiblePlacements(useReference.getState()).length}`
+      )
+      check(
+        'and the copy is the same triangles it was without it',
+        trisOf() === bare,
+        `${trisOf()} against ${bare}`
+      )
+    }
+
+    laser().freshStock()
+    for (const axis of [0, 1, 2] as const) laser().setDim(axis, DEFAULT_BLOCK)
+    laser().past.length = 0
+    laser().future.length = 0
+  }
+
+  tools().setScreen('modelling')
 }
 
 console.log(

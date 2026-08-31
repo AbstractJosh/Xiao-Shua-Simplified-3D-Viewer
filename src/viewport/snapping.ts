@@ -1,5 +1,6 @@
 import { Box3, Vector3 } from 'three'
-import type { BufferGeometry } from 'three'
+import type { BufferGeometry, Matrix4 } from 'three'
+import { endFaceFrame } from '../geometry/prism'
 import {
   collectSnapTargets,
   objectSnapTargets,
@@ -7,10 +8,17 @@ import {
   snapSinglePoint,
   snapTranslation,
 } from '../geometry/snap'
-import type { SnapEntry, SnapHit, SnapTarget } from '../geometry/snap'
+import type {
+  SketchCentre,
+  SnapEntry,
+  SnapHit,
+  SnapSource,
+  SnapTarget,
+} from '../geometry/snap'
+import { hostSurfaceFor } from '../geometry/surfaces'
 import { objectMatrix } from '../geometry/transform'
 import { IDENTITY_TRANSFORM } from '../geometry/types'
-import type { Vec3 } from '../geometry/types'
+import type { SceneObject, Vec3 } from '../geometry/types'
 import { useTools } from '../store/toolStore'
 
 /**
@@ -82,9 +90,46 @@ function signatureFor(exclude: string): string {
     if (e.id === exclude) continue
     const [px, py, pz] = e.transform.position
     const [rx, ry, rz] = e.transform.rotation
-    signature += `${e.id}:${e.geometry.uuid}:${px},${py},${pz}:${rx},${ry},${rz};`
+    signature += `${e.id}:${e.geometry.uuid}:${px},${py},${pz}:${rx},${ry},${rz}:${sketchKey(e)};`
   }
   return signature
+}
+
+/**
+ * Sketch centres have to be part of what the cache is keyed on, because they
+ * are the one thing here that moves WITHOUT the mesh changing: a sketch at
+ * depth zero is a projection that cuts nothing, so sliding one leaves the
+ * geometry -- and its uuid -- exactly as it was, and the cache would go on
+ * handing back the centre the sketch used to be at.
+ */
+function sketchKey(entry: SnapEntry): string {
+  if (!entry.sketches || entry.sketches.length === 0) return ''
+  let key = ''
+  for (const { featureId, point } of entry.sketches) {
+    key += `${featureId}@${point.x.toFixed(4)},${point.y.toFixed(4)},${point.z.toFixed(4)}|`
+  }
+  return key
+}
+
+/**
+ * Where each of an object's sketches sits, in the object's OWN space: the
+ * middle of the outline on its host face, and -- once it has been pushed or
+ * pulled into a boss or a pocket -- the middle of the face that made.
+ *
+ * Read from the document rather than off the mesh for the reason `SnapEntry`
+ * gives: a flat sketch is not IN the mesh. Both centres carry the same feature
+ * id, so a sketch drag drops both of its own and catches everything else's.
+ */
+export function sketchCentres(object: SceneObject): SketchCentre[] {
+  const out: SketchCentre[] = []
+  for (const feature of object.features) {
+    const host = hostSurfaceFor(object.base, feature.anchor)
+    out.push({ featureId: feature.id, point: host.frame(feature.anchor).origin })
+    // Null at depth zero, which is exactly when there is no created face.
+    const end = endFaceFrame(host, feature.anchor, feature)
+    if (end) out.push({ featureId: feature.id, point: end.origin })
+  }
+  return out
 }
 
 export function snapTargets(excludeObjectId?: string): SnapTarget[] {
@@ -142,6 +187,40 @@ function localCornersFor(geometry: BufferGeometry): Vector3[] {
 }
 
 /**
+ * The dragged solid's own middle, in LOCAL space.
+ *
+ * Cached on the geometry by three itself, and correct for the same reason the
+ * corner sample is cached local: a drag moves the object every frame and its
+ * mesh never.
+ */
+function localCentreOf(geometry: BufferGeometry): Vector3 {
+  if (!geometry.boundingBox) geometry.computeBoundingBox()
+  return geometry.boundingBox?.getCenter(new Vector3()) ?? new Vector3()
+}
+
+/**
+ * What a solid being dragged offers the scene: its corners, and its middle.
+ *
+ * The two are offered as DIFFERENT KINDS of source rather than as one bag of
+ * points, and the snap engine's pairing rule is what that buys. A corner
+ * seeking a neighbour's face lands the solid flush against it; the middle
+ * seeking that same face would land it half buried, which is why the middle was
+ * left out of this list entirely until centres existed to catch it. Now it is
+ * here and can only ever meet another centre.
+ */
+function dragSources(geometry: BufferGeometry, matrix: Matrix4): SnapSource[] {
+  const sources: SnapSource[] = localCornersFor(geometry).map((p) => ({
+    point: p.clone().applyMatrix4(matrix),
+    kind: 'corner',
+  }))
+  sources.push({
+    point: localCentreOf(geometry).applyMatrix4(matrix),
+    kind: 'centre',
+  })
+  return sources
+}
+
+/**
  * Greedy farthest-point sampling over the points' own bounding box.
  *
  * Taking the first N instead would cluster every source on whichever pole the
@@ -193,14 +272,15 @@ function farthestPointSample(points: Vector3[], limit: number): Vector3[] {
 // --- Resolution -------------------------------------------------------------
 
 /**
- * The correction for a whole solid seeking the scene by its own corners.
+ * The correction for a whole solid seeking the scene by its own corners and its
+ * own middle.
  *
  * Shared by the two gestures that move a solid, which differ only in where the
  * geometry comes from and what they must not catch on. Both hand over the
- * corners as they would sit ONCE THE DRAG LANDS: the correction has to be
+ * sources as they would sit ONCE THE DRAG LANDS: the correction has to be
  * measured from where the solid is going, not from where it currently is.
  */
-function snapByCorners(
+function snapBySources(
   geometry: BufferGeometry,
   desired: Vec3,
   rotation: Vec3,
@@ -209,10 +289,11 @@ function snapByCorners(
 ): Vec3 {
   if (targets.length === 0) return desired
 
-  const matrix = objectMatrix({ position: desired, rotation })
-  const sources = localCornersFor(geometry).map((p) => p.clone().applyMatrix4(matrix))
-
-  const hit = snapTranslation(sources, targets, tol)
+  const hit = snapTranslation(
+    dragSources(geometry, objectMatrix({ position: desired, rotation })),
+    targets,
+    tol
+  )
   if (!hit) return desired
 
   snapIndicator.hit = hit
@@ -238,7 +319,7 @@ export function resolveObjectMove(objectId: string, desired: Vec3): Vec3 {
 
   // Rotation comes from the published entry because a drag only translates, so
   // the object cannot be turning while this runs.
-  return snapByCorners(
+  return snapBySources(
     entry.geometry,
     desired,
     entry.transform.rotation,
@@ -252,10 +333,10 @@ export function resolveObjectMove(objectId: string, desired: Vec3): Vec3 {
  * in from the palette.
  *
  * Takes a geometry instead of an object id for exactly that reason -- there is
- * no entry to look up. Snapping by the corners rather than by the centre is
- * what lets a dropped solid land FLUSH against a neighbour; a centre snap can
- * only ever pull it INTO one. Nothing is excluded, because the thing being
- * dropped owns none of the scene it is seeking.
+ * no entry to look up. The corners are what let a dropped solid land FLUSH
+ * against a neighbour, and its middle can only ever meet another middle, which
+ * is the rule that keeps a centre from pulling it INTO one. Nothing is
+ * excluded, because the thing being dropped owns none of the scene it seeks.
  */
 export function resolveSolidDrop(geometry: BufferGeometry, desired: Vec3): Vec3 {
   snapIndicator.hit = null
@@ -265,7 +346,7 @@ export function resolveSolidDrop(geometry: BufferGeometry, desired: Vec3): Vec3 
 
   // `makeObject` gives a fresh solid the identity rotation, so the drop lands
   // unrotated however the drag is resolved.
-  return snapByCorners(
+  return snapBySources(
     geometry,
     desired,
     IDENTITY_TRANSFORM.rotation,
@@ -314,7 +395,7 @@ export function resolveAxisMove(objectId: string, desired: Vec3, axis: Vector3):
   if (!entry) return desired
 
   const matrix = objectMatrix({ position: desired, rotation: entry.transform.rotation })
-  const sources = localCornersFor(entry.geometry).map((p) => p.clone().applyMatrix4(matrix))
+  const sources = dragSources(entry.geometry, matrix)
 
   const hit = snapAlongAxis(sources, snapTargets(objectId), axis, snapDistance)
   if (!hit) return desired

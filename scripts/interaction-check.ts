@@ -20,7 +20,9 @@ import {
   Group,
   Mesh,
   MeshBasicMaterial,
+  OrthographicCamera,
   PerspectiveCamera,
+  Plane,
   PlaneGeometry,
   Raycaster,
   TorusGeometry,
@@ -41,23 +43,46 @@ import { outlineAxis, sampleOutline } from '../src/geometry/outline'
 import { MIN_SHAPE, resizeShapeAlong } from '../src/geometry/dimensions'
 import { clampDepth, depthLimits } from '../src/geometry/surfaces'
 import { planeSeparates } from '../src/geometry/cut'
-import { objectSnapTargets, snapTranslation, DEFAULT_SNAP_DISTANCE } from '../src/geometry/snap'
-import { pickAnchorAcrossObjects, pickAnchorOnObject } from '../src/viewport/picking'
-import { publishScene, resolveSolidDrop } from '../src/viewport/snapping'
+import {
+  objectSnapTargets,
+  snapSinglePoint,
+  snapTranslation,
+  DEFAULT_SNAP_DISTANCE,
+} from '../src/geometry/snap'
+import type { SnapSource } from '../src/geometry/snap'
+import { frameOf, perspectiveFrame, pixelsToWorld, zoomFor } from '../src/viewport/orthoFrame'
+import { GRIP_PX, KNOT_PX, PREVIEW_PX, markScale, ribbon } from '../src/viewport/CutLayer'
+import type { FaceAxis, Pt } from '../src/geometry/laserCut'
+import { KERF } from '../src/geometry/laserCut'
+import { NO_PAN, clampPan, panCorrection, panLimits } from '../src/viewport/facePan'
+import { faceTolerance, sideAlong, snapToPeers } from '../src/viewport/pointSnap'
+import { pickAnchorAcrossObjects, pickAnchorOnObject, pointerClient } from '../src/viewport/picking'
+import {
+  publishScene,
+  resolveObjectMove,
+  resolveSolidDrop,
+  sketchCentres,
+  snapIndicator,
+} from '../src/viewport/snapping'
 import {
   COMPASS_VIEWS,
   POLAR_LIMIT,
   TURN_PER_SPAN,
   askForTurn,
   askForView,
+  nearestView,
   orbitPosition,
+  releaseTurn,
+  takeRelease,
   takeRequest,
   takeTurn,
   turnFromDrag,
+  viewDirection,
   viewQuaternion,
   viewUp,
 } from '../src/viewport/compassViews'
-import { useTools } from '../src/store/toolStore'
+import { DAB_SPACING, useTools } from '../src/store/toolStore'
+import type { StrokeBrush } from '../src/store/toolStore'
 import {
   GRAB_RADIUS,
   PLANE_FROM,
@@ -67,7 +92,7 @@ import {
   hoverHandlers,
 } from '../src/viewport/TransformGizmo'
 import { modifiers, clearModifiers } from '../src/viewport/modifiers'
-import { MODE_KEYS } from '../src/viewport/Viewport'
+import { MODE_KEYS, dragErode, forgetStroke, pauseStroke } from '../src/viewport/Viewport'
 import {
   advanceTurn,
   beginPlaneDrag,
@@ -90,13 +115,13 @@ import {
   NGON_HOLD_MS,
   NGON_MORPH_MS,
   NGON_SIDES,
-  NGON_SIDES_TOP_DOWN,
   NGON_NAMES,
   morphPoints,
   ngonPoints,
   ngonRadii,
   nextNgonSides,
 } from '../src/console/ngon'
+import { SOLID_TEMPLATES } from '../src/console/solidIcons'
 import { iconFrame } from '../src/console/solidMorph'
 import type { IconFrame } from '../src/console/solidMorph'
 import { IDENTITY_TRANSFORM } from '../src/geometry/types'
@@ -328,15 +353,24 @@ console.log('6. Polygon chip: band order and icon geometry')
     NGON_SIDES.every((n, i) => i === 0 || n > NGON_SIDES[i - 1]),
     NGON_SIDES.join(' < ')
   )
-  // The bands render top-down, so the FIRST rendered band is the largest and
-  // the LAST is the triangle -- that is what puts 3 at the bottom.
-  check('bottom band is the triangle', NGON_SIDES_TOP_DOWN.at(-1) === 3, `${NGON_SIDES_TOP_DOWN.at(-1)}`)
-  check('top band is the decagon', NGON_SIDES_TOP_DOWN[0] === 10, `${NGON_SIDES_TOP_DOWN[0]}`)
-  check(
-    'top-down order is the exact reverse',
-    NGON_SIDES_TOP_DOWN.join() === [...NGON_SIDES].reverse().join(),
-    NGON_SIDES_TOP_DOWN.join(',')
-  )
+  // The bands run ACROSS the chip and render in this array's own order, so the
+  // first rendered band is the triangle and the last is the decagon. There is
+  // no second, reversed copy of the list any more: a stacked layout needed one
+  // because index 0 sat at the bottom, and nothing stacks now.
+  check('leftmost band is the triangle', NGON_SIDES[0] === 3, `${NGON_SIDES[0]}`)
+  check('rightmost band is the decagon', NGON_SIDES.at(-1) === 10, `${NGON_SIDES.at(-1)}`)
+  // The direction is shared with the side-count ticks on a Solids row, which
+  // ascend left to right off the template's own list. A sweep that added sides
+  // in one panel and removed them in the other is the kind of thing nobody
+  // notices until their hand goes the wrong way.
+  {
+    const families = SOLID_TEMPLATES.map((t) => t.sides).filter((s): s is number[] => Boolean(s))
+    check(
+      'and Solids ticks ascend the same way',
+      families.length > 0 && families.every((s) => s.every((n, i) => i === 0 || n > s[i - 1])),
+      families.map((s) => s.join('<')).join(' | ')
+    )
+  }
 
   // Left alone the chip advertises itself by walking its own list. The walk
   // has to reach every band's polygon -- a cycle that skipped one would be
@@ -664,7 +698,7 @@ console.log('\n9. Snapping pulls two boxes flush')
   const targets = objectSnapTargets('still', geometryOf('still'), doc.objects[0].transform)
   const sources = objectSnapTargets('moving', geometryOf('moving'), doc.objects[1].transform)
     .filter((t) => t.kind === 'vertex')
-    .map((t) => (t.kind === 'vertex' ? t.point : new Vector3()))
+    .map((t): SnapSource => ({ point: t.kind === 'vertex' ? t.point : new Vector3(), kind: 'corner' }))
 
   check('a cube offers its eight corners', sources.length === 8, `${sources.length} corner targets`)
 
@@ -698,7 +732,7 @@ console.log('\n9. Snapping pulls two boxes flush')
     far.objects[1].transform
   )
     .filter((t) => t.kind === 'vertex')
-    .map((t) => (t.kind === 'vertex' ? t.point : new Vector3()))
+    .map((t): SnapSource => ({ point: t.kind === 'vertex' ? t.point : new Vector3(), kind: 'corner' }))
   const farTargets = objectSnapTargets('still', farResult.objects[0].geometry, far.objects[0].transform)
   const noPull = snapTranslation(farSources, farTargets, DEFAULT_SNAP_DISTANCE)
   check(
@@ -724,7 +758,7 @@ console.log('\n9. Snapping pulls two boxes flush')
     rested.objects[1].transform
   )
     .filter((t) => t.kind === 'vertex')
-    .map((t) => (t.kind === 'vertex' ? t.point : new Vector3()))
+    .map((t): SnapSource => ({ point: t.kind === 'vertex' ? t.point : new Vector3(), kind: 'corner' }))
   const restedTargets = objectSnapTargets(
     'still',
     restedResult.objects[0].geometry,
@@ -781,6 +815,161 @@ console.log('\n9b. A solid dropped from the palette lands flush')
   // Leave the registry empty: it is module state, and a later suite reading a
   // scene this one published would be reading a document that no longer exists.
   publishScene([])
+}
+
+// --- 9c. Centres ------------------------------------------------------------
+console.log('\n9c. Snapping catches middles as well as corners')
+{
+  resetEvaluator()
+  const doc = scene(object(CUBE, 'still', [0, 0, 0]))
+  const geometry = evaluateDoc(doc).objects[0].geometry
+  const targets = objectSnapTargets('still', geometry, doc.objects[0].transform)
+  const centres = targets.filter((t) => t.kind === 'centre')
+
+  // One for the solid, one for each of the six faces. Face middles come free of
+  // the face targets, which already carry an area-weighted centroid apiece.
+  check('a cube offers seven middles', centres.length === 7, `${centres.length}`)
+  const solidCentres = centres.filter((t) => t.kind === 'centre' && t.of === 'solid')
+  check('exactly one of them is the solid s own', solidCentres.length === 1)
+  if (solidCentres[0]?.kind === 'centre') {
+    near('sitting at the middle of the cube', solidCentres[0].point.length(), 0, 1e-9)
+  }
+
+  // The pairing rule, which is what lets a centre exist as a source at all.
+  const centreTarget = centres.find((t) => t.kind === 'centre' && t.of === 'solid')!
+  const faceCentre = centres.find((t) => t.kind === 'centre' && t.of === 'face')!
+  const near0 = (x: number, y: number, z: number) => new Vector3(x, y, z)
+
+  const cornerAtCentre = snapTranslation(
+    [{ point: near0(0.1, 0, 0), kind: 'corner' }],
+    [centreTarget],
+    DEFAULT_SNAP_DISTANCE
+  )
+  check('a corner never catches a middle', cornerAtCentre === null, `${cornerAtCentre?.target.kind}`)
+
+  const centreOnCentre = snapTranslation(
+    [{ point: near0(0.1, 0, 0), kind: 'centre' }],
+    [centreTarget],
+    DEFAULT_SNAP_DISTANCE
+  )
+  check('but a middle catches another middle', centreOnCentre !== null)
+  if (centreOnCentre) near('landing them concentric', centreOnCentre.delta.x, -0.1, 1e-9)
+
+  // The half-buried case the pairing rule exists to prevent: a solid's middle
+  // must not be pulled onto a neighbour's FACE middle, only onto its middle.
+  const onFaceCentre = snapTranslation(
+    [{ point: faceCentre.kind === 'centre' ? faceCentre.point.clone().addScalar(0.05) : near0(0, 0, 0), kind: 'centre' }],
+    [faceCentre],
+    DEFAULT_SNAP_DISTANCE
+  )
+  check('and never onto a FACE middle, which would bury it', onFaceCentre === null)
+
+  // A lone point has no body behind it to bury, so it may have every middle --
+  // which is what makes a sketch land in the centre of the face it is on.
+  if (faceCentre.kind === 'centre') {
+    const point = snapSinglePoint(
+      faceCentre.point.clone().add(new Vector3(0, 0.06, 0.06)),
+      [faceCentre],
+      DEFAULT_SNAP_DISTANCE
+    )
+    check('a lone point does catch a face middle', point !== null)
+    if (point) near('landing on it exactly', point.point.distanceTo(faceCentre.point), 0, 1e-9)
+  }
+
+  // A corner still wins its own contest: adding centres must not have changed
+  // what a corner drag does.
+  const flush = snapTranslation(
+    [{ point: near0(0.9, 0.9, 0.9), kind: 'corner' }],
+    targets,
+    DEFAULT_SNAP_DISTANCE
+  )
+  check('and a corner drag still catches a corner', flush?.target.kind === 'vertex', `${flush?.target.kind}`)
+}
+
+{
+  // The whole gesture, not just the engine: a small cube dragged near the
+  // middle of a big one. The sizes differ so that NOTHING but the middles is in
+  // reach -- the small cube's corners are 0.4 from the big one's faces and
+  // further still from its corners -- which is the case that used to have no
+  // snap at all, because a solid only ever offered its corners.
+  resetEvaluator()
+  const SMALL: BaseSolid = { kind: 'box', size: [1, 1, 1] }
+  const doc = scene(object(CUBE, 'big', [0, 0, 0]), object(SMALL, 'small', [0.1, 0, 0]))
+  const evaluated = evaluateDoc(doc)
+  publishScene(
+    doc.objects.map((o) => ({
+      id: o.id,
+      geometry: evaluated.objects.find((e) => e.id === o.id)!.geometry,
+      transform: o.transform,
+      sketches: sketchCentres(o),
+    }))
+  )
+  useTools.getState().setSnap(true)
+  useTools.getState().setSnapDistance(DEFAULT_SNAP_DISTANCE)
+
+  const landed = resolveObjectMove('small', [0.1, 0, 0])
+  near('a solid dragged near another s middle goes concentric', landed[0], 0, 1e-6)
+  near('on every axis', Math.hypot(landed[1], landed[2]), 0, 1e-9)
+  check('and the indicator says what it caught', snapIndicator.hit?.target.kind === 'centre', `${snapIndicator.hit?.target.kind}`)
+
+  // Reach still ends somewhere, or two solids could never be left overlapping
+  // slightly without one jumping into the other. 0.3 rather than 0.4 because
+  // the corner snap is still doing its own job: at 0.4 the small cube's +X face
+  // is a tenth short of the big one's, which is a flush catch that has nothing
+  // to do with middles and should go on firing.
+  const clear = resolveObjectMove('small', [0.3, 0, 0])
+  near('and one well off the middle is left alone', clear[0], 0.3, 1e-9)
+
+  // Snapping off means off, here as everywhere else.
+  useTools.getState().setSnap(false)
+  near('with snapping off nothing is pulled', resolveObjectMove('small', [0.1, 0, 0])[0], 0.1, 1e-9)
+  useTools.getState().setSnap(true)
+  publishScene([])
+}
+
+{
+  // A sketch at depth zero cuts nothing, so its middle is nowhere in the mesh.
+  // It has to be carried alongside, or the one sketch a user is most likely to
+  // want to line something up with would be the one that could not be caught.
+  resetEvaluator()
+  const flat: Feature = {
+    id: 'f1',
+    anchor: { on: 'box-face', face: 2, u: 0.5, v: 0 },
+    shape: { type: 'circle', r: 0.3 },
+    rotation: 0,
+    depth: 0,
+    enabled: true,
+    tilt: [0, 0, 0],
+    faceOffset: [0, 0],
+  }
+  const doc = scene(object(CUBE, 'host', [0, 0, 0], [flat]))
+  const geometry = evaluateDoc(doc).objects[0].geometry
+  const withSketch = objectSnapTargets(
+    'host',
+    geometry,
+    doc.objects[0].transform,
+    sketchCentres(doc.objects[0])
+  )
+  const mine = withSketch.filter((t) => t.kind === 'centre' && t.featureId === 'f1')
+  check('a flat sketch still offers its middle', mine.length === 1, `${mine.length}`)
+  if (mine[0]?.kind === 'centre') {
+    // u = 0.5 of a half-extent of 1, on the +Y face of a 2-cube.
+    near('at the point on the face it was seated', mine[0].point.x, 0.5, 1e-9)
+    near('on the face itself', mine[0].point.y, 1, 1e-9)
+  }
+
+  // And a raised one offers the middle of the face it made as well.
+  const boss = { ...flat, id: 'f2', depth: 0.4 }
+  const raised = scene(object(CUBE, 'host', [0, 0, 0], [boss]))
+  const both = objectSnapTargets(
+    'host',
+    evaluateDoc(raised).objects[0].geometry,
+    raised.objects[0].transform,
+    sketchCentres(raised.objects[0])
+  ).filter((t) => t.kind === 'centre' && t.featureId === 'f2')
+  check('a boss offers its base AND its top', both.length === 2, `${both.length}`)
+  const tops = both.filter((t) => t.kind === 'centre' && Math.abs(t.point.y - 1.4) < 1e-6)
+  check('the top standing at the height it was pulled to', tops.length === 1, `${tops.length}`)
 }
 
 // --- 10. A plane that only grazes is not a cut ----------------------------
@@ -1200,6 +1389,561 @@ console.log('\n13. The compass flies the camera to the face it names')
   const second = takeRequest()
   check('a second click redirects rather than queueing',
     second !== null && Math.abs(second.z - 1) < 1e-9)
+}
+
+console.log('\nA settling compass comes to rest square on to a face')
+{
+  // THE LASER CUTTER'S WHOLE CAMERA, and it is arithmetic rather than a widget:
+  // the screen offers no orbit and no pan, so where a drag LEAVES the camera is
+  // decided entirely by which of the six views this function picks. A wrong
+  // answer here is a screen that settles on the face behind you.
+
+  // A camera already square on to a view settles on that view and no other --
+  // the case that has to hold, since it is where every gesture ends up.
+  for (const view of COMPASS_VIEWS) {
+    const settled = nearestView(viewQuaternion(view.dir))
+    check(`${view.label} settles on itself`, settled.key === view.key, settled.key)
+  }
+
+  // The direction it measures is the one the camera STANDS in, not the one it
+  // looks along -- get that backwards and every settle lands on the opposite
+  // face, which is the one mistake here that still looks like a working screen.
+  for (const view of COMPASS_VIEWS) {
+    const dir = viewDirection(viewQuaternion(view.dir))
+    near(`${view.label}: the view direction is where the camera stands`, dir.dot(view.dir), 1, 1e-9)
+    near(`${view.label}: and it is a unit vector`, dir.length(), 1, 1e-9)
+  }
+
+  // A nudge off a face still settles back onto it. Fifteen degrees is well past
+  // anything a hand leaves behind when it lets go, and nowhere near the
+  // forty-five where the answer is genuinely two-ways.
+  {
+    const nudged = new Vector3(0, 0, 1)
+      .applyAxisAngle(new Vector3(0, 1, 0), (15 * Math.PI) / 180)
+      .applyAxisAngle(new Vector3(1, 0, 0), (10 * Math.PI) / 180)
+    check('a view nudged off Front settles back on Front',
+      nearestView(viewQuaternion(nudged)).key === 'z+',
+      nearestView(viewQuaternion(nudged)).key)
+  }
+
+  // Past halfway it settles on the NEXT face rather than crawling back to the
+  // one it started from: the answer is the nearest face, not the last one.
+  {
+    const most = new Vector3(0, 0, 1).applyAxisAngle(new Vector3(0, 1, 0), (60 * Math.PI) / 180)
+    check('and one dragged most of the way round settles on Right',
+      nearestView(viewQuaternion(most)).key === 'x+',
+      nearestView(viewQuaternion(most)).key)
+  }
+
+  // Every direction lands on SOMETHING, including the diagonals where two or
+  // three faces are equally near. There is no better answer on a corner than a
+  // consistent one, and no answer at all would strand the camera between faces.
+  {
+    let answered = 0
+    for (const corner of [
+      new Vector3(1, 1, 1),
+      new Vector3(-1, 1, 1),
+      new Vector3(1, -1, -1),
+      new Vector3(-1, -1, -1),
+      new Vector3(1, 1, 0),
+      new Vector3(0, -1, 1),
+    ]) {
+      const dir = corner.clone().normalize()
+      const settled = nearestView(viewQuaternion(dir))
+      // Whichever it picks has to be one of the three the corner actually
+      // touches -- a corner settling onto a face it points away from would be
+      // the camera swinging past the model to get there.
+      if (settled.dir.dot(dir) > 0) answered += 1
+    }
+    check('a camera on a corner settles onto a face it is already facing', answered === 6, `${answered}/6`)
+  }
+
+  // And the flag the widget leaves behind: consumed rather than read, so one
+  // release is one settle. A drag that ended two frames ago must not settle a
+  // camera the user has since taken somewhere else.
+  takeRelease()
+  check('nothing to take before a drag ends', takeRelease() === false)
+  releaseTurn()
+  check('letting go of the compass leaves word behind', takeRelease() === true)
+  check('and taking it clears it', takeRelease() === false)
+}
+
+console.log('\nAnd a projected camera measures the same everywhere it looks')
+{
+  // THE LASER CUTTER'S OTHER CAMERA DECISION, and the one the compass cannot
+  // make for it. Settling square on to a face fixes the DIRECTION the block is
+  // seen from; only a parallel projection fixes the SCALE it is seen at, and
+  // that screen needs both, because everything on it is a thing measured
+  // against something else -- a reference against the drawing it traces, a cut
+  // against the edge of the material.
+  //
+  // So the difference is stated here as arithmetic: two cameras standing in
+  // exactly the same place, looking at exactly the same block. None of it is a
+  // thing a screenshot gives away, since both pictures look like a block.
+
+  /** Four units off the block, through the room's own forty-five degree lens
+   *  -- see `STAGE_CAMERA`, and `LaserViewport` for the screen that stands
+   *  here. Restated rather than imported, because what is checked below is the
+   *  geometry these numbers are an instance of; the screen's own choice of them
+   *  is pinned in `ui-check`. */
+  const STANDOFF = 4
+  const FOV = 45
+  /** A canvas, because a projection's zoom is pixels per world unit and says
+   *  nothing at all without one. */
+  const TALL = 900
+  const WIDE = 1600
+
+  /** A BAR rather than a cube: one deep enough that its far face is a long way
+   *  behind its near one, which is where every difference below lives. Two
+   *  units deep, standing on the ground, so the faces are at z = 1 and z = -1
+   *  and the middle of it is half a unit up. */
+  const DEPTH = 2
+  const MIDDLE = new Vector3(0, 0.5, 0)
+
+  const frame = perspectiveFrame(STANDOFF, FOV)
+
+  const lens = new PerspectiveCamera(FOV, WIDE / TALL, 0.005, 1000)
+  lens.position.set(0, 0.5, STANDOFF)
+  lens.lookAt(MIDDLE)
+  lens.updateMatrixWorld()
+
+  // The frustum fiber gives an orthographic camera: the canvas's own half-width
+  // and half-height, in pixels, with `zoom` left to say how much world that
+  // covers. See `orthoFrame.ts`.
+  const flat = new OrthographicCamera(WIDE / -2, WIDE / 2, TALL / 2, TALL / -2, 0.005, 1000)
+  flat.zoom = zoomFor(TALL, frame)
+  flat.position.set(0, 0.5, STANDOFF)
+  flat.lookAt(MIDDLE)
+  flat.updateProjectionMatrix()
+  flat.updateMatrixWorld()
+
+  /** Where a point in the world lands on screen, as a fraction of half the
+   *  window. */
+  const seen = (at: Vector3, camera: PerspectiveCamera | OrthographicCamera) =>
+    at.clone().project(camera)
+
+  // FIRST, THE THING THAT WAS ALREADY RIGHT, because it is what stops all of
+  // this reading as a bug being fixed. A plane parallel to the film is scaled
+  // uniformly however far across it you go, so a line drawn square on to a face
+  // landed exactly where it looked even under a lens. What a lens got wrong was
+  // never the aim; it was everything the aim is measured against.
+  {
+    const on = (u: number) => new Vector3(u, 0.5, DEPTH / 2)
+    const middle = seen(on(0.1), lens).x - seen(on(0), lens).x
+    const edge = seen(on(0.5), lens).x - seen(on(0.4), lens).x
+    near('a lens square on to a face still measures that face evenly', edge, middle, 1e-12)
+  }
+
+  // THE FAR FACE AGAINST THE NEAR ONE, which is the reference's problem: the
+  // same picture on the back of the block is a block's depth further off, so a
+  // lens draws it smaller -- by the ratio of the two distances, exactly, which
+  // for a two-unit bar seen from four units out is five thirds. Size a picture
+  // against the drawing on one face and it no longer matches it on the other.
+  {
+    const span = (z: number, camera: PerspectiveCamera | OrthographicCamera) =>
+      seen(new Vector3(0.2, 0.5, z), camera).x - seen(new Vector3(-0.2, 0.5, z), camera).x
+
+    near(
+      'through a lens the same picture on the far face is drawn smaller',
+      span(DEPTH / 2, lens) / span(-DEPTH / 2, lens),
+      (STANDOFF + DEPTH / 2) / (STANDOFF - DEPTH / 2),
+      1e-9
+    )
+    near(
+      'projected, the two are the same size to the last digit',
+      span(-DEPTH / 2, flat),
+      span(DEPTH / 2, flat),
+      1e-12
+    )
+  }
+
+  // THE SIDES AGAINST THE FACE. A lens square on to a block does not show the
+  // block's face: the four faces around the one being looked at splay out from
+  // behind it, so what the eye reads as the edge of the material stands outside
+  // the face the cut has to stay inside. Projected, the silhouette IS the face.
+  {
+    const front = new Vector3(0.5, 1, DEPTH / 2)
+    const back = new Vector3(0.5, 1, -DEPTH / 2)
+    check(
+      'through a lens the far corner stands outside the near one',
+      seen(front, lens).x - seen(back, lens).x > 0.05,
+      `${(seen(front, lens).x - seen(back, lens).x).toFixed(3)} of half a window`
+    )
+    near("projected, the block's outline is the face's own", seen(back, flat).x, seen(front, flat).x, 1e-12)
+    near('in both directions', seen(back, flat).y, seen(front, flat).y, 1e-12)
+  }
+
+  // AND THE BLOCK AGAINST ITSELF. Type a bigger Depth and a lens brings the
+  // front face nearer the camera, so a block made deeper is drawn WIDER without
+  // getting wider: one field of the corner panel moving two dimensions on
+  // screen, which is the one of these a user would notice and disbelieve.
+  {
+    const corner = (depth: number, camera: PerspectiveCamera | OrthographicCamera) =>
+      seen(new Vector3(0.5, 0.5, depth / 2), camera).x
+
+    near(
+      'through a lens a deeper block is drawn wider than a shallow one',
+      corner(3, lens) / corner(1, lens),
+      (STANDOFF - 0.5) / (STANDOFF - 1.5),
+      1e-9
+    )
+    near(
+      'projected, changing the Depth leaves the front face exactly where it was',
+      corner(3, flat),
+      corner(1, flat),
+      1e-12
+    )
+  }
+
+  // THE SAME FACT FROM THE POINTER'S SIDE, which is how a cut is actually
+  // aimed: `CutLayer` fires a ray at the face's own plane and reads off where
+  // it lands. Projected, those rays are parallel, so a span of pointer means
+  // the same span of face whichever of the six faces the compass has settled on
+  // -- which is what lets one drawn line mean one cut on any of them.
+  {
+    const RAY = new Raycaster()
+    const reach = (ndcX: number, z: number, camera: PerspectiveCamera | OrthographicCamera) => {
+      RAY.setFromCamera(new Vector2(ndcX, 0), camera)
+      const hit = new Vector3()
+      // A plane facing the camera, `z` along its own normal from the origin.
+      return RAY.ray.intersectPlane(new Plane(new Vector3(0, 0, 1), -z), hit) ? hit.x : NaN
+    }
+    const span = (z: number, camera: PerspectiveCamera | OrthographicCamera) =>
+      reach(0.5, z, camera) - reach(-0.5, z, camera)
+
+    near(
+      'a pointer span reaches the same distance on the near face and the far one',
+      span(-DEPTH / 2, flat),
+      span(DEPTH / 2, flat),
+      1e-12
+    )
+    check(
+      'where through a lens it reaches further the further off the face is',
+      span(-DEPTH / 2, lens) > span(DEPTH / 2, lens) * 1.5,
+      `${span(-DEPTH / 2, lens).toFixed(3)} against ${span(DEPTH / 2, lens).toFixed(3)}`
+    )
+  }
+
+  // AND THE ARITHMETIC UNDER ALL OF IT. `perspectiveFrame` is the join between
+  // a projection and the lens the rest of the app looks through, so it is held
+  // to three's own camera rather than to itself: a point at the top of the
+  // frame it names has to land exactly at the top of the screen, and a
+  // projection set to that frame has to put it in the same place.
+  {
+    const top = new Vector3(0, 0.5 + frame / 2, 0)
+    near('the frame a lens throws is the frame it was asked for', seen(top, lens).y, 1, 1e-9)
+    near('and a projection set to it frames the very same', seen(top, flat).y, 1, 1e-12)
+
+    // A zoom is not a magnification, which is the whole reason `HoldFrame`
+    // exists: half the window at half the zoom holds the same slice of world,
+    // so a resize is a rescale rather than a reframing.
+    const zoom = zoomFor(TALL, frame)
+    near('a zoom is pixels per world unit', zoom, TALL / frame, 1e-12)
+    near('and reading it back gives the frame again', frameOf(TALL, zoom), frame, 1e-12)
+    const shorter = zoomFor(TALL / 2, frameOf(TALL, zoom))
+    near('a window half as tall holds that frame at half the zoom', shorter, zoom / 2, 1e-12)
+    near('which is the same slice of the world', frameOf(TALL / 2, shorter), frame, 1e-12)
+  }
+
+  // --- FURNITURE HOLDS ITS SIZE, THE WORK DOES NOT ------------------------
+  //
+  // WHAT ZOOMING IN IS FOR. The knots on a point cut used to be two hundredths
+  // of the block, so the wheel magnified them along with everything else:
+  // leaning in to place a point precisely made the point itself cover the
+  // detail being aimed at, and a reference underneath it disappeared behind a
+  // row of dots. A mark you put a finger on belongs to the SCREEN and is drawn
+  // at a size in pixels; the kerf, the block and the drawing stuck to it belong
+  // to the BLOCK and grow. See `pixelsToWorld` and `markScale`.
+  //
+  // Held to real numbers rather than to a source string: the marks are drawn
+  // inside the block's own scaled group, so the arithmetic has two transforms
+  // to undo and either could be dropped without anything else complaining.
+  {
+    /** What a mark of `px` actually measures on screen, drawn on this block. */
+    const onScreen = (px: number, zoom: number, dims: [number, number, number], axis: number) =>
+      markScale(px, zoom, dims)[axis] * dims[axis] * zoom
+
+    // Every block shape this app allows, including the extremes: a millimetre
+    // sheet and a five-metre bar are both looked at square on here, and the
+    // mark has to come out the same size on either.
+    const BLOCKS: [number, number, number][] = [[1, 1, 1], [0.01, 5, 0.4], [50, 0.1, 12]]
+    const opening = zoomFor(TALL, frame)
+    for (const [what, zoom] of [
+      ['at the opening frame', opening],
+      ['zoomed in four times', opening * 4],
+      ['zoomed right in', opening * 40],
+      ['and pulled well back', opening / 8],
+    ] as [string, number][]) {
+      let worst = 0
+      for (const dims of BLOCKS) {
+        for (let axis = 0; axis < 3; axis++) {
+          worst = Math.max(worst, Math.abs(onScreen(KNOT_PX, zoom, dims, axis) - KNOT_PX))
+        }
+      }
+      check(
+        `a knot is ${KNOT_PX}px ${what}, on any block and any axis of it`,
+        worst < 1e-9,
+        `worst ${worst} off at zoom ${zoom.toFixed(0)}`
+      )
+    }
+    near('and a handle grip is the finer of the two', onScreen(GRIP_PX, opening * 3, [1, 2, 3], 1), GRIP_PX, 1e-9)
+    check('which is smaller than the knot it stands off from', GRIP_PX < KNOT_PX, `${GRIP_PX} of ${KNOT_PX}`)
+
+    // A knot is round on a SHEET, which is the half of it the block's own scale
+    // would take away: undo two of the three axes and the mark comes out an
+    // ellipse on any stock that is not a cube.
+    const sheet: [number, number, number] = [3, 0.05, 2]
+    const mark = markScale(KNOT_PX, opening, sheet)
+    near('a knot on a sheet is a ball, not an egg', mark[0] * sheet[0], mark[1] * sheet[1], 1e-12)
+    near('on every axis of it', mark[1] * sheet[1], mark[2] * sheet[2], 1e-12)
+
+    near('a mark of no pixels is nothing at any zoom', pixelsToWorld(0, opening), 0, 1e-12)
+
+    // AND THE LINE ITSELF, which is the same rule applied to the one piece of
+    // furniture that is not a dot. It used to be drawn three kerfs wide -- a
+    // width in the MATERIAL -- so ten turns in it was a fifty-pixel band of
+    // solid colour lying across the drawing being traced. Now it is four
+    // pixels, at every zoom, and the slot it used to stand for is read off
+    // `KERF` instead. See `PREVIEW_PX`.
+    //
+    // MEASURED OFF THE BUILT STRIP rather than trusted: `ribbon` offsets each
+    // station sideways in FACE coordinates and the block scales those by a
+    // different number on each axis, so the width is only constant if that
+    // stretch is undone per station, in the direction that station happens to
+    // point. A straight line would pass either way; the bent ones are what
+    // catch it.
+    {
+      /** The strip's actual width in world units, at its widest and narrowest. */
+      const widths = (line: Pt[], face: FaceAxis, dims: [number, number, number], zoom: number) => {
+        const strip = ribbon(line, face, pixelsToWorld(PREVIEW_PX, zoom), dims)
+        if (!strip) return null
+        const at = strip.getAttribute('position')
+        const out: number[] = []
+        // Six vertices per station pair, of which the first two are the two
+        // edges of the same station -- see the winding in `ribbon`.
+        for (let i = 0; i + 1 < at.count; i += 6) {
+          const edge = new Vector3(
+            (at.getX(i) - at.getX(i + 1)) * dims[0],
+            (at.getY(i) - at.getY(i + 1)) * dims[1],
+            (at.getZ(i) - at.getZ(i + 1)) * dims[2]
+          )
+          out.push(edge.length())
+        }
+        strip.dispose()
+        return out
+      }
+
+      const LINES: [string, Pt[]][] = [
+        ['straight across', [[-0.4, 0], [0.4, 0]]],
+        ['straight up', [[0, -0.4], [0, 0.4]]],
+        ['on the diagonal', [[-0.4, -0.4], [0.4, 0.4]]],
+        ['round a corner', [[-0.4, -0.3], [0, 0], [0.3, -0.35], [0.4, 0.2]]],
+      ]
+      const FACES: FaceAxis[] = [
+        { axis: 2, sign: 1 },
+        { axis: 0, sign: -1 },
+        { axis: 1, sign: 1 },
+      ]
+
+      let worst = 0
+      let worstWhere = ''
+      for (const zoom of [opening, opening * 4, opening * 40]) {
+        for (const dims of BLOCKS) {
+          for (const face of FACES) {
+            for (const [what, line] of LINES) {
+              for (const width of widths(line, face, dims, zoom) ?? []) {
+                const off = Math.abs(width * zoom - PREVIEW_PX)
+                if (off > worst) {
+                  worst = off
+                  worstWhere = `${what} on ${dims.join('x')} at zoom ${zoom.toFixed(0)}: ${(width * zoom).toFixed(3)}px`
+                }
+              }
+            }
+          }
+        }
+      }
+      // A twentieth of a pixel, and the slack is FLOAT32 rather than doubt. The
+      // strip is a buffer attribute, so an offset of a few millionths of a face
+      // is stored against a coordinate of nearly half a one -- on a fifty-unit
+      // block wound right in, that quantises the width by about a hundredth of
+      // a pixel. What this is looking for is a systematic wedge, which is off
+      // by a factor rather than by a rounding.
+      check(
+        `the line is ${PREVIEW_PX}px wide down its whole length, on any block, face and bearing`,
+        worst < 0.05,
+        worstWhere || 'no strip was built'
+      )
+
+      // A line of one point is nothing to draw, not a strip of no width.
+      check('and a line of one point draws nothing at all', ribbon([[0, 0]], FACES[0], 0.01, [1, 1, 1]) === null, '')
+    }
+
+    // AND WHAT DOES NOT FOLLOW THE RULE, which is what makes the rest of it
+    // worth having: the slot the laser actually burns is measured in the
+    // material and is whatever it is. Nothing on screen stands for it any more,
+    // so this is where its size lives.
+    const kerfPixels = (zoom: number) => KERF * zoom
+    check(
+      'while the kerf the cut takes is still material, and grows with the wheel',
+      kerfPixels(opening * 4) > kerfPixels(opening) * 3.9,
+      `${kerfPixels(opening).toFixed(2)}px to ${kerfPixels(opening * 4).toFixed(2)}px`
+    )
+  }
+
+  // AND THE OTHER HALF OF THE WHEEL. A projection cannot be walked closer, so
+  // zooming magnifies about the middle of the window and carries the edges of
+  // the face out past the rim -- which is where a cut is aimed. The right
+  // button slides the view across the face to reach them, bounded so the block
+  // can never be carried off the screen. See `facePan.ts`.
+  {
+    // The bar the rest of this section is measured on: two deep, standing on
+    // the ground, so its middle is half a unit up and its front face is the
+    // square at z = 1.
+    const BAR: [number, number, number] = [1, 1, DEPTH]
+
+    // THE LIMIT IS THE EDGE OF THE FACE, in the two directions the face has,
+    // and nothing at all in the third.
+    for (const axis of [0, 1, 2] as const) {
+      const limits = panLimits(axis, BAR)
+      near(`looking along ${axis}, no travel toward the face`, limits[axis], 0, 1e-12)
+      for (const other of [0, 1, 2] as const) {
+        if (other === axis) continue
+        near(
+          `and half the block across it -- ${axis} sees ${other}`,
+          limits[other],
+          BAR[other] / 2,
+          1e-12
+        )
+      }
+    }
+
+    // A RECTANGLE RATHER THAN A DISC, which is the whole reason this is not
+    // three's own `maxTargetRadius`: the corners of a face are further from its
+    // middle than its edges are, and a round limit would refuse to reach them.
+    {
+      const limits = panLimits(2, BAR)
+      const corner = clampPan([BAR[0] / 2, BAR[1] / 2, 0], limits)
+      near('the far corner of a face is reachable in x', corner[0], BAR[0] / 2, 1e-12)
+      near('and in y at the same time', corner[1], BAR[1] / 2, 1e-12)
+    }
+
+    // And a shove past it stops AT it, either way about.
+    {
+      const limits = panLimits(2, BAR)
+      const held = clampPan([99, -99, 99], limits)
+      near('a shove past the edge stops on it', held[0], BAR[0] / 2, 1e-12)
+      near('and on the other side too', held[1], -BAR[1] / 2, 1e-12)
+      near('with the face axis pinned whatever is asked of it', held[2], 0, 1e-12)
+      const inside: [number, number, number] = [0.1, -0.2, 0]
+      const kept = clampPan(inside, limits)
+      near('while a pan inside the face is left exactly alone', kept[0], inside[0], 1e-12)
+      near('in both directions', kept[1], inside[1], 1e-12)
+    }
+
+    // WHAT THE LIMIT IS WORTH, against three's own camera: slid all the way,
+    // the corner of the face stands in the MIDDLE of the window. Which is the
+    // promise -- every part of a face can be brought to the middle of the
+    // screen at any zoom -- and it is a claim about a camera rather than about
+    // arithmetic, so it is asked of one.
+    {
+      const limits = panLimits(2, BAR)
+      const panned = new OrthographicCamera(WIDE / -2, WIDE / 2, TALL / 2, TALL / -2, 0.005, 1000)
+      // Twenty times the zoom the screen opens on: a face that fills the window
+      // twenty times over, which is the case the pan exists for.
+      panned.zoom = zoomFor(TALL, frame) * 20
+      panned.position.set(limits[0], 0.5 + limits[1], STANDOFF)
+      panned.lookAt(new Vector3(limits[0], 0.5 + limits[1], 0))
+      panned.updateProjectionMatrix()
+      panned.updateMatrixWorld()
+
+      const corner = new Vector3(BAR[0] / 2, 0.5 + BAR[1] / 2, DEPTH / 2)
+      near('slid to the limit, the corner of the face is dead centre', seen(corner, panned).x, 0, 1e-9)
+      near('in both directions', seen(corner, panned).y, 0, 1e-9)
+
+      // And at that zoom the middle of the block is long gone off the window,
+      // which is what makes the pan the only way to have reached the corner.
+      check(
+        'while the middle of the block is far outside it',
+        Math.abs(seen(new Vector3(0, 0.5, DEPTH / 2), panned).y) > 1,
+        `${seen(new Vector3(0, 0.5, DEPTH / 2), panned).y.toFixed(2)} of half a window`
+      )
+    }
+
+    // AND THE CORRECTION ITSELF, driven into a camera the way the screen drives
+    // it. This is the part with a sign in it, and a sign that is the wrong way
+    // round does not look like a bug -- it looks like a pan with a rubber band
+    // on it. So the whole loop is run: shove the pivot past the edge the way a
+    // drag does, correct it, and ask the camera what it can see.
+    //
+    // WHAT MUST SURVIVE is the offset between the camera and the point it
+    // orbits. Three rebuilds the camera's position from those two every update,
+    // so a correction applied to one and not the other is a view tipped off the
+    // face -- which on this screen is a cut that lands somewhere other than
+    // where it was drawn.
+    {
+      const middle = new Vector3(0, 0.5, 0)
+      const limits = panLimits(2, BAR)
+
+      const run = (pivot: Vector3) => {
+        const eye = new OrthographicCamera(WIDE / -2, WIDE / 2, TALL / 2, TALL / -2, 0.005, 1000)
+        eye.zoom = zoomFor(TALL, frame) * 20
+        // Where a drag leaves the two: the pivot slid across the face, and the
+        // camera carried along with it.
+        eye.position.set(pivot.x, pivot.y, STANDOFF)
+        const before = eye.position.clone().sub(pivot)
+
+        const [dx, dy, dz] = panCorrection(
+          [pivot.x, pivot.y, pivot.z],
+          [middle.x, middle.y, middle.z],
+          limits
+        )
+        const held = pivot.clone().add(new Vector3(dx, dy, dz))
+        eye.position.add(new Vector3(dx, dy, dz))
+        eye.lookAt(held)
+        eye.updateProjectionMatrix()
+        eye.updateMatrixWorld()
+        return { eye, held, before, after: eye.position.clone().sub(held) }
+      }
+
+      // A shove a long way past the top right corner of the front face.
+      const wild = run(new Vector3(4, 0.5 + 4, 0))
+      near('a pan shoved past the corner is pulled back to it in x', wild.held.x, BAR[0] / 2, 1e-12)
+      near('and in y', wild.held.y - middle.y, BAR[1] / 2, 1e-12)
+      near('with the camera kept exactly where it stood off the pivot', wild.after.x, wild.before.x, 1e-12)
+      near('in every direction', wild.after.y, wild.before.y, 1e-12)
+      near('so the view is still square on to the face', wild.after.z, wild.before.z, 1e-12)
+      // Which is the point of keeping it: the face is still drawn face-on, so a
+      // line drawn across it is still the line that gets cut.
+      const on = (u: number) => new Vector3(u, 0.5, DEPTH / 2)
+      near(
+        'and still measures that face evenly across the window',
+        seen(on(0.4), wild.eye).x - seen(on(0.3), wild.eye).x,
+        seen(on(0.1), wild.eye).x - seen(on(0), wild.eye).x,
+        1e-9
+      )
+
+      // A pan that is inside its limits is not touched at all -- the ordinary
+      // frame, and the one where a correction that fired anyway would feel like
+      // a camera fighting the hand.
+      const easy = run(new Vector3(0.2, 0.5 + 0.1, 0))
+      near('a pan inside the face is left where it was put', easy.held.x, 0.2, 1e-12)
+      near('to the last digit', easy.held.y - middle.y, 0.1, 1e-12)
+
+      // AND A FACE CHANGE WALKS IT HOME by the same path: the limits go to
+      // nothing for one frame, and the correction that follows is the whole pan
+      // in reverse. One road back, so a reset cannot land anywhere a clamp
+      // could not.
+      const slid = new Vector3(0.4, 0.5 - 0.3, 0)
+      const [hx, hy, hz] = panCorrection(
+        [slid.x, slid.y, slid.z],
+        [middle.x, middle.y, middle.z],
+        NO_PAN
+      )
+      near('a face change puts the pivot back on the middle in x', slid.x + hx, middle.x, 1e-12)
+      near('and in y', slid.y + hy, middle.y, 1e-12)
+      near('and in z', slid.z + hz, middle.z, 1e-12)
+    }
+  }
 }
 
 console.log('\nEach mode draws the handles for its own job')
@@ -1793,6 +2537,279 @@ console.log('\nThe compass is dragged as well as clicked')
   const stillAsked = takeRequest()
   check('a drag mid-flight does not swallow the request', stillAsked !== null)
   check('and the request does not swallow the drag', takeTurn() !== null)
+}
+
+// --- A brush stroke is a path, not a sample --------------------------------
+//
+// THE BUG, STATED AS THE USER SAW IT: drag the torch quickly and it stopped
+// drawing a groove and started printing a row of separate round dents with the
+// surface between them untouched. Nothing was wrong with the brush. The stroke
+// was read once a frame and one dab was laid wherever the pointer had got to,
+// so the space between the marks was the user's speed times the app's frame
+// time -- and past about a brush width per frame the marks stop overlapping at
+// all.
+//
+// The claim, then, is about SPACING RATHER THAN SPEED: however far the pointer
+// travels between two frames, the dabs it leaves behind are as far apart as the
+// ones a slow hand leaves, because the frame fills in the path it missed. See
+// `dragErode` and `DAB_SPACING`.
+console.log('\nA fast brush stroke fills itself in')
+{
+  const BRUSH = 0.3
+  const spacing = BRUSH * DAB_SPACING
+
+  // Square on to the front face, so a pixel is the same number of units across
+  // the whole stroke and the arithmetic below is honest.
+  const camera = new PerspectiveCamera(45, 1, 0.1, 100)
+  camera.position.set(0, 0, 6)
+  camera.lookAt(0, 0, 0)
+  camera.updateMatrixWorld(true)
+  const rect = { left: 0, top: 0, width: 800, height: 800 } as DOMRect
+  const canvas = { getBoundingClientRect: () => rect } as unknown as HTMLElement
+  const raycaster = new Raycaster()
+
+  useTools.setState({
+    brushTool: 'torch',
+    erodeRadius: BRUSH,
+    erodeHeat: 0.5,
+    erodeSmooth: 0.7,
+  })
+
+  /**
+   * The marks a run of frames leaves on a solid, in its own space.
+   *
+   * The mesh the brush is held against is built ONCE rather than re-evaluated
+   * per frame the way the viewport does it. The dabs still land where the ray
+   * hits; they all hit the surface as it stood at the start, which is what
+   * makes the spacing below a number rather than a drift. What is under test is
+   * where the marks go, not how deep they get.
+   */
+  const stroke = (
+    base: BaseSolid,
+    frames: ([number, number] | 'off-canvas')[],
+    /** Which brush is in hand. The spacing checks below are the torch's; the
+     *  parameter is here so the same rig can ask what the OTHER brushes hand
+     *  the document, which is the half of `dragErode` that reads the panel. */
+    brush: StrokeBrush = 'torch'
+  ): Vector3[] => {
+    resetEvaluator()
+    const doc = scene(object(base))
+    const meshes = sceneMeshes(doc)
+    forgetStroke()
+    useDoc.setState({ doc, past: [], future: [], drag: { kind: 'idle' } })
+    useDoc.getState().startErode('obj', brush)
+    for (const frame of frames) {
+      if (frame === 'off-canvas') {
+        // What the frame loop does when the pointer leaves the canvas: the
+        // stroke lives on, its path does not. See `pauseStroke`.
+        pauseStroke()
+        continue
+      }
+      pointerClient.x = frame[0]
+      pointerClient.y = frame[1]
+      const s = useDoc.getState()
+      if (s.drag.kind === 'erode') dragErode(s, s.drag, raycaster, meshes, camera, canvas)
+    }
+    const laid = useDoc.getState().doc.objects[0].erosion ?? []
+    useDoc.setState({ drag: { kind: 'idle' } })
+    forgetStroke()
+    return laid.map((d) => new Vector3(...d.at))
+  }
+
+  const widest = (path: Vector3[]) => {
+    let out = 0
+    for (let i = 1; i < path.length; i++) out = Math.max(out, path[i].distanceTo(path[i - 1]))
+    return out
+  }
+
+  // Two frames three hundred pixels apart: a flick. On this camera the cube's
+  // front face is a little under four hundred pixels across, so the second dab
+  // used to land well over a brush diameter from the first, and the two of them
+  // were the whole stroke.
+  const flick = stroke(CUBE, [
+    [250, 400],
+    [550, 400],
+  ])
+  const reach = flick[flick.length - 1].distanceTo(flick[0])
+  check(
+    'a flick across a face lays a run of dabs, not two',
+    flick.length >= Math.floor(reach / spacing),
+    `${flick.length} dabs over ${reach.toFixed(3)}, spacing ${spacing.toFixed(3)}`
+  )
+  check(
+    'and none of them lands further than the spacing from the last',
+    widest(flick) <= spacing * 1.05,
+    `widest gap ${widest(flick).toFixed(4)}`
+  )
+
+  // The same ground covered slowly. This is the stroke the tool always got
+  // right, and it is what the fast one now has to match: the marks are the
+  // gesture, not the frame rate it happened to be caught at.
+  const slow = stroke(
+    CUBE,
+    Array.from({ length: 13 }, (_, i): [number, number] => [250 + i * 25, 400])
+  )
+  check(
+    'a slow drag over the same ground lays about the same stroke',
+    Math.abs(slow.length - flick.length) <= 2,
+    `${slow.length} dabs slowly against ${flick.length} quickly`
+  )
+  near('and both end in the same place', slow[slow.length - 1].x, flick[flick.length - 1].x, 1e-9)
+
+  // EVERY DAB IS ON THE SURFACE. The fill walks the screen and asks the
+  // geometry where each step lands, rather than interpolating between the two
+  // ends in the object's own space: the straight line between two points on a
+  // flat face is that face, but on anything curved it runs UNDER the surface,
+  // and a dab is a sphere about its centre -- one sunk below the surface bites
+  // deeper than the one the user aimed, and on a thin wall burns through where
+  // nothing was pointed.
+  const onBall = stroke(SPHERE, [
+    [300, 400],
+    [500, 400],
+  ]).map((at) => at.length())
+  check(
+    'a flick across a sphere keeps every dab on the sphere',
+    onBall.length > 2 && onBall.every((r) => Math.abs(r - 1) < 0.01),
+    `${onBall.length} dabs, radii ${Math.min(...onBall).toFixed(4)}..${Math.max(...onBall).toFixed(4)}`
+  )
+
+  // THE WORST FORM OF THE SAME BUG: a flick that carries clean past the solid
+  // between one frame and the next. Neither end of the frame is over anything,
+  // so a tool that reads only where the pointer IS finds nothing under it twice
+  // and leaves the object untouched by a stroke drawn straight across it.
+  const past = stroke(CUBE, [
+    [120, 400],
+    [680, 400],
+  ])
+  check(
+    'a flick that overshoots the solid still marks it',
+    past.length > 4,
+    `${past.length} dabs`
+  )
+  check(
+    'and lays nothing off it',
+    past.every((at) => Math.abs(at.x) <= 1 + 1e-6 && Math.abs(at.z - 1) < 1e-6),
+    `x ${Math.min(...past.map((a) => a.x)).toFixed(3)}..${Math.max(...past.map((a) => a.x)).toFixed(3)}`
+  )
+  check(
+    'and still lands them a spacing apart',
+    widest(past) <= spacing * 1.05,
+    `widest gap ${widest(past).toFixed(4)}`
+  )
+
+  // A stroke that leaves the canvas and comes back somewhere else. The hand
+  // went somewhere in between and the app did not see it, so the return is a
+  // jump: one dab where it lands, and no line drawn along a path nobody drew.
+  const away = stroke(CUBE, [[300, 400], 'off-canvas', [500, 400]])
+  check(
+    'a stroke that leaves the canvas does not fill in on its way back',
+    away.length === 2,
+    `${away.length} dabs`
+  )
+
+  // WHAT THE FRAME LOOP HANDS THE DOCUMENT, asked of the Smoother because it is
+  // the brush whose numbers do not survive being read wrong. The torch and the
+  // sculpt tool differ by a flag; this one sends a target instead of a bite,
+  // and a `dragErode` that forwarded only the three numbers it always had would
+  // lay dabs that round by nothing at all -- a tool that silently does nothing,
+  // which is the failure a stroke test is worth having for.
+  useTools.setState({
+    brushTool: 'smoother',
+    smootherRadius: BRUSH,
+    smootherStrength: 0.4,
+  })
+  {
+    const marks = stroke(CUBE, [[300, 400], [420, 400]], 'smoother')
+    check('a Smoother drag fills its path in the same way', marks.length > 2, `${marks.length} dabs`)
+    check('and none of them lands further than the spacing from the last', widest(marks) <= spacing * 1.05, `${widest(marks).toFixed(4)}`)
+    const dabs = useDoc.getState().doc.objects[0].erosion ?? []
+    check('the panel\'s Strength reaches the dab as its target', dabs.every((d) => d.round === 0.4), JSON.stringify(dabs[0]))
+    check('and the panel\'s brush size reaches it as the radius', dabs.every((d) => d.radius === BRUSH), JSON.stringify(dabs[0]))
+    check('with no bite and no flow, which this brush has neither of', dabs.every((d) => d.heat === 0 && d.smooth === 0), JSON.stringify(dabs[0]))
+  }
+
+  useDoc.setState({ doc: { objects: [] }, past: [], future: [], drag: { kind: 'idle' } })
+  useTools.setState({ brushTool: null })
+  resetEvaluator()
+}
+
+console.log('  ')
+console.log('A Point Cut knot lines up with the knots already placed')
+{
+  // THE TWO AXES ARE DECIDED SEPARATELY, which is the whole design. It does not
+  // snap to the other POINT -- two knots on top of each other is the one
+  // arrangement a cut has no use for -- it snaps to its row and to its column,
+  // so a knot can take its height from one neighbour and its width from
+  // another and land on the corner the two of them imply.
+  const TOL = [0.05, 0.05] as const
+
+  {
+    const held = snapToPeers([0.32, -0.4], [[0.3, 0.1]], TOL)
+    near('a knot within reach of a column takes it', held.at[0], 0.3, 1e-12)
+    near('and keeps the height it was dragged to', held.at[1], -0.4, 1e-12)
+    check('reporting the line it caught', held.onU === 0.3 && held.onV === null, `${held.onU} / ${held.onV}`)
+  }
+  {
+    const held = snapToPeers([-0.4, 0.12], [[0.3, 0.1]], TOL)
+    near('a knot within reach of a row takes that instead', held.at[1], 0.1, 1e-12)
+    near('and keeps its own width', held.at[0], -0.4, 1e-12)
+  }
+  {
+    // Two neighbours, one lending a column and the other a row: the knot lands
+    // on the corner they imply, which squares a slot off and is exactly what a
+    // single nearest-POINT snap could never give.
+    const held = snapToPeers([0.28, 0.42], [[0.3, -0.2], [-0.1, 0.4]], TOL)
+    near('a knot can take its width from one neighbour', held.at[0], 0.3, 1e-12)
+    near('and its height from another', held.at[1], 0.4, 1e-12)
+    check('landing on the corner the two of them imply', held.onU === 0.3 && held.onV === 0.4, '')
+  }
+  {
+    // NEAREST RATHER THAN FIRST, or the answer would depend on the order the
+    // points happen to be stored in, and dragging past one knot could leave you
+    // caught on a further one.
+    const held = snapToPeers([0.3, 0], [[0.34, 0], [0.31, 0]], TOL)
+    near('the nearer of two columns wins', held.at[0], 0.31, 1e-12)
+  }
+  {
+    const held = snapToPeers([0.2, 0.2], [[0.3, 0.4]], TOL)
+    near('and a knot out of reach is left exactly where it was', held.at[0], 0.2, 1e-12)
+    near('on both axes', held.at[1], 0.2, 1e-12)
+    check('with nothing reported as caught', held.onU === null && held.onV === null, '')
+  }
+  {
+    // Off is not a mode inside the arithmetic: a reach of nothing catches
+    // nothing, which is what lets the switch in the bar simply not call it.
+    const held = snapToPeers([0.301, 0], [[0.3, 0]], [0, 0])
+    near('no reach, no snap', held.at[0], 0.301, 1e-12)
+  }
+
+  // WHAT A PIXEL IS WORTH ON A FACE, which is the part that has to know about
+  // the stock. Face coordinates are FRACTIONS of the block, and a face's two
+  // directions run along two different sides of it -- so on a sheet the same
+  // screen distance is worth wildly different fractions of each, and one
+  // tolerance for both would be unusable across the face and immovable up it.
+  {
+    // A sheet: two units wide, a twentieth thick, one deep. Looking at the
+    // front, u runs along the width and v up the height.
+    const SHEET = [2, 0.05, 1] as const
+    near('a face direction knows which side it runs along', sideAlong({ x: 1, y: 0, z: 0 }, SHEET), 2, 1e-12)
+    near('whichever way it points', sideAlong({ x: -1, y: 0, z: 0 }, SHEET), 2, 1e-12)
+    near('and up is the height', sideAlong({ x: 0, y: 1, z: 0 }, SHEET), 0.05, 1e-12)
+
+    const zoom = 400
+    const [tu, tv] = faceTolerance(10, zoom, [SHEET[0], SHEET[1]])
+    // Ten pixels at 400 pixels per world unit is 0.025 of the world, which is
+    // an eightieth of the sheet across and half of it up.
+    near('ten pixels across the sheet is a small fraction of it', tu, 0.025 / 2, 1e-12)
+    near('and up the sheet, the very same pixels are a large one', tv, 0.025 / 0.05, 1e-12)
+    check('which is the whole reason the two are computed apart', tv > tu * 10, `${tv.toFixed(3)} against ${tu.toFixed(4)}`)
+
+    // AND IT SHRINKS AS YOU LEAN IN, which is what makes pixels the right unit:
+    // zoom in twice as far and the same ten pixels reach half as much block, so
+    // points can be placed at half the spacing without being swallowed.
+    const [closer] = faceTolerance(10, zoom * 2, [SHEET[0], SHEET[1]])
+    near('twice the zoom, half the reach', closer, tu / 2, 1e-12)
+  }
 }
 
 console.log(

@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import {
-  CutActions,
   CutTool,
   ErodeTool,
   MirrorTool,
@@ -10,6 +9,7 @@ import {
   RulerTool,
   ScaleTool,
   SculptTool,
+  SmootherTool,
 } from '../console/NavTools'
 import { dockIsland, useTools } from '../store/toolStore'
 
@@ -220,7 +220,12 @@ export function IslandShell({ children }: { children: ReactNode }) {
 /**
  * The tools you work *with*, as an island floating over the scene: the three
  * that decide which gizmo is up, the mirror that flips a solid outright, Ruler,
- * Cut, the two brushes, and the two actions an armed cut plane brings with it.
+ * Cut and the three brushes.
+ *
+ * ONE ROW PER TOOL, and the island is the same height whatever is armed. The
+ * cut's Apply and Reset used to hang under the column as two more rows, which
+ * made arming it shove everything above them about; they are behind Cut's own
+ * caret now, like every other tool's controls. See `CutActions`.
  *
  * They were in the bar across the top. Every one of them is aimed at the SCENE
  * -- a gizmo is dragged on the solid it belongs to, a ruler is laid beside the
@@ -281,17 +286,21 @@ export function ToolIsland() {
           the document-wide controls rather than over the model. */}
       <RulerTool />
       <CutTool />
-      {/* The two brushes, last and together. Beside Cut because the torch
-          is the third tool that takes material away, and beside each other
-          because they are one brush with a sign in front of it -- a user
-          who has found either has found the pair, and swapping between
-          them is the commonest thing anyone does with them. Torch first,
-          since it is the one that was here already. */}
+      {/* Straight after Cut, and that is the whole argument for where it
+          sits: what a blade leaves is a sharp arris, and taking that off
+          is the commonest thing anybody wants next. It is a brush like the
+          two below and it could have gone with them -- but the pair below
+          are one brush with a sign in front of it, and putting a third
+          thing between them would break the one row that reads as a pair.
+          So the odd brush out stands with the tool it answers. */}
+      <SmootherTool />
+      {/* The two brushes that MOVE the surface, last and together. Beside
+          each other because they are one brush with a sign in front of it
+          -- a user who has found either has found the pair, and swapping
+          between them is the commonest thing anyone does with them. Torch
+          first, since it is the one that was here already. */}
       <ErodeTool />
       <SculptTool />
-      {/* Only on screen while the plane is armed, so the island is no
-          taller than its own switches for anyone not cutting. */}
-      <CutActions />
     </IslandShell>
   )
 }

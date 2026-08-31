@@ -19,15 +19,27 @@ import { anchorIsCurved, hostSurfaceFor, surfaceFor } from './surfaces'
 import { objectMatrix } from './transform'
 import { signedVolume } from './volume'
 import { sweepOp } from './types'
-import type { BaseSolid, Doc, Feature, SceneObject } from './types'
+import type {
+  BaseSolid,
+  CutPlane,
+  Doc,
+  ErodeDab,
+  ErodeStamp,
+  Feature,
+  SceneObject,
+} from './types'
 import { LOG_TAG } from '../appInfo'
 
 /**
  * The scene is a pure function of the `Doc`. Per object the pipeline is
- * base -> features in order -> cuts, and every stage of it runs in OBJECT-LOCAL
- * space. The transform enters exactly once, in `mergedGeometry`, because the
- * viewport draws each object inside a group that already carries it -- so
- * dragging an object costs no boolean work at all.
+ * base -> merged parts -> features in order -> cuts -> erasers -> melting, and
+ * every stage of it runs in OBJECT-LOCAL space. The transform enters exactly
+ * once, in `mergedGeometry`, because the viewport draws each object inside a
+ * group that already carries it -- so dragging an object costs no boolean work
+ * at all.
+ *
+ * That order is the DEFAULT rather than a law: the melting is spliced back into
+ * it at the point each stroke was actually laid down. See `planSteps`.
  */
 
 export type ObjectEval = {
@@ -126,10 +138,9 @@ function buildTool(base: BaseSolid, feature: Feature, paint: string): Brush | nu
 }
 
 // --- Prefix cache ----------------------------------------------------------
-// slots[0] holds the base brush, slots[i + 1] the brush after features[0..i],
-// and the last slot the result of the cuts, so editing feature k replays k
-// onward and nothing before it. Keys are cheap because the document is plain
-// data.
+// slots[0] holds the base brush and slots[i + 1] the brush after step i of the
+// plan, so editing step k replays k onward and nothing before it. Keys are
+// cheap because the document is plain data.
 //
 // The cache is keyed PER OBJECT: editing feature k of object B must not touch
 // object A's brushes, let alone free the GPU buffer the viewport is drawing for
@@ -139,9 +150,9 @@ function buildTool(base: BaseSolid, feature: Feature, paint: string): Brush | nu
 /**
  * `owned` distinguishes a slot that allocated its own brush from one that just
  * carries the previous slot's brush forward (an inert feature, a failed tool,
- * or an empty cut list change nothing). Without it, invalidating an aliased
- * slot would dispose a geometry an earlier slot still holds -- and the viewport
- * would render a freed buffer.
+ * or a melt with nothing to melt change nothing). Without it, invalidating an
+ * aliased slot would dispose a geometry an earlier slot still holds -- and the
+ * viewport would render a freed buffer.
  *
  * `failed` is stored on the slot rather than accumulated per evaluation so a
  * failure survives being cached: a feature that failed three edits ago must
@@ -176,25 +187,138 @@ function structureOf(parts: SceneObject[]): string {
   )
 }
 
-/** One key per slot: base, one per feature, then the cuts. */
-function slotKeys(obj: SceneObject): string[] {
-  // Slot zero is the welded union, so it has to name the parts as well as the
-  // base -- otherwise merging something would reuse a cached brush that predates
-  // it and the new part would simply never appear.
-  const keys: string[] = [JSON.stringify(obj.base) + `|parts:${structureOf(obj.parts)}`]
-  for (const f of obj.features) keys.push(`${keys[keys.length - 1]}|${featureKey(f)}`)
-  // Cuts hang off the end of the same chain, so retweaking a cut replays only
-  // the boolean cut, and retweaking a feature never replays more than it must.
-  keys.push(`${keys[keys.length - 1]}|cuts:${JSON.stringify(obj.cuts)}`)
-  // And the erased solids hang off the end of THAT, because they are the last
-  // thing applied: a hole is not something a later feature may fill back in.
-  keys.push(`${keys[keys.length - 1]}|erased:${structureOf(obj.erased ?? [])}`)
-  // The torch is last of all, and it is the one stage that is not a boolean --
-  // see `applyErosion`. Its own slot, so a stroke in flight replays the melting
-  // and nothing else: every boolean the object is built from stays cached
-  // through a drag that adds a dab on every frame.
-  keys.push(`${keys[keys.length - 1]}|erosion:${JSON.stringify(obj.erosion ?? [])}`)
-  return keys
+// --- The plan ---------------------------------------------------------------
+
+/** How far the object had got when a dab was laid. Absent means all of it. */
+function stampOf(obj: SceneObject, dab: ErodeDab): ErodeStamp {
+  return (
+    dab.stamp ?? {
+      parts: obj.parts.length,
+      features: obj.features.length,
+      cuts: obj.cuts.length,
+      erased: obj.erased?.length ?? 0,
+    }
+  )
+}
+
+function sameStamp(a: ErodeStamp, b: ErodeStamp): boolean {
+  return (
+    a.parts === b.parts &&
+    a.features === b.features &&
+    a.cuts === b.cuts &&
+    a.erased === b.erased
+  )
+}
+
+/**
+ * The dabs split into RUNS: each a maximal block of consecutive dabs that were
+ * all laid against the same shape of object.
+ *
+ * Melted as a block rather than one at a time, and that is not only a saving.
+ * `erodeGeometry` welds, refines and relaxes ONCE for the set it is handed --
+ * so a stroke of forty dabs replayed as forty separate melts would not merely
+ * cost forty times as much, it would come out a different, coarser surface.
+ * Grouping is what keeps a stamp from changing the geometry of a solid nobody
+ * has edited since: with nothing added after the strokes, every dab carries the
+ * same stamp, there is one run, and the melt is bit for bit the one that ran
+ * before any of this existed.
+ */
+function meltRuns(obj: SceneObject): { stamp: ErodeStamp; dabs: ErodeDab[] }[] {
+  const runs: { stamp: ErodeStamp; dabs: ErodeDab[] }[] = []
+  for (const dab of obj.erosion ?? []) {
+    const stamp = stampOf(obj, dab)
+    const last = runs[runs.length - 1]
+    if (last && sameStamp(last.stamp, stamp)) last.dabs.push(dab)
+    else runs.push({ stamp, dabs: [dab] })
+  }
+  return runs
+}
+
+/** One step of the build: what it contributes to the key, and what it does. */
+type PlanStep = { key: string; apply: (prev: Brush) => Step }
+
+/**
+ * The whole build of one object, in order: a list of steps that each take the
+ * brush so far and hand back the next one.
+ *
+ * The DEFAULT order is the one the pipeline has always run in -- merged parts,
+ * then features, then cuts, then erasers, then the melting -- and for an object
+ * nobody has torched that is exactly the list this produces, one step per item
+ * instead of one slot per stage.
+ *
+ * What this adds is that the MELTING IS SPLICED BACK IN WHERE IT HAPPENED. Each
+ * run of dabs carries the counts the object had when they were laid (see
+ * `ErodeStamp`), so the steps needed to reach that shape are emitted, then the
+ * melt, and only then whatever was added afterwards. A solid merged in after a
+ * melt welds onto the melted surface rather than being melted by it, and a boss
+ * grown after a melt grows out of the melted face rather than coming out
+ * pre-melted. Both were the same bug, and it was the fixed position of one
+ * stage that caused it.
+ *
+ * ONE STEP PER PART, PER CUT AND PER HOLE rather than one per stage, because a
+ * melt can now land in the middle of any of the three -- merge, torch, merge
+ * again, and the second weld has to happen after the melting that the first one
+ * predates. It buys finer caching for free: welding a second part no longer
+ * re-welds the first.
+ *
+ * `done` only ever climbs, and every limit is clamped to the list it indexes.
+ * So a stamp that points past the end of a list it outlived -- delete a feature
+ * after melting and it does -- builds what is actually there and stops, and a
+ * stamp that somehow points BACKWARDS is a step already emitted rather than a
+ * step emitted twice.
+ */
+function planSteps(obj: SceneObject): PlanStep[] {
+  const erased = obj.erased ?? []
+  const steps: PlanStep[] = []
+  const done = { parts: 0, features: 0, cuts: 0, erased: 0 }
+
+  const buildTo = (limit: ErodeStamp): void => {
+    for (; done.parts < Math.min(limit.parts, obj.parts.length); done.parts++) {
+      const part = obj.parts[done.parts]
+      steps.push({ key: `part:${structureOf([part])}`, apply: (prev) => weldPart(prev, part) })
+    }
+    const features = Math.min(limit.features, obj.features.length)
+    for (; done.features < features; done.features++) {
+      const feature = obj.features[done.features]
+      steps.push({
+        key: featureKey(feature),
+        apply: (prev) => applyFeature(obj.base, feature, prev, obj.id),
+      })
+    }
+    for (; done.cuts < Math.min(limit.cuts, obj.cuts.length); done.cuts++) {
+      const cut = obj.cuts[done.cuts]
+      steps.push({
+        key: `cut:${JSON.stringify(cut)}`,
+        apply: (prev) => applyOneCut(prev, cut, obj.id),
+      })
+    }
+    for (; done.erased < Math.min(limit.erased, erased.length); done.erased++) {
+      const hole = erased[done.erased]
+      steps.push({
+        key: `erased:${structureOf([hole])}`,
+        apply: (prev) => subtractHole(prev, hole, obj.id),
+      })
+    }
+  }
+
+  for (const run of meltRuns(obj)) {
+    buildTo(run.stamp)
+    // Its own step, so a stroke in flight replays the melting and nothing else:
+    // every boolean the object is built from stays cached through a drag that
+    // adds a dab on every frame.
+    steps.push({
+      key: `erosion:${JSON.stringify(run.dabs)}`,
+      apply: (prev) => applyMelt(prev, run.dabs, obj.id),
+    })
+  }
+  buildTo({
+    parts: obj.parts.length,
+    features: obj.features.length,
+    cuts: obj.cuts.length,
+    erased: erased.length,
+  })
+
+  return steps
 }
 
 function flushRetired(): void {
@@ -231,58 +355,50 @@ function baseBrush(base: BaseSolid, paint: string): Brush | null {
 }
 
 /**
- * The object's own primitive with every merged part welded onto it.
+ * Weld one merged part onto the solid so far.
  *
  * A part is a whole SceneObject in this object's local space, so it is
  * evaluated exactly the way a top-level object is -- base, then its features,
- * then its cuts -- and only then baked through its local transform and unioned
- * in. Recursion falls out of that: a part that was itself a merge brings its
- * own parts with it, and nothing had to be flattened at merge time.
- *
- * This is slot ZERO of the prefix cache, which is what makes the cost sane: a
- * merged object rebuilds its union only when the merge itself changes, not when
- * a feature on top of it is dragged.
+ * then its cuts, then its own melting -- and only then baked through its local
+ * transform and unioned in. Recursion falls out of that: a part that was itself
+ * a merge brings its own parts with it, and nothing had to be flattened at
+ * merge time. It is also why a melted solid absorbed AS a part was never the
+ * half of this bug that showed: its dabs run inside its own evaluation, and
+ * arrive here already baked into the triangles.
  *
  * Each solid goes in under its OWN paint -- the host under its id, every part
  * under the part's -- and the union carries those through as groups. That is
- * what lets a merge of a red cube and a blue one come back red and blue: the
- * document always kept both colours, and this is the step that used to lose
- * them.
+ * what lets a merge of a red cube and a blue one come back red and blue.
+ *
+ * `prev` is NOT disposed. Every step in the plan leaves that to whoever owns
+ * the chain: the cache defers it a generation, `evaluateObject` does it as it
+ * goes, and a step that did it itself would free a brush a live cache slot is
+ * still holding.
  */
-function mergedBase(obj: SceneObject): { brush: Brush | null; failed: string[] } {
-  const base = baseBrush(obj.base, obj.id)
-  if (!base || obj.parts.length === 0) return { brush: base, failed: base ? [] : [obj.id] }
-
+function weldPart(prev: Brush, part: SceneObject): Step {
   const failed: string[] = []
-  let current = base
-
-  for (const part of obj.parts) {
-    let welded: BufferGeometry | null = null
-    let tool: Brush | null = null
-    try {
-      // `evaluateObject` hands back a geometry the caller owns, which is what
-      // lets this dispose it once the brush has copied it.
-      const evaluated = evaluateObject(part)
-      failed.push(...evaluated.failed)
-      // Groups kept, unlike every other bake here: a part that was itself a
-      // merge arrives carrying several paints, and dropping its groups on the
-      // way in would flatten it to one colour before the union ever saw it.
-      welded = bakeWorld(evaluated.geometry, objectMatrix(part.transform), true)
-      evaluated.geometry.dispose()
-      tool = makeBrush(welded, evaluated.paints)
-      const next = csg(current, tool, ADDITION)
-      disposeBrush(current)
-      current = next
-    } catch (err) {
-      console.warn(`[${LOG_TAG}] merged part ${part.id} failed to weld`, err)
-      failed.push(part.id)
-    } finally {
-      if (tool) disposeBrush(tool)
-      else welded?.dispose()
-    }
+  let welded: BufferGeometry | null = null
+  let tool: Brush | null = null
+  try {
+    // `evaluateObject` hands back a geometry the caller owns, which is what
+    // lets this dispose it once the brush has copied it.
+    const evaluated = evaluateObject(part)
+    failed.push(...evaluated.failed)
+    // Groups kept, unlike every other bake here: a part that was itself a
+    // merge arrives carrying several paints, and dropping its groups on the
+    // way in would flatten it to one colour before the union ever saw it.
+    welded = bakeWorld(evaluated.geometry, objectMatrix(part.transform), true)
+    evaluated.geometry.dispose()
+    tool = makeBrush(welded, evaluated.paints)
+    return { brush: csg(prev, tool, ADDITION), owned: true, failed }
+  } catch (err) {
+    console.warn(`[${LOG_TAG}] merged part ${part.id} failed to weld`, err)
+    failed.push(part.id)
+    return { brush: prev, owned: false, failed }
+  } finally {
+    if (tool) disposeBrush(tool)
+    else welded?.dispose()
   }
-
-  return { brush: current, failed }
 }
 
 /**
@@ -322,76 +438,60 @@ function applyFeature(
 }
 
 /**
- * Take away every solid erased out of this object.
- *
- * Last in the chain, and its own slot in the prefix cache, so a hole costs its
- * boolean once and nothing that comes after re-runs it.
+ * Take one erased solid out of the object.
  *
  * The walls the eraser opens up wear the object's OWN paint, the same rule a
  * pocket's walls and a cut's face already follow: the hole belongs to the
  * object rather than to any one solid inside it, and an eraser has no colour of
  * its own to lend -- it is not in the scene any more by the time this runs.
  */
-function applyErased(obj: SceneObject, prev: Brush): Step {
-  const erased = obj.erased ?? []
-  if (erased.length === 0) return { brush: prev, owned: false, failed: [] }
-
-  let current = prev
-  let owned = false
+function subtractHole(prev: Brush, hole: SceneObject, paint: string): Step {
   const failed: string[] = []
-
-  for (const hole of erased) {
-    let baked: BufferGeometry | null = null
-    let tool: Brush | null = null
-    try {
-      // Evaluated exactly the way a merged part is -- base, features, cuts, its
-      // own parts -- then carried through its transform into this object's
-      // space. An eraser can be anything the palette can build, including
-      // something the user had already shaped.
-      const evaluated = evaluateObject(hole)
-      failed.push(...evaluated.failed)
-      baked = bakeWorld(evaluated.geometry, objectMatrix(hole.transform))
-      evaluated.geometry.dispose()
-      tool = makeBrush(baked, obj.id)
-      const next = csg(current, tool, SUBTRACTION)
-      if (owned) disposeBrush(current)
-      current = next
-      owned = true
-    } catch (err) {
-      console.warn(`[${LOG_TAG}] erased solid ${hole.id} failed to subtract`, err)
-      failed.push(hole.id)
-    } finally {
-      if (tool) disposeBrush(tool)
-      else baked?.dispose()
-    }
+  let baked: BufferGeometry | null = null
+  let tool: Brush | null = null
+  try {
+    // Evaluated exactly the way a merged part is -- base, features, cuts, its
+    // own parts -- then carried through its transform into this object's
+    // space. An eraser can be anything the palette can build, including
+    // something the user had already shaped.
+    const evaluated = evaluateObject(hole)
+    failed.push(...evaluated.failed)
+    baked = bakeWorld(evaluated.geometry, objectMatrix(hole.transform))
+    evaluated.geometry.dispose()
+    tool = makeBrush(baked, paint)
+    return { brush: csg(prev, tool, SUBTRACTION), owned: true, failed }
+  } catch (err) {
+    console.warn(`[${LOG_TAG}] erased solid ${hole.id} failed to subtract`, err)
+    failed.push(hole.id)
+    return { brush: prev, owned: false, failed }
+  } finally {
+    if (tool) disposeBrush(tool)
+    else baked?.dispose()
   }
-
-  return { brush: current, owned, failed }
 }
 
 /**
- * Melt the surface wherever the torch has been.
+ * Melt the surface wherever one run of the torch has been.
  *
- * The LAST stage of the chain, after even the erasers, because a melt is a fact
- * about the FINISHED surface: a boss grown afterwards would be grown out of a
- * face that had not been melted yet, and a hole opened afterwards would cut
- * through a wall the torch had already thinned.
- *
- * The one stage here that is NOT a boolean. It moves the vertices of the
+ * The one step here that is NOT a boolean. It moves the vertices of the
  * geometry it is handed rather than cutting a tool out of it -- see `erode.ts`
  * for why a sphere subtraction is the wrong shape of answer for a blowtorch.
- * The result is wrapped back into a brush anyway, so this slot looks like every
- * other slot to the cache and to `paintsOf`; the paints come across untouched,
+ * The result is wrapped back into a brush anyway, so this step looks like every
+ * other step to the cache and to `paintsOf`; the paints come across untouched,
  * since melting never changes which solid a triangle belongs to, only where it
  * is.
  *
- * An object nobody has torched returns the brush it was given, unowned, and
- * pays nothing at all -- not even a copy.
+ * That wrapping is load-bearing now in a way it was not when the melting always
+ * ran last: a merge or an extrude can follow it, so the melted surface goes
+ * back INTO the boolean evaluator. `erodeGeometry` welds and stitches its
+ * output for exactly that reason, and a weld that came out too torn to cut
+ * against costs the step that follows rather than this one -- every step in the
+ * plan keeps the previous brush when its own work throws.
+ *
+ * An object nobody has torched never reaches here at all: `planSteps` emits no
+ * melt step, so it pays nothing -- not even a copy.
  */
-function applyErosion(obj: SceneObject, prev: Brush): Step {
-  const dabs = obj.erosion ?? []
-  if (dabs.length === 0) return { brush: prev, owned: false, failed: [] }
-
+function applyMelt(prev: Brush, dabs: ErodeDab[], objectId: string): Step {
   try {
     const melted = erodeGeometry(prev.geometry, dabs)
     // Null means there was nothing to melt -- an object that evaluated to no
@@ -402,26 +502,32 @@ function applyErosion(obj: SceneObject, prev: Brush): Step {
   } catch (err) {
     // Same bargain the features strike: a stroke that cannot be applied must
     // not take the object down with it. Keep the unmelted solid and flag it.
-    console.warn(`[${LOG_TAG}] erosion on object ${obj.id} failed`, err)
-    return { brush: prev, owned: false, failed: [obj.id] }
+    console.warn(`[${LOG_TAG}] erosion on object ${objectId} failed`, err)
+    return { brush: prev, owned: false, failed: [objectId] }
   }
 }
 
-function applyObjectCuts(obj: SceneObject, prev: Brush): Step {
+function applyOneCut(prev: Brush, cut: CutPlane, paint: string): Step {
   try {
-    // Each half-space sizes itself from the solid it is actually cutting, so it
+    // The half-space sizes itself from the solid it is actually cutting, so it
     // covers whatever the features grew and reaches back from a plane parked
     // far outside the object.
-    const { brush, owned } = applyCuts(prev, obj.cuts, obj.id)
+    const { brush, owned } = applyCuts(prev, [cut], paint)
     return { brush, owned, failed: [] }
   } catch (err) {
-    console.warn(`[${LOG_TAG}] cuts on object ${obj.id} failed to evaluate`, err)
-    return { brush: prev, owned: false, failed: obj.cuts.map((c) => c.id) }
+    console.warn(`[${LOG_TAG}] cut ${cut.id} failed to evaluate`, err)
+    return { brush: prev, owned: false, failed: [cut.id] }
   }
 }
 
 function evaluateCached(obj: SceneObject): ObjectEval {
-  const keys = slotKeys(obj)
+  const plan = planSteps(obj)
+  // Cumulative, so a key names the whole history that produced its slot rather
+  // than the one step at the end of it: a step whose own key is unchanged still
+  // has to be replayed when something before it moved.
+  const keys: string[] = [JSON.stringify(obj.base)]
+  for (const step of plan) keys.push(`${keys[keys.length - 1]}|${step.key}`)
+
   const previous = caches.get(obj.id) ?? []
 
   // Longest cached prefix that still matches.
@@ -440,34 +546,17 @@ function evaluateCached(obj: SceneObject): ObjectEval {
   caches.set(obj.id, slots)
 
   if (slots.length === 0) {
-    const welded = mergedBase(obj)
-    if (!welded.brush) {
+    const base = baseBrush(obj.base, obj.id)
+    if (!base) {
       caches.delete(obj.id)
       return { id: obj.id, geometry: emptyGeometry(), paints: [obj.id], failed: [obj.id] }
     }
-    slots.push({ key: keys[0], brush: welded.brush, owned: true, failed: welded.failed })
+    slots.push({ key: keys[0], brush: base, owned: true, failed: [] })
   }
 
-  for (let i = slots.length - 1; i < obj.features.length; i++) {
-    slots.push({
-      key: keys[i + 1],
-      ...applyFeature(obj.base, obj.features[i], slots[i].brush, obj.id),
-    })
-  }
-
-  if (slots.length === obj.features.length + 1) {
-    const prev = slots[slots.length - 1].brush
-    slots.push({ key: keys[obj.features.length + 1], ...applyObjectCuts(obj, prev) })
-  }
-
-  if (slots.length === obj.features.length + 2) {
-    const prev = slots[slots.length - 1].brush
-    slots.push({ key: keys[obj.features.length + 2], ...applyErased(obj, prev) })
-  }
-
-  if (slots.length === obj.features.length + 3) {
-    const prev = slots[slots.length - 1].brush
-    slots.push({ key: keys[keys.length - 1], ...applyErosion(obj, prev) })
+  // One slot per plan step, replayed from wherever the cached prefix ran out.
+  for (let i = slots.length - 1; i < plan.length; i++) {
+    slots.push({ key: keys[i + 1], ...plan[i].apply(slots[i].brush) })
   }
 
   const failed: string[] = []
@@ -522,41 +611,23 @@ export function evaluateObject(obj: SceneObject): {
   paints: string[]
   failed: string[]
 } {
-  const welded = mergedBase(obj)
-  if (!welded.brush) return { geometry: emptyGeometry(), paints: [obj.id], failed: [obj.id] }
+  const base = baseBrush(obj.base, obj.id)
+  if (!base) return { geometry: emptyGeometry(), paints: [obj.id], failed: [obj.id] }
 
-  const failed: string[] = [...welded.failed]
-  let current = welded.brush
+  const failed: string[] = []
+  let current = base
 
-  for (const feature of obj.features) {
-    const step = applyFeature(obj.base, feature, current, obj.id)
-    failed.push(...step.failed)
+  // The SAME plan the cache walks, so the two paths cannot disagree about what
+  // an object is -- which matters most for the one thing only the plan knows:
+  // where in the chain each run of the torch belongs.
+  for (const step of planSteps(obj)) {
+    const applied = step.apply(current)
+    failed.push(...applied.failed)
     // An unowned step aliases `current`; disposing it would free the brush the
     // step just handed back.
-    if (!step.owned) continue
+    if (!applied.owned) continue
     disposeBrush(current)
-    current = step.brush
-  }
-
-  const cut = applyObjectCuts(obj, current)
-  failed.push(...cut.failed)
-  if (cut.owned) {
-    disposeBrush(current)
-    current = cut.brush
-  }
-
-  const holes = applyErased(obj, current)
-  failed.push(...holes.failed)
-  if (holes.owned) {
-    disposeBrush(current)
-    current = holes.brush
-  }
-
-  const melted = applyErosion(obj, current)
-  failed.push(...melted.failed)
-  if (melted.owned) {
-    disposeBrush(current)
-    current = melted.brush
+    current = applied.brush
   }
 
   return { geometry: current.geometry, paints: paintsOf(current), failed }

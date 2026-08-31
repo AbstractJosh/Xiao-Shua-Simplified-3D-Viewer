@@ -41,7 +41,6 @@ import {
   MIN_DIMENSION,
   MIN_SHAPE,
   axisDimension,
-  maxShapeSize,
   resizeAlongAxis,
   scaleShape,
   scaleUniform,
@@ -55,6 +54,8 @@ import {
   freshClay,
   isFresh,
   mold,
+  pieceHeight,
+  pieceSpan,
   resize,
   ringHeight,
   wallBounds,
@@ -62,17 +63,15 @@ import {
 import type { Clay, Dab } from '../src/geometry/clay'
 import { TURN_FACETS, revolveClay } from '../src/geometry/revolve'
 import {
-  CLAY_PROFILES,
   CLAY_SIDES,
   CLAY_SIDES_MAX,
   CLAY_SIDES_MIN,
   bore,
   clampSides,
   flatFactor,
-  profileWall,
   withWall,
 } from '../src/geometry/clay'
-import type { Bore, ClayProfile } from '../src/geometry/clay'
+import type { Bore } from '../src/geometry/clay'
 import { mirrorMesh, registerMesh } from '../src/geometry/meshLibrary'
 import { platonicFaces } from '../src/geometry/solids'
 import {
@@ -92,20 +91,35 @@ import {
 } from '../src/viewport/gizmoDrag'
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { snapAlongAxis } from '../src/geometry/snap'
-import type { SnapTarget } from '../src/geometry/snap'
-import { hostSurfaceFor, samePatch, slideAnchor } from '../src/geometry/surfaces'
+import type { SnapSource, SnapTarget } from '../src/geometry/snap'
+import { hostSurfaceFor, maxShapeSize, samePatch, slideAnchor } from '../src/geometry/surfaces'
 import { endFaceFrame } from '../src/geometry/prism'
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
-import { DAB_SPACING } from '../src/store/toolStore'
+import { DAB_SPACING, ROUND_MIN } from '../src/store/toolStore'
 import { objectMatrix, relativeTransform } from '../src/geometry/transform'
 import { planeSeparates, splitPlanes } from '../src/geometry/cut'
 import { signedVolume } from '../src/geometry/volume'
+import {
+  KERF as LASER_KERF,
+  bezierChain,
+  carryToBorder,
+  cutPieces,
+  faceBasis,
+  fittedHandles,
+  freshBlock,
+  outlineOf,
+  pieceVolume,
+  ropeFollow,
+  simplify,
+} from '../src/geometry/laserCut'
+import type { FaceAxis as LaserFace, Pt as LaserPt } from '../src/geometry/laserCut'
 import { IDENTITY_TRANSFORM, defaultFeature } from '../src/geometry/types'
 import type {
   BaseSolid,
   CutPlane,
   Doc,
   ErodeDab,
+  ErodeStamp,
   Feature,
   SceneObject,
   SurfaceAnchor,
@@ -855,6 +869,13 @@ console.log('\n11. Resizing along an axis moves that surface, on every primitive
 // --- 12. Axis-constrained snapping ------------------------------------------
 console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
 
+/** One corner of the solid being dragged: the source kind that seeks the
+ *  scene's corners, edges and faces, and never its centres. */
+const corner = (x: number, y: number, z: number): SnapSource => ({
+  point: new Vector3(x, y, z),
+  kind: 'corner',
+})
+
 {
   // A lone corner to seek, and a mover whose corner is a quarter-unit short of
   // it along X and dead level in Y and Z.
@@ -863,7 +884,7 @@ console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
   ]
   const axisX = new Vector3(1, 0, 0)
 
-  const hit = snapAlongAxis([new Vector3(0.9, 0, 0)], target, axisX, 0.18)
+  const hit = snapAlongAxis([corner(0.9, 0, 0)], target, axisX, 0.18)
   check('a corner in line with the axis is caught', hit !== null, hit ? 'caught' : 'missed')
   if (hit) {
     near('by exactly the gap', hit.delta.x, 0.1, 1e-9)
@@ -884,11 +905,11 @@ console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
   // Off-axis is the case a filtered three-axis snap would get wrong: it would
   // find this corner, hand back a delta with a Y in it, and the caller would
   // drop the Y and land the solid somewhere that touches nothing.
-  const off = snapAlongAxis([new Vector3(0.9, 0.05, 0)], target, axisX, 0.18)
+  const off = snapAlongAxis([corner(0.9, 0.05, 0)], target, axisX, 0.18)
   check('a corner off the axis is NOT caught', off === null, off ? 'wrongly caught' : 'ignored')
 
   // Out of range along the axis, in line but too far to reach.
-  const far = snapAlongAxis([new Vector3(0.5, 0, 0)], target, axisX, 0.18)
+  const far = snapAlongAxis([corner(0.5, 0, 0)], target, axisX, 0.18)
   check('and one beyond the tolerance is left alone', far === null, far ? 'wrongly caught' : 'ignored')
 }
 
@@ -904,13 +925,13 @@ console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
       normal: new Vector3(1, 0, 0),
     },
   ]
-  const hit = snapAlongAxis([new Vector3(0.88, 3, -4)], plane, new Vector3(1, 0, 0), 0.18)
+  const hit = snapAlongAxis([corner(0.88, 3, -4)], plane, new Vector3(1, 0, 0), 0.18)
   check('a face is caught from anywhere along it', hit !== null, hit ? 'caught' : 'missed')
   if (hit) near('at the plane exactly', hit.point.x, 1, 1e-9)
 
   // Running parallel to a plane, there is no offset that reaches it. An
   // implementation that divided anyway would return an infinity here.
-  const parallel = snapAlongAxis([new Vector3(0.88, 0, 0)], plane, new Vector3(0, 1, 0), 0.18)
+  const parallel = snapAlongAxis([corner(0.88, 0, 0)], plane, new Vector3(0, 1, 0), 0.18)
   check('a plane the axis runs along is not a target', parallel === null, `${parallel}`)
 }
 
@@ -925,7 +946,7 @@ console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
       b: new Vector3(1, 1, 0),
     },
   ]
-  const hit = snapAlongAxis([new Vector3(0.9, 0.3, 0)], edge, new Vector3(1, 0, 0), 0.18)
+  const hit = snapAlongAxis([corner(0.9, 0.3, 0)], edge, new Vector3(1, 0, 0), 0.18)
   check('an edge crossing the axis is caught', hit !== null, hit ? 'caught' : 'missed')
   if (hit) {
     near('at the edge', hit.point.x, 1, 1e-9)
@@ -934,7 +955,7 @@ console.log('\n12. An arrow drag snaps ALONG its axis and nowhere else')
 
   // Past the end of the segment: an edge attracts along its own length only,
   // or every edge in the scene would behave like an infinite line.
-  const past = snapAlongAxis([new Vector3(0.9, 4, 0)], edge, new Vector3(1, 0, 0), 0.18)
+  const past = snapAlongAxis([corner(0.9, 4, 0)], edge, new Vector3(1, 0, 0), 0.18)
   check('but not past its end', past === null, past ? 'wrongly caught' : 'ignored')
 }
 
@@ -1205,6 +1226,116 @@ console.log('\n15. The sketch ring scales an outline without reshaping it')
     'scaling up then back is the identity',
     back.type === 'rect' && Math.abs(back.w - 0.6) < 1e-9 && Math.abs(back.h - 0.4) < 1e-9,
     JSON.stringify(back)
+  )
+}
+
+{
+  // The bound is a question about the FACE, not about the solid. It used to be
+  // asked of the base alone -- a radius times nine tenths, or half the smallest
+  // side -- so a sketch stopped short of every rim whether or not anything was
+  // in the way, and a broad face on a thin solid was bounded by the thinness.
+  const slab: BaseSolid = { kind: 'box', size: [20, 2, 20] }
+  const top = maxShapeSize(slab, { on: 'box-face', face: 2, u: 0, v: 0 })
+  const side = maxShapeSize(slab, { on: 'box-face', face: 0, u: 0, v: 0 })
+  near('a slab s broad top holds a sketch out to its own edge', top, 10, 1e-9)
+  near('while its thin side is still bounded by the thinness', side, 1, 1e-9)
+  check('and the old whole-solid answer was the thin one', side < top, `${side} vs ${top}`)
+  near('which is what a caller with no face in mind still gets', maxShapeSize(slab), 1, 1e-9)
+
+  // The cap is a 48-gon, so its inradius -- the largest circle centred on it --
+  // is a fifth of a percent under the nominal radius rather than nine tenths
+  // of it. That fifth of a percent is the tessellation, not a margin.
+  const drum: BaseSolid = { kind: 'cylinder', radius: 5, height: 16.77 }
+  const cap = maxShapeSize(drum, { on: 'planar-face', face: 0, u: 0, v: 0 })
+  near('a cylinder cap reaches its rim', cap, 5 * Math.cos(Math.PI / 48), 1e-9)
+  check('which is where the old bound of 4.5 could not reach', cap > 4.98, `${cap}`)
+
+  // The wall runs out in the direction the CAP does not: up and down. The old
+  // bound never looked at the height at all, so a sketch on the wall of a short
+  // drum could be grown until it hung off both rims.
+  const wall = maxShapeSize(drum, { on: 'cylinder', theta: 0, y: 0 })
+  near('a tall wall is bounded by half its circumference', wall, (Math.PI * 5) / 2, 1e-9)
+  const coin: BaseSolid = { kind: 'cylinder', radius: 5, height: 1 }
+  near(
+    'and a short one by its own height',
+    maxShapeSize(coin, { on: 'cylinder', theta: 0, y: 0 }),
+    0.5,
+    1e-9
+  )
+
+  // A sphere has no rim to reach, so its bound is the projection's rather than
+  // an edge's -- and still nearly twice what the flat nine tenths allowed.
+  const ball: BaseSolid = { kind: 'sphere', radius: 5 }
+  const cover = maxShapeSize(ball, { on: 'sphere', theta: 0, phi: Math.PI / 2 })
+  near('a sphere is bounded by a sixty degree cap', cover, 5 * Math.tan(Math.PI / 3), 1e-9)
+  check('which is more room than the old bound gave', cover > 5 * 0.9, `${cover}`)
+}
+
+{
+  // The bound and the seat have to agree. `clampAnchor` is what keeps a sketch
+  // on its face, and a panel free to grow one past what the seat will hold is
+  // exactly how a sketch ends up shoved back to the middle of a face the moment
+  // it is touched -- so a shape AT the bound must still seat where it is.
+  const drum: BaseSolid = { kind: 'cylinder', radius: 5, height: 16.77 }
+  const anchor: SurfaceAnchor = { on: 'planar-face', face: 0, u: 0, v: 0 }
+  const at = maxShapeSize(drum, anchor)
+  const seated = hostSurfaceFor(drum, anchor).clampAnchor(anchor, { type: 'circle', r: at })
+  check(
+    'a sketch grown to the bound still seats on the cap',
+    seated.on === 'planar-face' && Math.hypot(seated.u, seated.v) < 1e-6,
+    JSON.stringify(seated)
+  )
+
+  const slab: BaseSolid = { kind: 'box', size: [20, 2, 20] }
+  const top: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
+  const wide = maxShapeSize(slab, top)
+  const onTop = hostSurfaceFor(slab, top).clampAnchor(top, { type: 'circle', r: wide })
+  check(
+    'and one grown to the slab s top bound seats on the top',
+    onTop.on === 'box-face' && Math.abs(onTop.u) < 1e-9 && Math.abs(onTop.v) < 1e-9,
+    JSON.stringify(onTop)
+  )
+}
+
+{
+  // A bound is only worth raising if the solid at it still BUILDS. Reaching the
+  // rim is where the boolean has least room -- the boss's wall lands within a
+  // fifth of a percent of the drum's own -- so this is the case that would fall
+  // over if the old tenth had been load-bearing rather than merely cautious.
+  resetEvaluator()
+  const drum: BaseSolid = { kind: 'cylinder', radius: 5, height: 4 }
+  const cap: SurfaceAnchor = { on: 'planar-face', face: 0, u: 0, v: 0 }
+  const flush = maxShapeSize(drum, cap)
+  const doc = scene(
+    object(drum, [feature({ anchor: cap, shape: { type: 'circle', r: flush }, depth: 1 })])
+  )
+  const result = evaluateDoc(doc)
+  check('a boss grown flush to the rim builds', result.failed.length === 0, `${result.failed}`)
+  const grown = signedVolume(result.objects[0].geometry)
+  const bare = signedVolume(solidOf(scene(object(drum))))
+  // A 48-gon of the cap's own inradius, one unit tall, sitting on the drum.
+  const disc = 0.5 * 48 * flush * flush * Math.sin((2 * Math.PI) / 48)
+  near('and adds the whole disc it drew', grown - bare, disc, 0.02)
+
+  // The other end of the same worry: a rectangle grown until its wall is
+  // EXACTLY coplanar with the box's, which is the input a boolean likes least.
+  resetEvaluator()
+  const bar: BaseSolid = { kind: 'box', size: [4, 1, 4] }
+  const face: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
+  const half = maxShapeSize(bar, face)
+  const flat = evaluateDoc(
+    scene(
+      object(bar, [
+        feature({ anchor: face, shape: { type: 'rect', w: half * 2, h: half * 2 }, depth: 0.5 }),
+      ])
+    )
+  )
+  check('a boss with walls flush to the box builds too', flat.failed.length === 0, `${flat.failed}`)
+  near(
+    'and stands its full height on it',
+    signedVolume(flat.objects[0].geometry),
+    4 * 1 * 4 + half * 2 * half * 2 * 0.5,
+    0.02
   )
 }
 
@@ -2179,9 +2310,10 @@ console.log('\nThe erode brush melts the surface rather than biting it')
     check('the dabs are a stroke, not a set', forward !== backward, `${forward.toFixed(7)} vs ${backward.toFixed(7)}`)
   }
 
-  // THE TORCH RUNS LAST, after the cuts and the erasers. A melt is a fact about
-  // the finished surface: run it earlier and a cut would slice through a face
-  // that had already flowed, which is a different solid.
+  // AN UNSTAMPED DAB RUNS LAST, after the cuts and the erasers -- which is what
+  // every dab meant before `ErodeStamp` existed, and what one written by hand
+  // still means. A stamped dab runs where it was laid instead; that is the
+  // section below.
   {
     const half: CutPlane = { id: 'c1', origin: [0, 0, 0], normal: [0, 1, 0], side: -1 }
     const cut = evaluateObject({
@@ -2240,6 +2372,194 @@ console.log('\nThe erode brush melts the surface rather than biting it')
       'the base can still be resized under a stroke',
       signedVolume(grown.geometry) > signedVolume(small.geometry) * 1.9,
       `${signedVolume(small.geometry).toFixed(4)} -> ${signedVolume(grown.geometry).toFixed(4)}`
+    )
+  }
+}
+
+// --- A finished melt is finished --------------------------------------------
+/**
+ * A stamped dab runs WHERE IT WAS LAID -- see `ErodeStamp` -- so nothing added
+ * to the object afterwards is melted by strokes that predate it.
+ *
+ * The bug this fixes was one stage running at a fixed point in the chain: the
+ * melting went last no matter what, so a solid merged in afterwards was melted
+ * where the old dabs happened to reach, and a boss extruded out of a torched
+ * face came out already torched -- flattened, in the worst case, right back to
+ * the face it grew from.
+ *
+ * MEASURED BY HEIGHT where the thing under test stands proud of the melt (a
+ * boss, a merged cap): those sit inside the dab sphere, so if the melt reaches
+ * them the top comes down. Measured by VOLUME where it does not -- a crater in
+ * a wide flat face leaves the corners untouched, and max-Y cannot see it.
+ */
+console.log('\nA melt is done when it is done')
+{
+  resetEvaluator()
+  const cube: BaseSolid = { kind: 'box', size: [1, 1, 1] }
+  const ZERO: ErodeStamp = { parts: 0, features: 0, cuts: 0, erased: 0 }
+  const at = (over: Partial<ErodeStamp>): ErodeStamp => ({ ...ZERO, ...over })
+
+  /** A stroke on the top face. `null` leaves it unstamped: the old behaviour. */
+  const stroke = (stamp: ErodeStamp | null): ErodeDab[] =>
+    Array.from({ length: 6 }, (): ErodeDab => ({
+      at: [0, 0.5, 0],
+      radius: 0.5,
+      heat: 1,
+      smooth: 0.5,
+      ...(stamp ? { stamp } : {}),
+    }))
+
+  const melted = (over: Partial<SceneObject>, id: string): SceneObject => ({
+    ...object(cube, [], [], id),
+    ...over,
+  })
+
+  const topOf = (o: SceneObject): number => {
+    const { geometry } = evaluateObject(o)
+    const pos = geometry.getAttribute('position')
+    let top = -Infinity
+    for (let i = 0; i < pos.count; i++) top = Math.max(top, pos.getY(i))
+    geometry.dispose()
+    return top
+  }
+  const volumeOf = (o: SceneObject): number => {
+    const { geometry } = evaluateObject(o)
+    const v = Math.abs(signedVolume(geometry))
+    geometry.dispose()
+    return v
+  }
+
+  /** A boss standing 0.3 proud of the top face. */
+  const boss: Feature = {
+    ...defaultFeature({ on: 'box-face', face: 2, u: 0, v: 0 }, { type: 'circle', r: 0.15 }),
+    id: 'boss',
+    depth: 0.3,
+  }
+  /** A cap standing on the top face, entirely inside the dab sphere. */
+  const cap: SceneObject = {
+    ...object({ kind: 'box', size: [0.3, 0.3, 0.3] }, [], [], 'cap'),
+    transform: { position: [0, 0.6, 0], rotation: [0, 0, 0] },
+  }
+
+  // The stroke has to actually do something, or every claim below is vacuous.
+  {
+    const bitten = volumeOf(melted({ erosion: stroke(ZERO) }, 'bite'))
+    check('the torch takes a bite out of a cube', bitten < 0.99, `${bitten.toFixed(4)} of 1`)
+  }
+
+  // Nothing added afterwards means nothing to reorder: one run, and the same
+  // mesh the evaluator built before stamps existed. This is what keeps a stamp
+  // from being a change to every torched object in the scene.
+  {
+    const vertsOf = (o: SceneObject): Float32Array => {
+      const { geometry } = evaluateObject(o)
+      const copy = Float32Array.from(geometry.getAttribute('position').array as Float32Array)
+      geometry.dispose()
+      return copy
+    }
+    const stamped = vertsOf(melted({ erosion: stroke(ZERO) }, 'same1'))
+    const bare = vertsOf(melted({ erosion: stroke(null) }, 'same2'))
+    check(
+      'a stamp changes nothing when nothing came after it',
+      stamped.length === bare.length && stamped.every((v, i) => v === bare[i]),
+      `${stamped.length} floats`
+    )
+  }
+
+  // MERGE. The cap stands 0.75 high and sits wholly inside the dab sphere.
+  {
+    near(
+      'a solid merged in after the melt keeps its full height',
+      topOf(melted({ erosion: stroke(ZERO), parts: [cap] }, 'merge1')),
+      0.75,
+      1e-6
+    )
+    near(
+      'which is the height it has with no melt at all',
+      topOf(melted({ parts: [cap] }, 'merge2')),
+      0.75,
+      1e-6
+    )
+    // The other order is still allowed: a stroke laid against the assembly is
+    // entitled to reach across the seam.
+    const after = topOf(melted({ parts: [cap], erosion: stroke(at({ parts: 1 })) }, 'merge3'))
+    check('while a stroke laid AFTER the merge does melt the part', after < 0.74, after.toFixed(4))
+    // And the old behaviour, on demand: this is the bug itself.
+    const last = topOf(melted({ parts: [cap], erosion: stroke(null) }, 'merge4'))
+    check('running last -- the old rule -- melted it', last < 0.74, last.toFixed(4))
+  }
+
+  // EXTRUDE. The boss reaches 0.8, and the dab sphere reaches 1.0.
+  {
+    near(
+      'a boss grown after the melt reaches its full depth',
+      topOf(melted({ features: [boss], erosion: stroke(ZERO) }, 'boss1')),
+      0.8,
+      1e-6
+    )
+    const before = topOf(melted({ features: [boss], erosion: stroke(at({ features: 1 })) }, 'boss2'))
+    check(
+      'while one already standing when the torch came out is melted',
+      before < 0.79,
+      before.toFixed(4)
+    )
+    const last = topOf(melted({ features: [boss], erosion: stroke(null) }, 'boss3'))
+    check('running last flattened the boss back onto its face', last < 0.51, last.toFixed(4))
+  }
+
+  // ORDER. Melt, grow a boss, melt again: the second stroke sees the boss and
+  // the first does not. Two runs of one list, replayed in different places.
+  {
+    const twice = topOf(
+      melted(
+        { features: [boss], erosion: [...stroke(ZERO), ...stroke(at({ features: 1 }))] },
+        'twice'
+      )
+    )
+    check('melt, extrude, melt again: the second stroke reaches the boss', twice < 0.79, twice.toFixed(4))
+  }
+
+  // CUTS AND ERASERS follow the same rule. The melt sits above y=0.25, so a cut
+  // taken afterwards carries all of it away and leaves the plain half-cube.
+  {
+    const half: CutPlane = { id: 'c1', origin: [0, 0.25, 0], normal: [0, 1, 0], side: -1 }
+    near(
+      'a cut taken after the melt leaves a clean plane',
+      topOf(melted({ cuts: [half], erosion: stroke(ZERO) }, 'cut1')),
+      0.25,
+      1e-6
+    )
+    near(
+      'and takes the melt with it',
+      volumeOf(melted({ cuts: [half], erosion: stroke(ZERO) }, 'cut2')),
+      0.75,
+      1e-4
+    )
+    const cutFirst = volumeOf(melted({ cuts: [half], erosion: stroke(at({ cuts: 1 })) }, 'cut3'))
+    check(
+      'while a cut face that was there first melts',
+      cutFirst < 0.749,
+      `${cutFirst.toFixed(4)} of 0.75`
+    )
+
+    const slab: SceneObject = {
+      ...object({ kind: 'box', size: [2, 0.3, 2] }, [], [], 'slab'),
+      transform: { position: [0, 0.5, 0], rotation: [0, 0, 0] },
+    }
+    const eraserOnly = volumeOf(melted({ erased: [slab] }, 'hole0'))
+    const meltFirst = volumeOf(melted({ erased: [slab], erosion: stroke(ZERO) }, 'hole1'))
+    const holeFirst = volumeOf(
+      melted({ erased: [slab], erosion: stroke(at({ erased: 1 })) }, 'hole2')
+    )
+    check(
+      'a melt that ran before the hole is erased away with it',
+      eraserOnly - meltFirst < 0.02,
+      `${meltFirst.toFixed(4)} of ${eraserOnly.toFixed(4)}`
+    )
+    check(
+      'while one that ran after eats the floor the eraser left',
+      holeFirst < meltFirst - 0.02,
+      `${holeFirst.toFixed(4)} against ${meltFirst.toFixed(4)}`
     )
   }
 }
@@ -2437,7 +2757,194 @@ console.log('\nThe sculpt brush is the torch with one sign flipped')
   }
 }
 
-// --- The torch on curved and merged solids ----------------------------------
+// --- The Smoother -----------------------------------------------------------
+console.log('\nThe Smoother rounds a corner to a radius and then stops')
+{
+  resetEvaluator()
+  const cube: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const rounding = (over: Partial<ErodeDab> = {}): ErodeDab => ({
+    at: [1, 1, 1],
+    radius: 0.6,
+    heat: 0,
+    smooth: 0,
+    round: 1,
+    ...over,
+  })
+  const rounded = (dabs: ErodeDab[], id: string) =>
+    evaluateObject({ ...object(cube, [], [], id), erosion: dabs })
+  const passes = (n: number, d: ErodeDab): ErodeDab[] =>
+    Array.from({ length: n }, () => ({ ...d }))
+
+  /** How far the far corner still reaches along its own diagonal. */
+  const cornerReach = (geom: BufferGeometry): number => {
+    const pos = geom.getAttribute('position')
+    const v = new Vector3()
+    const diagonal = new Vector3(1, 1, 1).normalize()
+    let far = -Infinity
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i)
+      if (v.x < 0.2 || v.y < 0.2 || v.z < 0.2) continue
+      far = Math.max(far, v.dot(diagonal))
+    }
+    return far
+  }
+  const bare = cornerReach(rounded([], 'round-bare').geometry)
+  /** How much of the corner one set of passes has taken off. */
+  const taken = (dabs: ErodeDab[], id: string) =>
+    bare - cornerReach(rounded(dabs, id).geometry)
+
+  // ONE PASS TAKES THE CORNER OFF, and takes only the corner off.
+  {
+    const one = rounded([rounding()], 'round-one')
+    check('a rounding dab does not produce a NaN', !hasNaN(one.geometry), '')
+    check('one pass eases the corner back', taken([rounding()], 'round-one2') > 0, '')
+    const volume = signedVolume(one.geometry)
+    check('it takes material away, since the corner was convex', volume < 8, `${volume.toFixed(5)}`)
+    check('and hardly any of it', volume > 7.99, `${volume.toFixed(5)}`)
+  }
+
+  // IT STOPS, which is the whole difference between this tool and Smoothing on
+  // the other two. Every dab is the same dab, so an accumulating brush would go
+  // on eating for as long as it was held -- the torch's own check a few hundred
+  // lines above asserts exactly that of itself. This one asserts the opposite.
+  {
+    const at20 = taken(passes(20, rounding()), 'round-20')
+    const at40 = taken(passes(40, rounding()), 'round-40')
+    const at80 = taken(passes(80, rounding()), 'round-80')
+    check('twenty passes have got somewhere', at20 > 0.2, `${at20.toFixed(4)}`)
+    check('forty are no further along', Math.abs(at40 - at20) < 0.01, `${at20.toFixed(4)} then ${at40.toFixed(4)}`)
+    near('and eighty land where forty did', at80, at40, 5e-3)
+  }
+
+  // A FLAT FACE IS UNTOUCHED, and not approximately: a vertex on a plane has
+  // its neighbours in that plane, so the reading the tool acts on is zero to
+  // the float and nothing moves at all. It is what lets a user drag sloppily
+  // across a panel and change only the edge they were aiming at.
+  {
+    const flat = rounded(passes(40, rounding({ at: [0, 1, 0], radius: 0.5 })), 'round-flat')
+    check('forty passes over the middle of a face move nothing', !hasNaN(flat.geometry), '')
+    // To within float SUMMATION, not to the bit: the refinement has split the
+    // triangles under the brush -- which is exactly shape-preserving, every
+    // midpoint landing on the straight edge it came from -- so the same solid
+    // is being added up in more pieces and in a different order. The positions
+    // are the check that means anything, and they are exact.
+    near('the solid is the same solid', signedVolume(flat.geometry), 8, 1e-9)
+    const pos = flat.geometry.getAttribute('position')
+    let highest = -Infinity
+    let lowest = Infinity
+    for (let i = 0; i < pos.count; i++) {
+      if (Math.abs(pos.getX(i)) > 0.4 || Math.abs(pos.getZ(i)) > 0.4) continue
+      if (pos.getY(i) < 0) continue
+      highest = Math.max(highest, pos.getY(i))
+      lowest = Math.min(lowest, pos.getY(i))
+    }
+    check('and the face is still flat at exactly its own height', highest === 1 && lowest === 1, `${lowest} to ${highest}`)
+  }
+
+  // STRENGTH IS A DESTINATION AND IT IS A LENGTH, which is the claim the panel
+  // makes and the one thing here worth measuring against arithmetic rather than
+  // against the setting below it: what a stroke leaves is a fillet whose radius
+  // is Strength times the brush.
+  //
+  // Measured on an EDGE rather than on the corner above, because an edge is
+  // what a fillet is defined on -- a 90-degree edge filleted at radius T has
+  // its apex cut back by T times root-two-minus-one, so the radius can be read
+  // straight back out of the geometry. The three-face corner is the harder
+  // shape and the one the checks above use for convergence; it is the wrong
+  // shape to read a radius off, since three arcs meet there.
+  //
+  // The reading is not exact and cannot be: it comes from a discrete curvature
+  // over a fan of triangles, and ROUND_GAIN is the constant that makes it come
+  // out right. What is left over depends on the brush against the OBJECT rather
+  // than on either alone -- the coarse mesh outside the patch has more say the
+  // smaller the patch is -- and over everything this app offers that lands
+  // between 0.89 and 1.36 of the radius asked for. See ROUND_GAIN. The band
+  // here is wide enough for all of that and nowhere near wide enough to survive
+  // the calibration going missing, which is the regression worth catching.
+  {
+    /** The fillet radius on the +X+Y edge, read back off the geometry. */
+    const filletOn = (dabs: ErodeDab[], id: string): number => {
+      const pos = rounded(dabs, id).geometry.getAttribute('position')
+      const v = new Vector3()
+      const across = new Vector3(1, 1, 0).normalize()
+      let far = -Infinity
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i)
+        if (Math.abs(v.z) > 0.05 || v.x < 0.2 || v.y < 0.2) continue
+        far = Math.max(far, v.dot(across))
+      }
+      return (Math.SQRT2 - far) / (Math.SQRT2 - 1)
+    }
+
+    let last = 0
+    for (const round of [ROUND_MIN, 0.5, 1]) {
+      const radius = 0.3
+      const got = filletOn(passes(80, rounding({ at: [1, 1, 0], radius, round })), `dial-${round}`)
+      check(`strength ${round} leaves more than the setting below it`, got > last, `${got.toFixed(4)}`)
+      // The top of the dial is the one place the promise gives way, and it
+      // gives way to the BRUSH: a fillet of radius T needs about T of surface
+      // either side of the corner to sit on, so a round approaching the size of
+      // the sphere that is making it runs out of room. Checked only where there
+      // is room, which is the whole of the dial below the top.
+      if (round < 1) {
+        near(`and it is about ${round} of the brush across`, got, round * radius, round * radius * 0.4)
+      }
+      last = got
+    }
+  }
+
+  // NOTHING OUTSIDE THE BRUSH MOVES, which is the promise the whole file is
+  // built on and the one a tool that spreads its own work could most easily
+  // break: rounding a corner makes its neighbours the sharpest thing left, so
+  // the round does creep -- as far as the rim of the sphere and no further.
+  {
+    const geom = rounded(passes(60, rounding()), 'round-far').geometry
+    const pos = geom.getAttribute('position')
+    let farthest = -Infinity
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) < -0.9) farthest = Math.max(farthest, pos.getY(i))
+    }
+    check('the far face is bit-for-bit where it was', farthest === -1, `${farthest}`)
+  }
+
+  // A THIN PLATE'S RIM IS NOT ROUNDED THROUGH ITSELF. Round both sides of a rim
+  // thinner than twice the target and the two rounds are aimed at the same
+  // material; left alone they arrive in the same place and pass through each
+  // other, and a bracket comes out inside out. See ROUND_WALL, which spends a
+  // share of what is left rather than a threshold, so the gap closes
+  // geometrically and never reaches nothing.
+  {
+    const plate: BaseSolid = { kind: 'box', size: [2, 0.06, 2] }
+    const rim = (n: number, id: string) =>
+      evaluateObject({
+        ...object(plate, [], [], id),
+        erosion: passes(n, rounding({ at: [1, 0, 0], radius: 0.5 })),
+      }).geometry
+    const bareVolume = signedVolume(evaluateObject(object(plate, [], [], 'plate-bare')).geometry)
+    const many = rim(100, 'plate-100')
+    check('a hundred passes along a thin rim produce no NaN', !hasNaN(many), '')
+    const volume = signedVolume(many)
+    check('the plate keeps its volume rather than turning itself inside out', volume > bareVolume * 0.99, `${volume.toFixed(6)} of ${bareVolume.toFixed(6)}`)
+    near('and forty passes have already settled there', signedVolume(rim(40, 'plate-40')), volume, 1e-6)
+  }
+
+  // ORDER MATTERS ACROSS ALL THREE BRUSHES, which is why they share one list
+  // rather than having one each. A groove melted across a rounded edge is not
+  // the surface a rounded edge melted across a groove is, and the only thing
+  // that says which happened is which dab was laid second.
+  {
+    const round = rounding({ at: [1, 1, 0], radius: 0.5 })
+    const melt: ErodeDab = { at: [1, 1, 0], radius: 0.5, heat: 1, smooth: 0.7 }
+    const roundThenMelt = signedVolume(rounded([...passes(6, round), ...passes(6, melt)], 'order-rm').geometry)
+    const meltThenRound = signedVolume(rounded([...passes(6, melt), ...passes(6, round)], 'order-mr').geometry)
+    check(
+      'rounding then melting is not melting then rounding',
+      Math.abs(roundThenMelt - meltThenRound) > 1e-4,
+      `${roundThenMelt.toFixed(5)} against ${meltThenRound.toFixed(5)}`
+    )
+  }
+}
+
 console.log('\nThe erode brush survives curved surfaces and merged assemblies')
 {
   resetEvaluator()
@@ -3620,15 +4127,28 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
   }
 
   // THE BOUNDS HOLD however hard the tool is leant on, which is what keeps the
-  // piece inside the frame it is drawn in.
+  // piece inside the frame it is drawn in -- and on the way IN the bound is the
+  // axis itself, so a piece may close. See `CLAY_FLARE`.
   {
     const { min, max } = wallBounds(0.4)
+    check('the floor is the axis', min === 0, `${min}`)
     const pinched = hold(stock, { y: 0.75, radius: 0, reach: 0.3, bite: 1, tool: 'push' }, 200)
-    near(
-      'a wall pinched as hard as possible stops at the floor',
-      Math.min(...pinched.wall),
-      min,
-      1e-9
+    // EXACTLY nothing, and it takes both halves of the change to get there. The
+    // floor no longer holds the wall out at a twentieth of the stock -- but the
+    // tool would still only CONVERGE on the axis, because the relax pass that
+    // keeps it from creasing the wall lifts the middle of its dish by a fraction
+    // of the neighbours either side, and what that leaves is a whisker five
+    // hundredths of a millimetre thick. `CLAY_CLOSED` is what turns the last
+    // fraction of a millimetre into nothing at all.
+    check(
+      'a wall pinched as hard as possible closes onto the axis',
+      Math.min(...pinched.wall) === 0,
+      `closed to ${Math.min(...pinched.wall)}`
+    )
+    check(
+      'and never crosses it',
+      pinched.wall.every((r) => r >= 0),
+      `${Math.min(...pinched.wall)}`
     )
     const flared = hold(stock, { y: 0.75, radius: 99, reach: 0.3, bite: 1, tool: 'pull' }, 200)
     near(
@@ -3637,6 +4157,127 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
       max,
       1e-9
     )
+  }
+
+  // A ROUND TOP, which is the most ordinary thing anybody turns and the one
+  // shape a floor of a twentieth made impossible: the tool held on the axis at
+  // the rim closes the piece to a point and leaves the body under it alone.
+  {
+    const domed = hold(stock, { y: 1.5, radius: 0, reach: 0.35, bite: 1, tool: 'push' }, 200)
+    check(
+      'a tool held on the axis at the rim closes the top to a point',
+      domed.wall[CLAY_RINGS - 1] === 0,
+      `rim at ${domed.wall[CLAY_RINGS - 1]}`
+    )
+    // And what it leaves under the point is a dome rather than a spike: every
+    // ring up the shoulder narrower than the one below it, all the way from the
+    // untouched wall to the axis.
+    let dents = 0
+    for (let i = CLAY_RINGS - 22; i < CLAY_RINGS - 1; i += 1) {
+      if (domed.wall[i + 1] > domed.wall[i] + 1e-9) dents += 1
+    }
+    check('and the shoulder under it falls away smoothly', dents === 0, `${dents} dents`)
+    check(
+      'while the wall below the tool is untouched',
+      domed.wall[CLAY_RINGS - 30] === stock.wall[CLAY_RINGS - 30],
+      `${domed.wall[CLAY_RINGS - 30]}`
+    )
+    // And the case the old floor was there to forbid, allowed on purpose: a
+    // piece pinched through the middle is two lobes meeting at a point, which
+    // still sweeps to a solid with volume in it.
+    const waisted = hold(stock, { y: 0.75, radius: 0, reach: 0.3, bite: 1, tool: 'push' }, 200)
+    const volume = clayVolume(waisted)
+    check(
+      'a piece pinched in two still has volume in it',
+      volume > 0 && Number.isFinite(volume),
+      `${volume}`
+    )
+  }
+
+  // ROUNDING THE TOP OFF, which is the gesture the whole of the change above is
+  // for: run the tool up the axis and clean off the top of the piece, and what
+  // is left is a piece with a domed top and no stock standing over it.
+  //
+  // What used to happen instead is worth writing down, because it is the shape
+  // of the bug. The floor held the wall out at a twentieth of the stock, so the
+  // top never closed; lifted, the tool converged on the axis but the relax left
+  // a whisker of five hundredths of a millimetre; and the viewport draws a wall
+  // of any width at all with a stroke a pixel and a half wide. The top of the
+  // piece came off as a NEEDLE standing on the shoulder the hand had rounded.
+  {
+    const from = stock.wall
+    let run = stock
+    // A hand dragging the tool up the axis, forty positions and eight frames of
+    // contact at each, ending clean above the rim.
+    for (let step = 0; step <= 40; step += 1) {
+      const y = 1.15 + (step / 40) * 0.5
+      for (let f = 0; f < 8; f += 1) {
+        run = mold(run, { y, radius: 0, reach: 0.35, bite: 0.5, tool: 'push' }, from)
+      }
+    }
+
+    const span = pieceSpan(run)
+    check('a tool run up the axis closes the piece below the rim', span !== null && span.hi < CLAY_RINGS - 1, `${span?.hi}`)
+    check(
+      'and every ring above the clay is nothing at all, not a whisker',
+      run.wall.slice((span?.hi ?? 0) + 1).every((r) => r === 0),
+      `${run.wall.slice((span?.hi ?? 0) + 1).filter((r) => r !== 0).length} rings still standing`
+    )
+    // A dome rather than a spike: the shoulder narrows all the way up, and it
+    // does it without a step in it -- the same promise the tools make anywhere
+    // else on the wall.
+    let rises = 0
+    for (let i = 40; i < (span?.hi ?? 0); i += 1) if (run.wall[i + 1] > run.wall[i] + 1e-12) rises += 1
+    check('the shoulder narrows all the way to the top', rises === 0, `${rises} rises`)
+    let sharpest = 0
+    for (let i = 1; i <= (span?.hi ?? 0); i += 1) {
+      sharpest = Math.max(sharpest, Math.abs(run.wall[i] - run.wall[i - 1]))
+    }
+    check('and does it without a step', sharpest < 0.03, `sharpest step ${sharpest.toFixed(4)}`)
+
+    // THE PIECE IS SHORTER THAN ITS STOCK, and every consumer has to agree
+    // about that or the readout, the drawing and the pasted solid tell three
+    // different stories.
+    const top = ringHeight(run, span?.hi ?? 0)
+    near('the piece is as tall as its clay, not as tall as its stock', pieceHeight(run), top, 1e-12)
+    check('which is shorter than the stock it came out of', pieceHeight(run) < run.height - 0.1, `${pieceHeight(run).toFixed(3)} of ${run.height}`)
+    const box = new Box3().setFromBufferAttribute(
+      revolveClay(run).getAttribute('position') as BufferAttribute
+    )
+    // A looser tolerance than the rest of this file uses, and it is the buffer
+    // rather than the arithmetic: positions land in a Float32Array, which holds
+    // about seven digits.
+    near('and the solid it sweeps to stops where the clay does', box.max.y, top, 1e-6)
+    near('still standing on the faceplate', box.min.y, 0, 1e-9)
+    check('and still holding clay', signedVolume(revolveClay(run)) > 0, `${signedVolume(revolveClay(run)).toFixed(5)}`)
+
+    // A FRESH LUMP IS THE WHOLE OF ITSELF, which is what says the trim only
+    // takes what the tools have actually closed.
+    const whole = pieceSpan(stock)
+    check('an untouched lump is clay from the plate to the rim', whole?.lo === 0 && whole?.hi === CLAY_RINGS - 1, `${whole?.lo}..${whole?.hi}`)
+    near('and stands its full stock height', pieceHeight(stock), 1.5, 1e-12)
+  }
+
+  // CLOSING IS THE TOOL'S RULE, NOT THE MODEL'S -- see `CLAY_CLOSED`. The tool
+  // snaps a ring it has worked under a millimetre; the size fields and undo,
+  // which touch every ring at once and are not aimed at anything, do not.
+  {
+    const stem = withWall(stock, stock.wall.map((r, i) => (i > 60 ? 0.011 : r)))
+    const shrunk = resize(stem, { radius: 0.04 })
+    check(
+      'shrinking the stock does not close the walls it thins',
+      shrunk.wall.every((r) => r > 0),
+      `${shrunk.wall.filter((r) => r === 0).length} rings closed`
+    )
+    check(
+      'and putting a hair-thin wall back does not close it either',
+      withWall(stock, stem.wall).wall.every((r) => r > 0),
+      ''
+    )
+    // But a tool worked over one does, and only over the rings it reached.
+    const closed = mold(stem, { y: 1.5, radius: 0, reach: 0.15, bite: 1, tool: 'push' })
+    check('while a tool worked over one closes it', closed.wall[CLAY_RINGS - 1] === 0, `${closed.wall[CLAY_RINGS - 1]}`)
+    check('and leaves the rings it never reached alone', closed.wall[0] === stem.wall[0], `${closed.wall[0]}`)
   }
 
   // NEITHER TOOL CAN SHARPEN THE WALL. The relax pass is what buys this, and it
@@ -3908,19 +4549,14 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
   }
 }
 
-// --- The rib, the profiles and the bore -------------------------------------
+// --- The rib and the bore ----------------------------------------------------
 //
-// The three things the lathe grew after its two tools: a smoothing tool that is
-// the second half of the other two, a table of shapes to start from, and a way
-// to take the middle out. All three are arithmetic on the same row of radii,
-// which is why they are checked here rather than in front of a window.
-console.log('\nThe lathe fairs, starts from a shape, and bores itself out')
+// The two things the lathe grew after its two tools: a smoothing tool that is
+// the second half of the other two, and a way to take the middle out. Both are
+// arithmetic on the same row of radii, which is why they are checked here
+// rather than in front of a window.
+console.log('\nThe lathe fairs itself and bores itself out')
 {
-  const roughest = (c: Clay): number => {
-    let worst = 0
-    for (let i = 1; i < CLAY_RINGS; i += 1) worst = Math.max(worst, Math.abs(c.wall[i] - c.wall[i - 1]))
-    return worst
-  }
   const hold = (c: Clay, dab: Dab, times: number): Clay => {
     const from = c.wall
     let out = c
@@ -4001,49 +4637,6 @@ console.log('\nThe lathe fairs, starts from a shape, and bores itself out')
     check('no ring outside the rib moves', moved === 0, `${moved} moved`)
   }
 
-  // THE PROFILES. Each one has to land somewhere the tools could have reached
-  // on their own -- inside the bounds every stroke obeys -- and has to come out
-  // fair, since a wall with corners in it is not something anybody turned.
-  {
-    const lump = freshClay(1.5, 0.4)
-    const { min, max } = wallBounds(lump.radius)
-    check('the palette offers eight shapes to start from', CLAY_PROFILES.length === 8, `${CLAY_PROFILES.length}`)
-    for (const profile of CLAY_PROFILES) {
-      const wall = profileWall(lump, profile)
-      const inside = wall.every((r) => r >= min - 1e-9 && r <= max + 1e-9)
-      check(
-        `${profile.id} lands where the tools could have taken it`,
-        wall.length === CLAY_RINGS && inside,
-        `${Math.min(...wall).toFixed(3)}..${Math.max(...wall).toFixed(3)} in ${min.toFixed(3)}..${max.toFixed(3)}`
-      )
-      // Faired on the way in: six straight runs between control points would
-      // leave corners, and a turned piece has none.
-      const shaped: Clay = { ...lump, wall }
-      // A SLOPE, NOT A STEP. Unfaired, a goblet steps from a 1.2 foot to a
-      // 0.28 stem between two neighbouring rings -- a third of the stock radius
-      // in a millimetre and a half of height. Faired, the steepest thing in the
-      // whole palette is that same transition at a twelfth of it. The bar is
-      // set where it separates the two by a wide margin rather than where any
-      // particular profile happens to land.
-      check(
-        `and ${profile.id} arrives fair rather than in straight runs`,
-        roughest(shaped) < 0.05,
-        `sharpest step ${roughest(shaped).toFixed(4)}`
-      )
-    }
-    // A SHAPE RATHER THAN A SIZE: the same profile on a bigger lump is the same
-    // piece, bigger. Checked as a ratio, since that is what "the same shape"
-    // means.
-    const vase = CLAY_PROFILES.find((p) => p.id === 'vase') as ClayProfile
-    const small = profileWall(freshClay(1.5, 0.2), vase)
-    const large = profileWall(freshClay(1.5, 0.4), vase)
-    check(
-      'a profile is a shape rather than a size',
-      large.every((r, i) => Math.abs(r / small[i] - 2) < 1e-9),
-      ''
-    )
-  }
-
   // THE BORE. One number and two switches on the way in; where the cavity
   // actually reaches on the way out. See `bore`.
   {
@@ -4061,27 +4654,86 @@ console.log('\nThe lathe fairs, starts from a shape, and bores itself out')
     const stout = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.5, capTop: false, capBottom: true } }
     check('nor has one bored thinner than its own wall', bore(stout) === null, '')
 
+    /**
+     * A wall shaped by hand, for the two pieces below: control points as
+     * `[height fraction, radius as a multiple of the stock]`, sampled onto the
+     * rings, held inside what the tools allow and then faired.
+     *
+     * A FIXTURE, not a feature. The app has no palette of starting shapes --
+     * every piece is pushed and pulled out of the cylinder -- but the two
+     * questions below are about shapes a cylinder cannot ask: whether a neck
+     * stops the cavity, and which pocket gets bored when the wall pinches into
+     * several. Working them up with `mold` would be a hundred dabs describing
+     * a shape six numbers describe, so the shape is written down here, in the
+     * check that needs it.
+     */
+    const shapedWall = (c: Clay, points: [number, number][]): number[] => {
+      const { min, max } = wallBounds(c.radius)
+      const hold = (r: number) => Math.min(max, Math.max(min, r))
+      const wall = new Array<number>(CLAY_RINGS)
+      for (let i = 0; i < CLAY_RINGS; i += 1) {
+        const t = i / (CLAY_RINGS - 1)
+        let r = points[0][1]
+        for (let k = 1; k < points.length; k += 1) {
+          const [t1, r1] = points[k]
+          if (t > t1 && k < points.length - 1) continue
+          const [t0, r0] = points[k - 1]
+          const span = t1 - t0
+          const f = span <= 0 ? 1 : Math.min(1, Math.max(0, (t - t0) / span))
+          r = r0 + (r1 - r0) * f
+          break
+        }
+        wall[i] = hold(r * c.radius)
+      }
+      // Faired the way a stroke's own relax pass fairs, so the straight runs
+      // between control points arrive as the curves they stand for -- a wall
+      // with corners in it is not something anybody turned.
+      for (let pass = 0; pass < 24; pass += 1) {
+        const from = wall.slice()
+        for (let i = 1; i < CLAY_RINGS - 1; i += 1) {
+          wall[i] = hold((from[i - 1] + from[i] * 2 + from[i + 1]) / 4)
+        }
+      }
+      return wall
+    }
+
     // ASKING IS NOT GETTING. A neck narrower than two walls stops the cavity
     // before it reaches the end, and the bore says so rather than pretending.
-    const vase = CLAY_PROFILES.find((p) => p.id === 'vase') as ClayProfile
+    // A vase: a belly, a neck drawn in above it, and a small flare at the rim.
+    const vase: [number, number][] = [
+      [0, 0.7],
+      [0.15, 1.15],
+      [0.38, 1.4],
+      [0.7, 0.72],
+      [0.88, 0.55],
+      [1, 0.78],
+    ]
     // Thick enough that the vase's own rim is narrower than two walls, so
     // there is nothing to bore through at the end that was asked for. The
     // cavity ends up in the belly, blind at both ends.
     const necked = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.31, capTop: false, capBottom: true } }
-    const shaped = { ...necked, wall: profileWall(necked, vase) }
+    const shaped = { ...necked, wall: shapedWall(necked, vase) }
     const blind = bore(shaped) as Bore
     check('a neck too thin to bore through stops the cavity', blind !== null && !blind.openTop, `${blind?.openTop}`)
     check('and the end that was asked for is honestly not open', blind !== null && blind.hi < shaped.height, `${blind?.hi.toFixed(3)} of ${shaped.height}`)
 
     // BORED FROM THE OPEN END, which is what stops a goblet being hollowed
     // through its foot -- the widest part of it, and the wrong end entirely.
-    const goblet = CLAY_PROFILES.find((p) => p.id === 'goblet') as ClayProfile
+    // A goblet: a wide foot, a thin stem, and a cup opening out above it.
+    const goblet: [number, number][] = [
+      [0, 1.2],
+      [0.08, 1.1],
+      [0.16, 0.28],
+      [0.42, 0.24],
+      [0.6, 0.85],
+      [1, 1.25],
+    ]
     // A wall thicker than the stem is wide, so the stem cannot be bored at all
     // -- which is what makes this a test of WHICH pocket gets chosen rather
     // than of whether one exists. At a thinner wall the bore runs right down
     // through the stem into the foot, and that is correct: there is room.
     const cupLump = { ...freshClay(1.5, 0.4), hollow: { thickness: 0.095, capTop: false, capBottom: true } }
-    const stem = { ...cupLump, wall: profileWall(cupLump, goblet) }
+    const stem = { ...cupLump, wall: shapedWall(cupLump, goblet) }
     const bowlBore = bore(stem) as Bore
     check(
       'a goblet is bored from the cup rather than through its foot',
@@ -4160,8 +4812,187 @@ console.log('\nThe lathe fairs, starts from a shape, and bores itself out')
   }
 }
 
-console.log(
-  failures === 0
+
+// --- the laser cutter's kerf --------------------------------------------------
+//
+// Cutting with a LINE rather than a plane, which is the one thing `cut.ts`
+// cannot do and the whole of what the third screen is for. The line is swept
+// into a thin closed wall, that wall is subtracted, and the pieces are whatever
+// the result falls into -- so what has to hold here is that a block conserves
+// its volume less the slot, that a line which misses leaves it alone, and that
+// the pieces come back as separate solids rather than as one geometry holding
+// two shells. See `laserCut.ts`.
+console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
+{
+  const FRONT: LaserFace = { axis: 2, sign: 1 }
+
+  // The frame each face is drawn in. It has to be right for all six or a line
+  // drawn on one of them lands somewhere else entirely -- and the handedness is
+  // what the wall builder leans on to decide which way its faces point.
+  for (const face of [
+    { axis: 0, sign: 1 },
+    { axis: 0, sign: -1 },
+    { axis: 1, sign: 1 },
+    { axis: 1, sign: -1 },
+    { axis: 2, sign: 1 },
+    { axis: 2, sign: -1 },
+  ] as LaserFace[]) {
+    const { u, v, n } = faceBasis(face)
+    const name = `axis ${face.axis}${face.sign > 0 ? '+' : '-'}`
+    check(`${name}: the face frame is right-handed`, u.clone().cross(v).distanceTo(n) < 1e-9, '')
+    check(`${name}: and its axes are unit and square`, Math.abs(u.length() - 1) < 1e-9 && Math.abs(u.dot(n)) < 1e-9, '')
+  }
+
+  near('a fresh block is the unit cube', pieceVolume(freshBlock()), 1, 1e-6)
+
+  // A CUT CONSERVES THE BLOCK, less the slot it burned. That is the one
+  // arithmetic claim the whole screen rests on: material is removed by the kerf
+  // and by nothing else.
+  const down = cutPieces([freshBlock()], [[0, -0.2], [0, 0.2]], FRONT)
+  check('a line down the front splits the block in two', down.pieces.length === 2, `${down.pieces.length}`)
+  check('and reports the one piece that came apart', down.split === 1, `${down.split}`)
+  near(
+    'the halves are the block less one kerf',
+    down.pieces.reduce((t, g) => t + pieceVolume(g), 0),
+    1 - LASER_KERF,
+    2e-3
+  )
+  check(
+    'cut down the middle they are equal',
+    Math.abs(pieceVolume(down.pieces[0]) - pieceVolume(down.pieces[1])) < 1e-3,
+    down.pieces.map((g) => pieceVolume(g).toFixed(4)).join(' / ')
+  )
+
+  // WHAT THE CUT MADE, all of it, because which piece is waste is not this
+  // function's to decide -- it hands back the set and the screen offers the
+  // choice. See `choices` in `laserStore`.
+  //
+  // NOT THE WHOLE BED, which is the reason a list is kept at all: a sliver from
+  // an earlier cut may have been kept on purpose, and a chooser ranging over
+  // every piece there has ever been would offer to bin work this cut never
+  // touched.
+  const off = cutPieces([freshBlock()], [[0.3, -0.2], [0.3, 0.2]], FRONT)
+  check('a cut names both pieces it made', off.made.length === 2, `${off.made.join(', ')}`)
+  check('and they are the pieces on the bed', off.made.join() === '0,1', `${off.made.join()}`)
+  // Biggest first, so a screen stepping through them steps down in size and the
+  // smallest -- the one the choice opens on -- is the last of them.
+  check(
+    'biggest first',
+    pieceVolume(off.pieces[off.made[0]]) > pieceVolume(off.pieces[off.made[1]]),
+    off.made.map((i) => pieceVolume(off.pieces[i]).toFixed(4)).join(' / ')
+  )
+  near('and the last of them is the sliver it looks like', pieceVolume(off.pieces[1]), 0.2 - LASER_KERF / 2, 5e-3)
+
+  // A miss has to be reported rather than silently doing nothing, or the button
+  // reads as broken -- the same lesson the plane cut's receipt already carries.
+  const missed = cutPieces([freshBlock()], [[2, 2], [2, 2.4]], FRONT)
+  check('a line clear of the block cuts nothing', missed.split === 0 && missed.pieces.length === 1, `${missed.pieces.length}`)
+  check('and names no pieces of its own', missed.made.length === 0, `${missed.made.length}`)
+
+  // Every drawn end is carried on to the border, so a stroke that stops in the
+  // middle of a face still separates the block. Without it the wall has a dead
+  // end and the cut is a slot rather than a cut.
+  const carried = carryToBorder([[0, -0.2], [0, 0.2]])
+  check(
+    'an open line is carried well past the face',
+    carried[0][1] < -0.5 && carried[carried.length - 1][1] > 0.5,
+    `${carried[0][1].toFixed(2)} .. ${carried[carried.length - 1][1].toFixed(2)}`
+  )
+  check('along the tangent it was already travelling', Math.abs(carried[0][0]) < 1e-9, '')
+  const short = cutPieces([freshBlock()], [[-0.15, -0.05], [-0.15, 0.05]], FRONT)
+  check('so a stroke across a tenth of the face still cuts it in two', short.pieces.length === 2, `${short.pieces.length}`)
+
+  // Cuts stack, and a later one acts on every piece it crosses -- there being
+  // no selection on that screen to aim it with.
+  const again = cutPieces(down.pieces, [[-0.4, 0], [0.4, 0]], FRONT)
+  check('a second cut across both pieces makes four', again.pieces.length === 4, `${again.pieces.length}`)
+  check('and reports both of them coming apart', again.split === 2, `${again.split}`)
+
+  // A curve cuts exactly as a straight line does, which is the point of
+  // sweeping a wall rather than intersecting a half-space.
+  const control: LaserPt[] = [[-0.2, -0.3], [0.15, 0], [-0.1, 0.3]]
+  const curved = cutPieces([freshBlock()], bezierChain(control, fittedHandles(control), 20), FRONT)
+  check('a curved line splits it too', curved.pieces.length === 2, `${curved.pieces.length}`)
+  near('and still conserves the block', curved.pieces.reduce((t, g) => t + pieceVolume(g), 0), 1 - LASER_KERF, 4e-3)
+
+  // WHAT THE CURVE IS. Fit and Manual are one Bezier chain given different
+  // handles, which is what lets the tool switch between them without the line
+  // moving -- and the fitted curve has to pass through every placed point, or
+  // "Fit to line" is not fitting to anything.
+  {
+    const pts: LaserPt[] = [[-0.3, -0.3], [0, 0.1], [0.3, -0.2]]
+    const curve = bezierChain(pts, fittedHandles(pts), 24)
+    const misses = pts.map((p) => Math.min(...curve.map((c) => Math.hypot(c[0] - p[0], c[1] - p[1]))))
+    check('the fitted curve passes through every point', misses.every((d) => d < 1e-9), misses.map((d) => d.toExponential(1)).join(' '))
+    const flat: LaserPt[] = [[-0.4, 0], [0, 0], [0.4, 0]]
+    check(
+      'and collinear points stay collinear',
+      bezierChain(flat, fittedHandles(flat), 16).every((p) => Math.abs(p[1]) < 1e-9),
+      ''
+    )
+  }
+
+  // THE STABILISER IS A ROPE, not an average: nothing at all happens inside the
+  // slack, and a long pull is followed exactly, one slack behind. That is what
+  // lets the recorded line be the line that gets cut.
+  {
+    let at: LaserPt = [0, 0]
+    at = ropeFollow(at, [0.05, 0], 0.1)
+    check('a wobble inside the slack moves the tool not at all', at[0] === 0 && at[1] === 0, `${at}`)
+    at = ropeFollow(at, [0.5, 0], 0.1)
+    near('a long pull drags it to one slack behind', at[0], 0.4, 1e-9)
+    near('and with no slack it arrives exactly', ropeFollow(at, [0.5, 0], 0)[0], 0.5, 1e-9)
+  }
+
+  // Simplifying is what keeps a cut cheap: a straight stroke arrives with a
+  // station every STEP and needs two.
+  {
+    const dense: LaserPt[] = []
+    for (let i = 0; i <= 200; i += 1) dense.push([-0.4 + (i / 200) * 0.8, 0])
+    check('a dead straight run simplifies to its two ends', simplify(dense).length === 2, `${simplify(dense).length}`)
+    const bend: LaserPt[] = [[-0.4, 0], [0, 0.3], [0.4, 0]]
+    check('and a corner is kept', simplify(bend).length === 3, `${simplify(bend).length}`)
+    check(
+      'so a straight cut is a handful of triangles, not hundreds',
+      down.pieces.every((g) => triangleCount(g) < 60),
+      down.pieces.map(triangleCount).join(' / ')
+    )
+  }
+
+  // AND THE OUTLINE. Three's own `EdgesGeometry` cannot do this one: a boolean
+  // leaves T-junctions, so half the shared edges find no partner and every
+  // triangle of the fan across a flat cut face is drawn as a silhouette. A cut
+  // box has twelve edges and that is a thing worth being able to state.
+  {
+    const edgeSpan = (g: BufferGeometry) => {
+      const a = outlineOf(g).getAttribute('position').array as ArrayLike<number>
+      let total = 0
+      for (let i = 0; i < a.length; i += 6) {
+        total += Math.hypot(a[i + 3] - a[i], a[i + 4] - a[i + 1], a[i + 5] - a[i + 2])
+      }
+      return total
+    }
+    const edgeCount = (g: BufferGeometry) => outlineOf(g).getAttribute('position').count / 2
+    check('a cube outlines as twelve edges', edgeCount(freshBlock()) === 12, `${edgeCount(freshBlock())}`)
+    near('of twelve unit lengths', edgeSpan(freshBlock()), 12, 1e-6)
+
+    const boxes = cutPieces([freshBlock()], [[0.1, -0.3], [0.1, 0.3]], FRONT)
+    check('and each half of a straight cut as twelve too', boxes.pieces.every((g) => edgeCount(g) === 12), boxes.pieces.map(edgeCount).join(' / '))
+    const wide = [0.5 + 0.1 - LASER_KERF / 2, 0.5 - 0.1 - LASER_KERF / 2]
+    check(
+      'each measuring its own box exactly',
+      boxes.pieces.every((g, i) => Math.abs(edgeSpan(g) - (4 * wide[i] + 8)) < 0.02),
+      boxes.pieces.map((g, i) => `${edgeSpan(g).toFixed(3)} vs ${(4 * wide[i] + 8).toFixed(3)}`).join(' / ')
+    )
+    check(
+      'and a curved piece outlines its silhouette rather than its facets',
+      curved.pieces.every((g) => edgeSpan(g) < 16),
+      curved.pieces.map((g) => `${edgeSpan(g).toFixed(1)} over ${triangleCount(g)} facets`).join(' / ')
+    )
+  }
+}
+
+console.log(  failures === 0
     ? '\nAll engine checks passed.\n'
     : `\n${failures} engine check(s) FAILED.\n`
 )

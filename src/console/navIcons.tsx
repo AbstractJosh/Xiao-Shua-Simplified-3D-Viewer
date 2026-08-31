@@ -144,6 +144,50 @@ export function CutIcon() {
 }
 
 /**
+ * Freehand: a line drawn by hand across the face it is drawn on.
+ *
+ * THE SQUARE IS THE FACE, not the block, and that is the whole difference from
+ * `CutIcon` next door. That glyph draws a line running PAST a solid, because the
+ * plane it stands for is unbounded and the square is only a guide. This line
+ * stops at the border, because this cut really is bounded by the face it was
+ * drawn on -- and it wanders, because a hand drew it. A straight stroke here
+ * would be the other tool's picture.
+ *
+ * The wobble is deliberate and load-bearing: it is the one mark that separates
+ * this tool from Point Cut at eighteen pixels, where neither the square nor the
+ * weight can carry a distinction.
+ */
+export function FreehandIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <rect x="3.4" y="3.4" width="13.2" height="13.2" rx="1.6" {...STROKE} />
+      <path d="M7.2 3.4c2.4 3 -2.2 5.2 0.6 7.4 2.4 1.9 -0.4 4 1.4 5.8" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * Point Cut: the same face, cut by a line somebody placed rather than drew.
+ *
+ * The knots are the picture. Three of them on a two-segment line, filled rather
+ * than outlined so they read as things you can take hold of at the size this is
+ * drawn -- an outlined ring at 2px reads as a smudge. The segments are dead
+ * straight, which is the tool's resting mode and the honest advertisement for
+ * it: the curves are a choice you make about a line that already exists.
+ */
+export function PointCutIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <rect x="3.4" y="3.4" width="13.2" height="13.2" rx="1.6" {...STROKE} />
+      <path d="M6.4 3.4 L12.4 9.2 L8.2 16.6" {...STROKE} />
+      <circle cx="12.4" cy="9.2" r="1.9" fill="currentColor" />
+      <circle cx="6.4" cy="3.4" r="1.5" fill="currentColor" />
+      <circle cx="8.2" cy="16.6" r="1.5" fill="currentColor" />
+    </svg>
+  )
+}
+
+/**
  * The torch's business end: a live flame standing on the nozzle it comes out of.
  *
  * THE FLAME IS THE WHOLE ICON and the nozzle is there to say what kind. The old
@@ -208,6 +252,39 @@ export function SculptIcon() {
       {/* The stylus, and the collar that names it one. */}
       <path d="M16.9 2.6 11.6 7.9" {...STROKE} />
       <path d="M14.4 3.2 16.3 5.1" {...STROKE} />
+    </svg>
+  )
+}
+
+/**
+ * The Smoother: a corner with the corner taken off it.
+ *
+ * THE SHAPE THAT COMES OUT is the rule these glyphs follow -- see `SculptIcon`
+ * -- and here it is the whole picture rather than half of it, because this tool
+ * has no direction to show. A flame says heat and a mound says up; a fillet
+ * says nothing at all until you can see what it replaced. So both are drawn:
+ * the round the tool leaves, solid, and the point it took, faint. The eye reads
+ * the pair as a before and an after, which is exactly what one pass does.
+ *
+ * The arc is a little under half the leg. Fatter and the glyph reads as a
+ * bracket -- all corner, no edge -- which is the shape of a UI chrome mark
+ * rather than of a fillet; thinner and it disappears at 20 px. Both legs run
+ * past it by the same length so the corner sits in the MIDDLE of the box
+ * rather than in its top-left, which an L drawn to two edges always does.
+ */
+export function SmootherIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      {/* The point the tool took, drawn first so the arc lies over it, and
+          faint rather than dashed: a dash in this set means a surface being
+          looked THROUGH, and this is one that is no longer there at all. Just
+          under half weight, which at this size is the difference between
+          reading as a ghost and reading as a shadow -- and a ghost is the whole
+          message, since a rounded corner alone says nothing about what did the
+          rounding. */}
+      <path d="M5.6 10.2V5.6H10.2" {...STROKE} opacity="0.45" />
+      {/* And the edge as it leaves it: two straight legs and the arc between. */}
+      <path d="M5.6 18V10.2A4.6 4.6 0 0 1 10.2 5.6H18" {...STROKE} />
     </svg>
   )
 }
@@ -366,13 +443,22 @@ export function MergeIcon() {
  *
  * Not a pencil eraser, which would say "undo" as loudly as it says "take
  * away", and not a second solid ghosted over the first the way `MergeIcon`
- * pairs two rectangles -- at the 14px this is drawn at, the ghost is mush.
+ * pairs two rectangles -- at the size this is drawn at, the ghost is mush.
+ *
+ * The artwork fills its viewBox rather than sitting in the middle of it. The
+ * box used to span two thirds of the width and the minus inside it under a
+ * third, so the glyph arrived at whatever size CSS asked for and then threw
+ * away a third of it -- which is how the eraser grip on a Solids row came to be
+ * a hairline nobody could find. Same silhouette, same proportions between box
+ * and bar; it just stopped leaving the room empty. The bar carries extra
+ * stroke on top, because it is the half that says what the button does: an
+ * outlined box on its own is every other icon in this set.
  */
 export function EraseIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden>
-      <rect x="3.2" y="5.4" width="13.6" height="9.2" rx="1.8" {...STROKE} />
-      <path d="M6.8 10h6.4" {...STROKE} />
+      <rect x="1.6" y="4.2" width="16.8" height="11.6" rx="2.2" {...STROKE} />
+      <path d="M5.6 10h8.8" {...STROKE} strokeWidth={2.4} />
     </svg>
   )
 }

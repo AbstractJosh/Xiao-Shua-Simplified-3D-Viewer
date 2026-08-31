@@ -15,6 +15,15 @@ import type { BaseSolid, ErodeDab } from './types'
  * on `RELAX_FILL`, which is the one place the two are not mirror images by
  * accident but by arrangement.
  *
+ * A THIRD BRUSH RIDES THE SAME SPHERE and takes neither direction: the
+ * Smoother, which rounds a corner off and does nothing else. It is the flow
+ * above with the bite taken out -- see `roundOff` -- and it lives here rather
+ * than in a file of its own because rounding a corner is not something the
+ * other two do BESIDE melting and raising, it is something they cannot help
+ * doing WHILE they melt and raise. What the Smoother adds is a PLACE TO STOP:
+ * it eases every corner under it to one radius and then leaves the surface
+ * alone, where the other two go on moving it for as long as they are held.
+ *
  * What follows describes the torch, because that is the tool the tuning below
  * was measured against; read every "sink" as "move the surface the way this dab
  * is pointed" and it is equally the description of the other one.
@@ -310,6 +319,134 @@ const DAB_CLOSE = 0.08
  * reads as sandblasting rather than melting, which is what the low end is for.
  */
 export const BRUSH_SMOOTH_MIN = 0.15
+
+/**
+ * How much of the room in front of a vertex the Smoother may close in one dab.
+ *
+ * THE ONE PLACE THE SMOOTHER ADMITS IT CAN RUN OUT OF ROOM, and the answer the
+ * torch gives with `burnList` asked of a tool that has no hole to offer. Round
+ * the rim of a plate thinner than twice the target and the two rounds -- one
+ * coming down the front face, one coming up the back -- are aimed at the same
+ * material; round the bottom of a slot narrower than twice the target and the
+ * two fills are aimed at the same air. Either way the surfaces arrive in the
+ * same place and pass through each other, and what the user is left with is a
+ * plate turned inside out by the tool that was supposed to take the edge off
+ * it.
+ *
+ * A SHARE OF WHAT IS LEFT rather than a threshold, which is what makes it
+ * safe without needing a threshold to be right. Each face may close a fifth of
+ * the gap per dab, so the two of them together close two fifths and three
+ * fifths survive -- every dab, however many are laid. The gap shrinks
+ * geometrically and never reaches zero, so a rim too thin to round comes out
+ * thin and rounded rather than crossed, and the tool stops being able to do
+ * anything more to it. That is the honest outcome: there was no room for the
+ * radius that was asked for, and what room there was has been used.
+ *
+ * A fifth, because it has to be small enough that three rounds of a dab cannot
+ * spend it (they are capped against the same allowance, not each given it) and
+ * large enough that the approach is not so slow it reads as the tool giving up
+ * early. It costs nothing anywhere else: on any surface with a solid behind it
+ * -- which is every surface that is not part of a thin wall -- the gap is
+ * larger than anything this brush could travel, and the cap never binds.
+ */
+const ROUND_WALL = 0.2
+
+/**
+ * The tightest round the Smoother will make, as a share of its brush.
+ *
+ * A FLOOR ON THE TARGET, and it is a PERFORMANCE floor, which is the honest
+ * name for it. The target is what the mesh has to be fine enough to carry --
+ * see `refineEdge` -- and the refinement it asks for is spread over the whole
+ * brush rather than laid along the corner, because refinement runs before
+ * anything has moved and knows only where the dabs are. So the cost of a round
+ * goes as the square of how much finer than the brush it is, and a Strength
+ * near zero spends the entire vertex budget on an arc nobody can see.
+ *
+ * MEASURED at the WIDE end, because that is where a floor has to hold: a 3 cm
+ * brush -- the torch's default, and three times the Smoother's own -- dragged a
+ * hundred dabs along a cube's edge, against the torch over the same ground at
+ * 59 ms. At a quarter the Smoother takes 109 ms, at a fifth 337, at a tenth
+ * several seconds -- and erosion is REPLAYED from the document on every
+ * evaluation, so that is not a one-off cost but the frame time for the rest of
+ * the drag. A quarter is where it stops being about twice the torch and starts
+ * being a stall. The tool opens at a centimetre and is far cheaper there; see
+ * DEFAULT_SMOOTHER_RADIUS.
+ *
+ * It costs the user very little, because the answer to wanting a finer round is
+ * a finer brush: the two dials are a size and a share of it, so the 1 cm brush
+ * this tool opens with leaves a 2.5 mm round at the floor, and a 1 mm brush
+ * leaves a quarter of a millimetre. And a finer brush is CHEAPER rather than dearer, since the
+ * region it refines shrinks with it -- which is what makes "use a smaller
+ * brush" real advice rather than a way of describing a limitation. What the
+ * floor rules out is only the combination that was never going to work: a wide
+ * brush asked for a hairline fillet.
+ *
+ * The panel offers nothing below it, so the number a user picks is the number
+ * they get. It is the same bargain BRUSH_SMOOTH_MIN strikes on the other two.
+ */
+export const ROUND_MIN = 0.25
+
+/**
+ * The longest edge an ARC can be drawn with, as a share of the radius it is an
+ * arc of.
+ *
+ * Coarser than REFINE_EDGE, which is the same question asked about a dish, and
+ * the difference is what the two things are: a dish has a rim and a middle and
+ * a falloff between them, so it needs vertices to shape; an arc is one radius
+ * all the way along and the reading that produces it is normalised by the
+ * spacing of the vertices themselves. Density buys shape in the first case and
+ * almost nothing in the second.
+ *
+ * Measured over brushes from 0.3 to 2 and Strengths from 0.1 to 1: at three
+ * fifths the arc lands between 0.87 and 1.07 of the radius asked for, which is
+ * TIGHTER than the same sweep at two fifths, and it does it with a third of the
+ * triangles. Finer than this is paying for a worse answer -- past a point the
+ * mean-edge reading `span` takes starts over-reading a fan whose edges vary
+ * more than they did, and the arc comes out short.
+ */
+const ROUND_EDGE = 0.6
+
+/**
+ * What the dial's target has to be multiplied by for the arc it leaves to
+ * actually have that radius.
+ *
+ * A CALIBRATION, and it is here rather than folded into the arithmetic above
+ * because the arithmetic above is exact and this is not. `keep` compares the
+ * reading against h squared over twice the target, which is the relation a
+ * SPHERE of that radius obeys. A fillet is not a sphere, it is a cylinder --
+ * curved across the corner and dead straight along it -- and the reading is a
+ * MEAN curvature, which on a cylinder is half the curvature of its section. So
+ * half the answer belongs to the flat direction and the target has to be twice
+ * what the sphere relation asks for. That much is derived.
+ *
+ * The rest is measured, and it comes from `span` being a MEAN edge length over
+ * a fan that is not regular: squaring a mean over-reads what an average of
+ * squares would give, so the reading comes out high, the corner is called
+ * rounder than it is, and the tool stops early. Measured on a cube's edge at
+ * brush radii from 0.5 to 2 and Strengths from 0.1 to 0.5, the arc landed at
+ * 0.34 of the radius asked for -- flat across all of them, which is what makes
+ * a single constant the right shape of fix rather than a fudge that holds at
+ * one size.
+ *
+ * At 3.4 the arc lands between 0.89 and 1.36 of the radius asked for over every
+ * combination this app offers. The residual is SCALE-INVARIANT and depends only
+ * on the brush against the OBJECT -- measured at a brush a sixth of a cube's
+ * side it reads 1.20 whether the cube is 60 cm or 6, and at half a side it
+ * reads 0.92 at both -- which is the mesh outside the brush, pinned where the
+ * evaluator left it, having more say the smaller the patch is. That is a
+ * property of refining a region rather than a whole solid, and it is why the
+ * panel calls this Strength rather than a radius in millimetres: it is a share
+ * of the brush, held to about a fifth either way.
+ *
+ * What it cannot do is beat the BRUSH: a fillet of radius T needs about T of
+ * surface either side of the corner to sit on, so a round approaching the size
+ * of the sphere runs out of room and saturates -- Strength at 1 leaves about
+ * 0.7 of a radius rather than a whole one, and pushing this number higher buys
+ * a few hundredths for a lot of iteration. Which is the honest shape of the
+ * tool: the brush is how much of the corner you are working, and it bounds what
+ * you can ask for.
+ */
+const ROUND_GAIN = 3.4
 
 /**
  * The thinnest wall the torch will leave standing, as a fraction of the brush
@@ -905,6 +1042,35 @@ function workingCopy(welded: Welded): Work {
  * at the same place would weld back together by position -- until the torch
  * moved one of them.
  */
+/**
+ * The longest edge a given dab can work with.
+ *
+ * For the two brushes that MOVE the surface it is a share of the brush, and it
+ * has always been that: the dish is the size of the sphere, so the sphere is
+ * what has to be resolved.
+ *
+ * The Smoother is the one whose mark is smaller than its brush. What it leaves
+ * is a fillet of the TARGET radius, wherever inside the sphere the corner
+ * happens to run -- and triangles sized for the sphere cannot carry an arc a
+ * quarter of it. Held to the brush, a fine round under a fat brush did nothing
+ * at all: the corner already read rounder than asked for, because the only
+ * thing the reading had to go on was edges four times longer than the round. So
+ * the Smoother asks about the round it is about to leave instead, and a fine
+ * round under a fat brush now refines the way a fine round under a fine brush
+ * always did.
+ *
+ * Bounded at BOTH ends, and both bounds are load-bearing. ROUND_MIN is the
+ * floor, and it is what keeps a Strength of nearly nothing from spending the
+ * whole vertex budget. REFINE_EDGE is the ceiling: a round approaching the size
+ * of its own brush is being cut by a sphere barely wider than the arc, and the
+ * density the torch already uses resolves that -- there is nothing to be gained
+ * by refining a wide fillet more coarsely than a dish of the same size.
+ */
+function refineEdge(d: ErodeDab): number {
+  if (d.round === undefined) return d.radius * REFINE_EDGE
+  return d.radius * Math.min(Math.max(d.round, ROUND_MIN) * ROUND_EDGE, REFINE_EDGE)
+}
+
 function refine(work: Work, dabs: ErodeDab[]): void {
   const centres = dabs.map((d) => new Vector3(...d.at))
   const a = new Vector3()
@@ -948,7 +1114,7 @@ function refine(work: Work, dabs: ErodeDab[]): void {
    * finer triangles just outside the brush and is invisible.
    */
   const maxReach = Math.max(...dabs.map((d) => d.radius * REFINE_REACH))
-  const minTarget = Math.min(...dabs.map((d) => d.radius * REFINE_EDGE))
+  const minTarget = Math.min(...dabs.map(refineEdge))
   const cell = maxReach
   const cellKey = (x: number, y: number, z: number) =>
     ((Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0)
@@ -1024,7 +1190,7 @@ function refine(work: Work, dabs: ErodeDab[]): void {
       // actually be responsible -- which is only ever asked for an edge already
       // known to be in the right neighbourhood.
       for (let d = 0; d < dabs.length; d++) {
-        const target = dabs[d].radius * REFINE_EDGE
+        const target = refineEdge(dabs[d])
         if (lengthSq <= target * target) continue
         const reach = dabs[d].radius * REFINE_REACH
         if (nearestOnEdge(centres[d]) <= reach * reach) return true
@@ -1388,35 +1554,47 @@ function reachableVertices(work: Work, dabs: ErodeDab[]): Uint32Array {
   return Uint32Array.from(inside)
 }
 
-function dab(
+/** Who is under the brush this instant, and how hard. */
+type Under = {
+  /** The vertices in reach, in buffer order. */
+  hit: number[]
+  /** The falloff at each, 1 in the middle and 0 at the rim. */
+  weight: number[]
+  /** The same falloff opened out, which is what the FLOW is weighted by rather
+   *  than what the sinking is. See RELAX_SPREAD. */
+  spread: number[]
+}
+
+/**
+ * Gather the vertices one dab reaches, with their weights.
+ *
+ * Its own function because all three brushes ask exactly this question and
+ * would otherwise ask it in three places -- and the answer is not merely a
+ * distance test: it is the sphere, the falloff, and the one exclusion below
+ * that every brush has to make and none of them would think to. The arithmetic
+ * is written out rather than run through a Vector3 because this is the
+ * innermost loop of a live drag, and the wrapper costs more than the three
+ * subtractions it wraps.
+ *
+ * `touched` is what the shading pass reads at the far end, so a brush that may
+ * decline to move some of what it reaches passes `null` here and marks its own
+ * as it moves them. See `roundOff`.
+ */
+function underBrush(
   work: Work,
   adj: Adjacency,
   spec: ErodeDab,
   reachable: Uint32Array,
-  touched: Uint8Array,
-  /** Vertex -> its index in `hit`, or -1. Owned by the caller and handed back
-   *  all -1, so the clamp below can ask about a neighbour without a Map. */
-  slot: Int32Array
-): boolean {
+  touched: Uint8Array | null
+): Under {
   const cx = spec.at[0]
   const cy = spec.at[1]
   const cz = spec.at[2]
   const radius = spec.radius
   const radiusSq = radius * radius
-  // WHICH WAY THIS DAB PUSHES, and the only difference between the two tools.
-  // Read once, into a plain +1/-1, because it multiplies a displacement in
-  // three places and a branch in the innermost loop of a live drag would be
-  // three branches the CPU has to predict per vertex per round.
-  const dir = spec.raise ? 1 : -1
 
-  // Who is under the brush, and how hard. Gathered once: both steps below want
-  // the same set and the same weights. The arithmetic is written out rather
-  // than run through a Vector3 because this is the innermost loop of a live
-  // drag, and the wrapper costs more than the three subtractions it wraps.
   const hit: number[] = []
   const weight: number[] = []
-  // The flow's weight, kept beside the sink's rather than derived per round --
-  // there are three rounds and two uses in each. See RELAX_SPREAD.
   const spread: number[] = []
   for (let i = 0; i < reachable.length; i++) {
     const v = reachable[i]
@@ -1430,13 +1608,42 @@ function dab(
     // A vertex no triangle uses any more: what is left of material an earlier
     // dab burnt away. It belongs to no surface, so it has no normal to sink
     // along and nothing to answer for -- and it must not be offered to the
-    // wall search below as though it were still a face.
+    // wall search as though it were still a face.
     if (adj.triangleStart[v] === adj.triangleStart[v + 1]) continue
     hit.push(v)
     weight.push(w)
     spread.push(Math.pow(w, RELAX_SPREAD))
-    touched[v] = 1
+    if (touched) touched[v] = 1
   }
+  return { hit, weight, spread }
+}
+
+function dab(
+  work: Work,
+  adj: Adjacency,
+  spec: ErodeDab,
+  reachable: Uint32Array,
+  touched: Uint8Array,
+  /** Vertex -> its index in `hit`, or -1. Owned by the caller and handed back
+   *  all -1, so the clamp below can ask about a neighbour without a Map. */
+  slot: Int32Array
+): boolean {
+  // THE SMOOTHER IS A DIFFERENT QUESTION ASKED OF THE SAME SPHERE, and it is
+  // asked here rather than by the caller so that everything upstream -- the
+  // refinement, the reach box, the replay order -- goes on seeing one kind of
+  // dab. See `ErodeDab.round`.
+  if (spec.round !== undefined) return roundOff(work, adj, spec, reachable, touched, slot)
+
+  const radius = spec.radius
+  // WHICH WAY THIS DAB PUSHES, and the only difference between the two tools.
+  // Read once, into a plain +1/-1, because it multiplies a displacement in
+  // three places and a branch in the innermost loop of a live drag would be
+  // three branches the CPU has to predict per vertex per round.
+  const dir = spec.raise ? 1 : -1
+
+  // Who is under the brush, and how hard. Gathered once: both steps below want
+  // the same set and the same weights.
+  const { hit, weight, spread } = underBrush(work, adj, spec, reachable, touched)
   if (hit.length === 0) return false
 
   // Sink, or raise. Along each vertex's own normal rather than toward or away
@@ -1616,6 +1823,386 @@ function dab(
   // Last, so everything above ran on the mesh it was built against. True means
   // the topology moved and the caller owes itself a fresh adjacency.
   return burned.length > 0 && breakThrough(work, adj, burned, touched)
+}
+
+// --- Rounding ---------------------------------------------------------------
+
+/**
+ * Hold the Smoother still for one instant: ease every corner under the brush
+ * toward one radius, and leave everything already that round exactly alone.
+ *
+ * THE FLOW WITH THE BITE TAKEN OUT, and with a place to stop bolted on. The
+ * torch and the sculpt tool move the surface and then relax it; this only
+ * relaxes -- so a stroke takes nothing away and puts nothing on beyond what
+ * easing a corner over necessarily moves. It is the third brush in the same
+ * list for the reason the second one is: the order the three were used in is
+ * the whole of what the result means.
+ *
+ * WHAT IT MOVES IS ONLY WHAT IS TOO SHARP. Every vertex is asked how far it
+ * sits off the average of its neighbours ALONG ITS OWN NORMAL, and that
+ * reading, against the vertex's span, is the radius of the surface there. A
+ * face reads flat, a gentle curve reads gentle, a cube's edge reads very sharp
+ * indeed. Only the part of the reading BEYOND the target is moved, so:
+ *
+ *   - a flat face under the brush does not move at all, and not approximately
+ *     -- its neighbours lie in its own plane, so the reading is zero to the
+ *     float and the arithmetic below never touches it;
+ *   - a curve already gentler than the target is left for the same reason,
+ *     which is what lets a user drag sloppily across a panel and change only
+ *     the edge they were aiming at;
+ *   - a corner sharper than the target is eased until it reads exactly the
+ *     target, and then it too stops. Going over it again does nothing.
+ *
+ * That last one is the difference between this tool and Smoothing on the other
+ * two. Smoothing is a RATE -- hold it there and the feature goes away. This is
+ * a DESTINATION: what a stroke leaves is a fillet of the radius that was asked
+ * for, and a second stroke over the same corner leaves the same fillet.
+ *
+ * BOTH KINDS OF CORNER, out of one signed reading. A convex corner has its
+ * neighbours below it and eases inward; an inside crease has them above it and
+ * fills outward. Nothing here asks which it found, and nothing needs to: they
+ * are one quantity with two signs, exactly as the torch and the sculpt tool are
+ * one displacement with two signs.
+ *
+ * NOTHING OUTSIDE THE BRUSH MOVES, which is the promise this whole file is
+ * built on and is not weakened by the rounding spreading itself: a corner being
+ * eased makes its neighbours the sharpest thing left, so the round does creep
+ * outward along the edge -- as far as the rim of the sphere and no further, and
+ * it settles there rather than creeping on. A vertex where the fillet meets the
+ * flat reads half the arc's curvature, which is under the target, so it holds
+ * its ground and the round has an edge.
+ */
+function roundOff(
+  work: Work,
+  adj: Adjacency,
+  spec: ErodeDab,
+  reachable: Uint32Array,
+  touched: Uint8Array,
+  slot: Int32Array
+): boolean {
+  const radius = spec.radius
+  // THE RADIUS THE CORNER IS DRIVEN TO, as a share of the brush -- which is
+  // what makes the two dials one gesture: the sphere on screen is the size of
+  // the round it can leave, and Strength is how much of it to use.
+  //
+  // Clamped here rather than trusted from the document, for the reason the flow
+  // is clamped in `dab`: a dab that arrives from anywhere -- an older file, a
+  // headless caller, a hand-written test -- gets a surface that holds together.
+  const target = Math.min(Math.max(spec.round ?? 0, 0), 1) * radius * ROUND_GAIN
+  // Strength at zero asks for corners of no radius at all, which is what every
+  // corner already is. The one setting of this tool that is honestly nothing
+  // rather than something very slow.
+  if (target <= 0) return false
+
+  // `null`, so nothing is marked as having moved until it does -- see
+  // `underBrush`. It is the difference between a tool that leaves a flat face
+  // alone and one that leaves it alone and re-shades it anyway, which along a
+  // crisp edge at the fringe of the stroke reads as a round that is not there.
+  const { hit, spread } = underBrush(work, adj, spec, reachable, null)
+  if (hit.length === 0) return false
+
+  // EVERY NORMAL IS READ BEFORE ANY VERTEX MOVES, for the reason the torch
+  // reads its own that way: a normal is derived from where the neighbours are,
+  // so reading and moving in one pass aims each vertex using a surface the ones
+  // before it have already bent. See `dab`.
+  const normal = new Vector3()
+  const normals = new Float32Array(hit.length * 3)
+  // The mesh's own scale at each vertex: the mean distance to its neighbours.
+  // It is what turns a Laplacian into a CURVATURE. The same dish read on coarse
+  // triangles and on fine ones gives wildly different averages and exactly the
+  // same radius, so without this "how round is this corner" would quietly mean
+  // "how round is this corner, at this tessellation" -- and the Smoother would
+  // leave a different fillet either side of a refinement boundary.
+  const span = new Float32Array(hit.length)
+  for (let i = 0; i < hit.length; i++) {
+    const v = hit[i]
+    vertexNormal(work, adj, v, normal)
+    normals[i * 3] = normal.x
+    normals[i * 3 + 1] = normal.y
+    normals[i * 3 + 2] = normal.z
+    const start = adj.neighbourStart[v]
+    const end = adj.neighbourStart[v + 1]
+    let sum = 0
+    for (let k = start; k < end; k++) {
+      const n = adj.neighbour[k]
+      const ex = work.position[n * 3] - work.position[v * 3]
+      const ey = work.position[n * 3 + 1] - work.position[v * 3 + 1]
+      const ez = work.position[n * 3 + 2] - work.position[v * 3 + 2]
+      sum += Math.sqrt(ex * ex + ey * ey + ez * ez)
+    }
+    span[i] = end > start ? sum / (end - start) : 0
+  }
+
+  // How much room each vertex has in front of it and behind it. Measured once,
+  // off the surface this dab was aimed at, and consulted by every round.
+  const room = facingRoom(work, hit, normals, radius)
+
+  // How far each vertex is being moved this round, along its own normal, and
+  // how far this dab has moved it in total. The second is what the room above
+  // is spent against: three rounds share one allowance rather than each being
+  // handed it.
+  const move = new Float32Array(hit.length)
+  const gone = new Float32Array(hit.length)
+  const before = new Float32Array(hit.length * 3)
+  for (let i = 0; i < hit.length; i++) slot[hit[i]] = i
+
+  for (let round = 0; round < RELAX_ROUNDS; round++) {
+    for (let i = 0; i < hit.length; i++) {
+      const v = hit[i]
+      before[i * 3] = work.position[v * 3]
+      before[i * 3 + 1] = work.position[v * 3 + 1]
+      before[i * 3 + 2] = work.position[v * 3 + 2]
+    }
+
+    for (let i = 0; i < hit.length; i++) {
+      move[i] = 0
+      const v = hit[i]
+      const start = adj.neighbourStart[v]
+      const end = adj.neighbourStart[v + 1]
+      if (end === start || span[i] <= 0) continue
+
+      let sx = 0
+      let sy = 0
+      let sz = 0
+      for (let k = start; k < end; k++) {
+        const n = adj.neighbour[k]
+        // JACOBI, and strictly: a neighbour that is itself under the brush is
+        // read as it stood at the top of the round rather than as this round
+        // has already left it. Without that the answer depends on the order the
+        // vertices happen to sit in the buffer, and the same stroke replayed
+        // from the same document comes back a different mesh.
+        const j = slot[n]
+        if (j < 0) {
+          sx += work.position[n * 3]
+          sy += work.position[n * 3 + 1]
+          sz += work.position[n * 3 + 2]
+        } else {
+          sx += before[j * 3]
+          sy += before[j * 3 + 1]
+          sz += before[j * 3 + 2]
+        }
+      }
+
+      const count = end - start
+      // HOW FAR THIS VERTEX SITS OFF THE AVERAGE OF ITS NEIGHBOURS, measured
+      // along its own normal. Signed, and the sign is which kind of corner it
+      // is: a convex one has its neighbours below it and reads negative, an
+      // inside crease has them above it and reads positive.
+      const into =
+        (sx / count - before[i * 3]) * normals[i * 3] +
+        (sy / count - before[i * 3 + 1]) * normals[i * 3 + 1] +
+        (sz / count - before[i * 3 + 2]) * normals[i * 3 + 2]
+
+      // AND WHAT A CORNER OF EXACTLY THE TARGET RADIUS WOULD READ HERE, which
+      // is the whole of how this tool knows when to stop. A surface of radius R
+      // whose neighbours are a span h away sits h squared over 2R off their
+      // average -- so the reading and the target are the same quantity, and
+      // what lies between them is a DISTANCE, ready to be moved.
+      const keep = (span[i] * span[i]) / (2 * target)
+      if (into <= keep && into >= -keep) continue
+      const excess = into > 0 ? into - keep : into + keep
+
+      // Held to the same share of a step the flow is, for the same reason: a
+      // full explicit Laplacian step moves a vertex all the way onto its
+      // neighbours' average, which shatters a patch rather than smoothing it.
+      // See RELAX_RATE.
+      //
+      // The falloff sets the RATE and nothing else here. Every vertex the brush
+      // reaches at all converges on the same radius, however faintly it is
+      // weighted -- so a stroke leaves one even round rather than a scalloped
+      // one, deepest where the middle of the brush happened to pass.
+      let step = excess * RELAX_RATE * spread[i]
+
+      // AND HELD TO THE ROOM THERE IS: material in front of it going in, air in
+      // front of it coming out. See ROUND_WALL.
+      const allowed = ROUND_WALL * (step < 0 ? room.solid[i] : room.air[i])
+      const left = allowed - Math.abs(gone[i])
+      if (left <= 0) continue
+      if (step > left) step = left
+      else if (step < -left) step = -left
+      move[i] = step
+    }
+
+    // NO EDGE MAY CHANGE LENGTH FASTER THAN THE SURFACE CAN CARRY IT, which is
+    // the torch's clamp doing the torch's job on a different displacement. A
+    // corner being eased travels along its own normal while the surface just
+    // outside the brush stays pinned where the evaluator left it, so the edge
+    // between them bears the whole of the step -- and a sharp enough corner on
+    // coarse enough triangles asks for a step large enough to fold it. ONE
+    // SCALE FOR THE WHOLE ROUND rather than per vertex, for the reason
+    // DAB_CLOSE gives: rescuing the worst vertex by moving it differently from
+    // its neighbours is a new crease in place of the old one.
+    let scale = 1
+    for (let i = 0; i < hit.length; i++) {
+      if (move[i] === 0) continue
+      const v = hit[i]
+      const vx = normals[i * 3] * move[i]
+      const vy = normals[i * 3 + 1] * move[i]
+      const vz = normals[i * 3 + 2] * move[i]
+      for (let k = adj.neighbourStart[v]; k < adj.neighbourStart[v + 1]; k++) {
+        const n = adj.neighbour[k]
+        const ex = work.position[n * 3] - work.position[v * 3]
+        const ey = work.position[n * 3 + 1] - work.position[v * 3 + 1]
+        const ez = work.position[n * 3 + 2] - work.position[v * 3 + 2]
+        const length = Math.sqrt(ex * ex + ey * ey + ez * ez)
+        if (length < 1e-12) continue
+        const j = slot[n]
+        const nx = j < 0 ? 0 : normals[j * 3] * move[j]
+        const ny = j < 0 ? 0 : normals[j * 3 + 1] * move[j]
+        const nz = j < 0 ? 0 : normals[j * 3 + 2] * move[j]
+        const change = Math.abs(((nx - vx) * ex + (ny - vy) * ey + (nz - vz) * ez) / length)
+        const allowance = DAB_CLOSE * length
+        if (change > allowance) scale = Math.min(scale, allowance / change)
+      }
+    }
+
+    for (let i = 0; i < hit.length; i++) {
+      const step = move[i] * scale
+      if (step === 0) continue
+      const v = hit[i]
+      work.position[v * 3] = before[i * 3] + normals[i * 3] * step
+      work.position[v * 3 + 1] = before[i * 3 + 1] + normals[i * 3 + 1] * step
+      work.position[v * 3 + 2] = before[i * 3 + 2] + normals[i * 3 + 2] * step
+      gone[i] += step
+      // Marked only now, and only here: what the brush reached and declined to
+      // move is not something this dab did, and the shading pass must not be
+      // told it was.
+      touched[v] = 1
+    }
+  }
+
+  for (let i = 0; i < hit.length; i++) slot[hit[i]] = -1
+  // The Smoother never changes the topology: it has nothing to remove, and what
+  // it moves it moves along the surface it found. The caller's adjacency is
+  // still good.
+  return false
+}
+
+/**
+ * How much room every vertex under the brush has straight ahead of it and
+ * straight behind it: the nearest surface facing back at it, on each side.
+ *
+ * `solid` is material -- the far face of a wall this vertex is standing on --
+ * and it is what limits a corner being eased INWARD. `air` is the gap across a
+ * slot or an inside corner, and it is what limits a crease being filled
+ * OUTWARD. Both are Infinity where there is nothing in the way, which is the
+ * answer for almost every vertex of almost every dab.
+ *
+ * NOT `burnList`, although it measures the same distance with the same grid and
+ * the same facing test, and the two are deliberately left as two. What the
+ * torch wants is a VERDICT -- is this wall gone, and is its far side gone with
+ * it -- reached against a threshold and a predicted step, all-or-nothing,
+ * because what it does next is surgery. What this wants is a DISTANCE, on both
+ * signs, for a tool that never opens anything and only ever needs to know how
+ * much of the gap it may spend. Folding them together would mean one function
+ * that answers neither question without a flag saying which it was asked.
+ *
+ * The search is the brush's own radius, and nothing wider is needed: a rounding
+ * dab cannot travel further than the target it is driving at, and the target is
+ * a share of that radius.
+ */
+function facingRoom(
+  work: Work,
+  hit: number[],
+  normals: Float32Array,
+  search: number
+): { solid: Float32Array; air: Float32Array } {
+  const solid = new Float32Array(hit.length).fill(Infinity)
+  const air = new Float32Array(hit.length).fill(Infinity)
+
+  // ONE SHEET UNDER THE BRUSH IS THE ORDINARY CASE and it is ruled out in a
+  // pass, exactly as `burnList` rules it out and for the same reason -- the
+  // rest of this is not free, and it would otherwise run on every dab of every
+  // stroke anyone ever makes. If every normal sits within sixty degrees of
+  // their average then no two of them are more than a hundred and twenty apart,
+  // which is not facing enough to be in each other's way.
+  let ax = 0
+  let ay = 0
+  let az = 0
+  for (let i = 0; i < hit.length; i++) {
+    ax += normals[i * 3]
+    ay += normals[i * 3 + 1]
+    az += normals[i * 3 + 2]
+  }
+  const mean = Math.sqrt(ax * ax + ay * ay + az * az)
+  if (mean > 1e-12) {
+    ax /= mean
+    ay /= mean
+    az /= mean
+    let worst = 1
+    for (let i = 0; i < hit.length; i++) {
+      const d = normals[i * 3] * ax + normals[i * 3 + 1] * ay + normals[i * 3 + 2] * az
+      if (d < worst) worst = d
+    }
+    if (worst > 0.5) return { solid, air }
+  }
+
+  // A grid one search radius to a cell, so the far side of a wall is found in
+  // twenty-seven lookups rather than by sweeping the patch for every vertex.
+  const cells = new Map<number, number[]>()
+  const cellKey = (x: number, y: number, z: number) =>
+    ((Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0)
+  for (let i = 0; i < hit.length; i++) {
+    const v = hit[i]
+    const key = cellKey(
+      Math.floor(work.position[v * 3] / search),
+      Math.floor(work.position[v * 3 + 1] / search),
+      Math.floor(work.position[v * 3 + 2] / search)
+    )
+    const bucket = cells.get(key)
+    if (bucket) bucket.push(i)
+    else cells.set(key, [i])
+  }
+
+  for (let i = 0; i < hit.length; i++) {
+    const v = hit[i]
+    const px = work.position[v * 3]
+    const py = work.position[v * 3 + 1]
+    const pz = work.position[v * 3 + 2]
+    const nx = normals[i * 3]
+    const ny = normals[i * 3 + 1]
+    const nz = normals[i * 3 + 2]
+    const cx = Math.floor(px / search)
+    const cy = Math.floor(py / search)
+    const cz = Math.floor(pz / search)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const bucket = cells.get(cellKey(cx + dx, cy + dy, cz + dz))
+          if (!bucket) continue
+          for (const j of bucket) {
+            const u = hit[j]
+            if (u === v) continue
+            // Only a surface FACING BACK is in the way. Two vertices on one
+            // sheet, however close, are neighbours rather than obstacles. See
+            // BURN_FACING, which is the same threshold for the same reason.
+            const away = normals[j * 3] * nx + normals[j * 3 + 1] * ny + normals[j * 3 + 2] * nz
+            if (away >= BURN_FACING) continue
+            const dxu = px - work.position[u * 3]
+            const dyu = py - work.position[u * 3 + 1]
+            const dzu = pz - work.position[u * 3 + 2]
+            // ALONG THE NORMAL, with the sideways part discarded rather than
+            // added in: the far face is tessellated on its own, so the vertex
+            // opposite this one generally is not opposite at all. What is
+            // wanted is the room ahead, which is the part of the offset that
+            // runs along the normal.
+            const gap = dxu * nx + dyu * ny + dzu * nz
+            // Too far to the side to be standing across from this one at all.
+            if (dxu * dxu + dyu * dyu + dzu * dzu - gap * gap > search * search) continue
+            // POSITIVE IS MATERIAL BETWEEN THE TWO FACES, NEGATIVE IS AIR, and
+            // that sign is the whole difference between the two sides of a thin
+            // wall and the two walls of a narrow slot. A vertex sitting exactly
+            // on another counts as both, which is the only honest reading of a
+            // surface that has already arrived.
+            if (gap >= 0 && gap < search && gap < solid[i]) solid[i] = gap
+            if (gap <= 0 && -gap < search && -gap < air[i]) air[i] = -gap
+          }
+        }
+      }
+    }
+  }
+
+  return { solid, air }
 }
 
 // --- Burning through --------------------------------------------------------

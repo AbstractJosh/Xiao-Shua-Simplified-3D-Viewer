@@ -1,4 +1,4 @@
-import { Matrix3, Vector3 } from 'three'
+import { Box3, Matrix3, Vector3 } from 'three'
 import type {
   BufferAttribute,
   BufferGeometry,
@@ -28,6 +28,51 @@ export type SnapTarget =
   | { kind: 'vertex'; objectId: string; point: Vector3 }
   | { kind: 'edge'; objectId: string; a: Vector3; b: Vector3 }
   | { kind: 'face'; objectId: string; origin: Vector3; normal: Vector3 }
+  | {
+      kind: 'centre'
+      objectId: string
+      /** What is centred there, which decides who may catch it -- see `canPair`. */
+      of: 'solid' | 'face' | 'sketch'
+      /**
+       * Present only on a sketch centre, and only so the sketch being dragged
+       * can be left out of its own target set: without it a sketch nudged a
+       * hair would be pulled straight back to where it started.
+       */
+      featureId?: string
+      point: Vector3
+    }
+
+/**
+ * What a drag OFFERS, and what each kind of source is allowed to catch.
+ *
+ * The pairing rule is the whole reason centres can be added at all, and it is
+ * asymmetric on purpose:
+ *
+ *   corner  everything BUT a centre. A corner seeking a face lands a solid
+ *           flush against its neighbour, which is the snap that has always
+ *           been here and must not start behaving differently.
+ *   centre  another SOLID's centre, and nothing else. Concentric is the one
+ *           thing a body wants its middle aligned to; a middle landing on a
+ *           face -- the plane OR the face's own centre -- would bury the solid
+ *           halfway into its neighbour, which is why a centre was kept out of
+ *           the source list entirely until there was something safe for it to
+ *           meet.
+ *   point   anything, centres included. A sketch on its host, a ruler end, an
+ *           end face: there is no body behind these to bury, so the middle of a
+ *           face or of another sketch is exactly what they should be able to
+ *           find.
+ */
+export type SnapSourceKind = 'corner' | 'centre' | 'point'
+export type SnapSource = { point: Vector3; kind: SnapSourceKind }
+
+function canPair(source: SnapSourceKind, target: SnapTarget): boolean {
+  if (source === 'point') return true
+  if (source === 'centre') return target.kind === 'centre' && target.of === 'solid'
+  return target.kind !== 'centre'
+}
+
+/** Where each of an object's sketches sits, in that object's OWN space. */
+export type SketchCentre = { featureId: string; point: Vector3 }
 
 export type SnapHit = {
   /** Translation to apply to the dragged thing so its source point lands. */
@@ -43,6 +88,12 @@ export type SnapEntry = {
   id: string
   geometry: BufferGeometry
   transform: ObjectTransform
+  /**
+   * Sketch centres, which cannot be read off the mesh: a sketch at depth zero
+   * is a projection that cuts nothing, so the geometry is the bare solid and
+   * the only record of where the sketch is, is the document.
+   */
+  sketches?: SketchCentre[]
 }
 
 export const DEFAULT_SNAP_DISTANCE = 0.18
@@ -65,6 +116,9 @@ const COS_FEATURE = Math.cos((15 * Math.PI) / 180)
 const MAX_VERTEX_TARGETS = 3000
 const MAX_EDGE_TARGETS = 4000
 const MAX_FACE_TARGETS = 400
+/** Face middles, which a hand-modelled part has a few dozen of at most. The
+ *  solid's own middle is one more and is never dropped. */
+const MAX_CENTRE_TARGETS = 200
 
 /** An axis extreme outranks any corner, so a smooth solid still offers the six
  *  points a user actually aims with -- a sphere has no creases at all and would
@@ -76,7 +130,19 @@ const AXIS_EXTREME_SCORE = 100
  *  nearer face losing to a distant vertex. */
 const PRIORITY_MARGIN = 0.35
 
-const PRIORITY: Record<SnapTarget['kind'], number> = { vertex: 0, edge: 1, face: 2 }
+/**
+ * A centre ties with a vertex rather than outranking it. It is at least as
+ * deliberate a thing to aim at, but the two can never compete anyway -- the
+ * pairing rule above keeps a corner off centres and a centre off corners -- so
+ * the only pairing this decides is a lone POINT choosing between them, and
+ * there the honest answer is whichever is actually nearer.
+ */
+const PRIORITY: Record<SnapTarget['kind'], number> = {
+  centre: 0,
+  vertex: 0,
+  edge: 1,
+  face: 2,
+}
 
 const MEMO_CAPACITY = 24
 
@@ -86,9 +152,10 @@ type LocalTargets = {
   vertices: Vector3[]
   edges: Array<readonly [Vector3, Vector3]>
   faces: Array<{ origin: Vector3; normal: Vector3 }>
+  centres: Array<{ point: Vector3; of: 'solid' | 'face' }>
 }
 
-const EMPTY_TARGETS: LocalTargets = { vertices: [], edges: [], faces: [] }
+const EMPTY_TARGETS: LocalTargets = { vertices: [], edges: [], faces: [], centres: [] }
 
 type EdgeRecord = { i: number; j: number; t0: number; t1: number; count: number }
 
@@ -171,10 +238,12 @@ function buildLocalTargets(geometry: BufferGeometry): LocalTargets {
     }
   }
 
+  const faces = pickFaces(mesh, onCurve, groups)
   return {
     vertices: pickVertices(points, used, cornerScore),
     edges: pickEdges(points, featureEdges),
-    faces: pickFaces(mesh, onCurve, groups),
+    faces,
+    centres: pickCentres(points, used, faces),
   }
 }
 
@@ -405,6 +474,41 @@ function pickFaces(
     .map((c) => ({ origin: c.origin, normal: c.normal }))
 }
 
+/**
+ * The points a thing is centred ON: the solid's own middle, and the middle of
+ * every flat face it has.
+ *
+ * Both come free of work already done. The face middles ARE the face targets'
+ * origins, which `pickFaces` computed as area-weighted centroids in order to
+ * seat each plane; a face's centroid is where anyone would say its centre is.
+ * The solid's middle is the centre of the box its used vertices fill, which
+ * comes to the object's own origin for every primitive here -- and stays honest
+ * for one that has been cut or torched off-centre, where the origin no longer
+ * is the middle of anything.
+ *
+ * A curved solid contributes no face middles at all, because it has no flat
+ * faces: a sphere offers exactly one centre, which is the right answer.
+ */
+function pickCentres(
+  points: Vector3[],
+  used: Uint8Array,
+  faces: Array<{ origin: Vector3; normal: Vector3 }>
+): Array<{ point: Vector3; of: 'solid' | 'face' }> {
+  const box = new Box3()
+  for (let i = 0; i < points.length; i++) {
+    if (used[i]) box.expandByPoint(points[i])
+  }
+
+  const out: Array<{ point: Vector3; of: 'solid' | 'face' }> = []
+  if (!box.isEmpty()) out.push({ point: box.getCenter(new Vector3()), of: 'solid' })
+  // Shared rather than cloned: `objectSnapTargets` clones on the way out, and
+  // nothing between here and there writes to a face origin.
+  for (let i = 0; i < faces.length && i < MAX_CENTRE_TARGETS; i++) {
+    out.push({ point: faces[i].origin, of: 'face' })
+  }
+  return out
+}
+
 // --- Memo ------------------------------------------------------------------
 
 // Keyed on the geometry alone: the evaluator hands out a fresh BufferGeometry
@@ -436,7 +540,8 @@ function localTargetsFor(geometry: BufferGeometry): LocalTargets {
 export function objectSnapTargets(
   objectId: string,
   geometry: BufferGeometry,
-  transform: ObjectTransform
+  transform: ObjectTransform,
+  sketches: SketchCentre[] = []
 ): SnapTarget[] {
   const local = localTargetsFor(geometry)
   const matrix = objectMatrix(transform)
@@ -464,6 +569,26 @@ export function objectSnapTargets(
       normal: face.normal.clone().applyMatrix3(rotation),
     })
   }
+  for (const centre of local.centres) {
+    out.push({
+      kind: 'centre',
+      objectId,
+      of: centre.of,
+      point: centre.point.clone().applyMatrix4(matrix),
+    })
+  }
+  // Sketch centres come from the document rather than the mesh -- see
+  // `SnapEntry` -- but they are in the same local space, so they ride the same
+  // matrix. The featureId is what lets a sketch drag drop its own.
+  for (const sketch of sketches) {
+    out.push({
+      kind: 'centre',
+      objectId,
+      of: 'sketch',
+      featureId: sketch.featureId,
+      point: sketch.point.clone().applyMatrix4(matrix),
+    })
+  }
   return out
 }
 
@@ -476,7 +601,12 @@ export function collectSnapTargets(
     // Nothing snaps to itself: every one of its own corners is already at zero
     // distance, so the drag would freeze the moment it started.
     if (entry.id === excludeObjectId) continue
-    for (const target of objectSnapTargets(entry.id, entry.geometry, entry.transform)) {
+    for (const target of objectSnapTargets(
+      entry.id,
+      entry.geometry,
+      entry.transform,
+      entry.sketches
+    )) {
       out.push(target)
     }
   }
@@ -498,7 +628,7 @@ const gapVector = new Vector3()
  * handful of the thousands to test per source.
  */
 export function snapTranslation(
-  sources: Vector3[],
+  sources: SnapSource[],
   targets: SnapTarget[],
   tol: number
 ): SnapHit | null {
@@ -510,8 +640,9 @@ export function snapTranslation(
   let best: SnapHit | null = null
   let bestScore = Infinity
 
-  for (const source of sources) {
+  for (const { point: source, kind } of sources) {
     for (const target of nearby) {
+      if (!canPair(kind, target)) continue
       const distance = closestOnTarget(source, target, tol, candidatePoint)
       // A candidate the source already sits on has a zero delta, so winning
       // costs it nothing and gains the user nothing -- but it still beats a
@@ -538,24 +669,26 @@ export function snapTranslation(
   return best
 }
 
+/** A lone point, with no body behind it, so it may catch anything -- including
+ *  a centre. This is the sketch on its host, the end face, the ruler end. */
 export function snapSinglePoint(
   p: Vector3,
   targets: SnapTarget[],
   tol: number
 ): SnapHit | null {
-  return snapTranslation([p], targets, tol)
+  return snapTranslation([{ point: p, kind: 'point' }], targets, tol)
 }
 
 type Bounds = { min: Vector3; max: Vector3 }
 
 /** The sources' axis-aligned extent, grown by the tolerance so nothing that
  *  could still be reached falls outside it. */
-function sourceBounds(sources: Vector3[], tol: number): Bounds {
+function sourceBounds(sources: SnapSource[], tol: number): Bounds {
   const min = new Vector3(Infinity, Infinity, Infinity)
   const max = new Vector3(-Infinity, -Infinity, -Infinity)
   for (const s of sources) {
-    min.min(s)
-    max.max(s)
+    min.min(s.point)
+    max.max(s.point)
   }
   return {
     min: min.subScalar(tol),
@@ -566,6 +699,8 @@ function sourceBounds(sources: Vector3[], tol: number): Bounds {
 function withinBounds(target: SnapTarget, bounds: Bounds): boolean {
   const { min, max } = bounds
   switch (target.kind) {
+    // A centre is a point and is rejected like one.
+    case 'centre':
     case 'vertex': {
       const p = target.point
       return (
@@ -597,6 +732,7 @@ function closestOnTarget(
   out: Vector3
 ): number {
   switch (target.kind) {
+    case 'centre':
     case 'vertex': {
       const q = target.point
       if (Math.abs(p.x - q.x) > tol) return Infinity
@@ -657,7 +793,7 @@ function closestOnSegment(p: Vector3, a: Vector3, b: Vector3, out: Vector3): voi
  * `axis` must be a unit vector. `sources` are the corners as they sit now.
  */
 export function snapAlongAxis(
-  sources: Vector3[],
+  sources: SnapSource[],
   targets: SnapTarget[],
   axis: Vector3,
   tol: number
@@ -687,8 +823,9 @@ export function snapAlongAxis(
   let best: SnapHit | null = null
   let bestScore = Infinity
 
-  for (const source of sources) {
+  for (const { point: source, kind } of sources) {
     for (const target of nearby) {
+      if (!canPair(kind, target)) continue
       const offset = axialOffsetTo(source, target, axis)
       if (offset === null) continue
       const slid = source.clone().addScaledVector(axis, offset)
@@ -729,6 +866,7 @@ const RESIDUE_TOL = 1e-4
 /** Distance from an arrived point to the target it was aimed at. */
 function distanceToTarget(p: Vector3, target: SnapTarget): number {
   switch (target.kind) {
+    case 'centre':
     case 'vertex':
       return p.distanceTo(target.point)
     case 'edge': {
@@ -748,6 +886,7 @@ function distanceToTarget(p: Vector3, target: SnapTarget): number {
  */
 function axialOffsetTo(source: Vector3, target: SnapTarget, axis: Vector3): number | null {
   switch (target.kind) {
+    case 'centre':
     case 'vertex':
       // Closest approach of the swept line to a point is its projection.
       return target.point.clone().sub(source).dot(axis)

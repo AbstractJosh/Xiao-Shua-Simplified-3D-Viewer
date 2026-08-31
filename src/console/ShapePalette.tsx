@@ -7,7 +7,7 @@ import {
   NGON_LABEL,
   NGON_MORPH_MS,
   NGON_NAMES,
-  NGON_SIDES_TOP_DOWN,
+  NGON_SIDES,
   morphPoints,
   nextNgonSides,
   ngonPoints,
@@ -27,10 +27,18 @@ function ChipIcon({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * The polygon chip is one square target split into six invisible bands. The
- * band under the pointer previews its polygon in the chip's own icon, so the
- * side count is chosen by *where* the drag starts rather than by a separate
- * control. Bands carry no visible edges by design.
+ * The polygon chip is one target split into six invisible bands. The band under
+ * the pointer previews its polygon in the chip's own icon, so the side count is
+ * chosen by *where* the drag starts rather than by a separate control. Bands
+ * carry no visible edges by design.
+ *
+ * The bands run ACROSS the chip, not down it. They used to stack, and the chip
+ * was square to give six of them room to stack in -- which is what made this
+ * the tallest thing in the console for three shapes. Turned on their side they
+ * are as wide as they used to be tall, so the sweep lost nothing, and the chip
+ * stopped having to be as tall as the panel is wide. It is also the gesture a
+ * Solids row already asks for, which is the other half of why: the two controls
+ * choose the same polygon and should not want opposite hands.
  *
  * Left alone, it morphs through every polygon it can place, named for the
  * family rather than for whichever member is on screen: a chip sitting still
@@ -100,8 +108,8 @@ function NgonChip() {
       </div>
 
       <div className="ngon-bands">
-        {/* Laid out top-down, so fewest sides land at the bottom. */}
-        {NGON_SIDES_TOP_DOWN.map((sides) => (
+        {/* Ascending left to right, as the ticks on a Solids row read. */}
+        {NGON_SIDES.map((sides) => (
           <button
             key={sides}
             type="button"

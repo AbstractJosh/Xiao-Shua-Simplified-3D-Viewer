@@ -3,10 +3,12 @@ import type { ComponentType } from 'react'
 import { Console } from './console/Console'
 import { HelpScreen } from './console/HelpScreen'
 import { NavBar } from './console/NavBar'
+import { LaserConsole } from './console/LaserConsole'
 import { LatheConsole } from './console/LatheConsole'
 import type { ScreenId } from './screens'
 import { useTools } from './store/toolStore'
 import { THEME_ATTRIBUTE } from './theme'
+import { LaserViewport } from './viewport/LaserViewport'
 import { LatheViewport } from './viewport/LatheViewport'
 import { Viewport } from './viewport/Viewport'
 
@@ -40,13 +42,14 @@ function useTheme() {
  *
  * A SCREEN IS A PAIR, not a viewport with a console bolted beside it. The two
  * halves are chosen together because they are two halves of one working
- * surface: Lathe's console holds the Clipboard and nothing else precisely
- * because Lathe's viewport draws no document, and neither of those facts
- * makes sense without the other.
+ * surface: Lathe's console holds the Clipboard and its own Base precisely
+ * because Lathe's viewport draws a lump and no document, and neither of those
+ * facts makes sense without the other.
  */
 const SCREEN_PARTS: Record<ScreenId, { Viewport: ComponentType; Console: ComponentType }> = {
   modelling: { Viewport, Console },
   lathe: { Viewport: LatheViewport, Console: LatheConsole },
+  laser: { Viewport: LaserViewport, Console: LaserConsole },
 }
 
 /**
@@ -60,7 +63,10 @@ const SCREEN_PARTS: Record<ScreenId, { Viewport: ComponentType; Console: Compone
  * behind a hidden canvas: a browser hands out somewhere between eight and
  * sixteen, and the clipboard's live thumbnails are already spending three. The
  * Lathe screen costs none of them at all -- it draws its piece as one SVG path,
- * because a solid of revolution seen from the side hides nothing.
+ * because a solid of revolution seen from the side hides nothing. The Laser
+ * Cutter spends two, the scene and the compass beside it, exactly as Modelling
+ * does: a block seen square on from a chosen face is still a solid, and which
+ * face is chosen is the whole of what the screen is about.
  */
 export default function App() {
   useTheme()

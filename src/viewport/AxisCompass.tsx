@@ -22,7 +22,10 @@ import {
   askForTurn,
   askForView,
   compass,
+  nearestView,
   orbitPosition,
+  releaseTurn,
+  takeRelease,
   takeRequest,
   takeTurn,
   turnFromDrag,
@@ -66,6 +69,16 @@ import type { CompassView } from './compassViews'
  * up. The same shape as `rotationIndicator`, for the same reason -- a value
  * that changes sixty times a second has no business in a store.
  */
+
+/**
+ * `PointerEvent.button` for the middle button.
+ *
+ * Named because the number alone reads as a count. Not `three`'s `MOUSE.MIDDLE`,
+ * which is the same 1 but is OrbitControls' vocabulary for which GESTURE a
+ * button asks for -- this is the DOM's for which button was pressed, and the two
+ * only happen to agree.
+ */
+const MIDDLE_BUTTON = 1
 
 /** How far out the widget draws, in its own units. The canvas is fitted to
  *  this, so everything below is a fraction of the corner it occupies. */
@@ -454,12 +467,49 @@ const OFFSET = new Vector3()
 /** The pivot when there are no controls to ask, which is only ever a test. */
 const ORIGIN = new Vector3()
 
-type Orbit = {
+/**
+ * The slice of OrbitControls this file touches.
+ *
+ * Exported because every screen that mounts a `CompassControl` has to hold a
+ * ref of this shape, and the alternative is each of them writing the same four
+ * fields down again -- which is how two screens end up handing the compass two
+ * subtly different objects.
+ */
+export type Orbit = {
   enabled: boolean
   /** The point the camera orbits, which panning moves. */
   target: Vector3
+  /**
+   * Whether a released drag keeps gliding. Read and put straight back by
+   * `dropMomentum`, which is the only thing here that touches it -- the value
+   * itself belongs to whichever screen mounted the controls.
+   */
+  enableDamping: boolean
   update: () => void
 } | null
+
+/**
+ * Spend a released drag's leftover glide at once, instead of over the next half
+ * second.
+ *
+ * OrbitControls damps by holding the last of the drag and paying it out a
+ * fraction at a time; with damping switched off it pays the whole remainder in
+ * one update and zeroes it, which is the only way to clear that state from
+ * outside -- there is no API for it. Done at the moment of release, the frame it
+ * buys is indistinguishable from one more frame of the drag, and what follows is
+ * a flight from wherever the hand actually finished rather than a flight racing
+ * a glide it cannot see.
+ *
+ * The setting is put back, not assumed: damping is the screen's choice, and this
+ * borrows it for one call.
+ */
+function dropMomentum(controls: Orbit): void {
+  if (!controls) return
+  const damping = controls.enableDamping
+  controls.enableDamping = false
+  controls.update()
+  controls.enableDamping = damping
+}
 
 /**
  * The compass's other half, inside the scene: it publishes where the camera is
@@ -478,22 +528,105 @@ type Orbit = {
  * vector is flown as well: left level, it would drag the camera back upright on
  * the very frame the flight was tipping it over the pole.
  */
-export function CompassControl({ controlsRef }: { controlsRef: RefObject<Orbit> }) {
-  const flight = useRef<{ to: Quaternion; focus: Vector3; radius: number } | null>(null)
+export function CompassControl({
+  controlsRef,
+  /**
+   * Whether this screen's camera may only ever REST on an axis.
+   *
+   * With it on, letting go of a compass drag flies the camera to whichever of
+   * the six views it ended up nearest -- so the view is square on to a face
+   * between one gesture and the next, and never in between. See `nearestView`.
+   *
+   * It is a fact about the SCREEN rather than about the widget, which is why it
+   * is a prop here and not a mode inside the compass: the compass reports that
+   * a drag ended, and this decides what that is worth. The laser cutter turns
+   * it on because a laser cuts straight down and a foreshortened face is a face
+   * you cannot aim at; the modelling screen leaves it off because an orbit
+   * camera that snapped to an axis every time you let go would be an orbit
+   * camera you could not use.
+   *
+   * IT COVERS EVERY WAY THE SCREEN TURNS ITS CAMERA, not just the widget. The
+   * laser cutter also orbits on the middle button, and letting go of THAT
+   * settles by the same rule and down the same flight -- see the pointer
+   * listeners below, which are where an orbit is noticed. So the promise holds
+   * as it always did: on a settling screen the camera comes to rest on an axis,
+   * whichever hand put it there.
+   */
+  settle = false,
+}: {
+  controlsRef: RefObject<Orbit>
+  settle?: boolean
+}) {
+  /**
+   * Where the camera is being flown to, and how far off the pivot it stands
+   * while it goes.
+   *
+   * THE PIVOT ITSELF IS NOT RECORDED, and that is deliberate: it is read live,
+   * every frame, from the controls. A flight used to carry a copy of it, taken
+   * when the flight was asked for, and that copy is wrong the moment anything
+   * moves the pivot underneath it -- which on the laser cutter is two things.
+   * The block growing raises the point the camera aims at, and a view slid
+   * across a face is put back on the middle of the block when the face changes,
+   * which happens HALF WAY THROUGH exactly the flight that is changing it. See
+   * `PanAcrossFace` and `FocusOnBlock`. Flown around a stale pivot, the camera
+   * lands the right way up and in the wrong place, and the controls' next
+   * update aims it back at the real pivot from there -- off the axis it was
+   * just so carefully settled onto.
+   *
+   * The RADIUS is still taken once, and should be: how far the camera stands
+   * off is a fact about the flight, and a pivot that moves sideways should
+   * carry the camera with it rather than reel it in.
+   */
+  const flight = useRef<{ to: Quaternion; radius: number } | null>(null)
+  /** A middle-button orbit in the viewport has just ended, and owes a settle. */
+  const orbitEnded = useRef(false)
 
-  // Any press in the viewport is the user taking the camera back, so the flight
-  // stands down: carried on through an orbit, it would fight the drag for as
-  // long as it lasted. Presses on the compass are how flights START, so they
-  // are the one place this does not apply.
+  // A press that TAKES THE CAMERA stands the flight down: carried on through an
+  // orbit, it would fight the drag for as long as it lasted. Presses on the
+  // compass are how flights START, so they are the one place this never applies.
+  //
+  // Which presses those are is the screen's business, and the two screens differ
+  // because their buttons do. A settling screen binds the camera to the middle
+  // button ALONE -- its left button draws the cut -- so a left press there is
+  // not the user taking the camera back, and standing the flight down for it
+  // would strand the view part-way to the axis it was settling on, off every
+  // face, with the compass the only way out. Anywhere else every button is a
+  // camera, so every press counts.
+  //
+  // This is the join between the two, and it is why it is a `button` test rather
+  // than the `if (settle) return` it used to be: back when the laser cutter
+  // refused the camera outright, NO press in that viewport could fight a flight.
+  // One can now.
+  //
+  // The RELEASE is the same fact read the other way, and only a settling screen
+  // has any use for it: the press took the camera, so letting go is the end of a
+  // gesture that has to come to rest on an axis. It is the viewport's answer to
+  // the compass's own release, and it is deliberately routed into the very same
+  // request below rather than flown from here -- one settle, one flight, one
+  // thing that can interrupt it, whichever hand asked.
   useEffect(() => {
+    // `target` is an EventTarget, not an element: an event dispatched straight
+    // at `document` -- or at the window -- has no `closest` to call, and reading
+    // through it would throw inside a listener nobody is watching. Anything that
+    // is not an element cannot be the compass, which is the only question here.
+    const onCompass = (e: PointerEvent) =>
+      e.target instanceof Element && e.target.closest('.axis-compass') !== null
     const interrupt = (e: PointerEvent) => {
-      const target = e.target as HTMLElement | null
-      if (target && target.closest('.axis-compass')) return
+      if (onCompass(e)) return
+      if (settle && e.button !== MIDDLE_BUTTON) return
       flight.current = null
     }
+    const ended = (e: PointerEvent) => {
+      if (!settle || e.button !== MIDDLE_BUTTON || onCompass(e)) return
+      orbitEnded.current = true
+    }
     window.addEventListener('pointerdown', interrupt, true)
-    return () => window.removeEventListener('pointerdown', interrupt, true)
-  }, [])
+    window.addEventListener('pointerup', ended, true)
+    return () => {
+      window.removeEventListener('pointerdown', interrupt, true)
+      window.removeEventListener('pointerup', ended, true)
+    }
+  }, [settle])
 
   useFrame(({ camera }, delta) => {
     const controls = controlsRef.current
@@ -535,12 +668,37 @@ export function CompassControl({ controlsRef }: { controlsRef: RefObject<Orbit> 
       controls?.update()
     }
 
+    // The hand has come off the compass. Taken every frame whether or not this
+    // screen cares -- see `takeRelease` -- and turned into an ordinary request,
+    // so a settle is flown exactly the way a click on a face is: same rate,
+    // same arrival, same one thing that can interrupt it.
+    //
+    // AFTER the turn above rather than before it, because the last pixels of
+    // the drag are applied there and the nearest view has to be measured from
+    // where the gesture actually finished. The camera is read directly rather
+    // than through `compass.facing`, which was copied at the top of the frame
+    // and is one turn out of date by now.
+    // Both hands, one rule. `orbitEnded` is only ever set on a settling screen,
+    // so it needs no `settle` test of its own -- but it is read and cleared
+    // every frame regardless, for the reason `takeRelease` is: a flag left
+    // standing would fire on the first frame after a switch to another screen.
+    const released = takeRelease()
+    const orbited = orbitEnded.current
+    orbitEnded.current = false
+    // An orbit leaves the controls gliding, and that glide would outlive the
+    // flight it is about to ask for: the flight lands the camera exactly on the
+    // axis, clears itself, and the leftover momentum then creeps the view back
+    // off it -- a fifth of a degree, measured, where a compass flight lands on
+    // nothing at all. So the momentum goes here, with the gesture that owned it.
+    // See `dropMomentum` for why this is not simply a jump.
+    if (orbited) dropMomentum(controls)
+    if ((released || orbited) && settle) askForView(nearestView(camera.quaternion).dir)
+
     const asked = takeRequest()
     if (asked) {
-      const focus = controls ? controls.target.clone() : new Vector3()
+      const focus = controls ? controls.target : ORIGIN
       flight.current = {
         to: viewQuaternion(asked),
-        focus,
         radius: camera.position.distanceTo(focus),
       }
     }
@@ -552,7 +710,9 @@ export function CompassControl({ controlsRef }: { controlsRef: RefObject<Orbit> 
     if (done) camera.quaternion.copy(run.to)
     else camera.quaternion.rotateTowards(run.to, delta * TURN_RATE)
 
-    camera.position.copy(orbitPosition(camera.quaternion, run.focus, run.radius))
+    camera.position.copy(
+      orbitPosition(camera.quaternion, controls ? controls.target : ORIGIN, run.radius)
+    )
     // Rolled with the camera while it flies, then handed back to the world.
     // OrbitControls orbits ABOUT `up`, so leaving it tipped after a top view
     // would spin the whole scene about Z on the next drag. Putting it back
@@ -651,6 +811,9 @@ export function AxisCompass() {
     }
 
     const up = () => {
+      // Only a drag is reported. A press that never moved is a click, and a
+      // click on a ball or a face already asks for a view of its own.
+      if (dragged.current) releaseTurn()
       setTurning(false)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)

@@ -1,4 +1,4 @@
-import { CLAY_RINGS, bore, flatFactor, ringHeight } from '../geometry/clay'
+import { CLAY_RINGS, bore, flatFactor, pieceSpan, ringHeight } from '../geometry/clay'
 import type { Clay } from '../geometry/clay'
 
 /**
@@ -310,10 +310,22 @@ const round = (n: number) => Math.round(n * 1000) / 1000
  * refers to is worse than no line.
  */
 export function silhouette(clay: Clay, frame: ClayFrame, factor = 1): string {
+  // ONLY THE RINGS THAT ARE CLAY, which is what lets this screen round a top.
+  // A piece whose wall has reached the axis below the rim has no material above
+  // that, and drawn ring by ring to the rim regardless it grows a needle: the
+  // outline runs up the axis and back down it, enclosing nothing, and the
+  // stroke on that nothing is a pixel and a half wide all the way to the top of
+  // the stock. See `pieceSpan`, which also keeps the one closed ring the
+  // outline needs to end ON the axis rather than on a flat.
+  const span = pieceSpan(clay)
+  // Nothing left to draw. An empty path rather than a degenerate one: the wall
+  // has been turned away entirely, and a `d` of nothing draws nothing.
+  if (span === null) return ''
+
   const right: string[] = []
   const left: string[] = []
 
-  for (let i = 0; i < CLAY_RINGS; i += 1) {
+  for (let i = span.lo; i <= span.hi; i += 1) {
     const y = round(clayY(frame, ringHeight(clay, i)))
     const r = round(clay.wall[i] * factor)
     right.push(`${r} ${y}`)
@@ -393,7 +405,15 @@ export function turningRings(clay: Clay, frame: ClayFrame): { y: number; r: numb
   // and it is a belt as well: this is a loop over one length divided by another,
   // and it must not be the thing that hangs the frame the day either arrives
   // wrong.
-  const ceiling = Math.min(clay.height, frame.base)
+  // THE PIECE'S OWN TOP rather than the stock's, so a rounded top is not
+  // crossed by rings drawn on the air above it. They would be invisible anyway
+  // -- the wall is at nothing up there, so each is a line from zero to zero,
+  // and the clip that holds them to the body would take what was left -- but
+  // the ceiling is what this loop MEANS, and meaning the stock's height here
+  // while the drawing means the piece's is how the two come apart later.
+  const span = pieceSpan(clay)
+  if (span === null) return rings
+  const ceiling = Math.min(ringHeight(clay, span.hi), frame.base)
   for (let n = 1; n <= FRAME_RULES; n += 1) {
     const height = n * frame.rule
     // Never ON the rim, and never on the plate: a ring lying along either is a

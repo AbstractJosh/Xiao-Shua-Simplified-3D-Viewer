@@ -152,7 +152,7 @@ export function HelpScreen() {
             <h2 className="help-screen-title" id="help-screen-title">
               Controls
             </h2>
-            <p className="help-lede">Everything the app does, grouped by what you are doing.</p>
+            <p className="help-lede">What each tool does, and how to work in each viewport.</p>
           </div>
           <button
             type="button"
@@ -208,9 +208,29 @@ export function HelpScreen() {
                     {entry.title}
                     {entry.key && <kbd className="help-key">{entry.key}</kbd>}
                   </h4>
-                  {entry.body.map((paragraph, i) => (
-                    <p className="help-text" key={i}>
-                      {paragraph}
+                  {entry.summary && <p className="help-text">{entry.summary}</p>}
+
+                  {/* The gestures, as a two-column grid rather than as
+                      sentences. `dl` because that is what this is: a term and
+                      what it means. The verb column is what the eye runs down,
+                      so it is the one that stays narrow and left-aligned. */}
+                  {entry.steps && (
+                    <dl className="help-steps">
+                      {entry.steps.map((step, i) => (
+                        <div className="help-step" key={i}>
+                          <dt className="help-step-do">{step.action}</dt>
+                          <dd className="help-step-is">{step.result}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+
+                  {/* Last, and marked off by a rule down its left edge: a note
+                      is the thing you did not come looking for, so it must not
+                      sit in the way of the thing you did. */}
+                  {entry.notes?.map((note, i) => (
+                    <p className="help-note" key={i}>
+                      {note}
                     </p>
                   ))}
                 </li>

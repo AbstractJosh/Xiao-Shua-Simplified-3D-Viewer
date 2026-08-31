@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { pieceHeight } from '../geometry/clay'
 import { fitToEnvelope } from '../geometry/importers'
 import { registerMesh } from '../geometry/meshLibrary'
 import { revolveClay } from '../geometry/revolve'
@@ -122,7 +123,10 @@ export function CopyPieceButton() {
     renameCustom(saveCustom(piece), name)
 
     setNoted(
-      `Copied · ${formatLength(clay.height, displayUnit)} tall` +
+      // The PIECE's height, the same one the readout in the other corner shows
+      // -- see `pieceHeight`. A receipt for a piece whose top has been rounded
+      // off must not quote the stock it was cut from.
+      `Copied · ${formatLength(pieceHeight(clay), displayUnit)} tall` +
         ` · ${entry.triangles.toLocaleString()} tris`
     )
   }

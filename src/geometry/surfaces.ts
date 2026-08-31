@@ -10,6 +10,7 @@ import {
   SphereGeometry,
   Vector3,
 } from 'three'
+import { MIN_SHAPE } from './dimensions'
 import { meshGeometry } from './meshLibrary'
 import type { Point2 } from './outline'
 import type { FacePatch } from './solids'
@@ -74,6 +75,19 @@ export interface SurfaceDef {
   sweep(anchor: SurfaceAnchor, depth: number, op: FeatureOp): Sweep
   /** Composite solids vary per patch, so the anchor decides where it is measured. */
   maxDepth(op: FeatureOp, anchor?: SurfaceAnchor): number
+  /**
+   * Widest sketch this patch will hold, measured from the patch's own centre.
+   *
+   * Per patch for the same reason `maxDepth` is: the question is about the face
+   * being drawn on, not about the solid it belongs to. A cylinder's cap and its
+   * wall run out of room in completely different directions, and a slab's broad
+   * top is not bounded by how thin the slab is.
+   *
+   * Omitting the anchor asks the conservative question -- the tightest any of
+   * this solid's patches would answer -- which is the honest reply when nobody
+   * has said which face they mean.
+   */
+  maxShapeRadius(anchor?: SurfaceAnchor): number
   /** Local-space extents, which is what drops a new solid onto the ground. */
   bounds(): Box3
 }
@@ -93,6 +107,21 @@ export function tangentBasis(n: Vector3): { uDir: Vector3; vDir: Vector3 } {
  * curved surface stays this fraction short of the convergence point.
  */
 const CURVED_MAX_INWARD = 0.85
+
+/**
+ * The widest cap one sketch may cover on a CLOSED smooth surface, as the
+ * tangent of the half-angle it subtends at the centre.
+ *
+ * A sphere and a bean have no rim to reach, so their bound cannot be an edge --
+ * it has to be the point where the projection stops being usable. Gnomonic
+ * projection pushes a tangent-plane point out along the line through the
+ * centre, so the tangent radius runs away to infinity as the half-angle
+ * approaches ninety degrees and the outline flattens against the equator.
+ * Sixty degrees is a cap a third of the way down the sphere, at a tangent of
+ * 1.73 radii -- far more reach than the flat 0.9 this replaces, and still well
+ * short of where the map blows up.
+ */
+const CURVED_MAX_TANGENT = Math.tan((60 * Math.PI) / 180)
 
 /** Segment count shared by every lathe-built primitive and its offset shell. */
 const LATHE_SEGMENTS = 48
@@ -355,6 +384,28 @@ export class BoxSurface implements SurfaceDef {
     return op === 'extrude' ? minThickness * 2 : minThickness * 1.5
   }
 
+  /**
+   * Half the shorter side of THE FACE, so a circle grows until it touches the
+   * two edges nearest it.
+   *
+   * The bound this replaces was half the box's smallest side whichever face you
+   * were on, so a twenty-by-two-by-twenty slab capped every sketch on its broad
+   * top at a radius of one, with nine units of face going spare in each
+   * direction.
+   *
+   * Without an anchor the smallest half-extent is the answer, because every
+   * face pairs that one with something no smaller. That is the same number the
+   * old whole-solid bound gave, so a caller with no face in mind loses nothing.
+   */
+  maxShapeRadius(anchor?: SurfaceAnchor): number {
+    if (anchor?.on === 'box-face') {
+      const { halfU, halfV } = this.faceExtents(anchor.face)
+      return Math.min(halfU, halfV)
+    }
+    const h = this.half()
+    return Math.min(h.x, h.y, h.z)
+  }
+
   bounds(): Box3 {
     const h = this.half()
     return new Box3(h.clone().negate(), h.clone())
@@ -454,6 +505,12 @@ export class SphereSurface implements SurfaceDef {
 
   maxDepth(op: FeatureOp): number {
     return op === 'extrude' ? this.radius * 2 : this.radius * 0.8
+  }
+
+  /** There is no rim on a sphere, so the bound is the projection's, not an
+   *  edge's -- see `CURVED_MAX_TANGENT`. */
+  maxShapeRadius(): number {
+    return this.radius * CURVED_MAX_TANGENT
   }
 
   bounds(): Box3 {
@@ -610,6 +667,24 @@ export class FacetedSurface implements SurfaceDef {
     return op === 'extrude' ? thickness * 2 : thickness * 1.5
   }
 
+  /**
+   * The face's inradius: how far its own centre sits from its nearest edge.
+   *
+   * `polygonClearance` at the origin is exactly that, because `facePatch` seats
+   * every face's frame on its centroid -- so this is the largest circle that
+   * fits on the face WHERE THE PANEL WOULD PUT IT. On a face whose centroid is
+   * not its incentre a slightly larger circle would fit off to one side, and
+   * `insetIntoPolygon` will happily seat one there; what this bounds is the
+   * sketch the user can grow without the outline being shoved sideways to make
+   * room, which is the honest thing for a slider to stop at.
+   */
+  maxShapeRadius(anchor?: SurfaceAnchor): number {
+    if (anchor?.on === 'planar-face') {
+      return polygonClearance(this.face(anchor.face).polygon, 0, 0)
+    }
+    return Math.min(...this.faces.map((f) => polygonClearance(f.polygon, 0, 0)))
+  }
+
   bounds(): Box3 {
     return new Box3().setFromPoints(this.points)
   }
@@ -753,6 +828,27 @@ export class CylinderSurface implements SurfaceDef {
   maxDepth(op: FeatureOp, anchor?: SurfaceAnchor): number {
     if (anchor && anchor.on === 'planar-face') return this.caps.maxDepth(op, anchor)
     return op === 'extrude' ? this.radius * 2 : this.radius * 0.8
+  }
+
+  /**
+   * Half the wall's height, or a quarter of its circumference, whichever runs
+   * out first.
+   *
+   * The height is the bound `clampAnchor` already enforces on this patch, so
+   * without it here the two disagreed: the panel would grow a sketch the slide
+   * then pinned to the middle of the barrel with its outline hanging off both
+   * rims. The circumference is the other way it runs out -- u is arc length
+   * round the barrel, so an outline of radius r spans 2r of it, and half the
+   * way round is as far as one can reach before it starts lapping itself.
+   */
+  private wallShapeRadius(): number {
+    return Math.min(this.height / 2, (Math.PI * this.radius) / 2)
+  }
+
+  maxShapeRadius(anchor?: SurfaceAnchor): number {
+    if (anchor?.on === 'planar-face') return this.caps.maxShapeRadius(anchor)
+    if (anchor?.on === 'cylinder') return this.wallShapeRadius()
+    return Math.min(this.caps.maxShapeRadius(), this.wallShapeRadius())
   }
 
   bounds(): Box3 {
@@ -970,6 +1066,25 @@ export class ConeSurface implements SurfaceDef {
     return this.inwardReach(anchor && anchor.on === 'cone' ? anchor.t : 0.5) * 0.8
   }
 
+  /**
+   * Half the wall's usable band, measured along the slant.
+   *
+   * `clampAnchor` seats a sketch of radius r between t = r/slant and
+   * t = CONE_MAX_T - r/slant, so the band it has to fit inside runs from the
+   * rim to the point where the apex is fenced off, and a sketch centred in it
+   * reaches half that band each way. Past this the two limits cross and the
+   * sketch is dumped in the middle of the band whatever the user asked for.
+   */
+  private wallShapeRadius(): number {
+    return (this.slant * CONE_MAX_T) / 2
+  }
+
+  maxShapeRadius(anchor?: SurfaceAnchor): number {
+    if (anchor?.on === 'planar-face') return this.base.maxShapeRadius(anchor)
+    if (anchor?.on === 'cone') return this.wallShapeRadius()
+    return Math.min(this.base.maxShapeRadius(), this.wallShapeRadius())
+  }
+
   bounds(): Box3 {
     const hh = this.height / 2
     return new Box3(
@@ -1155,6 +1270,13 @@ export class CapsuleSurface implements SurfaceDef {
     return op === 'extrude' ? this.radius * 2 : this.radius * 0.8
   }
 
+  /** Closed and smooth, exactly like a sphere: no rim, so the projection sets
+   *  the bound. The straight mid-section only ever gives a sketch MORE room
+   *  than the hemispherical ends do, so the ends are the number. */
+  maxShapeRadius(): number {
+    return this.radius * CURVED_MAX_TANGENT
+  }
+
   bounds(): Box3 {
     const hh = this.height / 2 + this.radius
     return new Box3(
@@ -1205,6 +1327,12 @@ export class DerivedSurface implements SurfaceDef {
   }
   maxDepth(): number {
     return this.span
+  }
+  /** Nothing here has an edge to fall off -- `clampAnchor` is the identity for
+   *  the same reason -- so the only honest bound is the reach of the solid the
+   *  patch was cut out of. */
+  maxShapeRadius(): number {
+    return this.span / 2
   }
   bounds(): Box3 {
     // Only ever consulted through baseSpan, which asks the BASE solid; this is
@@ -1301,6 +1429,13 @@ export class MeshSurface implements SurfaceDef {
     return this.span()
   }
 
+  /** Every anchor on an import is derived, and a derived patch is whatever
+   *  triangles the sketch happens to cover -- there is no face to be bounded
+   *  by, so this answers the way `DerivedSurface` does. */
+  maxShapeRadius(): number {
+    return this.span() / 2
+  }
+
   bounds(): Box3 {
     const h = new Vector3(this.size[0] / 2, this.size[1] / 2, this.size[2] / 2)
     return new Box3(h.clone().negate(), h)
@@ -1392,6 +1527,26 @@ export function depthLimits(
   anchor: SurfaceAnchor
 ): { in: number; out: number } {
   return { in: host.maxDepth('intrude', anchor), out: host.maxDepth('extrude', anchor) }
+}
+
+/**
+ * Widest sketch the patch under `anchor` will hold, measured from its centre.
+ *
+ * Lives here rather than beside the solid dimensions because the answer is a
+ * question about a SURFACE, and the version that lived there could not ask one:
+ * it read a radius or a size off the base and shaved a flat tenth off it, so a
+ * sketch stopped a tenth short of every rim whether or not there was anything
+ * in the way, and a broad face on a thin solid was bounded by the thinness.
+ *
+ * Two places ask -- the Inspector's Radius and Width fields, and the sketch
+ * gizmo's ring -- and a bound only one of them honoured would let a drag build
+ * a sketch the panel then refused to show. `MIN_SHAPE` is the floor for the
+ * same reason the fields take it as their minimum: a degenerate patch answering
+ * zero would leave a slider whose maximum sat under its minimum.
+ */
+export function maxShapeSize(base: BaseSolid, anchor?: SurfaceAnchor): number {
+  const host = anchor ? hostSurfaceFor(base, anchor) : surfaceFor(base)
+  return Math.max(MIN_SHAPE, host.maxShapeRadius(anchor))
 }
 
 /** A signed depth held inside those limits, keeping the direction it names. */

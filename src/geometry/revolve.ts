@@ -1,5 +1,5 @@
 import { BufferAttribute, BufferGeometry } from 'three'
-import { CLAY_RINGS, bore, ringHeight } from './clay'
+import { bore, pieceSpan, ringHeight } from './clay'
 import type { Clay } from './clay'
 
 /**
@@ -168,12 +168,30 @@ export function revolveClay(clay: Clay, facets: number = TURN_FACETS): BufferGeo
   const cavity = bore(clay)
 
   // THE OUTER WALL FIRST, whatever else is built after it, so the buffer opens
-  // with `CLAY_RINGS * columns.length` vertices laid out ring by ring. That is
-  // a layout `engine-check` reads by index to prove the seam closes, and it is
+  // with one vertex per column per ring, laid out ring by ring. That is a
+  // layout `engine-check` reads by index to prove the seam closes, and it is
   // the one thing about this buffer that anything outside it knows.
+  //
+  // AND ONLY THE RINGS THAT ARE CLAY, which is the same trim the drawing makes
+  // -- see `pieceSpan`, and `silhouette`, which is one meridian of this
+  // surface and has to stay one. A piece with a rounded top has no material
+  // over the last stretch of its stock, and swept to the rim regardless it
+  // carries a column of degenerate bands up the axis: no volume, but a bounding
+  // box as tall as the stock, which is the box the modelling screen sizes and
+  // stands the pasted piece by. The piece would arrive shorter than it looks
+  // and hovering over the grid.
+  const span = pieceSpan(clay)
+  // Turned away altogether. An empty mesh rather than a degenerate one: there
+  // is no piece, and a buffer of nothing is the honest way to say so.
+  if (span === null) return new BufferGeometry()
+
   const heights: number[] = []
-  for (let i = 0; i < CLAY_RINGS; i += 1) heights.push(ringHeight(clay, i))
-  sweepBand(mesh, columns, quads, clay.wall, heights, true)
+  const profile: number[] = []
+  for (let i = span.lo; i <= span.hi; i += 1) {
+    heights.push(ringHeight(clay, i))
+    profile.push(clay.wall[i])
+  }
+  sweepBand(mesh, columns, quads, profile, heights, true)
 
   // Then the cavity, if the piece has one: the same sweep, turned inside out.
   if (cavity) {
@@ -204,13 +222,20 @@ export function revolveClay(clay: Clay, facets: number = TURN_FACETS): BufferGeo
   const bottomOpen = cavity !== null && cavity.openBottom
   const topOpen = cavity !== null && cavity.openTop
   const last = cavity ? cavity.wall.length - 1 : 0
+  // The ends of the PIECE, which on an untouched lump are the faceplate and the
+  // rim and on a domed one are wherever the clay ran out. A cap at a ring that
+  // closed is a fan of no area -- the surface has already come to a point there
+  // -- and it costs a handful of vertices to keep one rule for both cases.
+  const foot = heights[0]
+  const crown = heights[heights.length - 1]
+  const base = profile[0]
+  const rim = profile[profile.length - 1]
 
-  if (cavity && bottomOpen) capAnnulus(mesh, 0, ring(cavity.wall[0]), ring(clay.wall[0]), -1)
-  else capDisc(mesh, 0, ring(clay.wall[0]), -1)
+  if (cavity && bottomOpen) capAnnulus(mesh, foot, ring(cavity.wall[0]), ring(base), -1)
+  else capDisc(mesh, foot, ring(base), -1)
 
-  const rim = clay.wall[CLAY_RINGS - 1]
-  if (cavity && topOpen) capAnnulus(mesh, clay.height, ring(cavity.wall[last]), ring(rim), 1)
-  else capDisc(mesh, clay.height, ring(rim), 1)
+  if (cavity && topOpen) capAnnulus(mesh, crown, ring(cavity.wall[last]), ring(rim), 1)
+  else capDisc(mesh, crown, ring(rim), 1)
 
   if (cavity && !bottomOpen) capDisc(mesh, cavity.lo, ring(cavity.wall[0]), 1)
   if (cavity && !topOpen) capDisc(mesh, cavity.hi, ring(cavity.wall[last]), -1)

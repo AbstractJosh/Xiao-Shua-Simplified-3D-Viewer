@@ -3,7 +3,7 @@ import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent }
 import { baseName } from '../console/BasePanel'
 import { HollowTool } from '../console/HollowTool'
 import { PullTool, PushTool, SmoothTool } from '../console/LatheTools'
-import { bite, bore, isFresh, widestRadius } from '../geometry/clay'
+import { bite, bore, isFresh, pieceHeight, widestRadius } from '../geometry/clay'
 import { useLathe } from '../store/latheStore'
 import { armedLatheTool, useTools } from '../store/toolStore'
 import { formatLength } from '../units'
@@ -94,6 +94,31 @@ const WHEEL_PER_DOUBLING = 500 / Math.LN2
  */
 const BODY_CLIP = 'lathe-body-clip'
 
+/**
+ * How big the tool's ghost is drawn, and the band it may never leave.
+ *
+ * A SIXTH OF THE REACH, not the reach itself. The ghost used to be the tool's
+ * true footprint -- a circle of r = reach, which at the default is a fifth of
+ * the frame across -- and a mark that size is not a cursor, it is a shape
+ * standing between the hand and the thing it is aimed at. It is also unread at
+ * the one moment it was sized for: the instant the tool goes down, the wall
+ * itself starts moving, and what the eye follows from then on is the wall.
+ *
+ * Scaled by the reach rather than fixed, because the Size dial has to show
+ * SOMETHING on this screen -- a dial whose only effect arrives on the next
+ * stroke is a dial nobody can aim -- and clamped at both ends, because a reach
+ * runs from a millimetre to twelve metres and a cursor may be neither invisible
+ * nor a screenful.
+ *
+ * The clamps are fractions of the FRAME, which is what makes them screen sizes:
+ * the frame is a fixed square fitted to the window, so a ghost held at either
+ * clamp is the same size on glass at every zoom, while one inside the band
+ * zooms with the clay it is measured against.
+ */
+const GHOST_OF_REACH = 1 / 6
+const GHOST_MIN_OF_FRAME = 0.007
+const GHOST_MAX_OF_FRAME = 0.029
+
 function capture(e: ReactPointerEvent<SVGSVGElement>, take: boolean) {
   try {
     if (take) e.currentTarget.setPointerCapture(e.pointerId)
@@ -152,6 +177,11 @@ export function LatheViewport() {
   const flats = useMemo(() => flatsProfile(clay, frame), [clay, frame])
   const rings = useMemo(() => turningRings(clay, frame), [clay, frame])
   const stock = stockRect(clay, frame)
+  // See `GHOST_OF_REACH`: cursor-sized, and only loosely the tool's own size.
+  const ghost = Math.min(
+    Math.max(reach * GHOST_OF_REACH, frame.width * GHOST_MIN_OF_FRAME),
+    frame.width * GHOST_MAX_OF_FRAME
+  )
 
   /**
    * THE LATHE ITSELF. While the tool is held against the clay, the wall goes on
@@ -295,6 +325,12 @@ export function LatheViewport() {
   }
 
   const widest = widestRadius(clay)
+  // THE PIECE'S HEIGHT, NOT THE STOCK'S -- see `pieceHeight`. Round the top off
+  // and the piece really is shorter than the lump it came out of, and the two
+  // numbers beside each other in the corner are both what the clay has BECOME.
+  // The Stock panel goes on showing what it was cut from, which is the same
+  // division this readout already makes about the width.
+  const tall = pieceHeight(clay)
   // Read out to anyone who cannot see the drawing, in the same terms the
   // readout in the corner shows: what is on the lathe, how big it has got, and
   // what it is turned on. Across the CORNERS on a faceted piece, which is what
@@ -315,7 +351,7 @@ export function LatheViewport() {
             : ', hollow and sealed'
   const label =
     `Clay on the lathe, ${baseName(clay.sides).toLowerCase()} based,` +
-    ` ${formatLength(clay.height, displayUnit)} tall` +
+    ` ${formatLength(tall, displayUnit)} tall` +
     ` and ${formatLength(widest * 2, displayUnit)} across${hollowed}`
 
   return (
@@ -465,31 +501,22 @@ export function LatheViewport() {
           vectorEffect="non-scaling-stroke"
         />
 
-        {/* The tool, where the pointer is: how wide it is, and which way it
-            works. Drawn only while a tool is in hand -- with empty hands the
-            pointer is just a pointer -- and it is the tool's REACH, so what you
-            see is exactly the stretch of wall a press would move. */}
+        {/* The tool, where the pointer is: WHICH WAY IT WORKS, said in colour,
+            and only loosely how wide it is -- see `GHOST_OF_REACH`. A small
+            filled ghost rather than an outline of the tool's footprint, and one
+            mark rather than two: at this size the disc is both the aim point
+            and the tool, and the tick that used to say where the pointer was
+            has nothing left to add. Drawn only while a tool is in hand -- with
+            empty hands the pointer is just a pointer. */}
         {tool && at && (
-          <g className={`lathe-tool lathe-tool-${tool}`} aria-hidden>
-            <circle
-              cx={at.x}
-              cy={clayY(frame, at.y)}
-              r={reach}
-              vectorEffect="non-scaling-stroke"
-            />
-            {/* The line the wall is being called to. It is the whole promise of
-                the tool -- the wall stops here and not past it -- and it is the
-                only mark that says where the pointer is as opposed to how big
-                the tool is. */}
-            <line
-              className="lathe-tool-mark"
-              x1={at.x}
-              y1={clayY(frame, at.y) - reach * 0.34}
-              x2={at.x}
-              y2={clayY(frame, at.y) + reach * 0.34}
-              vectorEffect="non-scaling-stroke"
-            />
-          </g>
+          <circle
+            className={`lathe-tool lathe-tool-${tool}`}
+            cx={at.x}
+            cy={clayY(frame, at.y)}
+            r={ghost}
+            vectorEffect="non-scaling-stroke"
+            aria-hidden
+          />
         )}
       </svg>
 
@@ -505,7 +532,7 @@ export function LatheViewport() {
           screen keeps for what is selected -- this screen has one thing and it
           is always selected. */}
       <div className="lathe-readout">
-        <span>{formatLength(clay.height, displayUnit)} tall</span>
+        <span>{formatLength(tall, displayUnit)} tall</span>
         <span className="lathe-readout-sep" aria-hidden>
           ·
         </span>
