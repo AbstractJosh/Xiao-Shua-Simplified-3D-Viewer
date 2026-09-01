@@ -117,14 +117,18 @@ import { planeSeparates, splitPlanes } from '../src/geometry/cut'
 import { signedVolume } from '../src/geometry/volume'
 import {
   KERF as LASER_KERF,
+  STEP as LASER_STEP,
+  buildKerfWall,
   carryToBorder,
   cutPieces,
   faceBasis,
   freshBlock,
   outlineOf,
   pieceVolume,
+  resample,
   ropeFollow,
   simplify,
+  stations,
 } from '../src/geometry/laserCut'
 import type { FaceAxis as LaserFace, Pt as LaserPt } from '../src/geometry/laserCut'
 import { IDENTITY_TRANSFORM, defaultFeature } from '../src/geometry/types'
@@ -5724,6 +5728,127 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
       'so a straight cut is a handful of triangles, not hundreds',
       down.pieces.every((g) => triangleCount(g) < 60),
       down.pieces.map(triangleCount).join(' / ')
+    )
+  }
+
+  // A CORNER DRAWN WITH POINT CUT IS BURNT WHERE IT WAS DRAWN, which is the one
+  // thing `resample` could not do and the reason `stations` exists beside it.
+  //
+  // `resample` strides the whole polyline at a fixed step and carries the
+  // leftover across each vertex -- right for a freehand stroke, whose vertices
+  // are pointer samples, and wrong for a line whose vertices ARE the drawing. A
+  // stride that steps over a corner never puts a station on it, so what gets
+  // burnt is a chord across it: a chamfer where a point was asked for, up to a
+  // third of a millimetre off on a 10 cm block. That is further than the slot
+  // the cut burns, and four times the budget `simplify` is so careful to stay
+  // inside -- the pipeline was strict about its second pass and careless about
+  // its first.
+  {
+    // Deliberately off any multiple of the step, which is what a hand produces
+    // and what every check here had quietly avoided by drawing on round
+    // numbers.
+    const zig: LaserPt[] = [
+      [-0.4, -0.34],
+      [-0.13, 0.21],
+      [0.07, -0.29],
+      [0.28, 0.24],
+      [0.41, -0.18],
+    ]
+
+    /** How far a polyline passes from a point: the cut's own error at a corner. */
+    const misses = (poly: LaserPt[], c: LaserPt): number => {
+      let off = Infinity
+      for (let i = 1; i < poly.length; i += 1) {
+        const a = poly[i - 1]
+        const b = poly[i]
+        const dx = b[0] - a[0]
+        const dy = b[1] - a[1]
+        const l2 = dx * dx + dy * dy
+        const t =
+          l2 === 0 ? 0 : Math.min(1, Math.max(0, ((c[0] - a[0]) * dx + (c[1] - a[1]) * dy) / l2))
+        off = Math.min(off, Math.hypot(c[0] - (a[0] + dx * t), c[1] - (a[1] + dy * t)))
+      }
+      return off
+    }
+    const worstCorner = (pass: (l: LaserPt[]) => LaserPt[]): number => {
+      const out = simplify(pass(zig))
+      let worst = 0
+      for (let k = 1; k < zig.length - 1; k += 1) worst = Math.max(worst, misses(out, zig[k]))
+      return worst
+    }
+
+    // The fault, kept as a check so nobody puts the stride back.
+    check(
+      'striding through a corner burns a chamfer where a point was drawn',
+      worstCorner(resample) > LASER_KERF / 2,
+      `${(worstCorner(resample) * 100).toFixed(3)} mm off, against a ${(LASER_KERF * 100).toFixed(2)} mm slot`
+    )
+    check(
+      'restarting the walk at every vertex burns the corner itself',
+      worstCorner(stations) < 1e-12,
+      `${(worstCorner(stations) * 100).toExponential(1)} mm off`
+    )
+    check(
+      'and what is left IS the line that was drawn',
+      simplify(stations(zig)).length === zig.length,
+      `${simplify(stations(zig)).length} stations for ${zig.length} points`
+    )
+
+    // AND IT COSTS NOTHING. Every gap stays between half a step and one and a
+    // half -- nothing piled up for the wall builder to make a degenerate quad
+    // out of, nothing stretched far enough to cut a corner off somewhere else.
+    let closest = Infinity
+    let widest = 0
+    const walked = stations(zig)
+    for (let i = 1; i < walked.length; i += 1) {
+      const gap = Math.hypot(walked[i][0] - walked[i - 1][0], walked[i][1] - walked[i - 1][1])
+      closest = Math.min(closest, gap)
+      widest = Math.max(widest, gap)
+    }
+    check(
+      'with every gap still about a step wide',
+      closest >= LASER_STEP / 2 - 1e-9 && widest <= LASER_STEP * 1.5 + 1e-9,
+      `${(closest * 100).toFixed(3)} to ${(widest * 100).toFixed(3)} mm, against a ${(LASER_STEP * 100).toFixed(2)} mm step`
+    )
+    check(
+      'and no more of them than the stride wanted',
+      stations(zig).length <= resample(zig).length,
+      `${stations(zig).length} against ${resample(zig).length}`
+    )
+
+    // THE WALL STILL CLOSES ROUND THEM. A corner sharper than the sideways
+    // offset could fold the wall through itself, which is what the even spacing
+    // is really protecting -- so the sharp zigzag is swept and measured, not
+    // reasoned about. Signed volume is the whole test: only a closed mesh wound
+    // outward lands on a positive number.
+    const wall = buildKerfWall(carryToBorder(simplify(stations(zig))), { axis: 2, sign: 1 })
+    check('the wall round a sharp zigzag is closed and wound out', wall !== null && signedVolume(wall) > 0, `${wall ? signedVolume(wall).toExponential(2) : 'no wall'}`)
+
+    // AND IT CUTS. The point of a corner is that the block comes apart along
+    // it: a zigzag across the face makes two pieces whose volumes still add up
+    // to the block less the slot.
+    const zagged = cutPieces([freshBlock()], zig, { axis: 2, sign: 1 })
+    check('and a zigzag cut parts the block', zagged.pieces.length === 2, `${zagged.pieces.length} pieces`)
+    const held = zagged.pieces.reduce((sum, g) => sum + pieceVolume(g), 0)
+    check(
+      'with the block conserved but for the slot',
+      held < 1 && held > 0.97,
+      `${held.toFixed(4)} of the unit block`
+    )
+
+    // A FREEHAND STROKE IS UNTOUCHED, which is why `resample` is still there.
+    // Its vertices are pointer samples rather than corners, and it reaches this
+    // pipeline having already been evened out by `draftLine`.
+    const raw: LaserPt[] = []
+    for (let i = 0; i <= 400; i += 1) {
+      const t = i / 400
+      raw.push([-0.45 + t * 0.9, Math.sin(t * 6) * 0.25])
+    }
+    const stroke = resample(raw)
+    check(
+      'an evened-out stroke passes through unchanged',
+      simplify(stations(stroke)).length === simplify(resample(stroke)).length,
+      `${simplify(stations(stroke)).length} against ${simplify(resample(stroke)).length}`
     )
   }
 

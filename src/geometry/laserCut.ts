@@ -197,6 +197,59 @@ export function resample(points: Pt[], step = STEP): Pt[] {
 }
 
 /**
+ * The stations the wall is really built from: one at every corner the line has,
+ * and no gap longer than `step` anywhere along it.
+ *
+ * WHY THIS IS NOT `resample`. That one walks the whole polyline at a fixed
+ * stride and carries the leftover across each corner, which is exactly right
+ * for the job it was written for -- a freehand stroke, where the vertices are
+ * pointer samples and a corner in them is the frame rate rather than the hand.
+ * It is exactly wrong for a line whose vertices ARE the drawing. A stride that
+ * steps over a corner never puts a station on it: the two stations either side
+ * are joined by a chord, and what gets burnt is a chamfer where a point was
+ * asked for. On a 10 cm block that moved the cut up to a third of a millimetre
+ * off the corner drawn -- further than the slot it burns, and four times the
+ * budget `SIMPLIFY` is so careful to stay inside.
+ *
+ * So the walk RESTARTS at every vertex instead of striding through it. Each
+ * segment is divided into whole parts of its own -- `round(run / step)` of them
+ * -- which keeps every gap between half a step and one and a half, so nothing
+ * is piled up and nothing is stretched. What it costs is nothing: the same
+ * number of stations, in slightly different places, with the corners among
+ * them.
+ *
+ * A VERTEX NEARER THAN A KERF TO THE LAST STATION IS NOT A CORNER. The cut
+ * cannot express a detail finer than the slot it burns, so a jog that small is
+ * dropped rather than given a station of its own -- which is also what keeps a
+ * densely sampled curve (see `bezierChain`, sixteen to a span) from arriving as
+ * a run of stations too close together to offset a wall from. The last point is
+ * kept whatever, so the line still ends where the hand left it and
+ * `carryToBorder` reads the direction it was really travelling.
+ */
+export function stations(line: Pt[], step = STEP): Pt[] {
+  if (line.length < 2 || !(step > 0)) return line.slice()
+  const floor = step / 3
+
+  const out: Pt[] = [line[0]]
+  for (let i = 1; i < line.length; i += 1) {
+    const to = line[i]
+    const from = out[out.length - 1]
+    const run = len(sub(to, from))
+    // The same point twice: no direction to carry the wall along.
+    if (run <= WELD) continue
+    if (run < floor && i < line.length - 1) continue
+    const parts = Math.max(1, Math.round(run / step))
+    for (let k = 1; k < parts; k += 1) {
+      out.push([from[0] + ((to[0] - from[0]) * k) / parts, from[1] + ((to[1] - from[1]) * k) / parts])
+    }
+    // The vertex itself, written out rather than interpolated to, so a corner
+    // is the very point that was drawn rather than a float away from it.
+    out.push(to)
+  }
+  return out
+}
+
+/**
  * How far a station may be from the line drawn without it, before it has to be
  * kept.
  *
@@ -571,11 +624,19 @@ export function cutPieces(
   face: FaceAxis,
   kerf = KERF
 ): { pieces: BufferGeometry[]; split: number; made: number[] } {
-  // Even the spacing, then drop the stations the shape does not need, then
-  // carry the ends out past the block. In that order: the simplify is what
-  // keeps a straight cut from costing three hundred triangles, and the carry is
-  // two more stations that must not be simplified away.
-  const wall = buildKerfWall(carryToBorder(simplify(resample(line))), face, kerf)
+  // Even the spacing WITHOUT stepping over a corner, then drop the stations the
+  // shape does not need, then carry the ends out past the block. In that order:
+  // the simplify is what keeps a straight cut from costing three hundred
+  // triangles, and the carry is two more stations that must not be simplified
+  // away.
+  //
+  // `stations` rather than `resample`, and the difference is the whole of
+  // whether Point Cut can burn a corner: a stride that walks through a vertex
+  // leaves a chamfer where the hand asked for a point. See `stations`. The
+  // freehand stroke has already been through `resample` on its way here -- see
+  // `draftLine` -- so it arrives evenly spaced and passes through this
+  // unchanged.
+  const wall = buildKerfWall(carryToBorder(simplify(stations(line))), face, kerf)
   if (!wall) return { pieces, split: 0, made: [] }
 
   const out: BufferGeometry[] = []

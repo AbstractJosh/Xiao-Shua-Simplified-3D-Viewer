@@ -264,6 +264,14 @@ export const HELP_SECTIONS: HelpSection[] = [
             everywhere else. Moving a point never undoes an aim, and the aim survives the switch
             being thrown off and back on.
           </>,
+          <>
+            <b>With it off, a corner is burnt where you put it.</b> The line is walked from station
+            to station on its way to becoming a slot, and the walk restarts at every point you
+            placed rather than striding through it -- so a sharp V comes out a sharp V rather than
+            a small chamfer across the tip. What the tool cannot do is anything finer than the slot
+            itself: two points closer together than the kerf are one point as far as the cut is
+            concerned.
+          </>,
         ],
       },
       {
