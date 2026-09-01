@@ -26,17 +26,18 @@ import {
 import type { CutPlaneState, RulerFrame, TransformMode } from '../store/toolStore'
 import type { Axis } from '../geometry/dimensions'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
+import { anyMirror } from '../store/toolStore'
+import {
+  DEFAULT_MIRROR_SNAP,
+  DETENT,
+  MIRROR_SNAP_MAX,
+  MIRROR_SNAP_MIN,
+} from '../geometry/faceMirror'
 import { DEFAULT_LATHE_SNAP, LATHE_SNAP_MAX, LATHE_SNAP_MIN } from '../viewport/latheRuler'
 // The camera, read the way the corner compass reads it. This file is where the
 // island's tools are defined; the island itself is a viewport component, and
 // `compassViews` is plain arithmetic with no React and no renderer in it.
 import { compass } from '../viewport/compassViews'
-import {
-  FLIGHT_SPEED_DEFAULT,
-  FLIGHT_SPEED_MAX,
-  FLIGHT_SPEED_MIN,
-} from '../viewport/gameCamera'
-import { SCREEN_HAS_GAME_CONTROLS } from '../screens'
 import { NumberField } from './Field'
 import { NavTool } from './NavTool'
 import {
@@ -53,8 +54,7 @@ import {
   SmootherIcon,
   SnapIcon,
 } from './navIcons'
-import { UNIT_MODES, formatLength, fromDisplay, pinnedUnit } from '../units'
-import { THEMES, THEME_LABELS } from '../theme'
+import { formatLength, fromDisplay } from '../units'
 
 /**
  * The three tools that change what the gizmo IS, as a row of three.
@@ -254,6 +254,12 @@ export function SnapTool() {
   const setSnapDistance = useTools((s) => s.setSnapDistance)
   const setLaserSnapDistance = useTools((s) => s.setLaserSnapDistance)
   const setLatheSnapDistance = useTools((s) => s.setLatheSnapDistance)
+  const mirrorSnapAngle = useTools((s) => s.mirrorSnapAngle)
+  const setMirrorSnapAngle = useTools((s) => s.setMirrorSnapAngle)
+  /** Whether there is a mirror anywhere on the block for the angle to govern.
+   *  A count rather than the table itself, so aiming an axis does not re-render
+   *  the bar. */
+  const mirrored = useTools(anyMirror)
   const live = useTools(snapsHere)
   const screen = useTools((s) => s.screen)
 
@@ -276,17 +282,39 @@ export function SnapTool() {
           when the tool is idle reads as a bug. */}
       <fieldset className="tool-group" disabled={!snap}>
         {screen === 'laser' ? (
-          <NumberField
-            label="Sensitivity"
-            value={laserSnapDistance}
-            min={LASER_SNAP_MIN}
-            max={LASER_SNAP_MAX}
-            step={1}
-            decimals={0}
-            resetTo={DEFAULT_LASER_SNAP}
-            tip="How near a point has to come to another point's row or column before it lines up with it. In pixels on screen, so it is the same reach under the finger at every zoom -- which a length in the world could not be on a camera that zooms this far."
-            onChange={setLaserSnapDistance}
-          />
+          <>
+            <NumberField
+              label="Sensitivity"
+              value={laserSnapDistance}
+              min={LASER_SNAP_MIN}
+              max={LASER_SNAP_MAX}
+              step={1}
+              decimals={0}
+              resetTo={DEFAULT_LASER_SNAP}
+              tip="How near a point has to come to another point's row or column before it lines up with it. In pixels on screen, so it is the same reach under the finger at every zoom -- which a length in the world could not be on a camera that zooms this far."
+              onChange={setLaserSnapDistance}
+            />
+            {/* THE SECOND FIELD ON ANY SCREEN, and the one place the rule above
+                bends. It bends because this is not a second screen's number: it
+                is a second KIND of aiming on this one, and a screen that can
+                snap two different things has two answers to "how near is near".
+                It appears only once a mirror is standing somewhere on the
+                block, so a user who has never reached for Symmetry sees the one
+                field the panel has always had. See `mirrorSnapAngle`. */}
+            {mirrored && (
+              <NumberField
+                label="Angle"
+                value={mirrorSnapAngle}
+                min={MIRROR_SNAP_MIN}
+                max={MIRROR_SNAP_MAX}
+                step={0.5}
+                decimals={1}
+                resetTo={DEFAULT_MIRROR_SNAP}
+                tip={`How near the symmetry axis has to be swung to a stop before it holds there, in degrees. The stops are every ${DETENT} degrees -- the two squares and the two diagonals -- so at the top of this range they meet and no angle between them can be reached, and at zero the line goes exactly where it is put.`}
+                onChange={setMirrorSnapAngle}
+              />
+            )}
+          </>
         ) : screen === 'lathe' ? (
           <NumberField
             label="Sensitivity"
@@ -484,23 +512,11 @@ export function ErodeTool() {
       panelTitle="Blowtorch"
     >
       <div className="tool-group">
-        {/* A length, and one of the ones that cannot be shown in `auto`.
-
-            The brush runs from 1 mm to 1.25 m, so under `auto`, which is what
-            the app is set to out of the box, one drag of this slider crosses
-            both of `resolveUnit`'s switching points: the number goes 9.9, then
-            1.00, then 99.9, then 1.00, while the hand never changes direction.
-            That is `auto` doing its job -- it is a rule for READING a length at
-            any magnitude -- and it is the wrong job here, because this control
-            sets one. A scale that renumbers itself under the pointer cannot be
-            aimed. See `erodeSizeUnit`.
-
-            So it wears a concrete unit, and Settings is what usually chooses
-            it: picking mm or cm there writes through to this field as it does
-            to every other length on screen. The picker beside the number is
-            the override, for a brush you want read in something other than the
-            rest of the app -- and the only way to choose at all while the app
-            is on `auto`, which this field cannot show.
+        {/* A length, and the only one of the three that is: Settings chooses
+            the unit it is read in, as it does for every length on screen, and
+            the picker beside the number is the override for a brush you want
+            read in something other than the rest of the app. See
+            `erodeSizeUnit`, which is where that choice is remembered.
 
             The other two are pure ratios and carry no unit at all, which is why
             only this one is marked. */}
@@ -1070,262 +1086,26 @@ export function HelpTool() {
 }
 
 /**
- * The two states of the outline switch, in the order the segment shows them.
+ * The button that opens the preferences.
  *
- * On first, matching every other row in the panel: the segments in here read
- * left to right from the default outwards, and the default is lines on.
+ * Nothing but a button, exactly like `HelpTool` beside it and for the second
+ * half of the same reason. It used to be a `NavTool` with four rows of
+ * switches folded into a 188px panel; the switches moved to `SettingsScreen`,
+ * which takes the window and has room to say what each one does -- see that
+ * file for why a setting nobody can read is a setting nobody changes.
  *
- * A list rather than two hand-written buttons, so the row is built by the same
- * `map` the units and the themes are and cannot drift into a different button.
- * It stays local -- unlike `THEMES` and `UNIT_MODES`, which are exported
- * because the geometry and the stylesheet have to agree with them, this is two
- * labels for one boolean and nothing outside the panel needs them.
- */
-// "most solids" rather than "every solid", because a very dense one goes
-// without: past about ten thousand triangles the lines describe the
-// triangulation instead of the shape, and cost more than the solid does to
-// draw. See `OUTLINE_TRIANGLE_LIMIT` in `SceneObjects`. Said in the tooltip
-// rather than left to be discovered, since a setting that reads On while a
-// particular solid shows no lines is otherwise a bug report.
-const OUTLINE_CHOICES = [
-  { on: true, label: 'On', title: 'Draw the edge lines around most solids. Very dense ones -- imported models, laser-cut pieces -- go without: at that many facets the lines trace the triangulation rather than the shape.' },
-  { on: false, label: 'Off', title: 'Hide them and show the surfaces bare' },
-] as const
-
-/**
- * The same two labels for the camera scheme, and the titles carry the whole of
- * what each one means.
- *
- * Longer than the outline titles because there is more to say and nowhere else
- * to say it: this changes what four keys, a mouse button and the wheel all do,
- * and somebody reading the switch for the first time has no way to guess any of
- * it. A tooltip is the right place -- the panel stays two rows of short
- * buttons, and the explanation is one hover away from the control it explains
- * rather than a paragraph parked under it.
- */
-const GAME_CHOICES = [
-  {
-    on: true,
-    label: 'On',
-    title: 'Drive the camera like a game: W A S D to walk across the ground, Space to rise and C to sink, and hold the right mouse button to look about -- the cursor goes while you do, so a turn is never stopped by the edge of the screen. The wheel sets how fast you fly. M, R and S stop switching the gizmo while this is on -- S is the key that walks backwards -- so use the three buttons on the island instead.',
-  },
-  {
-    on: false,
-    label: 'Off',
-    title: 'Orbit the scene the usual way: middle-drag (or Alt and the left button) to turn, right-drag to slide the view, and the wheel to close in.',
-  },
-] as const
-
-/**
- * Everything about how the app is READ rather than what it contains.
- *
- * A panel-only tool, like Help: there is nothing here to switch on or off, so
- * the cog opens the choices rather than toggling anything.
- *
- * WHY THESE TOGETHER. A unit and a theme are the same kind of thing, and it
- * took having a second one to see it: neither touches the document. The geometry
- * is scene units whatever is on screen and whatever palette is around it, so a
- * millimetre and a dark background are both facts about this viewer rather than
- * about the model -- which is exactly what a preferences menu is for. Units had
- * been living in the bar as a button of its own, next to Export, on the argument
- * that the two answer "what are these numbers in" from either side. That is
- * still true; it is just a weaker claim than being the same kind of setting as
- * everything else in here, and the bar has one fewer button for it.
- *
- * Outlines is the third of exactly that kind and the one that proves the rule
- * was worth writing down: it changes what the scene LOOKS like and changes
- * nothing about what is in it, so it belongs here rather than on the island
- * with the tools that act on the model. See `showOutlines`.
+ * It still goes through `NavTool` and still owns the `settings` panel id, and
+ * that is the point rather than a leftover. `NavTool` with no children draws no
+ * panel and the press falls through to `setOpenPanel`, so the screen opens off
+ * the SAME one field every other panel in the bar uses. Escape, click-outside
+ * and the headless drive in `ui-check` all keep working without learning that
+ * another of the panels is now a window.
  *
  * Last in the row, right of Help. The cluster runs from the most document-
  * specific to the least -- export it, snap it, undo it, learn it, configure the
  * app around it -- and settings is the only thing here that is still true of the
  * next document you open.
- *
- * Discrete buttons rather than dropdowns, reusing the `seg` control the side
- * count already uses: every option in here is one or two words, and a select
- * would hide all but one of them behind a click to save no space at all.
  */
 export function SettingsTool() {
-  const displayUnit = useTools((s) => s.displayUnit)
-  const setDisplayUnit = useTools((s) => s.setDisplayUnit)
-  const theme = useTools((s) => s.theme)
-  const setTheme = useTools((s) => s.setTheme)
-  const showOutlines = useTools((s) => s.showOutlines)
-  const setShowOutlines = useTools((s) => s.setShowOutlines)
-  const gameControls = useTools((s) => s.gameControls)
-  const setGameControls = useTools((s) => s.setGameControls)
-  const flightSpeed = useTools((s) => s.flightSpeed)
-  const setFlightSpeed = useTools((s) => s.setFlightSpeed)
-  // Dimmed rather than hidden on the screens with no room to walk about in.
-  // The same bargain the bar strikes with the document controls: a panel that
-  // changed shape between screens would hide the feature from the two screens
-  // it is most likely to be looked for from. See `SCREEN_HAS_GAME_CONTROLS`.
-  const flies = SCREEN_HAS_GAME_CONTROLS[useTools((s) => s.screen)]
-
-  return (
-    // Opens leftwards like everything else in this cluster, and more so than
-    // anything else in it: this is the last button in the bar, so a panel
-    // hanging off its left edge is the only one that stays on screen.
-    <NavTool
-      id="settings"
-      label="Settings"
-      icon={<SettingsIcon />}
-      panelTitle="Settings"
-      // Kept as the panel's name for a screen reader, and taken off the panel
-      // itself along with the close cross: this one is reached by pressing a
-      // cog labelled Settings, so a heading repeating the word and a cross
-      // doing what pressing that cog again does are a row of chrome over two
-      // rows of controls. See `bare`.
-      bare
-      align="right"
-    >
-      {/* Named so the panel can size itself to two rows of short buttons rather
-          than to the 268px a snap field or a ruler list wants. The width lives
-          in CSS, keyed off what the panel HOLDS -- the same way Help's is -- so
-          a panel stays a panel and nothing here has to pass a flag about its
-          own layout. */}
-      <div className="settings-groups">
-        <div className="tool-group units-modes">
-          <p className="subhead">Units</p>
-          <div className="seg">
-            {UNIT_MODES.map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                className={`seg-btn${displayUnit === mode ? ' seg-active' : ''}`}
-                aria-pressed={displayUnit === mode}
-                onClick={() => setDisplayUnit(mode)}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* One theme today, and it is still drawn as a chooser rather than as a
-            line of text saying "Dark". A control that shows the state it is in
-            is honest at one option and needs no rewriting at two; a label would
-            have to become a control the moment the second palette lands, and
-            until then it would not even say that the choice exists. */}
-        <div className="tool-group theme-modes">
-          <p className="subhead">Theme</p>
-          <div className="seg">
-            {THEMES.map((name) => (
-              <button
-                key={name}
-                type="button"
-                className={`seg-btn${theme === name ? ' seg-active' : ''}`}
-                aria-pressed={theme === name}
-                onClick={() => setTheme(name)}
-              >
-                {THEME_LABELS[name]}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* A yes-or-no, and still a segment rather than a checkbox or a slider
-            switch. Two reasons, and the second is the one that decided it. It
-            keeps the panel one kind of control, so three rows read as three
-            answers to the same shape of question instead of a menu with a
-            gadget bolted to the bottom. And it names both states: `On | Off`
-            with one lit says what the alternative IS, which a lone tickbox
-            leaves you to infer from an empty square. */}
-        <div className="tool-group outline-modes">
-          <p className="subhead">Outlines</p>
-          <div className="seg">
-            {OUTLINE_CHOICES.map((choice) => (
-              <button
-                key={choice.label}
-                type="button"
-                className={`seg-btn${showOutlines === choice.on ? ' seg-active' : ''}`}
-                aria-pressed={showOutlines === choice.on}
-                title={choice.title}
-                onClick={() => setShowOutlines(choice.on)}
-              >
-                {choice.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* THE FOURTH ROW, and the first one here that is not about how the app
-            LOOKS -- it is about how it is DRIVEN. It sits with the other three
-            anyway, and for the reason they sit with each other: nothing in the
-            document knows it exists, and it is still true of the next document
-            you open. A unit, a palette, a line weight and a camera are four
-            answers to "how do I want to work", which is what a preferences
-            panel is.
-
-            LAST, because it is the largest claim of the four. The three above
-            change what you are looking at; this one changes what your hands do,
-            and a row that rebinds the keyboard belongs below the rows that
-            recolour the background rather than above them.
-
-            A fieldset rather than a dimmed div, so the disabled state reaches
-            both buttons and the field without either having to be told
-            separately -- and so a screen reader is told the group is off rather
-            than finding four controls that happen to be grey. */}
-        <fieldset className="tool-group game-modes" disabled={!flies}>
-          <p className="subhead">Game Controls</p>
-          <div
-            className="seg"
-            // On the group rather than on either button: what is worth saying
-            // on the screens that cannot fly is why, and it is the same
-            // sentence whichever half the pointer lands on.
-            title={flies ? undefined : 'Only the Modelling screen has a room to walk about in. The lathe and the laser cutter each draw one flat picture the camera looks straight at.'}
-          >
-            {GAME_CHOICES.map((choice) => (
-              <button
-                key={choice.label}
-                type="button"
-                className={`seg-btn${gameControls === choice.on ? ' seg-active' : ''}`}
-                aria-pressed={gameControls === choice.on}
-                title={choice.title}
-                onClick={() => setGameControls(choice.on)}
-              >
-                {choice.label}
-              </button>
-            ))}
-          </div>
-          {/* The one control in this panel that is not a segment, and it earns
-              the exception: a speed is a number over a two-hundred-to-one range
-              and there is no pair of words that names it. It stays MOUNTED with
-              the mode off rather than appearing with it -- the same rule the
-              snap distance follows a panel away -- because a row that materialises
-              only once you have found the switch is a row nobody knows the
-              switch leads to.
-
-              PINNED to a concrete unit, which is the `erodeSizeUnit` argument
-              exactly: `auto` picks a unit per value, so a field being scrubbed
-              across this range would renumber its own scale under the hand
-              aiming it. It takes that unit from the picker two rows above it
-              whenever that names one -- the two controls are in the same
-              panel, and a speed written in centimetres under a picker set to
-              millimetres is one panel disagreeing with itself. Centimetres is
-              the fallback for `auto`, which it cannot show, because a 200:1
-              range in millimetres is five digits at the top of it.
-
-              NO PICKER OF ITS OWN, unlike the brushes: there is one unit
-              control already in this panel and it is the app's, so a second
-              one on the row beneath it would be two answers to one question a
-              centimetre apart. */}
-          <fieldset className="tool-group game-speed" disabled={!gameControls}>
-            <NumberField
-              label="Speed"
-              pinUnit={pinnedUnit(displayUnit, 'cm')}
-              value={flightSpeed}
-              min={FLIGHT_SPEED_MIN}
-              max={FLIGHT_SPEED_MAX}
-              step={0.2}
-              resetTo={FLIGHT_SPEED_DEFAULT}
-              tip="How far the camera travels in a second. The wheel sets it too, without leaving the scene -- which is what the wheel does in this mode, since W and S are what close the distance now."
-              onChange={setFlightSpeed}
-            />
-          </fieldset>
-        </fieldset>
-      </div>
-    </NavTool>
-  )
+  return <NavTool id="settings" label="Settings" icon={<SettingsIcon />} />
 }

@@ -102,7 +102,7 @@ import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { snapAlongAxis } from '../src/geometry/snap'
 import type { SnapSource, SnapTarget } from '../src/geometry/snap'
 import {
-  arcSegments,
+  depthLimits,
   hostSurfaceFor,
   maxShapeSize,
   samePatch,
@@ -123,6 +123,7 @@ import {
   cutPieces,
   faceBasis,
   freshBlock,
+  isClosedLine,
   outlineOf,
   pieceVolume,
   resample,
@@ -131,6 +132,17 @@ import {
   stations,
 } from '../src/geometry/laserCut'
 import type { FaceAxis as LaserFace, Pt as LaserPt } from '../src/geometry/laserCut'
+import {
+  DETENT,
+  FRESH_MIRROR,
+  clipToPart,
+  images,
+  mirrorLines,
+  partOf,
+  partPolygon,
+  snapAxisAngle,
+} from '../src/geometry/faceMirror'
+import type { MirrorAxis } from '../src/geometry/faceMirror'
 import { IDENTITY_TRANSFORM, defaultFeature } from '../src/geometry/types'
 import type {
   BaseSolid,
@@ -140,6 +152,7 @@ import type {
   ErodeStamp,
   Feature,
   SceneObject,
+  Shape2D,
   SurfaceAnchor,
   Vec2,
   Vec3,
@@ -169,17 +182,17 @@ function hasNaN(geom: BufferGeometry): boolean {
   return false
 }
 
-/** Distances from origin of every vertex beyond `minR`. */
-function outerShellRadii(geom: BufferGeometry, minR: number): number[] {
+/** Every vertex of a geometry, in its own local space. */
+function vertices(geom: BufferGeometry): Vector3[] {
   const pos = geom.getAttribute('position')
-  const v = new Vector3()
-  const out: number[] = []
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i)
-    const r = v.length()
-    if (r > minR) out.push(r)
-  }
+  const out: Vector3[] = []
+  for (let i = 0; i < pos.count; i++) out.push(new Vector3().fromBufferAttribute(pos, i))
   return out
+}
+
+/** Largest gap between any two of a set of numbers. */
+function spread(values: number[]): number {
+  return Math.max(...values) - Math.min(...values)
 }
 
 const feature = (over: Partial<Feature> & { anchor: SurfaceAnchor }): Feature => ({
@@ -316,18 +329,19 @@ console.log('\n3. Through-cut (depth exceeds thickness)')
   near('cube - through hole', signedVolume(g), 8 - Math.PI * 0.09 * 2, 0.01)
 }
 
-// --- 4. Curved surface: the offset-shell payoff ----------------------------
-console.log('\n4. Sphere: boss follows the curvature')
+// --- 4. Curved surface: the SKETCH, not the surface -------------------------
+console.log('\n4. Sphere: a feature keeps the shape it was drawn as')
 {
   resetEvaluator()
   const depth = 0.25
+  const half = 0.25
   const g = solidOf(
     scene(
       object(SPHERE, [
         feature({
           anchor: { on: 'sphere', theta: 0, phi: Math.PI / 2 },
           depth,
-          shape: { type: 'rect', w: 0.5, h: 0.5 },
+          shape: { type: 'rect', w: half * 2, h: half * 2 },
         }),
       ])
     )
@@ -336,51 +350,218 @@ console.log('\n4. Sphere: boss follows the curvature')
   check('sphere gained material', vol > (4 / 3) * Math.PI, `volume ${vol.toFixed(4)}`)
   check('no NaN positions', !hasNaN(g), '')
 
-  // The decisive check. Every vertex on the boss's outer face must sit at
-  // exactly R+depth from the centre. A straight prism capped flat would put the
-  // corners further out than the middle, so the spread would be large.
-  const radii = outerShellRadii(g, 1 + depth * 0.5)
-  const min = Math.min(...radii)
-  const max = Math.max(...radii)
-  const spread = max - min
+  // That anchor's normal is +X, so the boss stands along X and its created face
+  // is whatever sits past the halfway mark up it: the walls put vertices at
+  // their two ends only, and the sphere itself never reaches x = 1.125.
+  const top = vertices(g).filter((p) => p.x > 1 + depth * 0.5)
+  check('boss top exists', top.length > 0, `${top.length} vertices`)
 
-  // The offset sphere is a tessellation, so its facets sag below the true
-  // radius by the chord sagitta. That is the floor on any honest measurement
-  // here -- tolerate it, but nothing larger. The count is asked for rather than
-  // written down, because it MOVES WITH THE RADIUS now: see `arcSegments`.
-  const R = 1 + depth
-  const segments = arcSegments(R)
-  const sagitta =
-    R * (1 - Math.cos(Math.PI / segments)) + R * (1 - Math.cos(Math.PI / (segments / 2)))
-  // What a straight prism capped flat would have produced, for contrast: the
-  // outline corners would sit further from the centre than its middle.
-  const halfDiagonal = Math.hypot(0.5, 0.5) / 2
-  const flatCapSpread = Math.hypot(R, halfDiagonal) - R
-
-  check('boss top exists', radii.length > 0, `${radii.length} outer vertices`)
-  near('boss top radius', max, R, 1e-3)
+  // THE DECISIVE CHECK, and it is the inverse of the one that stood here. The
+  // created end used to be trimmed against the sphere offset by `depth`, so it
+  // came back moulded to the host: the boss followed the surface instead of the
+  // sketch. It is a plane now, square to the normal the sketch was drawn on.
+  const xs = top.map((p) => p.x)
+  near('boss top sits at depth', Math.max(...xs), 1 + depth, 1e-5)
   check(
-    'boss top is CURVED, not a flat cap',
-    spread <= sagitta * 1.2 && spread < flatCapSpread * 0.2,
-    `spread ${spread.toExponential(2)} vs tessellation floor ${sagitta.toExponential(2)}, ` +
-      `flat cap would be ${flatCapSpread.toExponential(2)}`
+    'boss top is FLAT, not a patch of the shell',
+    spread(xs) < 1e-5,
+    `spread ${spread(xs).toExponential(2)}`
+  )
+
+  // And the walls run parallel. The top face is the FOOTPRINT, not a copy of it
+  // fanned out by however far the ring normals diverged on the way up. Gnomonic
+  // projection lands a tangent offset of `half` at R*half/hypot(R, half), so
+  // that -- not `half` itself -- is what the footprint spans, and the top has to
+  // match it. Sweeping along the ring's own normals grew it by (R + depth)/R,
+  // half as wide again on this sphere.
+  const footprint = (2 * half) / Math.hypot(1, half)
+  const fanned = footprint * (1 + depth)
+  near('boss top spans its own footprint', spread(top.map((p) => p.z)), footprint, 1e-4)
+  near('on the other axis too', spread(top.map((p) => p.y)), footprint, 1e-4)
+  check(
+    'the walls did not splay',
+    spread(top.map((p) => p.z)) < fanned * 0.99,
+    `spans ${spread(top.map((p) => p.z)).toFixed(4)}, a fanned sweep reached ${fanned.toFixed(4)}`
   )
 }
 {
   resetEvaluator()
-  const g = solidOf(
-    scene(
-      object(SPHERE, [
-        feature({
-          anchor: { on: 'sphere', theta: Math.PI / 3, phi: Math.PI / 2.5 },
-          depth: -0.25,
-        }),
-      ])
-    )
-  )
+  const depth = 0.25
+  const anchor = { on: 'sphere', theta: Math.PI / 3, phi: Math.PI / 2.5 } as const
+  const g = solidOf(scene(object(SPHERE, [feature({ anchor, depth: -depth })])))
   const vol = signedVolume(g)
   check('sphere lost material', vol < (4 / 3) * Math.PI, `volume ${vol.toFixed(4)}`)
   check('sphere pocket did not leak', vol > 0, `volume ${vol.toFixed(4)}`)
+
+  // A pocket's floor is as much a created face as a boss's top, and it gets the
+  // same answer: flat, at `depth` below the point the sketch was drawn on.
+  // Isolating it needs both bounds -- the far side of the sphere is deeper along
+  // this normal than the floor is, and only the lateral one tells them apart.
+  const n = new Vector3(
+    Math.sin(anchor.phi) * Math.cos(anchor.theta),
+    Math.cos(anchor.phi),
+    Math.sin(anchor.phi) * Math.sin(anchor.theta)
+  )
+  const floor = vertices(g).filter((p) => {
+    const along = p.dot(n)
+    return along > 0.5 && along < 0.9 && p.clone().addScaledVector(n, -along).length() < 0.4
+  })
+  check('pocket floor exists', floor.length > 0, `${floor.length} vertices`)
+  const depths = floor.map((p) => p.dot(n))
+  near('pocket floor sits at depth', Math.min(...depths), 1 - depth, 1e-5)
+  check(
+    'pocket floor is FLAT, not a dished shell',
+    spread(depths) < 1e-5,
+    `spread ${spread(depths).toExponential(2)}`
+  )
+}
+
+console.log('\n4b. Cylinder wall: a boss is the sketch, at every depth')
+{
+  // A barrel curves one way and runs straight the other, which is what makes it
+  // the sharpest test of the two: the same boss has to keep the sketch's height
+  // EXACTLY, and its width to the arc the footprint wraps onto.
+  const R = 0.6
+  const half = 0.2
+  const wall: BaseSolid = { kind: 'cylinder', radius: R, height: 2 }
+  const anchor = { on: 'cylinder', theta: 0, y: 0 } as const
+
+  // theta 0 puts the wall normal on +X, so the boss stands along X and the
+  // barrel itself never reaches past R.
+  const bossAt = (depth: number) => {
+    resetEvaluator()
+    const g = solidOf(
+      scene(
+        object(wall, [
+          feature({ anchor, depth, shape: { type: 'rect', w: half * 2, h: half * 2 } }),
+        ])
+      )
+    )
+    return vertices(g).filter((p) => p.x > R + depth * 0.5)
+  }
+
+  const shallow = bossAt(0.3)
+  const deep = bossAt(0.9)
+  check('boss tops exist', shallow.length > 0 && deep.length > 0, `${shallow.length}, ${deep.length}`)
+  near('a shallow boss tops out at its depth', Math.max(...shallow.map((p) => p.x)), R + 0.3, 1e-5)
+  near('a deep one at its own', Math.max(...deep.map((p) => p.x)), R + 0.9, 1e-5)
+  check(
+    'both tops are FLAT',
+    spread(shallow.map((p) => p.x)) < 1e-5 && spread(deep.map((p) => p.x)) < 1e-5,
+    `${spread(shallow.map((p) => p.x)).toExponential(2)}, ${spread(deep.map((p) => p.x)).toExponential(2)}`
+  )
+
+  // Along the barrel there is no curvature to follow, so this one is exact.
+  near('the sketch keeps its height along the axis', spread(shallow.map((p) => p.y)), half * 2, 1e-6)
+  // Across it, the footprint is the outline wrapped on -- u is arc length round
+  // the barrel -- so the chord it spans is what the boss stands on and keeps.
+  const chord = 2 * R * Math.sin(half / R)
+  near('and its width across the wrap', spread(shallow.map((p) => p.z)), chord, 1e-4)
+
+  // THE POINT OF THE WHOLE FIX. Sweeping along the ring normals scaled the boss
+  // by (R + depth)/R on the way up, so tripling the depth widened it by half
+  // again. Along one axis, depth buys height and nothing else.
+  near(
+    'and three times the depth does not widen it',
+    spread(deep.map((p) => p.z)),
+    spread(shallow.map((p) => p.z)),
+    1e-6
+  )
+  check(
+    'where a fanned sweep would have',
+    spread(deep.map((p) => p.z)) < (chord * (R + 0.9)) / R * 0.99,
+    `${spread(deep.map((p) => p.z)).toFixed(4)} against ${((chord * (R + 0.9)) / R).toFixed(4)}`
+  )
+}
+
+console.log('\n4c. A pocket can be driven clean through the solid')
+{
+  /**
+   * Is a point inside this solid? By ray parity, along a skew direction, so an
+   * axis-aligned face never decides it -- the same trick `sameSolid` uses, and
+   * for the same reason: nothing here is allowed to depend on how either mesh
+   * happened to be tessellated.
+   */
+  const encloses = (g: BufferGeometry) => {
+    const mesh = new Mesh(g, new MeshBasicMaterial({ side: DoubleSide }))
+    mesh.updateMatrixWorld(true)
+    const probe = new Raycaster()
+    const along = new Vector3(0.37139068, 0.55708601, 0.74278135)
+    return (p: Vector3) => {
+      probe.set(p, along)
+      return probe.intersectObject(mesh, false).length % 2 === 1
+    }
+  }
+
+  /**
+   * Run the depth slider to its inward end and check the solid is PIERCED:
+   * every point that the uncut solid held on the line of the cut has to be gone.
+   *
+   * Taken from the far end of `depthLimits` rather than from a number written
+   * here, because the claim is about the control the user actually has. A curved
+   * host used to fence a pocket off at eight tenths of its radius, so no depth
+   * the slider could reach came out the other side.
+   */
+  const piercesThrough = (label: string, base: BaseSolid, anchor: SurfaceAnchor, shape: Shape2D) => {
+    const host = hostSurfaceFor(base, anchor)
+    const { origin, normal } = host.frame(anchor)
+    const depth = depthLimits(host, anchor).in
+
+    resetEvaluator()
+    const whole = solidOf(scene(object(base)))
+    const held = encloses(whole)
+    resetEvaluator()
+    const bored = solidOf(scene(object(base, [feature({ anchor, shape, depth: -depth })])))
+    const holds = encloses(bored)
+
+    // Sampled down the middle of the cut, and kept only where there was
+    // material to begin with -- past the back of the solid every host is
+    // trivially empty, and counting that would prove nothing.
+    const line: Vector3[] = []
+    for (let i = 1; i < 80; i++) {
+      line.push(origin.clone().addScaledVector(normal, (-i / 80) * depth))
+    }
+    const crossed = line.filter(held)
+    const left = crossed.filter(holds)
+    check(`${label}: the cut has a solid to cross`, crossed.length > 10, `${crossed.length} samples`)
+    check(`${label}: and nothing of it is left on the line`, left.length === 0, `${left.length} still inside`)
+    check(`${label}: the solid survives being bored`, signedVolume(bored) > 0, `volume ${signedVolume(bored).toFixed(4)}`)
+    check(`${label}: and lost material doing it`, signedVolume(bored) < signedVolume(whole), `${signedVolume(bored).toFixed(4)} of ${signedVolume(whole).toFixed(4)}`)
+  }
+
+  piercesThrough(
+    'a ball',
+    { kind: 'sphere', radius: 1 },
+    { on: 'sphere', theta: 0, phi: Math.PI / 2 },
+    { type: 'circle', r: 0.25 }
+  )
+  piercesThrough(
+    'a barrel',
+    { kind: 'cylinder', radius: 0.6, height: 2 },
+    { on: 'cylinder', theta: 0, y: 0 },
+    { type: 'circle', r: 0.2 }
+  )
+  piercesThrough(
+    'a bean',
+    { kind: 'capsule', radius: 0.5, height: 1 },
+    { on: 'capsule', theta: 0, phi: Math.PI / 2 },
+    { type: 'circle', r: 0.2 }
+  )
+  piercesThrough(
+    'a cone wall',
+    { kind: 'cone', radius: 0.8, height: 1.6 },
+    { on: 'cone', theta: 0, t: 0.4 },
+    { type: 'circle', r: 0.2 }
+  )
+  // The flat case that was broken too, and differently: the bound was the box's
+  // THINNEST side whichever face you drew on, so a pocket on the end of a slab
+  // stopped nine tenths of a unit into the four it had to cross.
+  piercesThrough(
+    'a slab end to end',
+    { kind: 'box', size: [4, 0.6, 4] },
+    { on: 'box-face', face: 0, u: 0, v: 0 },
+    { type: 'circle', r: 0.2 }
+  )
 }
 
 // --- 5. Stacked features and cache reuse -----------------------------------
@@ -5620,7 +5801,7 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
   // A CUT CONSERVES THE BLOCK, less the slot it burned. That is the one
   // arithmetic claim the whole screen rests on: material is removed by the kerf
   // and by nothing else.
-  const down = cutPieces([freshBlock()], [[0, -0.2], [0, 0.2]], FRONT)
+  const down = cutPieces([freshBlock()], [[[0, -0.2], [0, 0.2]]], FRONT)
   check('a line down the front splits the block in two', down.pieces.length === 2, `${down.pieces.length}`)
   check('and reports the one piece that came apart', down.split === 1, `${down.split}`)
   near(
@@ -5643,7 +5824,7 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
   // an earlier cut may have been kept on purpose, and a chooser ranging over
   // every piece there has ever been would offer to bin work this cut never
   // touched.
-  const off = cutPieces([freshBlock()], [[0.3, -0.2], [0.3, 0.2]], FRONT)
+  const off = cutPieces([freshBlock()], [[[0.3, -0.2], [0.3, 0.2]]], FRONT)
   check('a cut names both pieces it made', off.made.length === 2, `${off.made.join(', ')}`)
   check('and they are the pieces on the bed', off.made.join() === '0,1', `${off.made.join()}`)
   // Biggest first, so a screen stepping through them steps down in size and the
@@ -5657,7 +5838,7 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
 
   // A miss has to be reported rather than silently doing nothing, or the button
   // reads as broken -- the same lesson the plane cut's receipt already carries.
-  const missed = cutPieces([freshBlock()], [[2, 2], [2, 2.4]], FRONT)
+  const missed = cutPieces([freshBlock()], [[[2, 2], [2, 2.4]]], FRONT)
   check('a line clear of the block cuts nothing', missed.split === 0 && missed.pieces.length === 1, `${missed.pieces.length}`)
   check('and names no pieces of its own', missed.made.length === 0, `${missed.made.length}`)
 
@@ -5671,21 +5852,163 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
     `${carried[0][1].toFixed(2)} .. ${carried[carried.length - 1][1].toFixed(2)}`
   )
   check('along the tangent it was already travelling', Math.abs(carried[0][0]) < 1e-9, '')
-  const short = cutPieces([freshBlock()], [[-0.15, -0.05], [-0.15, 0.05]], FRONT)
+  const short = cutPieces([freshBlock()], [[[-0.15, -0.05], [-0.15, 0.05]]], FRONT)
   check('so a stroke across a tenth of the face still cuts it in two', short.pieces.length === 2, `${short.pieces.length}`)
 
   // Cuts stack, and a later one acts on every piece it crosses -- there being
   // no selection on that screen to aim it with.
-  const again = cutPieces(down.pieces, [[-0.4, 0], [0.4, 0]], FRONT)
+  const again = cutPieces(down.pieces, [[[-0.4, 0], [0.4, 0]]], FRONT)
   check('a second cut across both pieces makes four', again.pieces.length === 4, `${again.pieces.length}`)
   check('and reports both of them coming apart', again.split === 2, `${again.split}`)
 
   // A curve cuts exactly as a straight line does, which is the point of
   // sweeping a wall rather than intersecting a half-space.
   const control: LaserPt[] = [[-0.2, -0.3], [0.15, 0], [-0.1, 0.3]]
-  const curved = cutPieces([freshBlock()], bezierChain(control, fittedHandles(control), 20), FRONT)
+  const curved = cutPieces([freshBlock()], [bezierChain(control, fittedHandles(control), 20)], FRONT)
   check('a curved line splits it too', curved.pieces.length === 2, `${curved.pieces.length}`)
   near('and still conserves the block', curved.pieces.reduce((t, g) => t + pieceVolume(g), 0), 1 - LASER_KERF, 4e-3)
+
+  // A LOOP CUTS OUT WHAT IT ENCIRCLES, which is the one thing a line across
+  // the face cannot do: an open cut divides the block, and a closed one drops
+  // an island out of the middle of it. The whole of the difference is that the
+  // ends are not carried to the border and the wall is bent round into a ring
+  // -- see `isClosedLine`, which is how the line says which of the two it is.
+  {
+    // A square, closed the way `draftLine` closes one: by writing the first
+    // point out again at the end.
+    const corners: LaserPt[] = [[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]]
+    const loop: LaserPt[] = [...corners, corners[0]]
+
+    check('a line that ends where it began is read as closed', isClosedLine(loop), '')
+    check('and one that does not, is not', !isClosedLine(corners), '')
+    // Three entries cannot enclose anything -- they are one segment out and
+    // back -- so the test refuses them rather than sweeping a ring of no area.
+    check(
+      'two points bridged back enclose nothing',
+      !isClosedLine([[0, 0], [0.1, 0], [0, 0]] as LaserPt[]),
+      ''
+    )
+
+    // THE CARRY STANDS ASIDE. Firing two rays off the seam and out through the
+    // border is exactly the wrong thing to do to a ring: it would turn the loop
+    // into a stroke wandering off the face.
+    const walked = simplify(stations(loop))
+    check('a loop survives the walk still closed', isClosedLine(walked), `${walked.length}`)
+    check(
+      'and the carry leaves it exactly alone',
+      carryToBorder(walked).length === walked.length,
+      `${carryToBorder(walked).length} against ${walked.length}`
+    )
+
+    // The wall is a torus rather than a capped tube: every station has a
+    // neighbour on both sides, and there is no end to cap.
+    const ring = buildKerfWall(carryToBorder(walked), FRONT)
+    const stroke = buildKerfWall(carryToBorder(simplify(stations(corners))), FRONT)
+    check('a closed line sweeps a wall', ring !== null, '')
+    check(
+      'with no caps on it -- one span per corner, four quads each',
+      ring !== null && ring.getAttribute('position').count / 3 === 4 * 4 * 2,
+      `${ring ? ring.getAttribute('position').count / 3 : 0} triangles`
+    )
+    check(
+      'where the open line of the same corners is capped at both ends',
+      stroke !== null && ring !== null &&
+        stroke.getAttribute('position').count > ring.getAttribute('position').count,
+      ''
+    )
+
+    const island = cutPieces([freshBlock()], [loop], FRONT)
+    check('and it drops an island out of the block', island.pieces.length === 2, `${island.pieces.length}`)
+    check('reported as one piece coming apart', island.split === 1, `${island.split}`)
+    check('with both pieces named as its own', island.made.length === 2, `${island.made.join(',')}`)
+    // The island is the square less half a kerf all the way round, and the
+    // block is the rest less the other half: what the loop took is its
+    // perimeter times the slot, and nothing else.
+    near('the island is the square it encircled', pieceVolume(island.pieces[1]), (0.4 - LASER_KERF) ** 2, 1e-3)
+    near(
+      'and the block is whole less the ring of slot',
+      island.pieces.reduce((t, g) => t + pieceVolume(g), 0),
+      1 - 4 * 0.4 * LASER_KERF,
+      2e-3
+    )
+
+    // A LOOP CAN MISS TOO, and has to say so the same way a stroke does -- the
+    // carry is what used to guarantee a line reached the block, and a ring
+    // gives that up by design.
+    const clear = cutPieces(
+      [freshBlock()],
+      [[[2, 2], [2.2, 2], [2.1, 2.2], [2, 2]] as LaserPt[]],
+      FRONT
+    )
+    check('a loop drawn clear of the block cuts nothing', clear.split === 0, `${clear.split}`)
+
+    // And one hanging off the edge is not a loop that failed: it bites the
+    // corner off, which is the answer a ring gives on its own with nothing
+    // special written for it.
+    const bite = cutPieces(
+      [freshBlock()],
+      [[[0.4, -0.1], [0.7, -0.1], [0.7, 0.1], [0.4, 0.1], [0.4, -0.1]] as LaserPt[]],
+      FRONT
+    )
+    check('a loop over the border takes a bite out of it', bite.split === 1, `${bite.split}`)
+    near('of just the part that was inside', pieceVolume(bite.pieces[1]), 0.1 * 0.2 - LASER_KERF * 0.5, 3e-3)
+
+    // A CURVED LOOP IS THE SAME LOOP. The chain closes on its own first point
+    // exactly, which is what keeps `isClosedLine` true all the way down.
+    const round = bezierChain(corners, fittedHandles(corners, true), 16, true)
+    check('a closed chain comes back to its first point', isClosedLine(round), '')
+    check(
+      'exactly, rather than nearly',
+      round[0][0] === round[round.length - 1][0] && round[0][1] === round[round.length - 1][1],
+      ''
+    )
+    // The seam is not a corner: on a ring every point's tangent is fitted from
+    // the neighbours either side of it, the first point included.
+    const fitted = fittedHandles(corners, true)
+    const open = fittedHandles(corners)
+    // THE SEAM IS NOT AN END ANY MORE, which is the claim worth making and is
+    // about DIRECTION rather than length: on a ring the first point's tangent
+    // is the chord between the two neighbours either side of it, exactly as at
+    // every other point, where an open run's first handle can only point at the
+    // second point. Read as cross products against that chord -- zero is
+    // parallel -- because the two are the same tangent only when one of them is
+    // wrong.
+    const chord: LaserPt = [corners[1][0] - corners[3][0], corners[1][1] - corners[3][1]]
+    const askew = (h: LaserPt) => Math.abs(h[0] * chord[1] - h[1] * chord[0])
+    check(
+      'the seam is fitted from both its neighbours, not just the next point',
+      askew(fitted[0]) < 1e-12,
+      askew(fitted[0]).toExponential(1)
+    )
+    check(
+      'which is a different tangent from the one an open run ends on',
+      askew(open[0]) > 1e-6,
+      askew(open[0]).toExponential(1)
+    )
+    // Every handle on a ring is the same sixth of the chord between the two
+    // neighbours, so a square's four come out equal -- which is the property a
+    // one-sided end difference breaks.
+    const reaches = fitted.map((h) => Math.hypot(h[0], h[1]))
+    check(
+      'so a square encircled is fitted evenly all the way round',
+      Math.max(...reaches) - Math.min(...reaches) < 1e-12,
+      reaches.map((r) => r.toFixed(6)).join(' ')
+    )
+    const curl = cutPieces([freshBlock()], [round], FRONT)
+    check('and a curved loop drops an island too', curl.pieces.length === 2, `${curl.pieces.length}`)
+    check(
+      'a rounder one than the square it was fitted through',
+      pieceVolume(curl.pieces[1]) > pieceVolume(island.pieces[1]),
+      `${pieceVolume(curl.pieces[1]).toFixed(4)} against ${pieceVolume(island.pieces[1]).toFixed(4)}`
+    )
+
+    // AND AN OPEN RUN IS UNTOUCHED BY ANY OF IT, which is the claim that keeps
+    // the loop from being a change to the tool rather than an addition: the
+    // same four corners left open still cut clean across the block.
+    const still = cutPieces([freshBlock()], [corners], FRONT)
+    check('the same points left open still cut across', still.pieces.length === 2, `${still.pieces.length}`)
+    check('and are still carried to the border', carryToBorder(corners).length === corners.length + 2, '')
+  }
 
   // WHAT THE CURVE IS. Fit and Manual are one Bezier chain given different
   // handles, which is what lets the tool switch between them without the line
@@ -5827,7 +6150,7 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
     // AND IT CUTS. The point of a corner is that the block comes apart along
     // it: a zigzag across the face makes two pieces whose volumes still add up
     // to the block less the slot.
-    const zagged = cutPieces([freshBlock()], zig, { axis: 2, sign: 1 })
+    const zagged = cutPieces([freshBlock()], [zig], { axis: 2, sign: 1 })
     check('and a zigzag cut parts the block', zagged.pieces.length === 2, `${zagged.pieces.length} pieces`)
     const held = zagged.pieces.reduce((sum, g) => sum + pieceVolume(g), 0)
     check(
@@ -5869,7 +6192,7 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
     check('a cube outlines as twelve edges', edgeCount(freshBlock()) === 12, `${edgeCount(freshBlock())}`)
     near('of twelve unit lengths', edgeSpan(freshBlock()), 12, 1e-6)
 
-    const boxes = cutPieces([freshBlock()], [[0.1, -0.3], [0.1, 0.3]], FRONT)
+    const boxes = cutPieces([freshBlock()], [[[0.1, -0.3], [0.1, 0.3]]], FRONT)
     check('and each half of a straight cut as twelve too', boxes.pieces.every((g) => edgeCount(g) === 12), boxes.pieces.map(edgeCount).join(' / '))
     const wide = [0.5 + 0.1 - LASER_KERF / 2, 0.5 - 0.1 - LASER_KERF / 2]
     check(
@@ -5882,6 +6205,228 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
       curved.pieces.every((g) => edgeSpan(g) < 16),
       curved.pieces.map((g) => `${edgeSpan(g).toFixed(1)} over ${triangleCount(g)} facets`).join(' / ')
     )
+  }
+}
+
+console.log('\nThe symmetry axis divides the face, and reflects what is drawn in one part')
+{
+  /** The area of a convex polygon, by the shoelace: what a part is worth. */
+  const area = (poly: LaserPt[]): number => {
+    let sum = 0
+    for (let i = 0; i < poly.length; i += 1) {
+      const a = poly[i]
+      const b = poly[(i + 1) % poly.length]
+      sum += a[0] * b[1] - b[0] * a[1]
+    }
+    return Math.abs(sum) / 2
+  }
+
+  // The face every one of these is aimed at, named here as it is in the section
+  // above rather than reached for across a block scope.
+  const FRONT: LaserFace = { axis: 2, sign: 1 }
+  const upright: MirrorAxis = FRESH_MIRROR
+  const cross: MirrorAxis = { mode: 'cross', angle: 90, part: 0 }
+
+  // WHICH PART A POINT IS IN. An upright mirror is the one a hand reaches for
+  // first, and it has to divide the face the way a person looking at it would:
+  // left and right, not top and bottom.
+  check('an upright mirror puts the left of the face in the part it opens on', partOf([-0.3, 0], upright) === 0, `${partOf([-0.3, 0], upright)}`)
+  check('and the right of it in the other', partOf([0.3, 0], upright) === 1, `${partOf([0.3, 0], upright)}`)
+  check('while a cross tells all four apart', new Set([
+    partOf([-0.3, 0.3], cross),
+    partOf([0.3, 0.3], cross),
+    partOf([0.3, -0.3], cross),
+    partOf([-0.3, -0.3], cross),
+  ]).size === 4, '')
+
+  // AND WHAT EACH PART IS WORTH. Half the face under a mirror and a quarter
+  // under a cross, which is the claim the dimming on screen is making.
+  near('a mirror halves the face', area(partPolygon(upright, 0, 0.5)), 0.5, 1e-9)
+  near('and a cross quarters it', area(partPolygon(cross, 2, 0.5)), 0.25, 1e-9)
+  near(
+    'with the four quarters accounting for the whole face',
+    [0, 1, 2, 3].reduce((t, part) => t + area(partPolygon(cross, part, 0.5)), 0),
+    1,
+    1e-9
+  )
+
+  // CLIPPING. A line that wanders over the axis is cut where it crosses, and
+  // the survivor ENDS ON THE AXIS rather than a hair short of it -- which is
+  // what makes the two mirrored halves meet instead of leaving a thread of
+  // material standing between them.
+  const kept = clipToPart([[-0.4, 0], [0.4, 0]], upright)
+  check('a line crossing the axis is clipped to one run', kept.length === 1, `${kept.length}`)
+  near('ending exactly on the axis', kept[0][kept[0].length - 1][0], 0, 1e-12)
+  check('and keeping the end it was drawn from', kept[0][0][0] === -0.4, `${kept[0][0][0]}`)
+  check(
+    'a line drawn wholly in a dimmed part survives nothing at all',
+    clipToPart([[0.2, 0], [0.4, 0]], upright).length === 0,
+    ''
+  )
+  check(
+    'and one that leaves and comes back is two runs rather than one',
+    clipToPart([[-0.4, 0], [0.1, 0], [0.1, 0.2], [-0.4, 0.2]], upright).length === 2,
+    ''
+  )
+
+  // THE REFLECTIONS. Two lines under a mirror and four under a cross, and the
+  // copy lands where the mirror says rather than merely somewhere else.
+  const drawn: LaserPt[] = [[-0.4, -0.1], [-0.2, 0.3]]
+  const pair = mirrorLines(drawn, upright)
+  check('a mirror makes two lines of one', pair.length === 2, `${pair.length}`)
+  check('the first being what was drawn', pair[0][0][0] === -0.4 && pair[0][0][1] === -0.1, '')
+  near('and the second its reflection across the axis', pair[1][0][0], 0.4, 1e-12)
+  near('at the same height', pair[1][0][1], -0.1, 1e-12)
+  // The cross opens on the quadrant above the middle and to the left of it, so
+  // a line for it has to be drawn there -- one that strays over an arm would be
+  // testing the clip rather than the reflections.
+  const quadrant: LaserPt[] = [[-0.4, 0.1], [-0.2, 0.3]]
+  const four = mirrorLines(quadrant, cross)
+  check('a cross makes four', four.length === 4, `${four.length}`)
+  check(
+    'the fourth being the half turn, which is the copy easiest to forget',
+    four.some((one) => Math.abs(one[0][0] - 0.4) < 1e-12 && Math.abs(one[0][1] + 0.1) < 1e-12),
+    four.map((one) => `(${one[0][0].toFixed(2)}, ${one[0][1].toFixed(2)})`).join(' ')
+  )
+  check(
+    'and every one of them a corner of the same rectangle about the middle',
+    new Set(four.map((one) => `${Math.abs(one[0][0]).toFixed(6)},${Math.abs(one[0][1]).toFixed(6)}`)).size === 1,
+    ''
+  )
+
+  // A SLANTED MIRROR IS THE SAME CLAIM, and it is the one an implementation
+  // that only knew about right angles would get wrong: reflecting across 45
+  // degrees swaps a point's two coordinates rather than negating one of them.
+  const across = images([0.3, 0.1], { mode: 'line', angle: 45, part: 0 })[1]
+  near('a mirror at 45 degrees swaps a point about the diagonal', across[0], 0.1, 1e-12)
+  near('both ways', across[1], 0.3, 1e-12)
+
+  // THE STOPS. Fixed at every 45, with the panel's number saying how near you
+  // have to come -- so an angle between two stops stays reachable by hand.
+  near('a swing near square holds at square', snapAxisAngle(88, 8), 90, 1e-12)
+  near('and one well clear of a stop is left where the hand put it', snapAxisAngle(70, 8), 70, 1e-12)
+  near('with the stops off, nothing is pulled anywhere', snapAxisAngle(88, 0), 88, 1e-12)
+  near('the diagonal is a stop as much as the square is', snapAxisAngle(43, 8), DETENT, 1e-12)
+  near('and half a turn is the whole range, a line having no ends to tell apart', snapAxisAngle(190, 0), 10, 1e-12)
+
+  // HALF A SHAPE DRAWN AGAINST THE MIRROR IS A RING, and this is the check that
+  // exists because it once was not. A silhouette drawn from the axis, round,
+  // and back to the axis reads as closed on screen the moment the mirror
+  // completes it -- and it IS closed, being one loop written in two pieces. Sent
+  // to the laser as two separate open lines, each end was carried out to the
+  // border along its own tangent, and the block came back slashed corner to
+  // corner by a cut nobody drew.
+  {
+    const half: LaserPt[] = [
+      [0, 0.3],
+      [-0.3, 0.3],
+      [-0.3, -0.3],
+      [0, -0.3],
+    ]
+    const sewn = mirrorLines(half, upright)
+    check('half a shape drawn to the axis comes back as one line', sewn.length === 1, `${sewn.length}`)
+    check('and that line is closed', isClosedLine(sewn[0]), `${sewn[0].length} points`)
+    check(
+      'closed EXACTLY, which is the only thing the sweep reads',
+      sewn[0][0][0] === sewn[0][sewn[0].length - 1][0] &&
+        sewn[0][0][1] === sewn[0][sewn[0].length - 1][1],
+      ''
+    )
+    check(
+      'and it goes all the way round rather than doubling back',
+      sewn[0].some((p) => p[0] > 0.29) && sewn[0].some((p) => p[0] < -0.29),
+      ''
+    )
+
+    // AND IT DROPS AN ISLAND OUT, which is the whole of what the user was
+    // asking for: the ring the two halves make, cut out in one act.
+    const island = cutPieces([freshBlock()], sewn, FRONT)
+    check('cutting it leaves the block and one island', island.pieces.length === 2, `${island.pieces.length}`)
+    near(
+      'the island being the square the two halves enclosed',
+      pieceVolume(island.pieces[1]),
+      (0.6 - LASER_KERF) ** 2,
+      3e-3
+    )
+
+    // A HAND DOES NOT LAND ON THE AXIS EXACTLY, so an end that stops a slot's
+    // width short of it is taken to be on it. Below that the two halves cannot
+    // be told apart by the laser anyway.
+    const nearly: LaserPt[] = [
+      [-0.0005, 0.3],
+      [-0.3, 0.3],
+      [-0.3, -0.3],
+      [-0.0005, -0.3],
+    ]
+    check('an end a hair short of the axis still closes the ring', mirrorLines(nearly, upright).length === 1, '')
+    check(
+      'while one a plain distance short stays two open lines',
+      mirrorLines(
+        [
+          [-0.05, 0.3],
+          [-0.3, 0.3],
+          [-0.3, -0.3],
+          [-0.05, -0.3],
+        ],
+        upright
+      ).length === 2,
+      ''
+    )
+
+    // ONE END ON THE AXIS IS NOT A RING, but it is still ONE line: the two
+    // copies are joined where they meet, so what crosses the mirror is a single
+    // stroke carried out to the border at each far end rather than two strokes
+    // each carried out of the middle of the block.
+    const single = mirrorLines(
+      [
+        [0, 0],
+        [-0.3, 0.4],
+      ],
+      upright
+    )
+    check('a line touching the axis at one end is sewn into one', single.length === 1, `${single.length}`)
+    check('and left open, having nowhere else to meet', !isClosedLine(single[0]), '')
+
+    // A CROSS CLOSES A QUARTER THE SAME WAY, through three joins rather than
+    // one: the quarter, its two reflections and the half turn come back round
+    // to where they started.
+    const quarterRing = mirrorLines(
+      [
+        [0, 0.3],
+        [-0.2, 0.2],
+        [-0.3, 0],
+      ],
+      { mode: 'cross', angle: 90, part: 0 }
+    )
+    check('a quarter drawn arm to arm closes into one ring', quarterRing.length === 1, `${quarterRing.length}`)
+    check('with all four copies in it', isClosedLine(quarterRing[0]) && quarterRing[0].length === 9, `${quarterRing[0].length} points`)
+
+    // AND NOTHING ELSE IS TOUCHED. A line drawn clear of the axis has ends that
+    // meet nothing, and comes out as the two open lines it always was.
+    check(
+      'a line clear of the axis is still two open lines',
+      mirrorLines(drawn, upright).length === 2,
+      ''
+    )
+  }
+
+  // AND IT CUTS. Two mirrored lines are ONE act: three pieces off one press,
+  // and the block conserved but for the two slots.
+  const twin = cutPieces([freshBlock()], mirrorLines([[-0.3, -0.6], [-0.3, 0.6]], upright), FRONT)
+  check('a mirrored cut leaves three pieces', twin.pieces.length === 3, `${twin.pieces.length}`)
+  check('off one act, reported as two pieces coming apart', twin.split === 2, `${twin.split}`)
+  check('all of them named as this act own', twin.made.length === 3, `${twin.made.join(',')}`)
+  near(
+    'and the block is conserved but for the two slots',
+    twin.pieces.reduce((t, g) => t + pieceVolume(g), 0),
+    1 - 2 * LASER_KERF,
+    3e-3
+  )
+  // THE TWO OUTER PIECES ARE ONE PIECE TWICE OVER, which is the whole reason
+  // the offcut became a set: they are what one press made, mirrored.
+  {
+    const sizes = twin.pieces.map((g) => pieceVolume(g)).sort((a, b) => a - b)
+    near('the two the mirror made match each other', sizes[0], sizes[1], 1e-6)
   }
 }
 

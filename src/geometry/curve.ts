@@ -43,10 +43,25 @@ const scale = (a: Pt, k: number): Pt => [a[0] * k, a[1] * k]
  *
  * The ends use a one-sided difference, which is what makes the curve leave the
  * first point heading at the second rather than curling.
+ *
+ * A CLOSED RUN HAS NO ENDS, and that is the whole of what `closed` changes.
+ * The first point's neighbours become the last one and the second, the last
+ * point's the one before it and the first, and every handle is a sixth of a
+ * full span. Without it the seam is the one place on a loop where two one-sided
+ * differences meet, so the ring would carry a corner at the very point it was
+ * closed at -- which is the point the user just clicked, and so the one they
+ * are looking straight at.
  */
-export function fittedHandles(points: Pt[]): Pt[] {
+export function fittedHandles(points: Pt[], closed = false): Pt[] {
   const n = points.length
   if (n < 2) return points.map(() => [0, 0] as Pt)
+  if (closed && n > 2) {
+    return points.map((_, i) => {
+      const before = points[(i - 1 + n) % n]
+      const after = points[(i + 1) % n]
+      return scale(sub(after, before), 1 / 6)
+    })
+  }
   return points.map((_, i) => {
     const before = points[Math.max(0, i - 1)]
     const after = points[Math.min(n - 1, i + 1)]
@@ -68,17 +83,35 @@ export function fittedHandles(points: Pt[]): Pt[] {
  * `perSegment` samples per span. Fixed rather than adaptive because every caller
  * resamples the result to its own step immediately afterwards anyway; all this
  * has to do is not miss the shape.
+ *
+ * `closed` ADDS ONE MORE SPAN, from the last point back to the first, and
+ * changes nothing else: a ring is this chain with the link that was missing.
+ * What comes back therefore ends ON its own first point, exactly rather than
+ * nearly -- a cubic at t = 1 is its far end untouched -- and that repeated
+ * point is how everything downstream reads the line as a loop without being
+ * handed a flag. See `isClosedLine`.
  */
-export function bezierChain(points: Pt[], handles: Pt[], perSegment = 16): Pt[] {
+export function bezierChain(
+  points: Pt[],
+  handles: Pt[],
+  perSegment = 16,
+  closed = false
+): Pt[] {
   if (points.length < 2) return points.slice()
+  // Two points enclose nothing, so a "ring" of them is the segment it already
+  // was rather than a chain doubling back along itself.
+  const ring = closed && points.length > 2
 
   const out: Pt[] = [points[0]]
-  for (let i = 0; i < points.length - 1; i += 1) {
+  for (let i = 0; i < (ring ? points.length : points.length - 1); i += 1) {
     const p0 = points[i]
-    const p3 = points[i + 1]
+    // Round the seam on the last span of a ring, and simply the next point
+    // everywhere else.
+    const far = (i + 1) % points.length
+    const p3 = points[far]
     const c1 = add(p0, handles[i] ?? [0, 0])
     // Backwards out of the far point, which is what "mirrored" means.
-    const c2 = sub(p3, handles[i + 1] ?? [0, 0])
+    const c2 = sub(p3, handles[far] ?? [0, 0])
     for (let s = 1; s <= perSegment; s += 1) {
       const t = s / perSegment
       const m = 1 - t
@@ -108,8 +141,17 @@ export function bezierChain(points: Pt[], handles: Pt[], perSegment = 16): Pt[] 
  *
  * The fit is computed once for the run rather than per point: it is a function
  * of every point, so asking for one costs what asking for all of them costs.
+ *
+ * `closed` goes straight through to the fit, and it has to: the grips a hand
+ * takes hold of are drawn from what comes back here, so a caller that closed
+ * the loop for the line but not for the handles would put the tangents of one
+ * curve on another.
  */
-export function curveHandles(points: Pt[], handles: (Pt | null)[]): Pt[] {
-  const fitted = fittedHandles(points)
+export function curveHandles(
+  points: Pt[],
+  handles: (Pt | null)[],
+  closed = false
+): Pt[] {
+  const fitted = fittedHandles(points, closed)
   return points.map((_, i) => handles[i] ?? fitted[i])
 }

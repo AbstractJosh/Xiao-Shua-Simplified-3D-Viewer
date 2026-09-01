@@ -10,7 +10,7 @@ import {
   resizeShapeAlong,
   scaleShape,
 } from '../geometry/dimensions'
-import { assemblyAnchor, assemblyHalfExtent } from '../geometry/assembly'
+import { assemblyAnchor, assemblyHalfExtent, sceneBounds } from '../geometry/assembly'
 import type { SnapTarget } from '../geometry/snap'
 import { snapSinglePoint } from '../geometry/snap'
 import {
@@ -21,7 +21,7 @@ import {
   surfaceFor,
 } from '../geometry/surfaces'
 import type { SurfaceDef } from '../geometry/surfaces'
-import { endFaceFrame } from '../geometry/prism'
+import { endFaceFrame, featureHandleOrigin } from '../geometry/prism'
 import { outlineAxis } from '../geometry/outline'
 import { toLocalPoint, toLocalRay, toWorldDir, toWorldPoint } from '../geometry/transform'
 import type { SceneObject, Shape2D, SurfaceAnchor, Vec3 } from '../geometry/types'
@@ -44,7 +44,13 @@ import { GameControls } from './GameControls'
 import { FlightSpeedReadout } from './FlightSpeedReadout'
 import { BrushScopePanel } from './BrushScopePanel'
 import { brushAllows } from './brushTarget'
-import { STAGE_CAMERA, STAGE_MAX_DISTANCE, STAGE_MIN_DISTANCE, Stage } from './Stage'
+import {
+  STAGE_CAMERA,
+  STAGE_MAX_DISTANCE,
+  STAGE_MIN_DISTANCE,
+  Stage,
+  groundReach,
+} from './Stage'
 import { RulerReadouts, Rulers } from './Rulers'
 import type { ObjectHit } from './picking'
 import {
@@ -885,7 +891,16 @@ function dragSketchGizmo(
   // one of the outline's own directions and slide the sketch sideways.
   if (handle.mode === 'plane') return
   const key = `${drag.objectId}|${drag.id}|${handle.mode}|${handle.axis}`
-  const centre = toWorldPoint(object.transform, host.frame(feature.anchor).origin)
+  // The TIP of the extrusion, which is where the gizmo is drawn -- see
+  // `featureHandleOrigin`. Both sides come through that one function because
+  // every gesture below is measured from it: the ring reads the pointer's angle
+  // about this point and the arrows their travel from it, so a drag reading one
+  // centre while the handles were drawn about another would run at a different
+  // rate than the hand was moving.
+  const centre = toWorldPoint(
+    object.transform,
+    featureHandleOrigin(host, feature.anchor, feature)
+  )
 
   // A sketch turns about ONE axis -- the surface normal it lies against -- so
   // there is no axis to choose here, and `feature.rotation` is a single number
@@ -1872,6 +1887,23 @@ function SnapGuides() {
   )
 }
 
+/**
+ * The room the modelling screen works in, with its ground cut to hold
+ * whatever is standing on it.
+ *
+ * A component of its own so that the subscription to the document lives here
+ * and not in `Scene`. The doc is rewritten on every frame of a drag, and a
+ * `Scene` that re-rendered at that rate would take every mesh, gizmo and ruler
+ * in the viewport with it. What is selected here is a NUMBER, so the store
+ * ends the update itself on all but the one frame where the ground actually
+ * grows -- `groundReach` rounds to whole tens exactly so that there is such a
+ * frame rather than a rebuilt grid per drag frame.
+ */
+function ModelGround() {
+  const reach = useDoc((s) => groundReach(sceneBounds(s.doc)))
+  return <Stage reach={reach} />
+}
+
 function Scene({
   controlsRef,
   meshes,
@@ -1885,8 +1917,8 @@ function Scene({
   return (
     <>
       {/* The room itself -- background, lights, ground -- shared with every
-          other screen's viewport. See `Stage`. */}
-      <Stage />
+          other screen's viewport, with its ground cut to fit. See `Stage`. */}
+      <ModelGround />
 
       <SceneObjects meshes={meshes} controlsRef={controlsRef} />
       <PlacingPreview />

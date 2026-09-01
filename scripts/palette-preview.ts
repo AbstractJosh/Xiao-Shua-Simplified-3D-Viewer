@@ -191,6 +191,13 @@ const html = `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${APP_NAME} palette preview</title>
+<!-- The same face index.html loads. This page inlines the app's stylesheet, so
+     it already asks for Rajdhani; without the link it would ask and be handed
+     the fallback, and a preview drawn in a different face from the app is
+     showing colour against the wrong ink. -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" />
 <style>
 ${css}
 

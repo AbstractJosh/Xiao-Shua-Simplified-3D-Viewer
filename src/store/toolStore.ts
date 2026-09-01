@@ -5,6 +5,16 @@ import { BRUSH_SMOOTH_MIN, ROUND_MIN } from '../geometry/erode'
 import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
 import {
+  DEFAULT_MIRROR_SNAP,
+  FRESH_MIRROR,
+  MIRROR_SNAP_MAX,
+  MIRROR_SNAP_MIN,
+  faceKey,
+  partsIn,
+} from '../geometry/faceMirror'
+import type { MirrorAxis } from '../geometry/faceMirror'
+import type { FaceAxis } from '../geometry/laserCut'
+import {
   FLIGHT_SPEED_DEFAULT,
   FLIGHT_SPEED_MAX,
   FLIGHT_SPEED_MIN,
@@ -31,7 +41,7 @@ import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
 import { NO_PAN, clampPan, clampZoom } from '../viewport/latheView'
 import type { LathePan } from '../viewport/latheView'
-import type { Unit, UnitMode } from '../units'
+import type { Unit } from '../units'
 import type { Axis } from '../geometry/dimensions'
 import type { Vec3 } from '../geometry/types'
 
@@ -103,8 +113,11 @@ export type NavPanel =
  * mounted, so the modelling four and the lathe two can share this list
  * without ever being on screen together. The unit selector went to the bar
  * first and `snap` followed it, and neither collapses with anything now -- the
- * bar is always there. (The units menu has since become one group inside
- * `settings`, which is a bar panel too, and so is `clay`.)
+ * bar is always there. (The units menu has since become one row inside
+ * `settings`, which is no longer a panel at all: it and `help` are screens over
+ * the whole app, opened from the bar off this same field. Neither can be
+ * trapped by a collapsing island either, which is the property this list is
+ * about.)
  *
  * A panel left off this list is one the island cannot shut: its button goes off
  * screen with the body and `openPanel` still names it, so the panel springs
@@ -228,16 +241,29 @@ export type LatheTool = ClayTool | 'points' | null
  * on, and they are pointed at a block the other two screens have never heard
  * of. See `LatheTool`, which sets out the whole argument.
  *
- * TWO OF THEM CUT AND ONE DOES NOT, which is the odd one out and worth saying
- * why. `move` puts no line on the block at all: it is the tool that takes hold
- * of a REFERENCE, to slide it about its face or pull a corner. It is in this
- * field rather than in a flag of its own because it claims the same left press
- * the cutters do -- a press on a picture cannot both start a line and pick the
+ * TWO OF THEM CUT AND TWO DO NOT, which is the odd part and worth saying why.
+ * `move` puts no line on the block at all: it is the tool that takes hold of a
+ * REFERENCE, to slide it about its face or pull a corner. It is in this field
+ * rather than in a flag of its own because it claims the same left press the
+ * cutters do -- a press on a picture cannot both start a line and pick the
  * picture up, and one field is the only way to say that once. It is also what
  * replaced the padlock: a reference used to be pinned so a cut could be drawn
  * across it, and a tool you have to be HOLDING to move anything makes the pin
  * redundant -- with a cutter in hand nothing on the face can be shifted, which
  * is what the padlock was for.
+ *
+ * AND `symmetry` IS IN THE FIELD FOR THE SAME REASON AND ONLY THAT REASON. It
+ * is the hand that swings the mirror and picks which part of the face is being
+ * worked in, and both of those are a left press on the block -- the very press
+ * a cutter uses to draw. So holding it puts the cutter down and taking a cutter
+ * up puts it down, which is what stops a press near the axis meaning two
+ * things.
+ *
+ * WHAT IT DOES NOT OWN IS THE MIRROR ITSELF. The axis is not a tool: it stands
+ * on the face like a ruler stands in a scene, and it goes on reflecting every
+ * cut while a cutter is in hand -- which is the whole point of it. See
+ * `mirrors`, where the standing axes live, and `MirrorLayer`, which draws them.
+ * This field says only who has the face right now.
  *
  * EMPTY-HANDED ON ARRIVAL, unlike the lathe, and the difference is what a press
  * costs. On the lathe a press with a tool in hand moves some clay and the next
@@ -246,9 +272,9 @@ export type LatheTool = ClayTool | 'points' | null
  * would mean the first press meant to turn the compass left a stroke on the
  * face instead.
  */
-export type LaserTool = 'freehand' | 'points' | 'move' | null
+export type LaserTool = 'freehand' | 'points' | 'move' | 'symmetry' | null
 
-/** The two that draw a line. `move` is the third, and it draws nothing. */
+/** The two that draw a line. The other two hold something else on the face. */
 export const isCutTool = (tool: LaserTool): tool is 'freehand' | 'points' =>
   tool === 'freehand' || tool === 'points'
 
@@ -841,7 +867,7 @@ export type ToolState = {
    *  controls that keep a concrete unit of their own, which `setDisplayUnit`
    *  writes the choice through to. Purely a display choice: nothing in the
    *  document or the geometry changes with it. */
-  displayUnit: UnitMode
+  displayUnit: Unit
   /** Which palette the app wears. Display-only in exactly the same sense the
    *  unit is, which is why the two share a panel. */
   theme: Theme
@@ -886,7 +912,7 @@ export type ToolState = {
    * SHOWN EVERYWHERE, LIVE ON ONE SCREEN. The lathe and the laser cutter draw a
    * flat picture with no room to walk about in, so the switch is dimmed on both
    * -- see `SCREEN_HAS_GAME_CONTROLS`, which owns that judgement, and
-   * `SettingsTool`, which draws it. The flag itself is left alone by the screen
+   * `SettingsScreen`, which draws it. The flag itself is left alone by the screen
    * you are on, so coming back to the modelling screen finds the camera the way
    * you left it.
    */
@@ -969,23 +995,18 @@ export type ToolState = {
   /**
    * The unit the brush size is READ AND TYPED in.
    *
-   * The one thing this field does NOT take from `displayUnit` is `auto`, and
-   * the reason is the range: the brush runs from 1 mm to 1.25 m, so under
-   * `auto` -- which is the app's default -- a single drag of the size slider
-   * crosses both switching points and the number under the pointer goes 9.9,
-   * 1.00, 99.9, 1.00 while the hand never changes direction. `auto` reads a
-   * length; this control SETS one, and a scale that renumbers itself
-   * mid-gesture cannot be aimed.
+   * Its own field rather than a read of `displayUnit`, and it survives the end
+   * of `auto`: a brush read in centimetres while the rest of the app is in
+   * millimetres is a preference somebody set on purpose, and a panel that
+   * forgot it every time the app-wide picker moved would be losing an answer
+   * nobody withdrew.
    *
-   * So the field is always pinned to a concrete unit, and this is where that
-   * unit is remembered. Asking for millimetres or centimetres in Settings
-   * writes straight through to it -- see `PINNED_UNITS` -- and the picker on
-   * the field itself overrides that afterwards, for a brush a user wants read
-   * in something other than the rest of the app. Under `auto` there is nothing
-   * to write through, so what is remembered here is all there is.
+   * Asking for a unit in Settings writes straight through to it -- see
+   * `PINNED_UNITS` -- and the picker on the field itself overrides that
+   * afterwards, for a brush a user wants read in something other than the rest
+   * of the app.
    *
-   * Centimetres to start: the range runs from a millimetre to 125 cm, which is
-   * two digits at both ends in centimetres where millimetres is four.
+   * It starts wherever `displayUnit` starts, which is millimetres.
    */
   erodeSizeUnit: Unit
   /** How hard one of the torch's dabs bites, 0..1. */
@@ -1104,6 +1125,53 @@ export type ToolState = {
    */
   fitCurve: boolean
   /**
+   * The mirror standing on each face of the block, by `faceKey`.
+   *
+   * PER FACE, and that is the whole reason this is a table rather than one
+   * axis. A mirror is a pair of numbers in one face's own (u, v) -- see
+   * `faceMirror` -- so it means something else entirely on any other face, and
+   * a single axis carried round the block would silently re-aim itself every
+   * time the compass turned. Keeping one per face means a 45-degree mirror set
+   * up on the front is still there when you come back to the front, and the top
+   * is upright until you say otherwise.
+   *
+   * `up` IS WHETHER IT IS STANDING and the axis beside it is what it was last
+   * aimed at. Cuts reflect exactly when the face being cut has an entry that is
+   * up, which is what the Symmetry button turns on and off -- and an axis goes
+   * on standing while a cutter is in hand, which is the whole point of it.
+   *
+   * THE AIM OUTLIVES THE AXIS, which is why the entry is not simply deleted.
+   * Taking a mirror away and putting one back is a thing people do between cuts,
+   * and a face that forgot a 45-degree axis every time would make that a
+   * decision rather than a flick -- so the aim is kept and the next one raised
+   * on that face comes up exactly where the last one stood.
+   *
+   * IN THE TOOL STORE rather than in `laserStore`, on that file's own rule: it
+   * holds what you have MADE, and a guide you are working to is not that. It is
+   * out of the cut history for the same reason a ruler is out of the document's
+   * -- swinging it changes no material -- so Ctrl+Z walks back cuts, not aim.
+   */
+  mirrors: Record<string, { up: boolean; axis: MirrorAxis }>
+  /**
+   * How near the mirror has to be swung to a square or a diagonal before it
+   * clicks onto it, in DEGREES.
+   *
+   * A TOLERANCE, NOT AN INTERVAL. The stops are fixed at every 45 -- see
+   * `DETENT` -- and this says how big each one's catchment is: at 8 the line
+   * holds square when it is within 8 degrees of square and is free everywhere
+   * else, so 30 degrees is reachable by hand on a line that still snaps to the
+   * diagonal. At 22.5 the stops meet and nothing between them survives, which
+   * is the honest top of the range rather than an arbitrary one.
+   *
+   * IN THE SNAP PANEL WITH THE OTHER THREE, and gated by the bar's own Snap
+   * switch like everything else there: snapping off is a mirror that goes
+   * exactly where it is put. Its own number rather than a share of
+   * `laserSnapDistance`, which is a reach in PIXELS for lining knots up with
+   * knots -- an angle is not a distance on a screen, and a number that had to
+   * be both would serve neither.
+   */
+  mirrorSnapAngle: number
+  /**
    * The same question for the Lathe screen's Point Sculpt, and a SEPARATE field
    * from `fitCurve` above.
    *
@@ -1200,10 +1268,9 @@ export type ToolState = {
    * user alternating between them would spend the sitting re-dialling a single
    * size back and forth.
    *
-   * The sizes are LENGTHS in scene units, pinned the way the brushes' are and
-   * following Settings the same way -- see `erodeSizeUnit` for why a control
-   * that SETS a length cannot be read in `auto`, and `PINNED_UNITS` for what
-   * the app-wide picker does to all of them at once.
+   * The sizes are LENGTHS in scene units, each remembering a unit the way the
+   * brushes' do and following Settings the same way -- see `erodeSizeUnit`, and
+   * `PINNED_UNITS` for what the app-wide picker does to all of them at once.
    */
   pushReach: number
   pushSizeUnit: Unit
@@ -1217,11 +1284,10 @@ export type ToolState = {
   /**
    * The unit the Hollow panel is read and typed in.
    *
-   * Pinned rather than `auto`, like every other control that SETS a length --
-   * see `erodeSizeUnit` -- and following the app-wide picker whenever that
-   * names a unit, like all of them. It STARTS at millimetres rather than at the
-   * centimetres the tool sizes use, because that is the unit a wall thickness
-   * is actually spoken in. Nobody says a pot has a 0.6 cm wall.
+   * Remembered here and following the app-wide picker, like every other
+   * control that SETS a length -- see `erodeSizeUnit`. Millimetres, which is
+   * both where the app starts and the unit a wall thickness is actually spoken
+   * in. Nobody says a pot has a 0.6 cm wall.
    *
    * One unit for the whole panel rather than one per row, which is why it is
    * named for the panel and not for a field: it is chosen from the panel's own
@@ -1296,7 +1362,7 @@ export type ToolState = {
   setSnap: (on: boolean) => void
   setSnapDistance: (d: number) => void
   setLaserSnapDistance: (pixels: number) => void
-  setDisplayUnit: (unit: UnitMode) => void
+  setDisplayUnit: (unit: Unit) => void
   setTheme: (theme: Theme) => void
   setShowOutlines: (on: boolean) => void
   setGameControls: (on: boolean) => void
@@ -1341,6 +1407,17 @@ export type ToolState = {
   setLaserTool: (tool: LaserTool) => void
   setFreehandSmoothing: (smoothing: number) => void
   setFitCurve: (fit: boolean) => void
+  /**
+   * Stand a mirror on a face, or take the one that is there away.
+   *
+   * Raising one on a face that already has an axis leaves the axis exactly as
+   * it was aimed -- taking the tool back up is not a reason to lose the angle
+   * you set with it.
+   */
+  setMirror: (face: FaceAxis, on: boolean) => void
+  /** Swing, switch or re-part the mirror on one face. Inert with none there. */
+  aimMirror: (face: FaceAxis, patch: Partial<MirrorAxis>) => void
+  setMirrorSnapAngle: (degrees: number) => void
   setSculptFit: (fit: boolean) => void
   setStockOpen: (open: boolean) => void
   /**
@@ -1426,10 +1503,10 @@ export type ToolState = {
 /**
  * Every control that REMEMBERS a unit of its own.
  *
- * These are the lengths a user SETS rather than reads, so none of them can be
- * shown in `auto` -- see `pinnedUnit` in `units.ts` for why a scale that
- * renumbers itself mid-drag cannot be aimed. Each keeps a concrete unit, and
- * the app-wide picker in Settings writes its choice through to all of them, so
+ * These are the lengths a user SETS rather than reads, and each keeps a unit of
+ * its own so that a panel deliberately read in something else is not overwritten
+ * by every readout in the app. The app-wide picker in Settings writes its choice
+ * through to all of them, so
  * asking for millimetres there puts the brush size, the lathe tools and the
  * wall thickness in millimetres too. Each picker still overrides its own field
  * afterwards, which is what it was for: one panel read in a unit that suits it
@@ -1473,9 +1550,11 @@ export const useTools = create<ToolState>((set) => ({
   snapDistance: DEFAULT_SNAP_DISTANCE,
   laserSnapDistance: DEFAULT_LASER_SNAP,
   latheSnapDistance: DEFAULT_LATHE_SNAP,
-  // `auto` by default: it reads correctly for a 2 mm boss and a 4 m wall alike,
-  // which a fixed unit cannot do across the range the app now allows.
-  displayUnit: 'auto',
+  // Millimetres. It is the unit this kind of part is drawn in, it is the finest
+  // one on offer so nothing it shows is rounded away, and -- unlike the rule
+  // that used to sit here -- it is a fact the user can read off the Settings
+  // screen rather than a behaviour they have to work out from the numbers.
+  displayUnit: 'mm',
   theme: DEFAULT_THEME,
   // On, which is how the app has always drawn and what a modelling tool is
   // expected to look like: the lines are how you count a chamfer or see where
@@ -1508,21 +1587,23 @@ export const useTools = create<ToolState>((set) => ({
   eraseScope: 'all',
   brushTool: null,
   erodeRadius: DEFAULT_BRUSH_RADIUS,
-  // Never 'auto', whatever the rest of the app is set to, and moved by the
-  // Settings picker whenever that names a unit -- see `erodeSizeUnit`.
-  erodeSizeUnit: 'cm',
+  // The app's own unit to start with, and moved by the Settings picker after
+  // that -- see `erodeSizeUnit`. Every one of these starts where `displayUnit`
+  // starts, or a fresh app would open with Settings saying one thing and half
+  // the panels showing another.
+  erodeSizeUnit: 'mm',
   erodeHeat: DEFAULT_BRUSH_FORCE,
   erodeSmooth: DEFAULT_BRUSH_SMOOTH,
   // The same three numbers, in their own slots. See `sculptRadius`.
   sculptRadius: DEFAULT_BRUSH_RADIUS,
-  sculptSizeUnit: 'cm',
+  sculptSizeUnit: 'mm',
   sculptStrength: DEFAULT_BRUSH_FORCE,
   sculptSmooth: DEFAULT_BRUSH_SMOOTH,
   // And the Smoother's two. Its size does NOT start where the other two do: an
   // edge is a thinner thing than a face, and this brush is the one that is
   // aimed at edges. See `DEFAULT_SMOOTHER_RADIUS`.
   smootherRadius: DEFAULT_SMOOTHER_RADIUS,
-  smootherSizeUnit: 'cm',
+  smootherSizeUnit: 'mm',
   smootherStrength: DEFAULT_BRUSH_ROUND,
   // Everything, matching the eraser's default and for the same reason: the
   // commonest thing to do with a brush is point it at something and pull, and
@@ -1546,6 +1627,11 @@ export const useTools = create<ToolState>((set) => ({
   // what you see is exactly what you placed. Curving is a thing you decide
   // about a line that already exists.
   fitCurve: false,
+  // No mirror anywhere until one is stood up, which is what makes the Symmetry
+  // button the whole of the switch: an empty table is a block that cuts the way
+  // it always has.
+  mirrors: {},
+  mirrorSnapAngle: DEFAULT_MIRROR_SNAP,
   // See `sculptFit`: a turned profile is a curve almost by definition, so this
   // one opens the other way up from the cutter's.
   sculptFit: true,
@@ -1562,12 +1648,11 @@ export const useTools = create<ToolState>((set) => ({
   // push is aimed at one place. Half again is enough to feel like a different
   // size of thing without needing its own explanation.
   smoothReach: DEFAULT_LATHE_REACH * 1.5,
-  // Centimetres, as the brushes are, and for the same reason: a tool runs from a
-  // millimetre to over a metre, and under `auto` a single drag of the size
-  // slider renumbers itself twice while the hand never changes direction.
-  pushSizeUnit: 'cm',
-  pullSizeUnit: 'cm',
-  smoothSizeUnit: 'cm',
+  // Millimetres, as the brushes are, and for the same reason: it is where the
+  // app starts, so nothing opens disagreeing with the Settings screen.
+  pushSizeUnit: 'mm',
+  pullSizeUnit: 'mm',
+  smoothSizeUnit: 'mm',
   // Millimetres: a wall is millimetres thick, and the panel opens speaking the
   // unit its one number is usually said in.
   hollowSizeUnit: 'mm',
@@ -1625,16 +1710,12 @@ export const useTools = create<ToolState>((set) => ({
     set({
       laserSnapDistance: Math.min(LASER_SNAP_MAX, Math.max(LASER_SNAP_MIN, pixels)),
     }),
-  // THE ONE PICKER, and it reaches the controls that cannot show `auto` as
-  // well as the readouts that can. A brush size pinned to centimetres while
-  // Settings said millimetres was the app answering "what are these numbers in"
-  // two different ways in two panels, and the panel the user had just told was
-  // the one that lost. Asking for `auto` writes nothing through: it is a rule
-  // for reading a length and there is nothing for a control that sets one to
-  // adopt, so those keep whichever unit they were last put in. See
-  // `PINNED_UNITS`.
-  setDisplayUnit: (displayUnit) =>
-    set(displayUnit === 'auto' ? { displayUnit } : { displayUnit, ...pinAll(displayUnit) }),
+  // THE ONE PICKER, and it reaches the controls that remember a unit of their
+  // own as well as the readouts that do not. A brush size left in centimetres
+  // while Settings said millimetres was the app answering "what are these
+  // numbers in" two different ways in two panels, and the panel the user had
+  // just told was the one that lost. See `PINNED_UNITS`.
+  setDisplayUnit: (displayUnit) => set({ displayUnit, ...pinAll(displayUnit) }),
 
   setTheme: (theme) => set({ theme }),
 
@@ -1757,10 +1838,14 @@ export const useTools = create<ToolState>((set) => ({
   // the way arming the cut plane does -- the tool's own Apply lives in there,
   // and a cut you could draw but not fire would be the panel nobody found.
   //
-  // MOVE HAS NO PANEL, so it counts as putting the cutter down: it is a tool
-  // with nothing to aim, and leaving the last cutter's panel standing open over
-  // a block you are now dragging pictures about would be a lid with no button
-  // under it.
+  // MOVE AND SYMMETRY HAVE NO PANEL, so either counts as putting the cutter
+  // down: neither has anything to aim from the island -- Move's handles are on
+  // the pictures and Symmetry's line is on the face -- and leaving the last
+  // cutter's panel standing open over a block you are now dragging pictures
+  // about, or swinging a mirror across, would be a lid with no button under it.
+  // What Symmetry has instead is a corner panel that stands as long as the axis
+  // does; see `SymmetryPanel`, and `CutPanel` for why a tool aimed by pressing
+  // the scene cannot keep its controls in a flyout.
   setLaserTool: (laserTool) =>
     set((s) => ({
       laserTool,
@@ -1773,6 +1858,42 @@ export const useTools = create<ToolState>((set) => ({
   setFreehandSmoothing: (freehandSmoothing) =>
     set({ freehandSmoothing: clamp(freehandSmoothing, 0, 1) }),
   setFitCurve: (fitCurve) => set({ fitCurve }),
+
+  setMirror: (face, on) =>
+    set((s) => {
+      const key = faceKey(face)
+      const was = s.mirrors[key]
+      if (was?.up === on) return s
+      // TAKEN DOWN RATHER THAN DELETED, so the aim is there to raise again --
+      // see `mirrors`. A face that has never had one starts from upright.
+      return { mirrors: { ...s.mirrors, [key]: { up: on, axis: was?.axis ?? FRESH_MIRROR } } }
+    }),
+
+  aimMirror: (face, patch) =>
+    set((s) => {
+      const key = faceKey(face)
+      const standing = s.mirrors[key]
+      if (!standing?.up) return s
+      const was = standing.axis
+      const next = { ...was, ...patch }
+      // HALF A TURN IS THE WHOLE RANGE, because a mirror at 190 degrees IS the
+      // mirror at 10 -- the line has no ends to tell apart. Wrapped here rather
+      // than only in `snapAxisAngle` so that a number TYPED into the panel is
+      // held to the same range a swung one is.
+      next.angle = ((next.angle % 180) + 180) % 180
+      // A cross has four parts and a mirror two, so the part has to be brought
+      // back inside the mode it now belongs to -- otherwise switching a cross
+      // showing its third quadrant back to a line leaves a face with no lit
+      // part at all, which draws as a face that refuses every stroke.
+      next.part = ((next.part % partsIn(next.mode)) + partsIn(next.mode)) % partsIn(next.mode)
+      if (next.mode === was.mode && next.angle === was.angle && next.part === was.part) return s
+      return { mirrors: { ...s.mirrors, [key]: { up: true, axis: next } } }
+    }),
+
+  setMirrorSnapAngle: (degrees) =>
+    set({
+      mirrorSnapAngle: Math.min(MIRROR_SNAP_MAX, Math.max(MIRROR_SNAP_MIN, degrees)),
+    }),
   setSculptFit: (sculptFit) => set({ sculptFit }),
   setStockOpen: (stockOpen) => set({ stockOpen }),
   // Clamped in `latheView`, so the range is written down once beside the frame
@@ -1987,6 +2108,30 @@ export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.scree
  * screen arrives it is answered there rather than here.
  */
 export const snapsHere = (s: ToolState): boolean => SCREEN_SNAPS[s.screen]
+
+/**
+ * The mirror standing on one face, or null.
+ *
+ * A SELECTOR RATHER THAN A HOOK, which is the shape `snapsHere` above already
+ * uses and the one that works from outside a component too: the cut fires from
+ * a button handler reading the store directly, and the layer that draws the
+ * axis reads it through `useTools`. Both ask the question the same way.
+ *
+ * Hands back the stored object itself, so a component subscribed to it
+ * re-renders when the mirror is aimed and not when anything else in the table
+ * moves. See `mirrors`.
+ */
+export const mirrorOn =
+  (face: FaceAxis) =>
+  (s: ToolState): MirrorAxis | null => {
+    const standing = s.mirrors[faceKey(face)]
+    return standing?.up ? standing.axis : null
+  }
+
+/** Whether any face is wearing a mirror. What decides whether the bar's Snap
+ *  panel has an angle to govern. */
+export const anyMirror = (s: ToolState): boolean =>
+  Object.values(s.mirrors).some((one) => one.up)
 
 /**
  * Is the camera being driven from the keyboard RIGHT NOW?

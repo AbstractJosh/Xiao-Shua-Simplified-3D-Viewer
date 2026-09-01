@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { RefObject } from 'react'
 import { Matrix4, Quaternion, Vector3 } from 'three'
+import { featureHandleOrigin } from '../geometry/prism'
 import { hostSurfaceFor } from '../geometry/surfaces'
 import type { Feature, SceneObject, Vec3 } from '../geometry/types'
 import { useDoc } from '../store/docStore'
@@ -22,12 +23,20 @@ const NORMAL_AXIS = [2] as const
  * The gizmo on a selected sketch: two arrows across the surface, and a third
  * facing away from it.
  *
- * The first two are the outline's OWN axes -- a rectangle's width and height --
- * and the third is the surface normal, which is the one direction a sketch
- * cannot move along and the one it can sweep along. So the third arrow has no
- * slide: both buttons on it drag the feature's depth, out of the face for a
- * boss and back through it for a pocket, which is the same signed number the
- * Extrude slider writes.
+ * It stands at the TIP of the extrusion -- the centre of the face the feature
+ * created -- rather than on the sketch it grew from. The base is the one part a
+ * feature's gestures never move; it stays welded to the host through a depth
+ * drag, a lean and a slide alike, so a gizmo there annotates the wrong end of
+ * the thing, and on a pocket it sits buried in material that is no longer
+ * there. Until there is a face to stand on -- a sketch at depth zero is a
+ * projection and nothing more -- it falls back to the sketch itself.
+ *
+ * The first two arrows are the outline's OWN axes -- a rectangle's width and
+ * height -- and the third is the surface normal, which is the one direction a
+ * sketch cannot move along and the one it can sweep along. So the third arrow
+ * has no slide: both buttons on it drag the feature's depth, out of the face
+ * for a boss and back through it for a pocket, which is the same signed number
+ * the Extrude slider writes.
  *
  * The frame is turned by the sketch's OWN rotation, not left on the surface's
  * raw U and V. That is what makes the stretch in Scale honest: it resizes the
@@ -48,11 +57,16 @@ export function SketchGizmo({
 }) {
   const startSketchGizmo = useDoc((s) => s.startSketchGizmo)
 
-  // The frame solve is cheap but runs on every frame of a drag; the anchor and
-  // the spin are the only things it depends on.
+  // The frame solve is cheap but runs on every frame of a drag, so it is kept
+  // to what actually moves the gizmo: where the anchor sits, how far the
+  // feature has been pushed out from it, and where the face has been slid to.
+  // NOT the lean -- the created face pivots about its own centre, so tilting it
+  // leaves this point exactly where it was.
   const placement = useMemo(() => {
-    const frame = hostSurfaceFor(object.base, feature.anchor).frame(feature.anchor)
-    const position: Vec3 = [frame.origin.x, frame.origin.y, frame.origin.z]
+    const host = hostSurfaceFor(object.base, feature.anchor)
+    const frame = host.frame(feature.anchor)
+    const tip = featureHandleOrigin(host, feature.anchor, feature)
+    const position: Vec3 = [tip.x, tip.y, tip.z]
     // uDir, vDir and normal are orthonormal by construction, so they ARE the
     // columns of a rotation: the gizmo's local +X becomes the surface's U, its
     // +Y becomes V, and its +Z the normal the third arrow points along.
@@ -64,7 +78,7 @@ export function SketchGizmo({
       .setFromRotationMatrix(basis)
       .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), feature.rotation))
     return { position, quaternion }
-  }, [object.base, feature.anchor, feature.rotation])
+  }, [object.base, feature.anchor, feature.rotation, feature.depth, feature.faceOffset])
 
   return (
     <TransformGizmo
@@ -82,6 +96,12 @@ export function SketchGizmo({
       // A sketch spins in the surface it lies on and nowhere else, so there is
       // no axis to choose: two of the three rings would be handles for turns
       // the document cannot write down.
+      //
+      // The extrusion's LEAN is two more turns the document can write down, and
+      // hanging them on the other two rings was tried and taken back out: the
+      // gesture reads as tumbling the sketch, when what the user is aiming at
+      // is the far end of a pillar. It stays on the Tilt rows and on the end
+      // face's own drag handle, both of which move the thing being aimed at.
       turns="facing"
       // No plane quads. A sketch is anchored to a surface and slides in that
       // surface's own u and v, so there is no such thing as moving it through

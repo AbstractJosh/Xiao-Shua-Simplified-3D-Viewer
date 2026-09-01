@@ -38,7 +38,12 @@ console.warn = (...args: unknown[]) => {
 
 import { evaluateDoc, resetEvaluator } from '../src/geometry/evaluate'
 import { hostSurfaceFor, surfaceFor } from '../src/geometry/surfaces'
-import { outlineOnSurface } from '../src/geometry/prism'
+import {
+  endFaceCentre,
+  endFaceRing,
+  featureHandleOrigin,
+  outlineOnSurface,
+} from '../src/geometry/prism'
 import { outlineAxis, sampleOutline } from '../src/geometry/outline'
 import { MIN_SHAPE, resizeShapeAlong } from '../src/geometry/dimensions'
 import { clampDepth, depthLimits } from '../src/geometry/surfaces'
@@ -52,9 +57,9 @@ import {
 } from '../src/geometry/snap'
 import type { SnapSource, SnapTarget } from '../src/geometry/snap'
 import { frameOf, perspectiveFrame, pixelsToWorld, zoomFor } from '../src/viewport/orthoFrame'
-import { GRIP_PX, KNOT_PX, PREVIEW_PX, markScale, ribbon } from '../src/viewport/CutLayer'
+import { GRAB_PX, GRIP_PX, KNOT_PX, PREVIEW_PX, closeRing, markScale, ribbon } from '../src/viewport/CutLayer'
 import type { FaceAxis, Pt } from '../src/geometry/laserCut'
-import { KERF } from '../src/geometry/laserCut'
+import { KERF, faceBasis } from '../src/geometry/laserCut'
 import { NO_PAN, clampPan, panCorrection, panLimits } from '../src/viewport/facePan'
 import { faceTolerance, sideAlong, snapToPeers } from '../src/viewport/pointSnap'
 import { CLAY_RINGS, bore, freshClay, ringHeight, wallAt, withWall } from '../src/geometry/clay'
@@ -1444,9 +1449,11 @@ console.log('\n12b. The tangent arrows stretch the outline')
 // --- 12c. One signed depth, with two different reaches ---------------------
 console.log('\n12c. Depth is one signed number, clamped asymmetrically')
 {
-  // A boss may stand further proud of a face than a pocket may sink into it,
-  // which is why the slider is not symmetric about zero and why the clamp has
-  // to be asked one direction at a time.
+  // The two directions are different questions -- a boss's reach is a matter of
+  // taste, a pocket's is the crossing it has to make -- so the slider is not
+  // symmetric about zero and the clamp has to be asked one direction at a time.
+  // On a CUBE the outward number is the larger of the two; on a slab pierced
+  // through its long axis it is not, which is the point of asking per anchor.
   const top: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
   const host = hostSurfaceFor(CUBE, top)
   const limit = depthLimits(host, top)
@@ -1462,6 +1469,51 @@ console.log('\n12c. Depth is one signed number, clamped asymmetrically')
   near('zero is inert either way', clampDepth(host, top, 0), 0, 1e-12)
 }
 
+// --- 12d. The sketch gizmo stands on the face the feature created ----------
+console.log('\n12d. The sketch gizmo stands at the tip of the extrusion')
+{
+  const top: SurfaceAnchor = { on: 'box-face', face: 2, u: 0, v: 0 }
+  const host = hostSurfaceFor(CUBE, top)
+  const frame = host.frame(top)
+  const shape = { type: 'circle', r: 0.3 } as const
+  const rad = (d: number) => (d * Math.PI) / 180
+
+  const tipOf = (depth: number, tilt: Vec3 = [0, 0, 0], faceOffset: [number, number] = [0, 0]) =>
+    featureHandleOrigin(host, top, { depth, tilt, faceOffset })
+
+  // A boss's top, a pocket's floor, and -- while the feature has made neither --
+  // the sketch on the surface itself.
+  near('a boss puts the gizmo on its top', tipOf(0.3).y, frame.origin.y + 0.3, 1e-12)
+  near('a pocket puts it on the floor', tipOf(-0.4).y, frame.origin.y - 0.4, 1e-12)
+  near('a flat projection leaves it on the surface', tipOf(0).y, frame.origin.y, 1e-12)
+
+  // The CENTRE of that face, not a point near it: the handle draws the face
+  // from `endFaceRing`, and a gizmo standing anywhere else would be annotating
+  // a face it was not on.
+  const ring = endFaceRing(host, top, {
+    shape,
+    rotation: 0,
+    depth: 0.3,
+    tilt: [0, 0, 0],
+    faceOffset: [0, 0],
+  })
+  check(
+    'and it is the centre of the face the handle draws',
+    tipOf(0.3).distanceTo(endFaceCentre(ring)) < 1e-9,
+    `${tipOf(0.3).distanceTo(endFaceCentre(ring)).toExponential(1)} apart`
+  )
+
+  // A LEAN MUST NOT MOVE IT. The created plane pivots about its own centre, and
+  // that is what lets a ring measure an angle about a point that holds still --
+  // a centre that moved with the turn would feed the drag back into itself.
+  check(
+    'leaning the face does not move the gizmo',
+    tipOf(0.3, [rad(30), 0, 0]).distanceTo(tipOf(0.3)) < 1e-12,
+    ''
+  )
+  // A slide does move it, because the face has gone there and the gizmo is on it.
+  near('but sliding the face carries it along', tipOf(0.3, [0, 0, 0], [0.5, 0]).x, 0.5, 1e-12)
+}
 // --- 13. The corner compass ------------------------------------------------
 console.log('\n13. The compass flies the camera to the face it names')
 {
@@ -1930,6 +1982,66 @@ console.log('\nAnd a projected camera measures the same everywhere it looks')
 
       // A line of one point is nothing to draw, not a strip of no width.
       check('and a line of one point draws nothing at all', ribbon([[0, 0]], FACES[0], 0.01, [1, 1, 1]) === null, '')
+    }
+
+    // THE RING THAT SAYS WHERE THE LOOP CLOSES follows the same rule, and has
+    // one claim of its own on top of it: it is drawn at exactly the radius the
+    // press catches at, so the circle IS the target rather than a decoration
+    // near it. A ring that lied about its reach would be worse than none --
+    // a user would aim at the edge of it and place a point instead. See
+    // `closeRing` and `GRAB_PX`.
+    {
+      const RING_FACES: FaceAxis[] = [
+        { axis: 0, sign: 1 },
+        { axis: 0, sign: -1 },
+        { axis: 1, sign: 1 },
+        { axis: 1, sign: -1 },
+        { axis: 2, sign: 1 },
+        { axis: 2, sign: -1 },
+      ]
+      // Read off the built geometry rather than trusted: the circle is laid out
+      // in the face's own two axes, and the mark scale then divides by each
+      // side of the block separately. Both have to be right or it comes out an
+      // ellipse, edge-on, or off the plane entirely.
+      let roundest = 0
+      let flattest = 0
+      let offPlane = 0
+      for (const face of RING_FACES) {
+        for (const dims of BLOCKS) {
+          const geometry = closeRing(faceBasis(face))
+          const at = geometry.getAttribute('position').array as ArrayLike<number>
+          const scale = markScale(GRAB_PX, opening, dims)
+          const { n } = faceBasis(face)
+          let min = Infinity
+          let max = 0
+          for (let v = 0; v < at.length; v += 3) {
+            // What the vertex is worth in WORLD units: the mark's own scale,
+            // then the block's, which is the pair `markScale` exists to undo.
+            const x = at[v] * scale[0] * dims[0]
+            const y = at[v + 1] * scale[1] * dims[1]
+            const z = at[v + 2] * scale[2] * dims[2]
+            const r = Math.hypot(x, y, z)
+            min = Math.min(min, r)
+            max = Math.max(max, r)
+            offPlane = Math.max(offPlane, Math.abs(x * n.x + y * n.y + z * n.z))
+          }
+          roundest = Math.max(roundest, Math.abs(max * opening - GRAB_PX))
+          // As a RATIO rather than a difference: the ring is a buffer
+          // attribute, so its vertices are float32, and on a fifty-unit block
+          // that is a few billionths of noise on a mark a thousandth of a unit
+          // across. What an ellipse would be is a factor.
+          flattest = Math.max(flattest, max / min - 1)
+          geometry.dispose()
+        }
+      }
+      check(
+        `the closing ring is ${GRAB_PX}px across -- the very reach the press catches at`,
+        roundest < 1e-9,
+        `worst ${roundest.toExponential(1)}px off`
+      )
+      check('and round on any stock, not an egg on a sheet', flattest < 1e-5, `${flattest.toExponential(1)} out of round`)
+      check('lying flat in the face it rings, on all six of them', offPlane < 1e-12, `${offPlane.toExponential(1)} out`)
+      check('and standing clear of the knot inside it', GRAB_PX > KNOT_PX, `${GRAB_PX} against ${KNOT_PX}`)
     }
 
     // AND WHAT DOES NOT FOLLOW THE RULE, which is what makes the rest of it

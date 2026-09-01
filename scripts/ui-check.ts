@@ -90,6 +90,10 @@ import { LatheViewport } from '../src/viewport/LatheViewport'
 import { StockPanel } from '../src/viewport/StockPanel'
 import { BlockPanel } from '../src/viewport/BlockPanel'
 import { FreehandTool, MoveRefTool, PointCutTool } from '../src/console/LaserTools'
+import { SymmetryTool } from '../src/console/LaserTools'
+import { SymmetryPanel } from '../src/viewport/SymmetryPanel'
+import { mirrorLines } from '../src/geometry/faceMirror'
+import type { FaceAxis as LaserFace } from '../src/geometry/laserCut'
 import { ReferencePanel, slotsFor } from '../src/console/ReferencePanel'
 import { ReferenceEditor } from '../src/console/ReferenceEditor'
 import {
@@ -128,7 +132,7 @@ import {
   pointUv,
   resizeFromCorner,
 } from '../src/viewport/decalPlacement'
-import { useCutDraft, draftLine, draftReady } from '../src/viewport/cutDraft'
+import { useCutDraft, draftCut, draftLine, draftReady } from '../src/viewport/cutDraft'
 import { BLOCK_MAX, BLOCK_MIN, DEFAULT_BLOCK, bedIsUncut, useLaser } from '../src/store/laserStore'
 import { bedGeometry } from '../src/geometry/laserCut'
 import { BLOCK_NAME, CopyBlockButton, bedName } from '../src/viewport/CopyBlockButton'
@@ -221,7 +225,7 @@ import {
   OPENING_SHARE,
   WIDEST_FRAME,
 } from '../src/viewport/LaserViewport'
-import { STAGE_CAMERA, groundPlan } from '../src/viewport/Stage'
+import { STAGE_CAMERA, groundPlan, groundReach } from '../src/viewport/Stage'
 import { perspectiveFrame } from '../src/viewport/orthoFrame'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX } from '../src/viewport/pointSnap'
 import { LATHE_SNAP_MAX } from '../src/viewport/latheRuler'
@@ -233,10 +237,10 @@ import { NGON_LABEL } from '../src/console/ngon'
 import { SOLID_TEMPLATES, restingSides } from '../src/console/solidIcons'
 import { SOLID_SIDES } from '../src/console/solidMorph'
 import {
-  UNIT_MODES,
+  UNITS,
+  decimalsOf,
   formatSize,
   fromDisplay,
-  resolveUnit,
   stepIn,
   suffixOf,
   toDisplay,
@@ -255,6 +259,7 @@ import { COMPASS_FACE_SHADE, SCENE_CSS_VARS, SCENE_THEMES } from '../src/viewpor
 import { DEFAULT_THEME, THEMES, THEME_LABELS } from '../src/theme'
 import type { Theme } from '../src/theme'
 import { HelpScreen } from '../src/console/HelpScreen'
+import { SettingsScreen } from '../src/console/SettingsScreen'
 import { DEFAULT_HELP_SECTION, HELP_SECTIONS } from '../src/helpTopics'
 import { objectMatrix } from '../src/geometry/transform'
 import {
@@ -309,6 +314,7 @@ import {
   dockIsland,
   rulerLength,
   rulerSpawn,
+  mirrorOn,
   useTools,
 } from '../src/store/toolStore'
 import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
@@ -325,12 +331,10 @@ import {
 import { formatLength } from '../src/units'
 
 /**
- * Panels render lengths in whatever unit the tool island is set to, so the
- * markup checks below pin one. `cm` rather than the shipped `auto`, because
- * `auto` picks per value and an assertion would have to re-derive the choice to
- * state its own expectation -- at which point it is testing the derivation
- * against itself. `auto` gets its own section, further down, where the choosing
- * IS the subject.
+ * Panels render lengths in whatever unit the app is set to, so the markup checks
+ * below pin one. Centimetres rather than the shipped millimetres, deliberately:
+ * a check that reads in the default would still pass if a conversion silently
+ * stopped happening, and one written in the other unit cannot.
  */
 useTools.setState({ displayUnit: 'cm' })
 const SHOWN = 'cm' as const
@@ -428,18 +432,20 @@ const rad = (deg: number) => (deg * Math.PI) / 180
 
 /**
  * The Inspector's own tilt bound, which is derived per feature rather than
- * fixed: the sweep survives only while the tilted end plane still leaves
- * positive travel at every ring point, which on a flat host works out at
- * tilt < atan(depth / shapeRadius).
+ * fixed: the sweep runs between two planes square to the anchor's normal and
+ * survives only while the tilted one still stands clear of the buried one,
+ * which on a flat host works out at tilt < atan((depth + buried) / radius).
  *
- * Nothing exports it, so it is mirrored here rather than imported -- the point
- * of the assertions below is to catch the panel's slider drifting away from the
- * angle the evaluator will actually accept, and importing the panel's own
- * arithmetic would make that impossible to see.
+ * `buried` comes from the surface layer, not from the panel -- it is how deep
+ * the tool is seated into its host, and it is reach the pillar may lean into
+ * before it folds up. Nothing exports the bound itself, so it is mirrored here
+ * rather than imported: the point of the assertions below is to catch the
+ * panel's slider drifting away from the angle the evaluator will actually
+ * accept, and importing the panel's own arithmetic would hide exactly that.
  */
 const MAX_TILT_DEG = 60
-function tiltBoundDeg(depth: number, radius: number): number {
-  const limit = (Math.atan(depth / radius) * 180) / Math.PI
+function tiltBoundDeg(depth: number, radius: number, buried: number): number {
+  const limit = (Math.atan((depth + buried) / radius) * 180) / Math.PI
   return Math.max(5, Math.min(MAX_TILT_DEG, Math.floor(limit) - 1))
 }
 
@@ -890,8 +896,13 @@ doc().selectObject(pyramidId)
   // difference between a modal and a big panel.
   shows('it opens as a modal dialog', screen, 'role="dialog"')
   shows('and says so', screen, 'aria-modal="true"')
-  shows('over a backdrop that can be pressed to dismiss it', screen, 'help-backdrop')
+  shows('over a backdrop that can be pressed to dismiss it', screen, 'overlay-backdrop')
   shows('with a way out that does not need the keyboard', screen, 'aria-label="Close help"')
+  // The sentence under the title, which Help keeps and Settings does not: this
+  // one is a DOCUMENT, so a line saying what it covers is part of what it is.
+  // A screen that is nothing but controls gets no such line -- see the settings
+  // checks, which assert the absence.
+  shows('and a lede saying what the document covers', screen, 'overlay-lede')
 
   // IT HAS TO LEAVE THE WAY IT ARRIVED. The screen animates in, and for a while
   // it did not animate out at all -- `openPanel` went null and the card was
@@ -908,27 +919,29 @@ doc().selectObject(pyramidId)
       /\r\n/g,
       '\n'
     )
-    const source = readFileSync(new URL('../src/console/HelpScreen.tsx', import.meta.url), 'utf8')
+    // The shell rather than the manual: the timing belongs to `ScreenOverlay`,
+    // which Help and Settings both wear, so this guards it once for both.
+    const source = readFileSync(new URL('../src/console/ScreenOverlay.tsx', import.meta.url), 'utf8')
     check(
       'the stylesheet knows how to take the screen away',
-      sheet.includes('.help-leaving') && sheet.includes('@keyframes help-screen-out'),
+      sheet.includes('.overlay-leaving') && sheet.includes('@keyframes overlay-card-out'),
       'without it the card vanishes between two frames'
     )
     check(
       'the component holds it on screen long enough to be seen going',
-      source.includes('HELP_EXIT_MS') && source.includes('help-leaving'),
+      source.includes('OVERLAY_EXIT_MS') && source.includes('overlay-leaving'),
       'CSS cannot animate a node React has already unmounted'
     )
     check(
       'and the two take their timing from ONE number',
-      sheet.includes('var(--help-exit') && source.includes("'--help-exit'"),
+      sheet.includes('var(--overlay-exit') && source.includes("'--overlay-exit'"),
       'a mirrored duration drifts, and the drift is visible'
     )
     // The setting asks for less MOVEMENT, not for jump cuts: the fade stays and
     // the 6px rise goes, which is the trade `.selection-hud` already makes.
     check(
       'a reduced-motion reader still gets the fade, without the movement',
-      sheet.includes('.help-leaving .help-screen {\n    animation-name: help-fade-out;'),
+      sheet.includes('.overlay-leaving .overlay-card {\n    animation-name: overlay-fade-out;'),
       'the screen would appear and vanish between two frames'
     )
   }
@@ -1684,7 +1697,15 @@ const baseline = measure(cubeId)
 // values rather than as 45, so it is the RATIO being pinned: halve the app's
 // default scale and this number must not move.
 const SKETCH_R = 0.15
-const TILT_BOUND = tiltBoundDeg(DEFAULT_FEATURE_DEPTH, SKETCH_R)
+const TILT_BOUND = tiltBoundDeg(
+  DEFAULT_FEATURE_DEPTH,
+  SKETCH_R,
+  surfaceFor({ kind: 'box', size: [1, 1, 1] }).sweep(
+    { on: 'box-face', face: 2, u: 0, v: 0 },
+    DEFAULT_FEATURE_DEPTH,
+    'extrude'
+  ).tIn
+)
 const TILT_DEG = 20
 doc().patchFeature(cubeId, featureId, { tilt: [rad(TILT_DEG), 0, 0] })
 const tilted = measure(cubeId)
@@ -1748,11 +1769,15 @@ const slid = measure(cubeId)
     atBound.failed.length === 0,
     `${TILT_BOUND} deg: ${atBound.failed.join(',')}`
   )
-  doc().patchFeature(cubeId, featureId, { tilt: [rad(TILT_BOUND + 1), 0, 0] })
+  // Two degrees past, not one. The bound is the floor of the real limit minus
+  // one, so the degree in between may or may not build depending on where the
+  // limit falls between two integers -- but the next one up is past it always,
+  // which is what pins the slider to within a degree of the truth.
+  doc().patchFeature(cubeId, featureId, { tilt: [rad(TILT_BOUND + 2), 0, 0] })
   check(
-    'and one degree past it does not, so the bound is not over-cautious',
+    'and two degrees past it does not, so the bound is not over-cautious',
     measure(cubeId).failed.includes(featureId),
-    `${TILT_BOUND + 1} deg built`
+    `${TILT_BOUND + 2} deg built`
   )
 
   // The bound reads one axis at a time. Tilting all three composes into a
@@ -4538,7 +4563,7 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // round trip: the panel shows a scene length in millimetres, the user drags
   // it, and what comes back has to be a scene length again. A conversion that
   // lost a hair each way would let a value drift every time it was looked at.
-  for (const mode of ['mm', 'cm', 'm'] as const) {
+  for (const mode of UNITS) {
     for (const v of [0, 0.005, 0.01, 2, 37.5, 50]) {
       const back = fromDisplay(toDisplay(v, mode), mode)
       near(`${mode} survives the round trip at ${v}`, back, v, 1e-12)
@@ -4549,36 +4574,52 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // so it is worth one check that says so in plain numbers.
   near('one unit is 100 mm', toDisplay(1, 'mm'), 100, 1e-12)
   near('and 10 cm', toDisplay(1, 'cm'), 10, 1e-12)
-  near('and a tenth of a metre', toDisplay(1, 'm'), 0.1, 1e-12)
   near('the smallest solid is a millimetre', toDisplay(MIN_DIMENSION, 'mm'), 1, 1e-12)
-  near('and the largest is five metres', toDisplay(MAX_SIZE, 'm'), 5, 1e-12)
+  near('and the largest is five metres', toDisplay(MAX_SIZE, 'mm'), 5000, 1e-9)
 
-  // `auto` switches on round numbers in the unit it is LEAVING, so the figure
-  // on screen stays readable rather than sliding into zeroes or long tails.
-  check('auto shows a millimetre feature in mm', resolveUnit(0.01, 'auto') === 'mm')
-  check('and holds mm right up to 10', resolveUnit(0.099, 'auto') === 'mm')
-  check('then takes centimetres', resolveUnit(0.1, 'auto') === 'cm')
-  check('and keeps them to a metre', resolveUnit(9.99, 'auto') === 'cm')
-  check('then metres', resolveUnit(10, 'auto') === 'm')
-  check('a five-metre solid reads in metres', resolveUnit(MAX_SIZE, 'auto') === 'm')
-  check('zero stays in mm rather than 0.000 m', resolveUnit(0, 'auto') === 'mm')
-  check('and sign does not change the choice', resolveUnit(-4, 'auto') === resolveUnit(4, 'auto'))
-  check('a fixed mode ignores magnitude', resolveUnit(50, 'mm') === 'mm')
+  // THE INCH IS EXACT, and it is the only unit here that is not a power of ten,
+  // so it is the one that can be wrong by a rounding. 25.4 mm to the inch, by
+  // definition, in both directions.
+  near('an inch is 25.4 mm', fromDisplay(1, 'in'), fromDisplay(25.4, 'mm'), 1e-12)
+  near('one unit is 3.937 in', toDisplay(1, 'in'), 100 / 25.4, 1e-12)
+  near('a two-inch part is 50.8 mm', toDisplay(fromDisplay(2, 'in'), 'mm'), 50.8, 1e-12)
+  // Three places, which is thousandths -- the unit's own convention, and enough
+  // for a one-millimetre nudge to show as something other than a rounding.
+  check('inches are written to thousandths', decimalsOf('in') === 3)
+  check(
+    'so a millimetre still moves the figure',
+    formatLength(fromDisplay(1, 'mm'), 'in') !== formatLength(fromDisplay(2, 'mm'), 'in'),
+    `${formatLength(fromDisplay(1, 'mm'), 'in')} vs ${formatLength(fromDisplay(2, 'mm'), 'in')}`
+  )
+  // AND THERE IS NO `auto` LEFT TO ARRIVE AT METRES. The three the picker
+  // offers are the three that exist: a mode that chose per value is gone, and
+  // with it the only thing that could ever have shown a metre.
+  check('the app offers exactly mm, cm and in', UNITS.join(',') === 'mm,cm,in', UNITS.join(','))
 
   // The whole point of converting bounds and step together: a pixel of drag
   // must be worth the same distance in the WORLD whichever unit is on screen,
   // or switching units would silently change how the controls feel.
-  const perPixel = (['mm', 'cm', 'm'] as const).map((mode) =>
+  const perPixel = UNITS.map((mode) =>
     fromDisplay(
       scrubTravel(1, toDisplay(-MAX_SIZE, mode), toDisplay(MAX_SIZE, mode), stepIn(0.05, mode)),
       mode
     )
   )
   near('a pixel is worth the same in cm as in mm', perPixel[1], perPixel[0], 1e-12)
-  near('and the same again in metres', perPixel[2], perPixel[0], 1e-12)
+  // EXCEPT IN INCHES, and it cannot be otherwise: `stepIn` rounds the converted
+  // step onto a number a person would type, and 0.05 units is 0.197 in, which
+  // rounds to 0.2 rather than to itself. The metric units are exact multiples of
+  // each other so their rounding lands in the same place; the inch is 27% off
+  // and that IS the tidy step doing its job. Asserted as a bound rather than
+  // ignored, so a conversion that went properly wrong would still be caught.
+  check(
+    'and within a third of that in inches, which is the tidy step rounding',
+    perPixel[2] > perPixel[0] * 0.7 && perPixel[2] < perPixel[0] * 1.4,
+    `${perPixel[2]} against ${perPixel[0]}`
+  )
   // The first pixel is the step plus the very start of the ramp, so this is
   // 'about a step' rather than exactly one. The equality that matters -- that
-  // all three units agree -- is asserted exactly, just above.
+  // the metric units agree -- is asserted exactly, just above.
   near('at about the step the control is written in', perPixel[0], 0.05, 1e-3)
 
   // And the selector itself, which lives in the BAR rather than on the island:
@@ -4586,31 +4627,157 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // under the pointer. It is inside Settings now -- the cog at the end of the
   // row -- because it shares that property with the theme and with nothing else
   // in the bar: neither touches the document.
-  useTools.setState({ openPanel: 'settings' })
+  // Settings is a SCREEN now, like Help: the cog in the bar opens it and the
+  // rows themselves are over the whole app. So there are two markups to read --
+  // the bar, which must still carry the cog and no unit button, and the screen,
+  // which carries every control that used to be in the dropdown.
   const bar = markupOf('NavBar (settings)', NavBar)
-  for (const mode of UNIT_MODES) shows(`the bar offers ${mode}`, bar, `>${mode}<`)
-  shows('with the current one marked', bar, 'seg-btn seg-active')
-  // The menu opens the way the rest of that cluster does -- downwards from the
-  // button, right-aligned to it -- which is the class the CSS reads. It matters
-  // more here than anywhere else: this is the LAST button in the bar, so a panel
-  // opening rightwards would hang off the window entirely.
-  shows('and its menu hangs off the button like Export', bar, 'nav-panel nav-panel-right')
-  // The hook the width rule reads. Without the class the menu falls back to the
-  // shared 268px, which for two rows of short buttons is mostly empty air.
-  shows('the groups are marked so the panel can fit them', bar, 'settings-groups')
-  shows('the unit row keeps its own hook', bar, 'tool-group units-modes')
-  shows('and the theme row has one of its own', bar, 'tool-group theme-modes')
-  shows('and so does the outline row', bar, 'tool-group outline-modes')
-  // Both groups are captioned. With two unlabelled rows of short buttons in one
-  // panel, `mm cm auto` over `Dark` is a puzzle rather than a menu -- and the
-  // captions are the only thing naming what either row does now that neither
-  // has a button in the bar carrying its name.
-  shows('the unit group is captioned', bar, '<p class="subhead">Units</p>')
-  shows('and so is the theme group', bar, '<p class="subhead">Theme</p>')
-  shows('and the outline group', bar, '<p class="subhead">Outlines</p>')
-  // Units no longer has a button of its own. The word survives as a caption
-  // INSIDE the panel, so this asks after the thing that would prove a stray
-  // second control -- a nav button carrying the old icon and label.
+  check(
+    'the screen renders nothing until the cog is pressed',
+    renderToStaticMarkup(createElement(SettingsScreen)) === '',
+    renderToStaticMarkup(createElement(SettingsScreen)).slice(0, 40)
+  )
+  useTools.setState({ openPanel: 'settings' })
+  const settings = markupOf('SettingsScreen', SettingsScreen)
+  for (const mode of UNITS) shows(`the screen offers ${mode}`, settings, `>${mode}<`)
+  shows('with the current one marked', settings, 'seg-btn seg-active')
+
+  // THE MOVING PART OF THE SWITCH, which is two numbers on the track: `--of`
+  // divides it into cells and `--at` says which one the slider stands in. CSS
+  // does the travelling -- see `.settings-row .seg::before` -- so these two are
+  // the whole of what React contributes, and a switch whose slider stopped
+  // agreeing with its own labels would fail here rather than on somebody's
+  // screen. Checked on the units row because it is the one with three cells.
+  const slider = (markup: string) => markup.match(/--at:\s*(\d+);\s*--of:\s*(\d+)/)?.slice(1) ?? []
+  check(
+    'the switch divides its track into one cell per option',
+    slider(settings)[1] === String(UNITS.length),
+    `--of ${slider(settings)[1]} against ${UNITS.length} units`
+  )
+  check(
+    'and stands the slider on the chosen one',
+    slider(settings)[0] === String(UNITS.indexOf(useTools.getState().displayUnit)),
+    `--at ${slider(settings)[0]} for ${useTools.getState().displayUnit}`
+  )
+  // And it MOVES with the value rather than being written once at first paint.
+  useTools.getState().setDisplayUnit(UNITS[UNITS.length - 1])
+  check(
+    'choosing another option moves it',
+    slider(markupOf('SettingsScreen (last unit)', SettingsScreen))[0] === String(UNITS.length - 1),
+    `--at ${slider(markupOf('SettingsScreen (last unit)', SettingsScreen))[0]}`
+  )
+  useTools.getState().setDisplayUnit('mm')
+  // The stylesheet's half of the same bargain: the two numbers are read by the
+  // rule that positions the slider, and the travel is a transition rather than
+  // a jump. Without either half the control is four buttons that take turns
+  // being coloured in.
+  {
+    const sheet = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+    check(
+      'the stylesheet moves the slider by those two numbers',
+      sheet.includes('width: calc((100% - 6px) / var(--of, 1))') &&
+        sheet.includes('transform: translateX(calc(var(--at, 0) * 100%))'),
+      'the slider would sit in the first cell whatever is chosen'
+    )
+    // THE TRACK IS DIVIDED BY THE NUMBER THE SLIDER COUNTS IN, and that is one
+    // number read twice rather than two that have to be kept equal. It was
+    // flex, which cannot promise it: a flex item will not shrink below its own
+    // content, so the longest label on the screen -- `Cyberpunk` -- took width
+    // off `Dark` and `Light` while the slider went on moving in exact thirds,
+    // and every word on that row sat off the accent under it. Pinned because it
+    // fails SILENTLY: nothing throws, the control still switches, it just stops
+    // lining up with itself.
+    check(
+      'and the track divides itself by that same number',
+      /\.settings-row \.seg \{[^}]*grid-template-columns: repeat\(var\(--of, 1\), minmax\(0, 1fr\)\)/s.test(
+        sheet
+      ),
+      'cells sized by their own labels drift from a slider that moves in equal steps'
+    )
+    check(
+      'and travels rather than jumping',
+      /\.settings-row \.seg::before \{[^}]*transition:\s+transform/s.test(sheet),
+      'a switch with no travel is a button that remembers'
+    )
+    // THE PRESS, which the travel says nothing about: the part slides on
+    // release, so without these the one moment a finger is actually on the
+    // control is the one moment nothing moves.
+    check(
+      'the part gathers while a cell is held down',
+      /\.settings-row \.seg:has\(\.seg-btn:active:not\(:disabled\)\)::before \{[^}]*scale: 0\.94 1/s.test(
+        sheet
+      ),
+      'a switch that only answers on release says nothing about the push that sent it'
+    )
+    check(
+      'and the word takes a pixel with it',
+      /\.settings-row \.seg-btn:active:not\(:disabled\) \{[^}]*translate: 0 1px/s.test(sheet),
+      'the label would stand still under the press it is the target of'
+    )
+    // And all three go together when movement is turned off. This is the half
+    // that rots: a reduced-motion block stops cancelling what it was written to
+    // cancel the moment a new moving part is added above it, and nothing on
+    // screen complains -- the setting simply stops being kept.
+    {
+      const from = sheet.indexOf(
+        '@media (prefers-reduced-motion: reduce) {',
+        sheet.indexOf('.settings-row .seg-btn:active')
+      )
+      const reduced = from < 0 ? '' : sheet.slice(from, sheet.indexOf('\n}\n', from))
+      check(
+        'and reduced motion stops the travel, the gather and the dip together',
+        reduced.includes('transition: none') &&
+          reduced.includes('scale: none') &&
+          reduced.includes('translate: none'),
+        'a switch that still springs under a finger is still a switch that moves'
+      )
+    }
+  }
+  // The same shell Help wears, which is where Escape, click-outside and the
+  // fade all come from -- and the class `NavBar` reads to tell a press on the
+  // card from a press on the surround.
+  shows('it opens as a modal dialog', settings, 'role="dialog"')
+  shows('over the app rather than under the cog', settings, 'overlay-backdrop')
+  shows('on the shell Help wears', settings, 'overlay-card settings-screen')
+  shows('with a way out that does not need the keyboard', settings, 'aria-label="Close settings"')
+  hides('and no longer drops a panel under the button', bar, 'nav-panel nav-panel-right')
+  // The hooks the row layout reads: a question on the left, its control on the
+  // right, one rule between each pair.
+  shows('the rows are marked so they can be laid out', settings, 'settings-rows')
+  shows('the unit row keeps its own hook', settings, 'settings-row units-modes')
+  shows('and the theme row has one of its own', settings, 'settings-row theme-modes')
+  shows('and so does the outline row', settings, 'settings-row outline-modes')
+  // Every row is captioned. With four unlabelled rows of short buttons,
+  // `mm cm auto` over `Dark` is a puzzle rather than a menu -- and the captions
+  // are the only thing naming what each row does now that none of them has a
+  // button in the bar carrying its name.
+  shows('the unit group is captioned', settings, '<p class="subhead">Units</p>')
+  shows('and so is the theme group', settings, '<p class="subhead">Theme</p>')
+  shows('and the outline group', settings, '<p class="subhead">Outlines</p>')
+  // AND NOT ONE WORD OF EXPLANATION ANYWHERE ON IT. A name and a switch per
+  // row, nothing under the title, and no `title` attribute on any control: the
+  // rule is in `CLAUDE.md` and this is what holds the screen to it. Both halves
+  // are guarded because they fail differently -- prose creeps in as a helpful
+  // sentence under a row, and a tooltip creeps in as a `title` that looks free
+  // and is invisible to every touch screen and every keyboard.
+  check(
+    'no row explains itself in prose',
+    !settings.includes('settings-blurb'),
+    'a settings row grew a paragraph'
+  )
+  check(
+    'and the screen carries no lede under its title',
+    !settings.includes('overlay-lede'),
+    'the controls are the screen; nothing introduces them'
+  )
+  check(
+    'and nothing explains itself on hover either',
+    !/ title="/.test(settings),
+    settings.match(/ title="[^"]*"/)?.[0] ?? ''
+  )
+  // Units no longer has a button of its own. The word survives as a caption on
+  // the screen, so this asks after the thing that would prove a stray second
+  // control -- a nav button carrying the old icon and label.
   hides('and no longer has a button of its own in the bar', bar, '<span class="nav-label">Units</span>')
   shows('while the cog does', bar, '<span class="nav-label">Settings</span>')
   hides(
@@ -4619,11 +4786,11 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     '>Units<'
   )
 
-  // The other half of the panel, and the reason the two are together. One theme
-  // today: the row still has to render as a CHOOSER showing which is on, or the
-  // second palette lands on a label nobody built a control for.
+  // The second row, and the reason the two are together. One theme today: the
+  // row still has to render as a CHOOSER showing which is on, or the second
+  // palette lands on a label nobody built a control for.
   for (const name of THEMES) {
-    shows(`the theme row offers ${name}`, bar, `>${THEME_LABELS[name]}<`)
+    shows(`the theme row offers ${name}`, settings, `>${THEME_LABELS[name]}<`)
   }
   check(
     'and the app opens in the default one',
@@ -4640,10 +4807,10 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
 
   // The third row. It is a yes-or-no, and the thing worth guarding is that it is
   // still drawn as a CHOOSER: both states named, one lit. A tickbox would leave
-  // the off state as an empty square, and the panel would stop being one kind of
-  // control -- which is the whole argument for it sitting in here.
-  shows('the outline row offers On', bar, '>On<')
-  shows('and Off', bar, '>Off<')
+  // the off state as an empty square, and the screen would stop being one kind
+  // of control -- which is the whole argument for it sitting in here.
+  shows('the outline row offers On', settings, '>On<')
+  shows('and Off', settings, '>Off<')
   check(
     'the app opens with the outlines drawn',
     useTools.getState().showOutlines === true,
@@ -4691,36 +4858,36 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   )
 
   // THE FOURTH ROW: the camera you drive instead of orbiting.
-  shows('the settings panel carries a Game Controls row', bar, 'tool-group game-modes')
-  shows('captioned like the other three', bar, '<p class="subhead">Game Controls</p>')
-  shows('and drawn as the same chooser', bar, 'aria-pressed="true"')
+  shows('the settings screen carries a Game Controls row', settings, 'settings-row game-modes')
+  shows('captioned like the other three', settings, '<p class="subhead">Game Controls</p>')
+  shows('and drawn as the same chooser', settings, 'aria-pressed="true"')
   check(
     'the app opens with the orbit camera, not the game one',
     useTools.getState().gameControls === false,
     String(useTools.getState().gameControls)
   )
-  // The speed is the one control in the panel that is not a segment, and it is
+  // The speed is the one control on the screen that is not a segment, and it is
   // MOUNTED with the mode off rather than appearing with it -- a row that
   // materialises only once you have found the switch is a row nobody knows the
   // switch leads to. Dimmed, though, because it means nothing yet.
-  shows('the speed field stands even with the mode off', bar, 'tool-group game-speed')
-  shows('and is dimmed until there is something to fly', bar, 'game-speed" disabled=""')
+  shows('the speed field stands even with the mode off', settings, 'tool-group game-speed')
+  shows('and is dimmed until there is something to fly', settings, 'game-speed" disabled=""')
   // Pinned to a concrete unit rather than shown in `auto`: that picks a unit
   // per value, so a field scrubbed across a 200:1 range would renumber its own
   // scale under the hand aiming it. See `erodeSizeUnit` for the same argument
   // one panel over. WHICH unit is the picker three rows above it -- the app is
   // on cm here -- with centimetres as the fallback `auto` gets.
-  shows('written in one settled unit so the scale cannot move mid-scrub', bar, '>cm<')
+  shows('written in one settled unit so the scale cannot move mid-scrub', settings, '>cm<')
 
   useTools.getState().setGameControls(true)
   check('switching it on holds', useTools.getState().gameControls === true)
-  const flying = markupOf('NavBar (game controls on)', NavBar)
+  const flying = markupOf('SettingsScreen (game controls on)', SettingsScreen)
   hides('and the speed field wakes up with it', flying, 'game-speed" disabled=""')
 
   // ONLY THE MODELLING SCREEN FLIES, and the flag itself is not what says so --
   // `flyingHere` is, so that a switch left on cannot make the lathe answer to
   // WASD. The switch is still SHOWN on the other two, dimmed, because Settings
-  // is one panel that follows you between screens.
+  // is one screen that follows you between screens.
   useTools.getState().setScreen('lathe')
   check(
     'the switch keeps its state on a screen with nowhere to walk',
@@ -4728,10 +4895,11 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   )
   check('but nothing is flying there', flyingHere(useTools.getState()) === false)
   // Changing screens shuts whatever panel was open -- every one of them hangs
-  // off a bar or an island that is about to be replaced -- so it is opened
-  // again to read the row in its dimmed state.
+  // off a bar or an island that is about to be replaced, and the two full-window
+  // screens answer to the same field -- so it is opened again to read the row in
+  // its dimmed state.
   useTools.setState({ openPanel: 'settings' })
-  const onLathe = markupOf('NavBar (lathe, game controls on)', NavBar)
+  const onLathe = markupOf('SettingsScreen (lathe, game controls on)', SettingsScreen)
   shows('and the whole group is dimmed rather than taken away', onLathe, 'game-modes" disabled=""')
   useTools.getState().setScreen('modelling')
   useTools.setState({ openPanel: 'settings' })
@@ -4946,30 +5114,31 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     useTools.getState().openPanel === 'settings'
   )
   // WHAT THE PANEL SAYS IT IS WRITTEN IN has to be what its rows are actually
-  // written in, and under `auto` that is a fact about the object rather than
-  // about the app. One panel, two solids, two answers -- and the rows move with
-  // the badge, which is the whole reason it can be said once at the top.
-  useTools.setState({ displayUnit: 'auto' })
+  // written in. It is the app's unit for every panel and every solid now --
+  // there is no rule choosing one per object any more -- so the thing worth
+  // guarding is that the badge and the rows move TOGETHER, which is the whole
+  // reason the unit can be said once at the top.
+  useTools.setState({ displayUnit: 'mm' })
   const measured = doc().addObject({ kind: 'box', size: [0.02, 0.02, 0.02] }, [0, 0, 0])
   doc().selectObject(measured)
   const inMm = markupOf('ObjectPanel (2 mm cube)', ObjectPanel)
-  check('a two-millimetre solid reads in mm', badgeIn(inMm) === 'mm', badgeIn(inMm))
+  check('the panel wears the unit the app is set to', badgeIn(inMm) === 'mm', badgeIn(inMm))
   shows('and its rows are the millimetres it named', inMm, 'value="2"')
   hides('with no row saying it again', inMm, 'class="field-unit"')
 
+  // A solid a thousand times bigger reads in the SAME unit, which is the
+  // difference from the rule that used to sit here: 3 m is 3000 mm, said in
+  // millimetres, because that is what the user asked the app for.
   doc().patchObject(measured, { base: { kind: 'box', size: [30, 30, 30] } })
-  const inM = markupOf('ObjectPanel (3 m cube)', ObjectPanel)
-  check('a three-metre one reads in metres', badgeIn(inM) === 'm', badgeIn(inM))
-  shows('and its rows follow the header', inM, 'value="3"')
+  const big = markupOf('ObjectPanel (3 m cube)', ObjectPanel)
+  check('however large the solid', badgeIn(big) === 'mm', badgeIn(big))
+  shows('and the rows say the whole number', big, 'value="3000"')
 
-  // ONE unit for the whole panel, taken from the largest of its lengths -- the
-  // rule `Vec3Field` already keeps across its three rows, one level up. A panel
-  // whose rows each chose their own could not be labelled in one word.
-  doc().patchObject(measured, { base: { kind: 'box', size: [30, 0.02, 0.02] } })
-  const mixed = markupOf('ObjectPanel (mixed)', ObjectPanel)
-  check('a panel with a wide range of lengths still says one', badgeIn(mixed) === 'm', badgeIn(mixed))
-  shows('the largest reading in it', mixed, 'value="3"')
-  shows('and the smallest in the same unit', mixed, 'value="0.002"')
+  // Ask for another unit and both move at once.
+  useTools.setState({ displayUnit: 'in' })
+  const inches = markupOf('ObjectPanel (3 m cube, in inches)', ObjectPanel)
+  check('asking for inches moves the badge', badgeIn(inches) === 'in', badgeIn(inches))
+  shows('and the rows with it', inches, 'value="118.11"')
 
   doc().removeObject(measured)
   useTools.setState({ islandCollapsed: false, openPanel: null, displayUnit: 'cm' })
@@ -5501,24 +5670,22 @@ console.log('\nThe erode tool says what it will melt before it melts it')
   shows('and a smoothing', panel, '>Smoothing<')
 
   {
-    // THE BRUSH SIZE CANNOT BE READ IN `auto`. Under it -- the app's own
-    // default -- one drag of this slider crosses both of `resolveUnit`'s
-    // switching points, and the number under the pointer goes 9.9, 1.00, 99.9,
-    // 1.00 while the hand travels one way. That is correct for reading a length
-    // and wrong for setting one, so the field is always on a concrete unit and
-    // carries a picker for choosing it.
-    tools().setDisplayUnit('auto')
-    const auto = markupOf('ErodeTool (app on auto)', ErodeTool)
-    shows('the brush size carries a unit picker', auto, 'aria-label="Brush size unit"')
-    shows('offering millimetres', auto, '>mm<')
-    shows('and centimetres', auto, '>cm<')
-    // `auto` is a rule for choosing a unit, not a unit. Offered here it would be
-    // the very thing this control exists to keep off the field.
-    hides('and never auto, whatever the app is set to', auto, '>auto<')
+    // THE BRUSH SIZE CARRIES A UNIT PICKER OF ITS OWN, so a brush can be read in
+    // something other than the rest of the app: it is a length somebody SETS,
+    // and the unit it is set in is a working preference rather than a reading.
+    tools().setDisplayUnit('cm')
+    const picker = markupOf('ErodeTool (unit picker)', ErodeTool)
+    shows('the brush size carries a unit picker', picker, 'aria-label="Brush size unit"')
+    shows('offering millimetres', picker, '>mm<')
+    shows('and centimetres', picker, '>cm<')
+    shows('and inches', picker, '>in<')
+    // Nothing is offered that is not a unit. `auto` used to be, and the picker
+    // had to keep it off the field; it does not exist at all now.
+    hides('and nothing that is not a unit', picker, '>auto<')
     check(
-      'it opens in centimetres',
-      tools().erodeSizeUnit === 'cm',
-      tools().erodeSizeUnit
+      'it opens in the unit the app opens in',
+      useTools.getInitialState().erodeSizeUnit === useTools.getInitialState().displayUnit,
+      `${useTools.getInitialState().erodeSizeUnit} against ${useTools.getInitialState().displayUnit}`
     )
     // AND SETTINGS IS WHAT USUALLY CHOOSES IT. The brush is 0.1 scene units,
     // which is 1 cm and 10 mm, so the number in the box says which unit reached
@@ -5532,15 +5699,13 @@ console.log('\nThe erode tool says what it will melt before it melts it')
       tools().erodeSizeUnit
     )
 
-    // `auto` writes nothing through, because there is nothing here that could
-    // adopt it. The field keeps the last concrete unit rather than falling back
-    // to a default the user never asked for.
-    tools().setDisplayUnit('auto')
-    check('and auto leaves it where it stands', tools().erodeSizeUnit === 'mm', tools().erodeSizeUnit)
+    // And every unit reaches it, inches included: 0.1 scene units is 10 mm,
+    // which is 0.394 in to the three places an inch is written to.
+    tools().setDisplayUnit('in')
     shows(
-      'so the field reads on with the app back on auto',
-      markupOf('ErodeTool (app back on auto, field in mm)', ErodeTool),
-      'value="10"'
+      'and asking for inches reaches it too',
+      markupOf('ErodeTool (app on in)', ErodeTool),
+      'value="0.394"'
     )
 
     // THE PICKER STILL OVERRIDES IT, which is what it is for now: one panel
@@ -8013,6 +8178,36 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       ShaderChunk.logdepthbuf_fragment.includes('vIsPerspective == 0.0 ? gl_FragCoord.z')
     )
 
+    // AND THE VIEW IS SQUARE ON FROM THE FIRST FRAME, which is not free here.
+    // Fiber points a camera it created at the world origin and the controls open
+    // with their pivot there, so until the pivot is moved onto the middle of the
+    // block the camera -- which stands at the height of that middle -- is pitched
+    // DOWN by the whole height of the block. An ordinary effect is flushed after
+    // the browser has painted and the render loop is already running, so that
+    // pitched view is the one the screen opens on; and the opening frame is the
+    // slowest a fresh canvas ever draws, since it is compiling every shader in
+    // the scene, so it stays up long enough to read before the view snaps level.
+    //
+    // Both of the things that have to be true of that first frame are seated
+    // inside the commit for the same reason. See `FocusOnBlock` and `HoldFrame`.
+    const partOf = (from: string, to: string) =>
+      source.slice(source.indexOf(from), source.indexOf(to))
+    const seating = partOf('function FocusOnBlock(', 'function PanAcrossFace(')
+    check(
+      'the laser screen aims at the block inside the commit',
+      seating.includes('useLayoutEffect('),
+      'FocusOnBlock'
+    )
+    check(
+      'rather than an effect flushed after the first frame is painted',
+      !/\buseEffect\(/.test(seating),
+      'FocusOnBlock'
+    )
+    check(
+      'and holds the frame the same way, for the same reason',
+      partOf('function HoldFrame(', 'function FocusOnBlock(').includes('useLayoutEffect('),
+      'HoldFrame'
+    )
     // THE GROUND IS CUT DOWN TO THE BED, which is the other thing a projection
     // forces. Nothing dims with distance under one, so an endless grid arrives
     // at the edge of the window at very nearly the brightness it has under the
@@ -8055,45 +8250,49 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       `${(decals.match(/startGrab\(/g) ?? []).length} grabs, ${(decals.match(/e\.button !== 0/g) ?? []).length} guards`
     )
     const modelling = readFileSync(new URL('../src/viewport/Viewport.tsx', import.meta.url), 'utf8')
+    // AND SO DOES THE MODELLING SCREEN, which did not always: it took the room
+    // bare and got an endless floor, and that floor is what had the grid
+    // trembling for a second after every camera move -- see `Stage`. What it
+    // asks for is ground that holds the model rather than a bed of a fixed
+    // size, but it asks.
     shows(
-      'and the modelling screen, which travels, does not',
+      'and the modelling screen cuts its ground to the model',
       modelling,
-      '<Stage />'
+      'groundReach(sceneBounds(s.doc))'
     )
+    hides('with no screen left taking the room bare', modelling, '<Stage />')
   }
 
   // WHAT A REACH DOES TO THE TWO GRIDS. Arithmetic, so it is asked of the
   // function rather than of a canvas -- see `groundPlan`.
   {
-    const endless = groundPlan()
-    check('left alone the ground never ends', endless.endless)
-    near('with the fine grid giving out at a metre and a half', endless.fineFade, 14, 1e-12)
-    near('and the coarse one at thirty', endless.coarseFade, 300, 1e-12)
-    // A floor with no middle dims around whoever is standing on it.
-    near('and both of them dimming around the camera', endless.fadeFrom, 1, 1e-12)
-
     // The bed the laser screen opens on: three default blocks.
     const bed = groundPlan(DEFAULT_BLOCK * 3)
-    check('a reach ends it', !bed.endless)
     near('the fine grid fades out at the reach', bed.fineFade, 3, 1e-12)
     near('and so does the coarse one', bed.coarseFade, 3, 1e-12)
-    // A bed HAS a middle, and it is the same patch of ground from every side --
-    // faded from the camera it would be bright in front of the block and dark
-    // behind it, and would slide as the view came round.
-    near('and the patch is centred on the bed rather than on the camera', bed.fadeFrom, 0, 1e-12)
+    // The ground is a patch around the thing standing on it, and it is the
+    // same patch from every side -- faded from the camera it would be bright
+    // in front of the block and dark behind it, and would slide as the view
+    // came round.
+    near('and the patch is centred on the ground, not the camera', bed.fadeFrom, 0, 1e-12)
 
-    // WHICH IS THE WHOLE POINT OF A REACH: a fade that completes INSIDE the
-    // quad it is ruled on is a ground with no edge to it. The fade is measured
-    // from the camera projected onto the plane rather than from the middle of
-    // it, so half the quad has to clear the reach by a margin rather than
-    // exactly.
+    // THE FADE COMPLETES INSIDE THE QUAD IT IS RULED ON, which is the whole
+    // point of cutting one to size: the fragments past the fade discard
+    // themselves, so what must never happen is the quad giving out first and
+    // showing its own straight edge.
     for (const span of [BLOCK_MIN, DEFAULT_BLOCK, BLOCK_MAX]) {
       const plan = groundPlan(span * 3)
-      check(
-        `the ground under a ${span} block fades out well inside its own quad`,
-        plan.plane[0] / 2 > Math.max(plan.fineFade, plan.coarseFade) * 1.2,
-        `${(plan.plane[0] / 2).toFixed(2)} against ${Math.max(plan.fineFade, plan.coarseFade).toFixed(2)}`
-      )
+      const grids = [
+        ['fine', plan.finePlane[0], plan.fineFade],
+        ['coarse', plan.coarsePlane[0], plan.coarseFade],
+      ] as const
+      for (const [name, side, fade] of grids) {
+        check(
+          `the ${name} ground under a ${span} block fades out well inside its own quad`,
+          side / 2 > fade * 1.2,
+          `${(side / 2).toFixed(2)} against ${fade.toFixed(2)}`
+        )
+      }
       // And the cap holds at the top end, where three blocks is 150 units and
       // a centimetre grid ruled that far is moire rather than ground.
       check(
@@ -8102,6 +8301,96 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         `${plan.fineFade.toFixed(2)} units`
       )
     }
+
+    // AND NEITHER QUAD IS BIG ENOUGH TO MAKE THE LINES TREMBLE, which is the
+    // reason there is no endless ground left to ask for.
+    //
+    // The grid pattern is a `fract` of a float32 varying interpolated across
+    // the quad's own corners, so how finely that varying resolves is set by how
+    // far out the corners are -- and `fwidth`, which is what decides how thick
+    // a line is drawn, is a DIFFERENCE between neighbouring fragments, only a
+    // few thousandths of a unit wide at working distance. Quantisation that is
+    // a decent fraction of that difference is a line whose thickness re-rolls
+    // itself on every frame the camera moves -- and damping keeps the camera
+    // creeping for about a second after the hand has stopped.
+    const ulp = (x: number) => Math.pow(2, Math.ceil(Math.log2(x))) * Math.pow(2, -24)
+    // One pixel at arm's length from a part: 45 degrees of fov, a 1,000 px
+    // window, the camera four units out.
+    const PIXEL = (2 * 4 * Math.tan((45 / 2) * (Math.PI / 180))) / 1000
+    // The cell size cancels: the noise and the pixel step are both divided by
+    // it on the way into `fwidth`.
+    const wobble = (side: number) => ulp(side / 2) / PIXEL
+    for (const reach of [10, 50, 150]) {
+      const plan = groundPlan(reach)
+      check(
+        `a ground reaching ${reach} rules both its grids steadily`,
+        wobble(plan.finePlane[0]) < 0.01 && wobble(plan.coarsePlane[0]) < 0.01,
+        `fine ${(wobble(plan.finePlane[0]) * 100).toFixed(2)}%, ` +
+          `coarse ${(wobble(plan.coarsePlane[0]) * 100).toFixed(2)}%`
+      )
+    }
+    // The quad the endless ground ruled its coarse grid onto: a 24-unit plane
+    // blown up by a fade distance of 300. It misses the bar above by a factor
+    // of seven, and that is what was on screen.
+    check(
+      'and the endless quad this replaced would not have passed that',
+      wobble(24 * 301) > 0.05,
+      `${(wobble(24 * 301) * 100).toFixed(1)}%`
+    )
+
+    // Which is only worth checking if the room cannot ask for one again.
+    const room = readFileSync(new URL('../src/viewport/Stage.tsx', import.meta.url), 'utf8')
+    hides('and the room no longer knows how to rule an endless one', room, 'infiniteGrid')
+  }
+
+  // HOW MUCH GROUND THE MODELLING SCREEN ASKS FOR. Enough to hold the model,
+  // never less than the patch the app opens on, and quantised -- see
+  // `groundReach`.
+  {
+    const box = (x: number, z: number, y = 1) =>
+      new Box3(new Vector3(-x, 0, -z), new Vector3(x, y, z))
+
+    near('an empty document opens on twenty units of ground', groundReach(new Box3()), 10, 1e-12)
+    // The solid the palette drops is 10 cm, which is 1 unit across.
+    near('and so does the solid the palette drops', groundReach(box(0.5, 0.5)), 10, 1e-12)
+    // A floor: how tall the part is has nothing to say about how wide the
+    // ground under it wants to be.
+    near('a tall part does not widen it', groundReach(box(0.5, 0.5, 40)), 10, 1e-12)
+
+    // AND A MODEL THAT OUTGROWS IT IS DRAWN THE REST. Measured to the far
+    // CORNER, because the fade is a circle, and with headroom past it: the
+    // fade is at its dimmest exactly where it ends, so ground that stopped at
+    // the model would leave the model standing on nothing.
+    for (const [x, z] of [[9, 9], [30, 2], [0, 44]] as const) {
+      const reach = groundReach(box(x, z))
+      const corner = Math.hypot(x, z)
+      check(
+        `a model reaching ${corner.toFixed(1)} is given ground past it`,
+        reach > corner,
+        `${reach} against ${corner.toFixed(1)}`
+      )
+      check(
+        `and enough of it that the model's own edge is still lit -- ${corner.toFixed(1)}`,
+        corner / reach <= 0.75,
+        `the model ends ${((corner / reach) * 100).toFixed(0)}% of the way out`
+      )
+    }
+
+    // QUANTISED, because the answer is `planeGeometry`'s `args`: a reach that
+    // followed the model exactly would rebuild both grids on every frame of a
+    // drag. Whole tens is a step nobody can catch happening.
+    const answers = new Set<number>()
+    for (let corner = 0; corner <= 40; corner += 0.05) answers.add(groundReach(box(corner, 0)))
+    check(
+      'every answer is a whole ten',
+      [...answers].every((r) => r % 10 === 0),
+      [...answers].join(', ')
+    )
+    check(
+      'so a drag clean across the ground rebuilds the grids a handful of times',
+      answers.size <= 9,
+      `${answers.size} distinct reaches`
+    )
   }
 
   // THE BLOCK IS THE LATHE'S CORNER PANEL, worn by a second screen: same
@@ -8148,7 +8437,7 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
 
       // A cut and a resize, which are the two things "reset block" undoes.
       laser().setDim(0, 0.35)
-      laser().cut([[0.3, -0.3], [0.3, 0.3]], { axis: 2, sign: 1 })
+      laser().cut([[[0.3, -0.3], [0.3, 0.3]]], { axis: 2, sign: 1 })
       check('a cut leaves more than one piece on the bed', laser().pieces.length > 1, `${laser().pieces.length}`)
       const dirty = markupOf('BlockPanel (cut and resized)', BlockPanel)
       check('and the block reset comes alive', !isDown(dirty, 'Reset block'), 'should be enabled')
@@ -9523,6 +9812,99 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       draft().addPoint([0.2, 0.2])
     }
 
+    // CLICKING THE FIRST POINT BRIDGES THE LOOP SHUT, which is the one thing
+    // Point Cut can do that Freehand cannot: encircle a region and cut it out
+    // rather than cross the face. What is checked here is the DRAFT's half of
+    // it -- the gesture that fires it lives in `CutLayer`, and the geometry it
+    // then burns in `engine-check`.
+    {
+      draft().clear()
+      draft().begin({ axis: 2, sign: 1 }, 'points')
+      check('a fresh draft is open', !draft().closed, '')
+
+      // TWO POINTS ENCLOSE NOTHING -- a bridge back would be the same segment
+      // walked twice -- so the tool refuses rather than reporting itself closed
+      // while nothing on screen has changed.
+      draft().addPoint([-0.2, -0.2])
+      draft().addPoint([0.2, -0.2])
+      draft().toggleClosed()
+      check('and two points cannot be closed into one', !draft().closed, '')
+      shows(
+        'the panel saying what the third point would buy',
+        markupOf('PointCutTool (two)', PointCutTool),
+        'the line can be closed into a loop'
+      )
+
+      draft().addPoint([0.2, 0.2])
+      shows(
+        'and with three, offering the close',
+        markupOf('PointCutTool (three)', PointCutTool),
+        'Click the ringed first point to close the loop'
+      )
+
+      const openLine = draftLine(draft(), false)
+      draft().toggleClosed()
+      check('three points can be', draft().closed, '')
+      shows(
+        'which the panel then says, with the way back out',
+        markupOf('PointCutTool (closed)', PointCutTool),
+        'click the first point again to open it'
+      )
+
+      // THE BRIDGE IS ONE MORE SEGMENT AND NO MORE POINTS. The closure is a way
+      // of reading the run -- see `closed` in `cutDraft` -- so a repeated point
+      // appears in the LINE and never in the points, where it would be a knot
+      // the user could drag a hole open with.
+      const ring = draftLine(draft(), false)
+      check('the points are untouched by it', draft().points.length === 3, `${draft().points.length}`)
+      check('and the line gains exactly one', ring.length === openLine.length + 1, `${ring.length} against ${openLine.length}`)
+      check(
+        'which is the first point written out again',
+        ring[ring.length - 1][0] === ring[0][0] && ring[ring.length - 1][1] === ring[0][1],
+        `${JSON.stringify(ring[ring.length - 1])}`
+      )
+
+      // And with the curve on: the chain runs one more span, round the seam,
+      // and lands back exactly where it set off -- which is how the cut reads
+      // it as a loop. See `isClosedLine`.
+      const curl = draftLine(draft(), true)
+      check(
+        'a curved loop closes on its own first point too',
+        curl[curl.length - 1][0] === curl[0][0] && curl[curl.length - 1][1] === curl[0][1],
+        ''
+      )
+      check(
+        'running one more span than the open curve does',
+        curl.length === draftLine({ ...draft(), closed: false }, true).length + 16,
+        `${curl.length} against ${draftLine({ ...draft(), closed: false }, true).length}`
+      )
+
+      // A WAY BACK OUT, because the gesture is one click on one knot and a
+      // click with no undo is a trap. The points are the same either way, so
+      // nothing is spent by trying it.
+      draft().toggleClosed()
+      check('and the bridge can be taken out again', !draft().closed, '')
+      check(
+        'leaving the very line it started as',
+        JSON.stringify(draftLine(draft(), false)) === JSON.stringify(openLine),
+        ''
+      )
+
+      // Every road to an empty drawing opens the line as well as emptying it: a
+      // draft that kept `closed` through a Reset would bridge the first two
+      // points placed after it.
+      draft().toggleClosed()
+      draft().clear()
+      check('Reset opens the line as well as emptying it', !draft().closed, '')
+      draft().addPoint([-0.2, -0.2])
+      draft().addPoint([0.2, 0.2])
+      draft().toggleClosed()
+      draft().begin({ axis: 2, sign: 1 }, 'points')
+      check('and so does taking the tool up again', !draft().closed, '')
+      draft().addPoint([-0.2, -0.2])
+      draft().addPoint([0.2, 0.2])
+    }
+
     // A DRAFT BELONGS TO ONE FACE. Turning the compass elsewhere has to drop it:
     // a line the user can no longer see, with Apply still willing to burn it, is
     // the one failure here that destroys work rather than merely surprising.
@@ -9541,8 +9923,12 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     }
     // A cut a third of the way across, so the two pieces are plainly different
     // sizes and "the smaller one" means something.
-    laser().cut([[0.3, -0.3], [0.3, 0.3]], { axis: 2, sign: 1 })
-    check('a cut leaves a piece lit', laser().offcut !== null, laser().offcut ?? 'nothing lit')
+    laser().cut([[[0.3, -0.3], [0.3, 0.3]]], { axis: 2, sign: 1 })
+    check(
+      'a cut leaves a piece lit',
+      laser().offcut.length === 1,
+      laser().offcut.join(',') || 'nothing lit'
+    )
     {
       const after = markupOf('CutPanel (offcut)', CutPanel)
       shows('and the panel offers to throw it away', after, '>Discard piece<')
@@ -9556,9 +9942,15 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     // offering to bin the thing you came for.
     {
       check('both pieces are on offer', laser().choices.length === 2, `${laser().choices.length}`)
-      const byId = (id: string | null) => laser().pieces.find((p) => p.id === id)
-      const opened = byId(laser().offcut)
-      const other = laser().pieces.find((p) => p.id !== laser().offcut)
+      // ONE PIECE PER SET without a mirror standing, which is the half of the
+      // change that matters here: the offcut became a list so that a mirrored
+      // cut can light a piece and its images together, and an ordinary cut has
+      // to go on behaving exactly as it did. `lit` is that claim, made once.
+      const byId = (id: string | undefined) => laser().pieces.find((p) => p.id === id)
+      const lit = () => laser().offcut[0]
+      const opened = byId(lit())
+      const other = laser().pieces.find((p) => p.id !== lit())
+      check('and one piece is lit rather than a set of them', laser().offcut.length === 1, `${laser().offcut.length}`)
       check(
         'the choice opens on the smaller of them',
         opened !== undefined && other !== undefined && opened.volume < other.volume,
@@ -9569,19 +9961,19 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       laser().nextOffcut()
       check(
         'and steps onto the bigger one',
-        laser().offcut === other?.id,
-        `${byId(laser().offcut)?.volume.toFixed(4)}`
+        lit() === other?.id,
+        `${byId(lit())?.volume.toFixed(4)}`
       )
       laser().nextOffcut()
-      check('wrapping back round', laser().offcut === opened?.id, '')
+      check('wrapping back round', lit() === opened?.id, '')
 
       // The direct way to say it, which is what a click on a piece calls.
       laser().markOffcut(other!.id)
-      check('a piece can be named outright', laser().offcut === other?.id, '')
+      check('a piece can be named outright', lit() === other?.id, '')
       // And a piece this cut did not make is not on offer -- the press that
       // lands on an older sliver does nothing rather than something surprising.
       laser().markOffcut('piece-does-not-exist')
-      check('while a piece that is not on offer is refused', laser().offcut === other?.id, '')
+      check('while a piece that is not on offer is refused', lit() === other?.id, '')
 
       // NOT AN UNDO STEP, either way of saying it: nothing has been destroyed,
       // both pieces are still on the bed, and a history that stepped through
@@ -9598,7 +9990,7 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     const before = laser().pieces.length
     laser().discardOffcut()
     check('which it does', laser().pieces.length === before - 1, `${laser().pieces.length}`)
-    check('and nothing is left lit', laser().offcut === null, '')
+    check('and nothing is left lit', laser().offcut.length === 0, '')
     // And the offer is spent with it: the pair it was a choice between is
     // broken, and what is left is one piece rather than a decision.
     check('nor anything left to choose between', laser().choices.length === 0, `${laser().choices.length}`)
@@ -9618,7 +10010,7 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     {
       const steps = laser().past.length
       const pieces = laser().pieces.length
-      const split = laser().cut([[3, -0.3], [3, 0.3]], { axis: 2, sign: 1 })
+      const split = laser().cut([[[3, -0.3], [3, 0.3]]], { axis: 2, sign: 1 })
       check('a line clear of the bed reports no split', split === 0, `${split}`)
       check('and leaves the pieces alone', laser().pieces.length === pieces, `${laser().pieces.length}`)
       check('and the history alone', laser().past.length === steps, `${laser().past.length - steps}`)
@@ -9640,6 +10032,150 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     laser().past.length = 0
     laser().future.length = 0
     tools().setLaserTool(null)
+    draft().clear()
+  }
+
+  // THE MIRROR ON THE FACE. What is worth pinning here is the half of the tool
+  // that a screenshot cannot show: that the axis outlives the hand that raised
+  // it, that a mirrored cut is ONE act with ONE set of pieces to throw away,
+  // and that the button lights for the hand rather than for the axis -- which
+  // is what stops re-aiming a mirror from costing you the mirror.
+  console.log('\nSymmetry: a mirror stands on the face and both halves of a cut come off together')
+  {
+    const FRONT: LaserFace = { axis: 2, sign: 1 }
+    const mirrorNow = () => mirrorOn(FRONT)(tools())
+    // Rendered without `markupOf`'s own "it renders" claim, because half of
+    // what is being checked here is that the panel renders NOTHING: an empty
+    // string is the right answer with no axis standing, and a helper that reads
+    // emptiness as a failure cannot ask that question.
+    const panel = () => renderToStaticMarkup(createElement(SymmetryPanel, { face: FRONT }))
+    const button = () => renderToStaticMarkup(createElement(SymmetryTool, { face: FRONT }))
+
+    const wasScreen = tools().screen
+    tools().setScreen('laser')
+    tools().setLaserTool(null)
+    tools().setMirror(FRONT, false)
+    laser().freshStock()
+
+    // AT REST there is no mirror anywhere, so the screen cuts exactly as it
+    // always has: an empty table is the whole of the switch being off.
+    check('no mirror until one is raised', mirrorNow() === null, '')
+    hides('and no panel standing over the block', panel(), '>Symmetry<')
+
+    // ONE PRESS DOES BOTH HALVES: takes the tool in hand and stands an axis up.
+    tools().setLaserTool('symmetry')
+    tools().setMirror(FRONT, true)
+    check('raising it puts an axis on the face', mirrorNow() !== null, '')
+    check('upright, which is what a mirror usually means', mirrorNow()?.angle === 90, `${mirrorNow()?.angle}`)
+    check('and a single line rather than a cross', mirrorNow()?.mode === 'line', `${mirrorNow()?.mode}`)
+    shows('the panel comes up with it', panel(), '>Symmetry<')
+    shows('offering the two kinds of mirror', panel(), '>Cross<')
+
+    // THE AXIS OUTLIVES THE HAND. This is the whole shape of the tool: take up
+    // a cutter and the mirror goes on standing, because a mirror you could not
+    // cut with would be no use at all.
+    tools().setLaserTool('freehand')
+    check('taking up a cutter leaves the axis standing', mirrorNow() !== null, '')
+    shows('and its panel with it', panel(), '>Symmetry<')
+    // AND THE BUTTON STAYS LIT WITH IT. It says whether cuts are being
+    // mirrored, not whether the mirror is in your hand -- a button that went
+    // dark the moment you picked up a cutter would be dark for the whole of the
+    // time the mirror was doing its work.
+    check('and the button stays lit, because cuts are still being mirrored', button().includes('nav-group-active'), '')
+    shows('and says so to a screen reader too', button(), 'aria-pressed="true"')
+
+    // AIMING. The angle is held to half a turn, since a line has no ends to
+    // tell apart, and the part is brought back inside the mode it belongs to.
+    tools().aimMirror(FRONT, { angle: 225 })
+    check('an angle past half a turn is the same mirror', mirrorNow()?.angle === 45, `${mirrorNow()?.angle}`)
+    tools().aimMirror(FRONT, { mode: 'cross', part: 3 })
+    check('a cross has four parts to work in', mirrorNow()?.part === 3, `${mirrorNow()?.part}`)
+    tools().aimMirror(FRONT, { mode: 'line' })
+    check('and switching back to a line brings the part inside it', mirrorNow()?.part === 1, `${mirrorNow()?.part}`)
+    // THE AIM OUTLIVES THE AXIS. Taking a mirror away and putting one back is a
+    // thing people do between cuts, so a face that forgot its 45-degree axis
+    // every time would make that a decision rather than a flick.
+    tools().aimMirror(FRONT, { mode: 'cross', angle: 45, part: 2 })
+    tools().setMirror(FRONT, false)
+    check('putting the mirror away takes the axis off the face', mirrorNow() === null, '')
+    tools().setMirror(FRONT, true)
+    check('and putting one back gives back the one you had', mirrorNow()?.angle === 45, `${mirrorNow()?.angle}`)
+    check('the kind of mirror with it', mirrorNow()?.mode === 'cross', `${mirrorNow()?.mode}`)
+    check('and the part you were working in', mirrorNow()?.part === 2, `${mirrorNow()?.part}`)
+
+    tools().aimMirror(FRONT, { mode: 'line' })
+    tools().aimMirror(FRONT, { angle: 90, part: 0 })
+
+    // AND IT CUTS AS ONE ACT. Two mirrored lines, three pieces, one step of
+    // history -- and the two the mirror made are lit together.
+    {
+      const steps = laser().past.length
+      const axis = mirrorNow()
+      const split = laser().cut(mirrorLines([[-0.3, -0.6], [-0.3, 0.6]], axis!), FRONT, axis)
+      check('a mirrored cut parts the block in two places', split === 2, `${split}`)
+      check('leaving three pieces', laser().pieces.length === 3, `${laser().pieces.length}`)
+      check('off one step of history', laser().past.length === steps + 1, `${laser().past.length - steps}`)
+
+      // THE TWIN SET is the point of the whole exercise: the piece the cut lit
+      // and its image are one decision, so they are lit together and go
+      // together.
+      check('the two the mirror made are lit as one', laser().offcut.length === 2, `${laser().offcut.length}`)
+      check(
+        'and are offered as one choice rather than two',
+        laser().choices.length === 2,
+        laser().choices.map((set) => set.length).join(' + ')
+      )
+      shows('with the panel naming what one press takes', markupOf('CutPanel (twins)', CutPanel), '>Discard pieces<')
+
+      const held = laser().pieces.length
+      laser().discardOffcut()
+      check('and Discard takes both of them at once', laser().pieces.length === held - 2, `${laser().pieces.length}`)
+      laser().undo()
+      check('which one undo puts back', laser().pieces.length === held, `${laser().pieces.length}`)
+    }
+
+    // A LINE IN A DIMMED PART IS NOT A LINE THAT MISSED THE BLOCK, and the
+    // refusal has to say the right one of those: the clip is what threw it
+    // away, and being told to go and measure the block would be a lie.
+    {
+      const axis = mirrorNow()
+      check(
+        'a line drawn in a dimmed part has nothing to burn',
+        draftCut({ kind: 'freehand', stroke: [[0.2, -0.3], [0.2, 0.3]], points: [], handles: [], closed: false }, false, axis).length === 0,
+        ''
+      )
+      check(
+        'while the same line on the lit side burns two',
+        draftCut({ kind: 'freehand', stroke: [[-0.2, -0.3], [-0.2, 0.3]], points: [], handles: [], closed: false }, false, axis).length === 2,
+        ''
+      )
+    }
+
+    // THE SNAP PANEL grows its angle only once there is a mirror to govern:
+    // a user who never reaches for Symmetry sees the one field it always had.
+    tools().setOpenPanel('snap')
+    shows(
+      'the Snap panel offers the angle while a mirror stands',
+      markupOf('SnapTool (mirrored)', SnapTool),
+      '>Angle<'
+    )
+    shows('beside the reach it already had', markupOf('SnapTool (mirrored)', SnapTool), '>Sensitivity<')
+
+    // PUTTING IT AWAY IS THE LIT BUTTON'S PRESS, and it takes the axis with it:
+    // one fact, one switch. The cut that follows is an ordinary single line.
+    tools().setLaserTool('symmetry')
+    tools().setLaserTool(null)
+    tools().setMirror(FRONT, false)
+    check('putting the tool away takes the axis with it', mirrorNow() === null, '')
+    hides('and the panel goes back to being scene', panel(), '>Symmetry<')
+    hides('with the Snap panel back to its one field', markupOf('SnapTool (plain)', SnapTool), '>Angle<')
+    tools().setOpenPanel(null)
+
+    laser().freshStock()
+    laser().past.length = 0
+    laser().future.length = 0
+    tools().setLaserTool(null)
+    tools().setScreen(wasScreen)
     draft().clear()
   }
 
@@ -9712,12 +10248,11 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         library().customs.map((c) => c.name).join(', ') || 'nothing on the shelf'
       )
 
-      // THE RECEIPT SAYS ONE UNIT, not three. `formatLength` resolves a unit
-      // per value, so in auto a 20 cm side beside a 5 mm one would print two
-      // different units inside one size -- and even where they agreed, the
-      // suffix would be said three times over.
+      // THE RECEIPT SAYS ONE UNIT, not three. `formatLength` writes the suffix
+      // after every number it is given, so three sides through it would say the
+      // unit three times over inside one measurement.
       const mixed: Vec3 = [2, 0.005, 1.5]
-      const said = formatSize(mixed, 'auto')
+      const said = formatSize(mixed, 'mm')
       // Three numbers and ONE word: anything else means a unit crept in beside
       // a side rather than standing once at the end of all three.
       check(
@@ -9726,8 +10261,8 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         said
       )
       check(
-        'which is the one the longest side asked for',
-        said.endsWith(suffixOf(resolveUnit(2, 'auto'))),
+        'which is the one the app is set to',
+        said.endsWith(suffixOf('mm')),
         said
       )
     }
@@ -9739,8 +10274,10 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     {
       const split = laser().cut(
         [
-          [-1, 0],
-          [1, 0],
+          [
+            [-1, 0],
+            [1, 0],
+          ],
         ],
         { axis: 2, sign: 1 }
       )

@@ -1,5 +1,5 @@
 import { BufferAttribute, BufferGeometry, Euler, Vector3 } from 'three'
-import type { ProjectedPoint, SurfaceDef } from './surfaces'
+import type { ProjectedPoint, Sweep, SurfaceDef } from './surfaces'
 import { anchorIsCurved, tangentBasis } from './surfaces'
 import { MAX_SIZE } from './dimensions'
 import { sampleOutline } from './outline'
@@ -10,11 +10,14 @@ import type { Feature, SurfaceAnchor } from './types'
  * Lift a feature's 2D outline onto its host surface, giving a closed ring of
  * (point, outward normal) pairs.
  *
- * This is the single representation the whole engine runs on. On a flat face
- * every normal is identical and the sweep below produces a straight prism; on
- * a sphere each normal is its own radial direction and the very same sweep
- * produces a frustum converging toward the centre. Curvature is not a special
- * case -- it falls out of the surface's `project`.
+ * This is the FOOTPRINT: where the tool meets the host. On a flat face it is
+ * the outline unchanged; on a curved one it is that outline wrapped onto the
+ * surface, which is exactly what the viewport draws the sketch as -- so the
+ * ring the user sees lying on the solid is the ring the solid is built from.
+ *
+ * The normals ride along for the decal's lift and for nothing else. Which way
+ * the tool TRAVELS is one direction for the whole ring, and it comes from
+ * `SweepAxis` rather than from here.
  */
 export function outlineOnSurface(
   surface: SurfaceDef,
@@ -25,6 +28,60 @@ export function outlineOnSurface(
   return sampleOutline(feature.shape, feature.rotation, curved).map(([u, v]) =>
     surface.project(anchor, u, v)
   )
+}
+
+/**
+ * The single direction a feature's tool sweeps along, and the two planes it
+ * runs between.
+ *
+ * ONE direction for the whole ring, and that is the point of the type. Sweeping
+ * each ring point along its OWN surface normal let curvature spread the tool as
+ * it travelled: a square drawn on a barrel came out half as wide again at the
+ * top as at its base, and its cap arrived bent into a patch of the offset
+ * shell. The feature followed the surface instead of the sketch. Along one axis
+ * the walls stay parallel and the caps stay flat, so a curved host now differs
+ * from a flat one in one thing only -- where the footprint sits.
+ *
+ * Both distances are measured from `origin`, the anchor's own point on the
+ * surface, so `depth` still means "this far proud of the spot it was drawn on"
+ * however far the rest of the ring has curved away from it.
+ */
+export type SweepAxis = {
+  /** The anchor's point on the surface. Both end planes are measured from it. */
+  origin: Vector3
+  /** The anchor's surface normal: unit, and shared by every ring point. */
+  dir: Vector3
+  /** Where the inner end plane sits, as a distance BEHIND `origin`. */
+  tIn: number
+  /** Where the outer end plane sits, as a distance IN FRONT of `origin`. */
+  tOut: number
+  /** The end this operation creates. The other one stays buried in the host. */
+  created: 'out' | 'in'
+}
+
+/**
+ * The sweep axis for a feature on a surface: the frame's normal, and the two
+ * distances the surface itself asked for.
+ *
+ * Built here rather than in the evaluator so the solid and the drag handle
+ * cannot drift apart -- `endFaceRing` runs the same solve on the same axis.
+ */
+export function sweepAxisFor(
+  surface: SurfaceDef,
+  anchor: SurfaceAnchor,
+  depth: number,
+  sweep: Sweep
+): SweepAxis {
+  const f = surface.frame(anchor)
+  return {
+    origin: f.origin,
+    dir: f.normal,
+    tIn: sweep.tIn,
+    tOut: sweep.tOut,
+    // The end that moves is the one the operation creates; the base of the
+    // extrusion stays welded to the surface either way.
+    created: sweepOp(depth) === 'extrude' ? 'out' : 'in',
+  }
 }
 
 /**
@@ -46,19 +103,6 @@ export type EndPlane = {
    * solve returning exactly the unslid points and `faceOffset` would be inert.
    */
   slide: Vector3
-  /**
-   * Signed distance along each point's OWN normal at which the created end
-   * lands, or null when it has to be solved onto the plane.
-   *
-   * An untilted end plane is parallel to the surface, but on a curved host the
-   * two are not the same answer: the unslid sweep leaves the created face
-   * following the curvature, while a flat plane cuts across it and pushes the
-   * rim outward. Solving there would make the face pop the instant a drag put
-   * the slightest slide on it. Travelling a constant distance is exactly what
-   * the unslid path does, so the drag now starts from where the face already
-   * is. A tilted face has no such path to match and keeps the plane solve.
-   */
-  alongNormal: number | null
 }
 
 /**
@@ -76,12 +120,16 @@ export type EndFaceFrame = {
 type EndPlaneSpec = Pick<Feature, 'depth' | 'tilt' | 'faceOffset'>
 
 /**
- * A ring normal grazing the end plane makes the ray/plane solve explode, and a
- * ring whose points land on wildly different sides of it produces walls that
- * cross. Both show up as a silently corrupt CSG result rather than an error, so
- * the sweep refuses outright once any point leaves this envelope.
+ * A tilt that lays the end plane down until it is nearly edge-on to the sweep
+ * makes the plane solve explode, so the tool refuses outright rather than
+ * handing the CSG a ring that has run off towards infinity.
  */
 const MIN_END_COS = 0.15
+/**
+ * The prism's own height, measured between its two ends along the sweep axis.
+ * At or below zero the caps have crossed and the walls fold through each other,
+ * which reaches the CSG as a silently corrupt result rather than as an error.
+ */
 const MIN_END_T = 1e-4
 /** Eight times `MAX_SIZE`, which is what it has always been -- a sweep may run
  *  well past the solid it starts from, but not to infinity. DERIVED, because
@@ -160,9 +208,9 @@ function endFaceBasis(
  * Where a feature's created end face sits once tilt and lateral slide are
  * applied, or null when neither is in play.
  *
- * Null is not a failure: it means the plain constant-offset sweep applies. That
- * path is cheaper and already verified against every surface kind, so an
- * untilted feature must never be routed through the ray/plane solve below.
+ * Null is not a failure: it means the created end already lands where the sweep
+ * axis puts it -- square to the axis, `depth` from the anchor -- which the plain
+ * path produces without a solve.
  */
 export function endPlaneFor(
   surface: SurfaceDef,
@@ -185,18 +233,11 @@ export function endPlaneFor(
     basis.origin.add(slide)
   }
 
-  // The end that moves is the one the operation creates; the base of the
-  // extrusion stays welded to the surface either way.
-  const end = sweepOp(feature.depth) === 'extrude' ? 'out' : 'in'
-  // Untilted, the plane is parallel to the surface and the constant-depth
-  // landing is the one the unslid sweep would have produced (see EndPlane).
-  const untilted = tx === 0 && ty === 0 && tz === 0
   return {
     origin: basis.origin,
     normal: basis.normal,
-    end,
+    end: sweepOp(feature.depth) === 'extrude' ? 'out' : 'in',
     slide,
-    alongNormal: untilted ? feature.depth : null,
   }
 }
 
@@ -230,37 +271,113 @@ export function endFaceFrame(
 }
 
 /**
- * Slide each ring point along its own normal until it meets the end plane.
+ * The point a feature's gizmo stands on: the centre of the face it created, or
+ * the sketch on the surface while it has created none.
  *
- * Shared by the solid and by the draggable face handle: if the handle computed
- * its polygon independently it would drift off the face the moment either side
- * changed a guard or a sign. Returns null when any point fails the envelope,
- * because a partially valid ring is exactly the corrupt-boolean case.
+ * The TIP, in other words, rather than the footprint. A gizmo at the base of a
+ * boss annotates the one part of it the gestures do not change -- the base
+ * stays welded to the host through every one of them -- and on a pocket it sits
+ * on the surface while the face it describes is buried underneath. At the tip it
+ * stands on the very face the depth arrow is pushing.
+ *
+ * Both the gizmo and the drag that answers it come through here, because the
+ * two must agree to the millimetre: every gesture is measured from the gizmo's
+ * origin -- the ring reads the pointer's angle about it, the arrows their travel
+ * from it -- so a drag reading one centre while the handles were drawn about
+ * another would run at a different rate than the hand was moving.
  */
-function endPlanePoints(ring: ProjectedPoint[], plane: EndPlane): Vector3[] | null {
-  const points: Vector3[] = []
-  for (const p of ring) {
-    const denom = p.normal.dot(plane.normal)
-    // Checked on both branches: the envelope is what keeps the walls from
-    // crossing, and the handle and the solid must agree on who is rejected.
-    if (!(denom > MIN_END_COS)) return null
-    // Distance along the point's own normal to the plane. Signed so that `t`
-    // counts forward in the direction this end travels, whichever end it is.
-    const s =
-      plane.alongNormal ?? plane.origin.clone().sub(p.position).dot(plane.normal) / denom
-    const t = plane.end === 'out' ? s : -s
-    if (!(t > MIN_END_T && t < MAX_END_T)) return null
-    // The slide is a rigid translation of the whole landed ring, so the cap
-    // keeps its shape and only the walls lean. That is exactly the gesture --
-    // the base stays welded to the host and the pillar follows the face.
-    points.push(p.position.clone().addScaledVector(p.normal, s).add(plane.slide))
-  }
-  return points
+export function featureHandleOrigin(
+  surface: SurfaceDef,
+  anchor: SurfaceAnchor,
+  feature: EndPlaneSpec
+): Vector3 {
+  return endFaceFrame(surface, anchor, feature)?.origin ?? surface.frame(anchor).origin
+}
+
+/** Signed height of a point above the plane through the axis origin. */
+function heightOn(axis: SweepAxis, p: Vector3): number {
+  return p.clone().sub(axis.origin).dot(axis.dir)
 }
 
 /**
- * Sweep a ring of (point, normal) pairs into a closed solid, from `tIn` behind
- * each point to `tOut` in front of it, each along its own normal.
+ * Slide each ring point along the SWEEP AXIS until it meets the end plane.
+ *
+ * Along the axis rather than along each point's own normal, which is what stops
+ * a tilted face on a curved host from splaying: every point travels the same
+ * direction, so the plane leans the cap without also stretching it.
+ *
+ * One denominator for the whole ring, for the same reason -- the tilt either
+ * lays the plane too far over for the sweep to reach it, or it does not.
+ */
+function endPlanePoints(
+  ring: ProjectedPoint[],
+  axis: SweepAxis,
+  plane: EndPlane
+): Vector3[] | null {
+  const denom = axis.dir.dot(plane.normal)
+  if (!(denom > MIN_END_COS)) return null
+  return ring.map((p) => {
+    const s = plane.origin.clone().sub(p.position).dot(plane.normal) / denom
+    return p.position.clone().addScaledVector(axis.dir, s).add(plane.slide)
+  })
+}
+
+/**
+ * The two end rings of a feature's tool: where the sweep starts and where it
+ * finishes, every point carried along the one axis.
+ *
+ * The solid and the drag handle both come through here, so the face the handle
+ * offers to drag is the face the solid actually has -- including the refusal,
+ * because a handle on a tool that was rejected invites a drag on nothing.
+ */
+function sweptEnds(
+  ring: ProjectedPoint[],
+  axis: SweepAxis,
+  endPlane?: EndPlane | null
+): { inner: Vector3[]; outer: Vector3[] } | null {
+  const heights = ring.map((p) => heightOn(axis, p.position))
+
+  // How far the footprint dips behind the anchor's own tangent plane. Zero on a
+  // flat face; on a curved one it is what the buried end has to clear before
+  // any of it is inside the host at all -- and it grows with the sketch, so it
+  // cannot be a number the surface hands over in advance of one.
+  const sag = Math.max(0, -Math.min(...heights))
+  // Only the BURIED end is pushed out by the sag. The created end is the number
+  // the user typed, and moving it would make the depth slider lie on every
+  // curved host.
+  const inDist = axis.tIn + (axis.created === 'out' ? sag : 0)
+
+  // Both ends are PLANES square to the axis: a point that starts lower on the
+  // surface travels further, instead of carrying the dip along with it. That is
+  // the whole difference between a boss with a flat top and one moulded to the
+  // barrel it stands on.
+  const inner = ring.map((p, i) =>
+    p.position.clone().addScaledVector(axis.dir, -inDist - heights[i])
+  )
+  const outer = ring.map((p, i) =>
+    p.position.clone().addScaledVector(axis.dir, axis.tOut - heights[i])
+  )
+
+  if (endPlane) {
+    const moved = endPlanePoints(ring, axis, endPlane)
+    if (!moved) return null
+    const target = endPlane.end === 'out' ? outer : inner
+    for (let i = 0; i < moved.length; i++) target[i] = moved[i]
+  }
+
+  // Every wall has to run the same way round the ring. A tilt steep enough to
+  // drive one side of the created end back through the buried one folds the
+  // tool inside out, and the feature is refused rather than built wrong.
+  for (let i = 0; i < ring.length; i++) {
+    const height = outer[i].clone().sub(inner[i]).dot(axis.dir)
+    if (!(height > MIN_END_T && height < MAX_END_T)) return null
+  }
+  return { inner, outer }
+}
+
+/**
+ * Sweep a ring of footprint points into a closed solid, running from the inner
+ * end plane to the outer one along the axis.
  *
  * The result is watertight by construction, which is what three-bvh-csg
  * requires. Caps are triangle fans, valid because every v1 outline is convex --
@@ -273,47 +390,40 @@ function endPlanePoints(ring: ProjectedPoint[], plane: EndPlane): Vector3[] | nu
  */
 export function buildSweptPrism(
   ring: ProjectedPoint[],
-  tIn: number,
-  tOut: number,
+  axis: SweepAxis,
   endPlane?: EndPlane | null
 ): BufferGeometry | null {
   const n = ring.length
   if (n < 3) return null
 
-  const inner: Vector3[] = []
-  const outer: Vector3[] = []
-  for (const p of ring) {
-    inner.push(p.position.clone().addScaledVector(p.normal, -tIn))
-    outer.push(p.position.clone().addScaledVector(p.normal, tOut))
-  }
+  // A rejected feature is flagged as failed in the UI; a prism whose walls
+  // cross each other corrupts the boolean with no warning at all.
+  const ends = sweptEnds(ring, axis, endPlane)
+  if (!ends) return null
+  const { inner, outer } = ends
 
   // Rings in sweep order, buried end first. Walls are built band by band so a
   // slide can put a third ring between these two.
   const rings: Vector3[][] = [inner, outer]
 
-  if (endPlane) {
-    const moved = endPlanePoints(ring, endPlane)
-    // A rejected feature is flagged as failed in the UI; a prism whose walls
-    // cross each other corrupts the boolean with no warning at all.
-    if (!moved) return null
-    const target = endPlane.end === 'out' ? outer : inner
-    for (let i = 0; i < n; i++) target[i] = moved[i]
-
-    // Kink the wall at the host surface: straight from the buried end up to the
-    // UN-SLID outline, leaning only from there on. Running a single band from
-    // the buried ring to the slid one shears the pillar about a pivot below the
-    // surface rather than about its own footprint, which leaves the section
-    // where the solid meets the host displaced by the buried fraction of the
-    // slide -- a seventh of it at the default margin. The base would creep
-    // sideways with the face being dragged, when the whole point of the gesture
-    // is that it stays put.
-    //
-    // The outline is where the sweep starts, so this ring always sits between
-    // the buried end (tIn behind it) and the created one (MIN_END_T ahead at
-    // the very least), and both bands share it vertex for vertex.
-    if (endPlane.slide.lengthSq() > 0) {
-      rings.splice(1, 0, ring.map((p) => p.position.clone()))
-    }
+  // Kink the wall at the host surface: straight from the buried end up to the
+  // UN-SLID outline, leaning only from there on. Running a single band from the
+  // buried ring to the slid one shears the pillar about a pivot below the
+  // surface rather than about its own footprint, which leaves the section where
+  // the solid meets the host displaced by the buried fraction of the slide -- a
+  // seventh of it at the default margin. The base would creep sideways with the
+  // face being dragged, when the whole point of the gesture is that it stays put.
+  //
+  // Only where the footprint really does lie between the two ends. It normally
+  // does, but a pocket shallower than the dip of its own footprint has a floor
+  // that surfaces through the ring, and threading a band through a ring on the
+  // wrong side of it would fold the wall over.
+  if (endPlane && endPlane.slide.lengthSq() > 0) {
+    const between = ring.every((p, i) => {
+      const h = heightOn(axis, p.position)
+      return h > heightOn(axis, inner[i]) && h < heightOn(axis, outer[i])
+    })
+    if (between) rings.splice(1, 0, ring.map((p) => p.position.clone()))
   }
 
   const verts: number[] = []
@@ -362,12 +472,8 @@ export function buildSweptPrism(
 /**
  * The polygon of the face this feature creates, in object-local space, or empty
  * when the feature cannot be built. The viewport draws its drag handle on these
- * points, so they come from the same solve the solid uses.
- *
- * The untilted case deliberately reads `depth` rather than the surface's `tOut`:
- * on a curved host the sweep overshoots on purpose and the evaluator trims it
- * back against the offset shell, so `depth` -- not the overshoot -- is where the
- * face the user sees actually lands.
+ * points, so they come from the same solve the solid uses -- the same axis, the
+ * same end planes, and the same refusal.
  */
 export function endFaceRing(
   surface: SurfaceDef,
@@ -377,10 +483,16 @@ export function endFaceRing(
   const ring = outlineOnSurface(surface, anchor, feature)
   if (ring.length < 3) return []
 
-  const plane = endPlaneFor(surface, anchor, feature)
-  if (plane) return endPlanePoints(ring, plane) ?? []
-
-  return ring.map((p) => p.position.clone().addScaledVector(p.normal, feature.depth))
+  const op = sweepOp(feature.depth)
+  const axis = sweepAxisFor(
+    surface,
+    anchor,
+    feature.depth,
+    surface.sweep(anchor, Math.abs(feature.depth), op)
+  )
+  const ends = sweptEnds(ring, axis, endPlaneFor(surface, anchor, feature))
+  if (!ends) return []
+  return axis.created === 'out' ? ends.outer : ends.inner
 }
 
 /**

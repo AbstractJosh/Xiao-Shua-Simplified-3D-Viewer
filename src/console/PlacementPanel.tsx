@@ -275,7 +275,7 @@ export function PlacementPanel() {
       hint={target.label}
       // The position triple is the whole of what this panel measures -- the
       // rotation below it is degrees, and says so on its own rows.
-      lengths={target.position}
+      hasLengths
       tip="Drives whatever is being aimed: the selected object, or the cut plane while the cut tool is armed. The gizmo in the viewport moves the same numbers -- these are for when the answer has to be exact."
     >
       {/* Above the rows rather than below them: an eraser is aimed and THEN

@@ -3,6 +3,7 @@ import type { ComponentType } from 'react'
 import { Console } from './console/Console'
 import { HelpScreen } from './console/HelpScreen'
 import { NavBar } from './console/NavBar'
+import { SettingsScreen } from './console/SettingsScreen'
 import { LaserConsole } from './console/LaserConsole'
 import { LatheConsole } from './console/LatheConsole'
 import type { ScreenId } from './screens'
@@ -86,14 +87,17 @@ export default function App() {
         <ScreenConsole />
       </main>
 
-      {/* Outside the bar, though the button that opens it is in the bar. Two
-          reasons, and the second is load-bearing. It covers the whole app, so
-          nesting it in a 44px-tall header would put a full-window overlay
+      {/* Outside the bar, though the buttons that open them are in the bar. Two
+          reasons, and the second is load-bearing. They cover the whole app, so
+          nesting one in a 44px-tall header would put a full-window overlay
           inside the one element in the layout that must not grow. And the
           bar's own click-outside handler treats everything under `.topbar` as
           inside itself -- so a backdrop mounted there could never be pressed to
-          dismiss what it is behind. It renders nothing unless Help is open. */}
+          dismiss what it is behind. Each renders nothing until its own button
+          is pressed, and only one can be open at a time: both answer to
+          `openPanel`, which holds one id. */}
       <HelpScreen />
+      <SettingsScreen />
     </div>
   )
 }

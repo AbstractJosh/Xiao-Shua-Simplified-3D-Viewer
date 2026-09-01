@@ -190,12 +190,17 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Cutting the block',
         summary:
-          'Two tools, both drawing one line on the face you are square on to. The line is carried on to the border at both ends, so any stroke goes all the way across, and the cut burns through the whole block.',
+          'Two tools, both drawing one line on the face you are square on to. An open line is carried on to the border at both ends, so any stroke goes all the way across; a closed one cuts out what it encircles. Either way the cut burns through the whole block.',
         steps: [
           { action: 'Freehand', result: 'Drag to draw the line by hand.' },
           {
             action: 'Point Cut',
             result: 'Click to place points, drag one to move it. The line runs through them.',
+          },
+          {
+            action: 'Close the loop',
+            result:
+              'Click the first point -- from three points on it wears a ring -- and the line bridges back round to it. Clicking it again opens the line. Dragging it still moves it.',
           },
           {
             action: 'With Snap on',
@@ -218,6 +223,14 @@ export const HELP_SECTIONS: HelpSection[] = [
             usually the waste -- but not when the cut is what frees the part you are after, so the
             choice is yours: <b>Other piece</b> steps it with the tool still in hand, and with no
             tool in hand you can click the piece you mean.
+          </>,
+          <>
+            A closed line does not reach for the border, because it does not need to: it already
+            has an inside and an outside. What it cuts out is the piece it drew round, which comes
+            away as its own piece and is the one the cut lights -- so encircling a shape and
+            pressing <b>Del</b> punches a hole, and encircling it and keeping it frees the part
+            from the stock around it. A loop drawn half off the edge takes the bite that was on
+            the block. Only <b>Point Cut</b> closes: <b>Freehand</b> has no points to click.
           </>,
           <>
             A cut is BAKED. There is no list to reopen -- <b>Ctrl+Z</b> is the way back, and one cut
@@ -271,6 +284,56 @@ export const HELP_SECTIONS: HelpSection[] = [
             a small chamfer across the tip. What the tool cannot do is anything finer than the slot
             itself: two points closer together than the kerf are one point as far as the cut is
             concerned.
+          </>,
+        ],
+      },
+      {
+        title: 'Symmetry',
+        summary:
+          'A mirror stood on the face: draw in one part of it and the cut appears in the others, all burned at once. Two parts under a line, four under a cross.',
+        steps: [
+          { action: 'Symmetry', result: 'Stands a green line through the middle of the face, and takes it in hand.' },
+          { action: 'Drag the line', result: 'Swings it. It holds at every 45 degrees while Snap is on.' },
+          { action: 'Click a part of the face', result: 'That part is the one you draw in. The rest are dimmed.' },
+          { action: 'Line / Cross', result: 'One mirror, or two at a right angle. In the panel by the block.' },
+          { action: 'Freehand or Point Cut', result: 'Draw as usual. The axis stays standing and reflects what you draw.' },
+          { action: 'Apply cut', result: 'Every copy is burned in the same act, and one Ctrl+Z takes them all back.' },
+          { action: 'Symmetry, cutter in hand', result: 'Takes the mirror back so you can re-aim it. The button was lit all along.' },
+          { action: 'Symmetry, mirror in hand', result: 'Puts it away. Cuts go back to being one line, and the aim is kept for next time.' },
+        ],
+        notes: [
+          <>
+            <b>The axis is not a tool you hold.</b> Taking Symmetry up puts the cutter down --
+            swinging the line and picking a part are the same press a cutter draws with -- but the
+            line itself stays on the face when you pick a cutter back up. That is the whole point
+            of it: a mirror you could not cut with would be no use. The button stays <b>lit</b> for
+            as long as the axis is standing, cutter in hand or not, because what it is telling you
+            is that cuts are being mirrored. Press it with a cutter in hand to take the mirror back
+            and re-aim it; press it while you are holding it to put it away.
+          </>,
+          <>
+            <b>Only the lit part is cut.</b> A line that strays over the axis is clipped where it
+            crosses, and what is left is what gets reflected -- so the two halves always meet
+            exactly on the mirror rather than nearly. A line drawn entirely in a dimmed part has
+            nothing to burn, and Apply says so.
+          </>,
+          <>
+            <b>Both halves come off together.</b> The pieces a mirrored cut makes are lit as a set:
+            a piece and its images are one decision, so <b>Del</b> and <b>Discard pieces</b> take
+            all of them at once, and one undo puts them all back.
+          </>,
+          <>
+            Each face keeps its own mirror, so a 45-degree axis set up on the front is still there
+            when you turn back to the front, and the top is upright until you say otherwise. How
+            near the line has to be swung before it holds at a stop is the <b>Angle</b> under
+            <b> Snap</b> in the bar -- and turning Snap off lets it sit at any angle at all.
+          </>,
+          <>
+            <b>Draw half a shape and the mirror closes it.</b> A line that starts on the axis and
+            comes back to it is sewn to its own reflection, so what burns is one ring and the shape
+            drops out of the block as an island -- which is what the completed silhouette on screen
+            was promising. A line that ends anywhere else runs out to the border along its own
+            tangent, as every open line here does.
           </>,
         ],
       },
@@ -699,7 +762,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Its arrows',
         summary:
-          'A selected sketch gets three: two along the outline’s own edges, and one facing away from the face.',
+          'A selected sketch gets three, standing on the end of the extrusion rather than on the sketch: two along the outline’s own edges, and one facing away from the face.',
         steps: [
           {
             action: 'Drag the sketch',
@@ -1202,26 +1265,28 @@ export const HELP_SECTIONS: HelpSection[] = [
         title: 'Units',
         summary: (
           <>
-            <b>Settings</b>, the cog at the end of the bar: mm, cm, or auto per value. It changes
-            what the numbers are READ in, never the model.
+            <b>Settings</b>, the cog at the end of the bar, which opens over the app:{' '}
+            <b>mm</b>, <b>cm</b> or <b>in</b>. It changes what the numbers are READ in, never the
+            model. The app opens in millimetres.
           </>
         ),
         notes: [
           <>
             <b>It reaches the tools as well as the readouts.</b> Brush and tool sizes, the wall on
-            the lathe and the flying speed are all read in the unit you pick here. The one thing
-            they cannot take is <b>auto</b>, which chooses a unit per value: a size slider dragged
-            under it would renumber its own scale mid-drag, and a scale that moves cannot be aimed.
-            On auto they keep the last unit they were given, and the mm / cm switch beside each one
-            is how to change it from there -- or to read one panel in something other than the rest
-            of the app.
+            the lathe and the flying speed are all read in the unit you pick here. The switch beside
+            one of those fields overrides it for that field alone, for a tool you want read in
+            something other than the rest of the app.
+          </>,
+          <>
+            <b>Inches are shown to thousandths</b>, which is the unit's own convention: 25.4 mm to
+            the inch, so a millimetre is 0.039 of one and two places would round a nudge away.
           </>,
         ],
       },
       {
         title: 'Theme',
         summary:
-          "Which palette the app wears, in the same panel. It repaints the app and never an object's own colour.",
+          "Which palette the app wears, one row below the units. It repaints the app and never an object's own colour.",
       },
       {
         title: 'Outlines',
@@ -1232,7 +1297,7 @@ export const HELP_SECTIONS: HelpSection[] = [
         title: 'Game Controls',
         summary: (
           <>
-            The last row in the same panel, and the only one that changes what your HANDS do rather
+            The last row on that screen, and the only one that changes what your HANDS do rather
             than what the app looks like. Switched on, the modelling camera is driven the way a
             game's is: <b>W A S D</b> to walk, <b>Space</b> and <b>C</b> to rise and sink, and the
             right mouse button held down to look about. The cursor disappears while you look,

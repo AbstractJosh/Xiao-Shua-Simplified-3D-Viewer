@@ -4,7 +4,7 @@ import { solidLabel } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
-import type { UnitMode } from '../units'
+import type { Unit } from '../units'
 import { formatLength, formatSize } from '../units'
 import { Section } from './Field'
 import { MergeIcon } from './navIcons'
@@ -23,7 +23,7 @@ import { MergeIcon } from './navIcons'
  * ellipsised by `.feature-text` when the panel is narrow, and a suffix repeated
  * mid-string is the first thing to cost it room.
  */
-function shapeLabel(f: Feature, unit: UnitMode): string {
+function shapeLabel(f: Feature, unit: Unit): string {
   return f.shape.type === 'circle'
     ? `Circle r${formatLength(f.shape.r, unit)}`
     : f.shape.type === 'rect'
@@ -41,7 +41,7 @@ function shapeLabel(f: Feature, unit: UnitMode): string {
  * two collapsed into one slider, and losing it would leave a column of rows
  * that differ by one word.
  */
-function action(f: Feature, unit: UnitMode): { text: string; tone: string } {
+function action(f: Feature, unit: Unit): { text: string; tone: string } {
   if (f.depth === 0) return { text: 'projection', tone: '' }
   const out = f.depth > 0
   return {

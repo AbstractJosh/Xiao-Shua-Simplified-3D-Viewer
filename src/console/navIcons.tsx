@@ -175,6 +175,30 @@ export function FreehandIcon() {
  * straight, which is the tool's resting mode and the honest advertisement for
  * it: the curves are a choice you make about a line that already exists.
  */
+/**
+ * A mark and its reflection, with the mirror standing between them.
+ *
+ * THE DASHED LINE IS THE TOOL and the two shapes are what it does, which is the
+ * one way round that reads: an icon of a line alone is a ruler, and an icon of
+ * two shapes alone is a copy. Dashed because the axis burns nothing -- every
+ * other line in this set is material or a cut, and this is the only one that is
+ * a guide, so it is drawn the way a guide is drawn.
+ *
+ * The pair are deliberately NOT symmetrical about their own centres: an L
+ * facing its own mirror image says reflected where a circle either side of a
+ * line would say nothing but "two". It is the same reason the cut icons draw a
+ * line that runs PAST the square rather than stopping at it.
+ */
+export function SymmetryIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden>
+      <path d="M10 2.2V17.8" strokeDasharray="2.6 2.2" {...STROKE} />
+      <path d="M7.4 5.6H3.6v8.8" {...STROKE} />
+      <path d="M12.6 5.6h3.8v8.8" {...STROKE} />
+    </svg>
+  )
+}
+
 export function PointCutIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden>

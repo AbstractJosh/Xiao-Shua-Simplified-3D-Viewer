@@ -6,7 +6,7 @@ import { Tip } from './Tip'
 import { trackWindow } from './scrub'
 import { useTools } from '../store/toolStore'
 import type { Unit } from '../units'
-import { UNITS, decimalsOf, fromDisplay, resolveUnit, stepIn, suffixOf, toDisplay } from '../units'
+import { UNITS, decimalsOf, fromDisplay, stepIn, suffixOf, toDisplay } from '../units'
 
 /**
  * The stretch of range a slider track shows, held steady while it is dragged.
@@ -17,7 +17,7 @@ import { UNITS, decimalsOf, fromDisplay, resolveUnit, stepIn, suffixOf, toDispla
  * track behaves like a track for the whole gesture and recentres once, on
  * release.
  *
- * The same rule as `useHeldUnit`, and as `scrubbed`, and as the gizmo: a
+ * The same rule as `scrubbed` and as the gizmo: a
  * gesture is measured from the press, never accumulated as it goes.
  */
 function useHeldWindow(value: number, min: number, max: number, step: number) {
@@ -41,13 +41,7 @@ function useHeldWindow(value: number, min: number, max: number, step: number) {
 }
 
 /**
- * A unit something has settled on, and the hold that keeps it settled across a
- * scrub. `unit` is null for a control that is not a length at all.
- */
-type HeldUnit = { unit: Unit | null; hold: () => void; release: () => void }
-
-/**
- * The unit a whole SECTION has settled on, for every length inside it.
+ * The unit a whole SECTION shows its lengths in.
  *
  * A panel used to write its unit on every row -- "cm" under Position X, under
  * Y, under Z, under Width, under Height, under Depth -- which is the same word
@@ -55,41 +49,21 @@ type HeldUnit = { unit: Unit | null; hold: () => void; release: () => void }
  * extra lines of height for it. Said once at the top of the panel it costs one
  * corner nothing else was using.
  *
- * That only works if every row really is in that unit, so the section resolves
- * ONE and hands it down here: the same bargain `Vec3Field` already strikes
- * across its three rows, one level up. It also carries the HOLD, so a scrub
- * that crosses 10 mm cannot change the unit under its own feet -- the freeze
- * has to sit wherever the choosing does.
- *
  * Null for a field outside any such section -- the snap distance in the tool
- * island -- which goes on choosing and labelling its own.
- */
-const UnitScope = createContext<HeldUnit | null>(null)
-
-/**
- * The unit a length field should show itself in, held steady across a scrub.
+ * island -- which goes on labelling its own.
  *
- * `auto` picks per value, so without the hold a drag could change the unit
- * under its own feet. The held value is a ref rather than state on purpose:
- * setting it must not itself cause a render, and every render that matters --
- * the ones the drag is already causing -- reads it on the way through. Exactly
- * the rule the gizmo and `scrub.ts` follow, where a gesture is measured from
- * the press rather than accumulated frame by frame.
+ * IT USED TO CARRY A HOLD as well, and does not need to any more: with `auto`
+ * gone there is no rule that could change a unit under a dragging hand, so
+ * there is nothing to freeze for the length of a gesture. What is left is the
+ * unit itself. See `Unit` in `units.ts`.
  */
-function useHeldUnit(sceneValue: number, active: boolean): HeldUnit {
-  const mode = useTools((s) => s.displayUnit)
-  const held = useRef<Unit | null>(null)
-  if (!active) return { unit: null, hold: () => {}, release: () => {} }
-  const unit = held.current ?? resolveUnit(sceneValue, mode)
-  return {
-    unit,
-    hold: () => {
-      held.current = unit
-    },
-    release: () => {
-      held.current = null
-    },
-  }
+const UnitScope = createContext<Unit | null>(null)
+
+/** The app's unit, for a control that is showing a length. Null for one that is
+ *  not a length at all, which is what takes the suffix off a plain number. */
+function useShownUnit(active: boolean): Unit | null {
+  const unit = useTools((s) => s.displayUnit)
+  return active ? unit : null
 }
 
 /**
@@ -99,23 +73,16 @@ function useHeldUnit(sceneValue: number, active: boolean): HeldUnit {
  * header -- and the row shows the bare number. Outside one the field is on its
  * own and wears its own suffix, exactly as it always did.
  *
- * Both hooks run whatever the answer, which is what keeps the hook order fixed:
- * the field's own resolution is simply switched off while a scope is in force.
+ * The hook runs whatever the answer, which is what keeps the hook order fixed.
  */
-function useFieldUnit(
-  sceneValue: number,
-  active: boolean,
-  pinned?: Unit
-): HeldUnit & { labelled: boolean } {
+function useFieldUnit(active: boolean, pinned?: Unit): { unit: Unit | null; labelled: boolean } {
   const scope = useContext(UnitScope)
-  const own = useHeldUnit(sceneValue, active && pinned === undefined && scope === null)
-  // A PIN ANSWERS AHEAD OF BOTH. There is nothing to resolve, so nothing to
-  // hold across a gesture; and the field is not in the section's unit, so the
-  // section cannot take the label off it. Both hooks still run, whatever the
-  // answer, which is what keeps the hook order fixed.
-  if (pinned) return { unit: pinned, hold: () => {}, release: () => {}, labelled: true }
-  if (active && scope) return { ...scope, labelled: false }
-  return { ...own, labelled: own.unit !== null }
+  const own = useShownUnit(active && pinned === undefined && scope === null)
+  // A PIN ANSWERS AHEAD OF BOTH: the field is not in the section's unit, so the
+  // section cannot take the label off it.
+  if (pinned) return { unit: pinned, labelled: true }
+  if (active && scope) return { unit: scope, labelled: false }
+  return { unit: own, labelled: own !== null }
 }
 
 /**
@@ -155,9 +122,8 @@ function ScrubNumber({
   max,
   step,
   decimals,
+  hoverText = true,
   onChange,
-  onPressStart,
-  onPressEnd,
 }: {
   className: string
   value: number
@@ -165,13 +131,9 @@ function ScrubNumber({
   max: number
   step: number
   decimals: number
+  /** Whether to name the two gestures on hover. See `NumberFieldProps`. */
+  hoverText?: boolean
   onChange: (v: number) => void
-  /** Told when a scrub begins and ends, so an owner converting units can HOLD
-   *  the unit for the gesture. Without it a drag that crosses 10 mm would
-   *  re-resolve to centimetres mid-flight, and `from` -- captured in the old
-   *  unit -- would send the value somewhere the pointer never went. */
-  onPressStart?: () => void
-  onPressEnd?: () => void
 }) {
   const box = useRef<HTMLInputElement>(null)
   const [editing, setEditing] = useState(false)
@@ -201,7 +163,6 @@ function ScrubNumber({
   const down = (e: ReactPointerEvent<HTMLInputElement>) => {
     if (editing || e.button !== 0) return
     press.current = { x: e.clientX, from: value, live: false }
-    onPressStart?.()
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
@@ -220,7 +181,6 @@ function ScrubNumber({
       e.currentTarget.releasePointerCapture(e.pointerId)
     }
     press.current = null
-    onPressEnd?.()
   }
 
   return (
@@ -261,7 +221,7 @@ function ScrubNumber({
         }
       }}
       onBlur={() => setEditing(false)}
-      title="Drag to change, double-click to type"
+      title={hoverText ? 'Drag to change, double-click to type' : undefined}
     />
   )
 }
@@ -283,21 +243,21 @@ type NumberFieldProps = {
    *
    * `min`, `max` and `step` stay in SCENE units here -- the opposite of the
    * `degrees` convention on `Vec3Field`, and deliberately. A rotation's unit is
-   * fixed, so a caller can express its bounds in degrees; a length's unit is
-   * not, because `auto` chooses it per value, and a caller cannot write bounds
-   * in a unit it has no way of knowing.
+   * fixed, so a caller can express its bounds in degrees; a length's is whatever
+   * the app is set to, and a caller cannot write bounds in a unit it has no way
+   * of knowing.
    */
   unit?: boolean
   /**
-   * PIN this field to one unit and let the reader change it, instead of the
-   * app-wide mode choosing one per value. Implies `unit`, and overrides both it
-   * and any `Section` unit the field sits inside; `min`, `max` and `step` stay
-   * in SCENE units exactly as they do above.
+   * PIN this field to one unit and let the reader change it, instead of taking
+   * the app's. Implies `unit`, and overrides both it and any `Section` unit the
+   * field sits inside; `min`, `max` and `step` stay in SCENE units exactly as
+   * they do above.
    *
-   * For a control that SETS a length rather than reporting one, where `auto`
-   * renumbering the scale mid-drag makes it unaimable -- see `erodeSizeUnit`.
-   * The suffix becomes the picker, so the unit is chosen where it is read and
-   * the row costs no extra height.
+   * For a control somebody wants read in a unit of its own -- a brush size in
+   * centimetres while the readouts are in millimetres. See `erodeSizeUnit`. The
+   * suffix becomes the picker, so the unit is chosen where it is read and the
+   * row costs no extra height.
    */
   ownUnit?: { unit: Unit; onChange: (unit: Unit) => void }
   /**
@@ -309,6 +269,18 @@ type NumberFieldProps = {
    * instead of every row saying it again. See `UnitPicker` and `HollowTool`.
    */
   pinUnit?: Unit
+  /**
+   * Whether this field may explain itself on HOVER -- the browser tooltip
+   * naming the scrub gesture on the number, and the one on the reset button.
+   *
+   * On by default, because in a console panel that hint is the only thing that
+   * says a number box can be dragged, and there is no room on the row to write
+   * it. Turned off by the settings screen, which is built on the opposite rule:
+   * everything there is said in the open, beside the control, where a touch
+   * screen and a keyboard can reach it too. It takes only the TITLES -- the
+   * reset button keeps its `aria-label`, so nothing becomes nameless.
+   */
+  hoverText?: boolean
   onChange: (v: number) => void
 }
 
@@ -325,11 +297,11 @@ export function NumberField({
   unit = false,
   ownUnit,
   pinUnit,
+  hoverText = true,
   onChange,
 }: NumberFieldProps) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
-  const { unit: shown, labelled, hold, release } = useFieldUnit(
-    value,
+  const { unit: shown, labelled } = useFieldUnit(
     unit || ownUnit !== undefined || pinUnit !== undefined,
     ownUnit?.unit ?? pinUnit
   )
@@ -353,6 +325,7 @@ export function NumberField({
         {resetTo !== undefined && (
           <ResetButton
             label={`Reset ${label.toLowerCase()}`}
+            hoverText={hoverText}
             disabled={Math.abs(value - resetTo) <= RESET_EPS}
             onClick={() => onChange(resetTo)}
           />
@@ -364,8 +337,7 @@ export function NumberField({
           max={ui(max)}
           step={uiStep}
           decimals={uiPlaces}
-          onPressStart={hold}
-          onPressEnd={release}
+          hoverText={hoverText}
           onChange={(v) => onChange(clamp(raw(v)))}
         />
         {/* Where the bare suffix goes when the field owns its unit. In the same
@@ -446,7 +418,7 @@ export function Section({
   collapsible = false,
   defaultOpen = true,
   right,
-  lengths,
+  hasLengths,
 }: {
   title: string
   /**
@@ -460,27 +432,19 @@ export function Section({
   defaultOpen?: boolean
   right?: React.ReactNode
   /**
-   * THE LENGTHS THIS SECTION SHOWS, in scene units.
+   * THIS SECTION SHOWS LENGTHS: wear the app's unit at the top right, and let
+   * every length field inside show itself in it rather than writing it out
+   * again per row. See `UnitScope`.
    *
-   * Given them it settles on one unit for all of them -- chosen from the
-   * largest, the way `Vec3Field` chooses across its three rows -- wears it at
-   * its top right, and every length field inside shows itself in that unit
-   * instead of writing it out again per row. See `UnitScope`.
-   *
-   * The VALUES rather than the count, because `auto` picks per magnitude and
-   * the section has to pick the same one its rows would have. Omitted, nothing
-   * changes: the fields choose and label their own, one at a time.
+   * A FLAG, where it used to be the values themselves. `auto` chose a unit per
+   * magnitude, so the section had to be handed its lengths to pick the same one
+   * its rows would have picked; there is one unit now and nothing to choose
+   * from. Left off, nothing changes: the fields label their own, one at a time.
    */
-  lengths?: number[]
+  hasLengths?: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
-  // One unit for the whole section, held for as long as anything inside it is
-  // being dragged. `0` for a section with no lengths at all reads as
-  // millimetres and is never shown, since the badge hangs off `lengths`.
-  const unit = useHeldUnit(
-    lengths === undefined ? 0 : Math.max(0, ...lengths.map((n) => Math.abs(n))),
-    lengths !== undefined
-  )
+  const unit = useShownUnit(hasLengths === true)
   // Collapsed state is local, so a section that later loses `collapsible` can
   // never stay stuck shut behind a flag nobody can reach any more.
   const shown = collapsible ? open : true
@@ -517,15 +481,15 @@ export function Section({
         {/* The one loud thing in a muted header, because it is the key to every
             number under it: take it away and the panel is a column of bare
             figures that could be millimetres or metres. */}
-        {unit.unit && (
-          <span className="section-unit" title={`Every length here is in ${suffixOf(unit.unit)}`}>
-            {suffixOf(unit.unit)}
+        {unit && (
+          <span className="section-unit" title={`Every length here is in ${suffixOf(unit)}`}>
+            {suffixOf(unit)}
           </span>
         )}
         {right && <span className="section-right">{right}</span>}
       </h2>
       {shown &&
-        (unit.unit === null ? (
+        (unit === null ? (
           children
         ) : (
           <UnitScope.Provider value={unit}>{children}</UnitScope.Provider>
@@ -556,10 +520,14 @@ const RESET_EPS = 1e-9
  */
 function ResetButton({
   label,
+  hoverText = true,
   disabled,
   onClick,
 }: {
   label: string
+  /** Whether the name is also shown on hover. The `aria-label` stays either
+   *  way -- this is a tooltip, not the button's name. See `NumberFieldProps`. */
+  hoverText?: boolean
   disabled: boolean
   onClick: () => void
 }) {
@@ -567,7 +535,7 @@ function ResetButton({
     <button
       type="button"
       className="reset-btn"
-      title={label}
+      title={hoverText ? label : undefined}
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
@@ -604,8 +572,6 @@ function AxisRow({
   decimals,
   resetTo,
   suffix,
-  onPressStart,
-  onPressEnd,
   onChange,
 }: {
   axis: string
@@ -618,8 +584,6 @@ function AxisRow({
   /** Shows a reset control for this axis alone. Omitted leaves the row as it was. */
   resetTo?: number
   suffix?: string
-  onPressStart?: () => void
-  onPressEnd?: () => void
   onChange: (v: number) => void
 }) {
   const track = useHeldWindow(value, min, max, step)
@@ -645,8 +609,6 @@ function AxisRow({
         max={max}
         step={step}
         decimals={decimals}
-        onPressStart={onPressStart}
-        onPressEnd={onPressEnd}
         onChange={(v) => onChange(clampTo(v, min, max))}
       />
       {suffix && <span className="vec3-unit">{suffix}</span>}
@@ -703,12 +665,7 @@ export function Vec3Field({
   // Whole degrees are the useful granularity for a tilt; lengths need hundredths.
   const stepped = step ?? (degrees ? 1 : 0.01)
   const places = decimals ?? (degrees ? 0 : 2)
-  // ONE unit for all three rows, chosen from the largest of them. Resolved per
-  // axis it would be honest but unreadable: a position reads as a triple, and a
-  // triple whose X is in metres and whose Y is in millimetres cannot be
-  // compared down the column, which is the whole point of stacking them.
-  const widest = Math.max(Math.abs(value[0]), Math.abs(value[1]), Math.abs(value[2]))
-  const { unit: shown, labelled, hold, release } = useFieldUnit(widest, unit && !degrees)
+  const { unit: shown, labelled } = useFieldUnit(unit && !degrees)
   const toUi = (v: number) =>
     degrees ? (v * 180) / Math.PI : shown ? toDisplay(v, shown) : v
   const fromUi = (v: number) =>
@@ -750,8 +707,6 @@ export function Vec3Field({
           decimals={shown ? decimalsOf(shown) : places}
           resetTo={resetTo}
           suffix={shown && labelled ? suffixOf(shown) : undefined}
-          onPressStart={hold}
-          onPressEnd={release}
           onChange={(v) => setAxis(i, v)}
         />
       ))}
@@ -784,10 +739,7 @@ export function Vec2Field({
   unit?: boolean
   onChange: (v: Vec2) => void
 }) {
-  // One unit across the pair, from the larger of them, for the reason
-  // `Vec3Field` uses one across its three.
-  const widest = Math.max(Math.abs(value[0]), Math.abs(value[1]))
-  const { unit: shown, labelled, hold, release } = useFieldUnit(widest, unit)
+  const { unit: shown, labelled } = useFieldUnit(unit)
   const ui = (v: number) => (shown ? toDisplay(v, shown) : v)
   const raw = (v: number) => (shown ? fromDisplay(v, shown) : v)
 
@@ -805,8 +757,6 @@ export function Vec2Field({
           step={shown ? stepIn(step, shown) : step}
           decimals={shown ? decimalsOf(shown) : 2}
           suffix={shown && labelled ? suffixOf(shown) : undefined}
-          onPressStart={hold}
-          onPressEnd={release}
           onChange={(u) =>
             onChange(i === 0 ? [raw(u), value[1]] : [value[0], raw(u)])
           }

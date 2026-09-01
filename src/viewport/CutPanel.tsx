@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLaser } from '../store/laserStore'
-import { useTools } from '../store/toolStore'
-import { draftLine, draftReady, useCutDraft } from './cutDraft'
+import { mirrorOn, useTools } from '../store/toolStore'
+import { draftCut, draftReady, useCutDraft } from './cutDraft'
 
 /**
  * Apply, Reset, and what happened: the panel that burns the line, standing in
@@ -66,10 +66,15 @@ export function CutPanel() {
   const stroke = useCutDraft((s) => s.stroke)
   const points = useCutDraft((s) => s.points)
   const handles = useCutDraft((s) => s.handles)
+  const closed = useCutDraft((s) => s.closed)
   const clear = useCutDraft((s) => s.clear)
 
   const offcut = useLaser((s) => s.offcut)
   const choices = useLaser((s) => s.choices)
+  /* The mirror on the face being drawn on, or null. What decides whether Apply
+     burns one line or four, and whether an empty result means the line missed
+     the block or was clipped away by the axis. */
+  const mirror = useTools(face ? mirrorOn(face) : () => null)
   const nextOffcut = useLaser((s) => s.nextOffcut)
   const discardOffcut = useLaser((s) => s.discardOffcut)
 
@@ -92,7 +97,11 @@ export function CutPanel() {
    */
   const [status, setStatus] = useState<{ text: string; key: string } | null>(null)
 
-  const drawnKey = `${stroke.length}|${points.length}|${fit}`
+  // `closed` is part of the key because bridging the loop is a change to the
+  // line, and a refusal describes one line: "does not cross the block" is
+  // exactly the message a loop drawn clear of the block has just fixed or
+  // earned, and it must not be left standing over the other one.
+  const drawnKey = `${stroke.length}|${points.length}|${closed}|${fit}`
   const showing = status !== null && status.key === drawnKey
 
   // And it goes on its own even if nothing is drawn after it: it stands over
@@ -109,20 +118,38 @@ export function CutPanel() {
    *  true if the refusal ever starts touching the draft. */
   const keyNow = () => {
     const d = useCutDraft.getState()
-    return `${d.stroke.length}|${d.points.length}|${useTools.getState().fitCurve}`
+    return `${d.stroke.length}|${d.points.length}|${d.closed}|${useTools.getState().fitCurve}`
   }
 
   const fire = () => {
     const drafted = useCutDraft.getState()
     if (drafted.face === null) return
-    const line = draftLine(drafted, useTools.getState().fitCurve)
-    const split = useLaser.getState().cut(line, drafted.face)
+    // WHAT THE MIRROR MAKES OF THE DRAWING, not the drawing: with an axis
+    // standing this is two lines or four, and they are handed to the cut
+    // together so that the whole symmetrical act is one step of history. The
+    // preview came through the very same call -- see `draftCut` -- so what
+    // burns is what was on screen.
+    const mirror = mirrorOn(drafted.face)(useTools.getState())
+    const lines = draftCut(drafted, useTools.getState().fitCurve, mirror)
+    const split = useLaser.getState().cut(lines, drafted.face, mirror)
     if (split === 0) {
       // The line missed, so the drawing is KEPT: it is the thing that needs
       // moving, and throwing it away would make the user redraw it to find out
       // what was wrong with it. This is the one outcome the scene cannot show
       // by itself -- nothing moved -- so it is the one that says anything.
-      setStatus({ text: 'The line does not cross the block', key: keyNow() })
+      //
+      // A MIRROR GIVES THE REFUSAL A SECOND THING TO SAY, and they are worth
+      // telling apart: a line drawn wholly in a dimmed part of the face has not
+      // missed the block at all, it has been clipped away to nothing, and being
+      // told it "does not cross the block" would send the user off measuring
+      // the wrong thing.
+      setStatus({
+        text:
+          lines.length === 0 && mirror
+            ? 'Draw in the lit part of the face'
+            : 'The line does not cross the block',
+        key: keyNow(),
+      })
       return
     }
     // On a hit the drawing goes: the line has been burned, and one left lying
@@ -142,8 +169,9 @@ export function CutPanel() {
     stroke,
     points,
     handles,
+    closed,
   }
-  const ready = face !== null && draftReady(draft, fit)
+  const ready = face !== null && draftReady(draft, fit, mirror)
 
   return (
     <div className="cut-panel">
@@ -201,14 +229,17 @@ export function CutPanel() {
           </button>
         )}
 
-        {offcut !== null && (
+        {offcut.length > 0 && (
           <button
             type="button"
             className="nav-action"
             title="Delete does the same, with the pointer anywhere over the bed."
             onClick={discardOffcut}
           >
-            Discard piece
+            {/* Named for how many it takes, because under a mirror it takes
+                every image of the piece at once and a button reading "Discard
+                piece" would be understating what one press does. */}
+            {offcut.length > 1 ? 'Discard pieces' : 'Discard piece'}
           </button>
         )}
 
