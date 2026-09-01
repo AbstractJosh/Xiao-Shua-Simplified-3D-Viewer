@@ -3,15 +3,32 @@ import type { Feature, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
+import { useTools } from '../store/toolStore'
+import type { UnitMode } from '../units'
+import { formatLength, formatSize } from '../units'
 import { Section } from './Field'
 import { MergeIcon } from './navIcons'
 
-function shapeLabel(f: Feature): string {
+/**
+ * How big the sketch is, IN THE UNIT THE APP IS SET TO.
+ *
+ * These rows used to print the scene number itself -- `Circle r0.15` -- which
+ * is the one measurement in the app that was in no unit at all. Fifteen
+ * hundredths of what? The rule at the top of `units.ts` is that scene units
+ * never leave the geometry, and a row of the tree is as much a readout as a
+ * ruler's label is, so it converts like one.
+ *
+ * A rectangle's two sides go through `formatSize`, which says the unit once at
+ * the end rather than after each side: `Rect 15.0 x 30.0 mm`. The row is
+ * ellipsised by `.feature-text` when the panel is narrow, and a suffix repeated
+ * mid-string is the first thing to cost it room.
+ */
+function shapeLabel(f: Feature, unit: UnitMode): string {
   return f.shape.type === 'circle'
-    ? `Circle r${f.shape.r.toFixed(2)}`
+    ? `Circle r${formatLength(f.shape.r, unit)}`
     : f.shape.type === 'rect'
-      ? `Rect ${f.shape.w.toFixed(2)}x${f.shape.h.toFixed(2)}`
-      : `${f.shape.sides}-gon r${f.shape.r.toFixed(2)}`
+      ? `Rect ${formatSize([f.shape.w, f.shape.h], unit)}`
+      : `${f.shape.sides}-gon r${formatLength(f.shape.r, unit)}`
 }
 
 /**
@@ -24,11 +41,14 @@ function shapeLabel(f: Feature): string {
  * two collapsed into one slider, and losing it would leave a column of rows
  * that differ by one word.
  */
-function action(f: Feature): { text: string; tone: string } {
+function action(f: Feature, unit: UnitMode): { text: string; tone: string } {
   if (f.depth === 0) return { text: 'projection', tone: '' }
   const out = f.depth > 0
   return {
-    text: `${out ? 'extrude' : 'intrude'} ${Math.abs(f.depth).toFixed(2)}`,
+    // A LENGTH, and shown as one -- the reach is the same kind of number the
+    // Inspector's Extrude field holds and it now reads the same way. See
+    // `shapeLabel`.
+    text: `${out ? 'extrude' : 'intrude'} ${formatLength(Math.abs(f.depth), unit)}`,
     tone: out ? ' feature-out' : ' feature-in',
   }
 }
@@ -180,6 +200,9 @@ export function SceneTree() {
   // exact id it can name, so an unrecognised entry simply lights nothing up
   // rather than mislabelling the row it happens to sit beside.
   const failed = useEvalStatus((s) => s.failed)
+  // The tree is a readout like any other, so its sizes follow the app-wide
+  // unit -- see `shapeLabel`.
+  const displayUnit = useTools((s) => s.displayUnit)
 
   if (objects.length === 0) {
     return (
@@ -300,9 +323,9 @@ export function SceneTree() {
                     >
                       <span className="feature-index">{j + 1}</span>
                       <span className="feature-text">
-                        {shapeLabel(f)} -{' '}
-                        <span className={`feature-action${action(f).tone}`}>
-                          {action(f).text}
+                        {shapeLabel(f, displayUnit)} -{' '}
+                        <span className={`feature-action${action(f, displayUnit).tone}`}>
+                          {action(f, displayUnit).text}
                         </span>
                         {failed.includes(f.id) && (
                           <span className="feature-error" title="This feature could not be applied">

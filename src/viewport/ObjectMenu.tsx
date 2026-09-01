@@ -34,7 +34,7 @@ export const useObjectMenu = create<MenuState>((set) => ({
  * by which time a pan has usually finished. Without this, every right-drag that
  * happened to start on a solid would end with a menu in the middle of it.
  */
-const CLICK_SLOP = 5
+export const CLICK_SLOP = 5
 
 let pressedAt: { x: number; y: number } | null = null
 
@@ -47,6 +47,27 @@ export function noteRightPress(x: number, y: number): void {
 export function isRightClick(x: number, y: number): boolean {
   if (!pressedAt) return false
   return Math.abs(x - pressedAt.x) <= CLICK_SLOP && Math.abs(y - pressedAt.y) <= CLICK_SLOP
+}
+
+/**
+ * Say outright that this press has become a drag, whatever the pixels claim.
+ *
+ * THE DISTANCE TEST CANNOT SEE A LOCKED POINTER. Game Controls take the mouse
+ * away from the window once a right-drag is plainly a look -- that is what
+ * stops the cursor reaching the edge of the screen and stopping the turn -- and
+ * a captured pointer reports the same `clientX` and `clientY` for the whole
+ * gesture, because there is no longer a cursor anywhere for them to describe.
+ * Measured on those, a hundred-and-eighty-degree turn releases within a pixel
+ * of where it started and the menu opens over the middle of it.
+ *
+ * So the gesture that knows says so. See `GameControls`, which calls this the
+ * moment a look passes the same slop the menu judges by -- which is also the
+ * moment it takes the pointer. Nothing else calls it, and with the mode off
+ * nothing does: the distance test is exactly right when there is a cursor to
+ * measure.
+ */
+export function cancelRightPress(): void {
+  pressedAt = null
 }
 
 /**

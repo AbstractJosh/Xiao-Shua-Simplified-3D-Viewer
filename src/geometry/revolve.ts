@@ -1,6 +1,10 @@
 import { BufferAttribute, BufferGeometry } from 'three'
-import { bore, pieceSpan, ringHeight } from './clay'
+import { bore, pieceSpan, ringHeight, widestRadius } from './clay'
 import type { Clay } from './clay'
+import { meridian, roundFacets } from './meridian'
+import type { Meridian } from './meridian'
+
+export { TURN_FACETS } from './meridian'
 
 /**
  * The lathe's one way OUT: the wall of radii, turned into triangles.
@@ -33,28 +37,23 @@ import type { Clay } from './clay'
  */
 
 /**
- * How many facets go round a ROUND piece.
+ * WHAT IT COSTS, which is the sum this file used to get wrong.
  *
- * Sixty-four is where a turned piece stops looking faceted at the size these
- * are made at: on a 10 cm bowl each facet is under 5 mm of arc, which is finer
- * than the outline the modelling screen draws over it. It is also a power of
- * two, so a piece can be decimated in half later without leaving a seam in an
- * odd place.
+ * The sweep is two counts multiplied together: how many rings up the piece, and
+ * how many facets round it. Both of them used to be constants -- ninety-six
+ * rings because that is how a wall is STORED, sixty-four facets because that is
+ * enough for the widest piece the stock allows -- and a constant times a
+ * constant is a triangle count that says nothing about the shape. Every piece
+ * this screen made, a bare cylinder and a fluted bowl alike, arrived in the
+ * scene at 12,288 triangles.
  *
- * The cost is triangles, and the sum is worth writing down: 96 rings by 64
- * facets is 12,160 triangles for the wall and 128 more for the caps. That is a
- * couple of imported models' worth for a shape with no detail in it -- and it
- * is deliberate, because the alternative is a piece whose profile is coarser in
- * the scene than it was on the lathe. Anybody who wants it lighter can say so
- * with a number.
- *
- * A POLYGONAL piece ignores it and sweeps its own side count instead, which is
- * worth seeing plainly: a round piece was never a curve here either. It has
- * always been an inscribed 64-gon, so picking a hexagon does not switch on a
- * second kind of geometry. It turns the same dial down to six and stops
- * pretending the facets are not there.
+ * Now both counts are fitted to the piece against ONE tolerance: `meridian`
+ * thins the rings to the ones the profile earns and `roundFacets` picks the
+ * facets from how wide the piece actually is. A cylinder is 192 triangles, a
+ * cone 288, a domed lid a couple of thousand -- and none of them is a
+ * millimetre's tenth away from the profile the lathe drew. See `meridian.ts`,
+ * which owns both answers and the arithmetic behind them.
  */
-export const TURN_FACETS = 64
 
 /**
  * One column of vertices up the piece: where it stands, and which way the wall
@@ -91,9 +90,9 @@ type Column = {
  * against a round one's 6,240. The faceted pieces are the cheap ones by a wide
  * margin.
  *
- * `segments` is passed in rather than read off the clay because a round piece
- * may be swept at any count the caller names -- see `revolveClay` -- while a
- * polygonal one's count IS its side count and has already been settled.
+ * `segments` is passed in rather than read off the clay because a round piece's
+ * count is worked out from its size -- see `roundFacets` -- while a polygonal
+ * one's count IS its side count and has already been settled.
  */
 function sweepColumns(
   sides: number | null,
@@ -152,16 +151,20 @@ function sweepColumns(
  * column faces is decided once, in `sweepColumns`, and the sweep below never
  * has to ask which kind of piece it is building.
  *
- * `facets` sets what a ROUND piece is swept with. A polygonal one ignores it:
- * its facet count is its side count, and that is the user's to set.
+ * `facets` OVERRIDES what a ROUND piece is swept with, and is meant for a
+ * caller that knows something this file does not -- a thumbnail, a check
+ * measuring the deficit at a named count. Left out, the count is worked out
+ * from how wide the piece is: see `roundFacets`. A polygonal piece ignores it
+ * either way, because its facet count is its side count and that is the user's
+ * to set.
  */
-export function revolveClay(clay: Clay, facets: number = TURN_FACETS): BufferGeometry {
+export function revolveClay(clay: Clay, facets?: number): BufferGeometry {
   // Three is the floor either way -- two facets enclose nothing -- and it is
   // applied here rather than trusted from the clay, which arrives from a store
   // a panel writes to.
   const segments =
     clay.sides === null
-      ? Math.max(3, Math.floor(facets))
+      ? Math.max(3, Math.floor(facets ?? roundFacets(widestRadius(clay))))
       : Math.max(3, Math.round(clay.sides))
   const { columns, facets: quads } = sweepColumns(clay.sides, segments)
   const mesh = builder()
@@ -191,16 +194,23 @@ export function revolveClay(clay: Clay, facets: number = TURN_FACETS): BufferGeo
     heights.push(ringHeight(clay, i))
     profile.push(clay.wall[i])
   }
-  sweepBand(mesh, columns, quads, profile, heights, true)
 
-  // Then the cavity, if the piece has one: the same sweep, turned inside out.
+  // THINNED BEFORE IT IS SWEPT, and this one line is where a cylinder stopped
+  // costing what a fluted bowl costs. Every ring the profile does not need is a
+  // band of triangles saying nothing, and every corner it does have is now
+  // spelt as two rings back to back rather than shaded away. See `meridian`.
+  const outer = meridian(heights, profile)
+  sweepBand(mesh, columns, quads, outer, true)
+
+  // Then the cavity, if the piece has one: the same sweep, thinned the same
+  // way, turned inside out.
   if (cavity) {
     const steps = cavity.wall.length - 1
     const boreHeights: number[] = []
     for (let i = 0; i <= steps; i += 1) {
       boreHeights.push(cavity.lo + ((cavity.hi - cavity.lo) * i) / steps)
     }
-    sweepBand(mesh, columns, quads, cavity.wall, boreHeights, false)
+    sweepBand(mesh, columns, quads, meridian(boreHeights, cavity.wall), false)
   }
 
   /**
@@ -226,10 +236,14 @@ export function revolveClay(clay: Clay, facets: number = TURN_FACETS): BufferGeo
   // rim and on a domed one are wherever the clay ran out. A cap at a ring that
   // closed is a fan of no area -- the surface has already come to a point there
   // -- and it costs a handful of vertices to keep one rule for both cases.
-  const foot = heights[0]
-  const crown = heights[heights.length - 1]
-  const base = profile[0]
-  const rim = profile[profile.length - 1]
+  // Read off the THINNED profile rather than the stored one. `meridian` keeps
+  // both ends whatever it drops between them -- the caps depend on it -- so
+  // these are the same four numbers either way, and taking them from the rings
+  // actually swept is what keeps a cap welded to the wall it closes.
+  const foot = outer.heights[0]
+  const crown = outer.heights[outer.heights.length - 1]
+  const base = outer.radii[0]
+  const rim = outer.radii[outer.radii.length - 1]
 
   if (cavity && bottomOpen) capAnnulus(mesh, foot, ring(cavity.wall[0]), ring(base), -1)
   else capDisc(mesh, foot, ring(base), -1)
@@ -294,10 +308,10 @@ function sweepBand(
   mesh: Builder,
   columns: Column[],
   quads: [number, number][],
-  radii: number[],
-  heights: number[],
+  line: Meridian,
   outward: boolean
 ): void {
+  const { heights, radii, seams } = line
   const width = columns.length
   const rings = radii.length
   const base = mesh.positions.length / 3
@@ -317,6 +331,14 @@ function sweepBand(
     // piece is faceted going ROUND and smooth going UP -- its flats are curved
     // panels, because the profile they follow is a curve -- so the slope is
     // read off the profile here and combined with the facet's own direction.
+    //
+    // AND THIS IS ALSO WHERE A CORNER BECOMES HARD, for nothing. `meridian`
+    // hands a creased ring back TWICE, at the same height and the same radius,
+    // so the difference below reaches back to the real ring beneath and the
+    // difference above reaches forward to the real ring over it: the first copy
+    // reads the slope of the segment under the corner and the second the slope
+    // of the segment over it. Two one-sided normals at one place is what a hard
+    // edge IS, and the loop never has to learn the word.
     const below = radii[Math.max(0, i - 1)]
     const above = radii[Math.min(rings - 1, i + 1)]
     const rise = heights[Math.min(rings - 1, i + 1)] - heights[Math.max(0, i - 1)]
@@ -336,6 +358,11 @@ function sweepBand(
   // outward wall's two triangles are laid out as below, and an inward one is
   // the same two with a corner swapped.
   for (let i = 0; i < rings - 1; i += 1) {
+    // Nothing between the two copies of a creased ring. They stand at the same
+    // height and the same radius, so the band would be a full turn of triangles
+    // with no area in them -- invisible, but real enough to trip a welder or an
+    // exporter that trusts a triangle to have a normal. See `Meridian.seams`.
+    if (seams[i]) continue
     for (const [left, right] of quads) {
       const a = base + i * width + left
       const b = base + i * width + right

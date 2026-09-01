@@ -123,7 +123,16 @@ const CURVED_MAX_INWARD = 0.85
  */
 const CURVED_MAX_TANGENT = Math.tan((60 * Math.PI) / 180)
 
-/** Segment count shared by every lathe-built primitive and its offset shell. */
+/**
+ * Segment count shared by every RULED lathe primitive -- the cylinder and the
+ * cone -- and its offset shell, and the ceiling on the adaptive counts below.
+ *
+ * Fixed for those two because it is not only a tessellation: their caps are
+ * real `FacePatch` polygons (see `discFace`), so the number is the corner count
+ * of a face a sketch gets clamped inside and an exporter writes out. It is also
+ * cheap to hold -- a whole cylinder is 192 triangles at this count, against the
+ * thousands a sphere was spending.
+ */
 const LATHE_SEGMENTS = 48
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
@@ -136,6 +145,72 @@ const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x
  */
 function latheTolerance(radius: number, segments: number): number {
   return 1e-3 + radius * (1 - Math.cos(Math.PI / segments))
+}
+
+/**
+ * The same, for a surface that curves BOTH WAYS.
+ *
+ * A cylinder's facet is dead straight up the axis and only bends around it, so
+ * one sagitta is the whole story. A sphere's bends along its rings AND along
+ * its meridians, and the middle of a facet -- the deepest point, and the one a
+ * ray aimed off the seams lands on -- is short by both at once. With the two
+ * angular steps equal (see `sphereGeometry` and `capsuleGeometry`) that is
+ * `1 - cos^2` of the half step rather than `1 - cos`: very nearly twice as
+ * deep.
+ *
+ * The 64x40 pair this replaces cleared a ONE-SIDED bound only by accident. Its
+ * rings were finer than its segments, so the second sagitta was small enough to
+ * hide inside the flat 1e-3 -- and a sphere cut evenly, as one cut for its own
+ * size is, drops straight out the bottom of that bound and reads every hit off
+ * a seam as derived geometry.
+ */
+function ballTolerance(radius: number, segments: number): number {
+  const cos = Math.cos(Math.PI / segments)
+  return 1e-3 + radius * (1 - cos * cos)
+}
+
+/**
+ * How deep a facet may sag below the curve it stands in for, in scene units.
+ *
+ * A fifth of a millimetre, one scene unit being ten centimetres -- finer than
+ * anything modelled here is printed or measured to. It is what decides how many
+ * segments a curve gets, because the honest question is "how coarse may this be
+ * before it stops looking round", and that is a question about the RADIUS.
+ *
+ * A fixed count is what this replaces, and it was wrong at both ends. Sixty-four
+ * segments round a five-centimetre ball resolve a facet a fifth of a MICRON
+ * deep: five thousand triangles buying nothing an eye or a printer could find.
+ * The same count on a two-and-a-half-metre one (`MAX_RADIUS`) is the coarsest
+ * surface in the app. Tying the count to the sagitta spends the triangles where
+ * the curve actually bends away from them.
+ */
+const MAX_SAGITTA = 0.002
+
+/**
+ * The floor on a segment count, for when the sagitta rule asks for less.
+ *
+ * It binds under about a centimetre of radius, where the rule alone would hand
+ * back a gem. Sixteen segments sag 1.9% of the radius, which still reads as
+ * round with a bead filling the screen -- and costs 224 triangles either way,
+ * so there is nothing to win by going below it.
+ */
+const MIN_ARC_SEGMENTS = 16
+
+/**
+ * How many segments a full turn at this radius is cut into.
+ *
+ * QUANTISED TO A MULTIPLE OF FOUR, which buys two separate things. A resize
+ * drag walks the radius a pixel at a time, and a count that moved with every
+ * step would re-tessellate the base -- and re-run the whole feature tree over
+ * the new mesh -- on every frame of the drag; in fours it changes a handful of
+ * times across the entire range, and the count is stable either side of each
+ * step. And four divides evenly into both counts derived from it below: a
+ * sphere's rings are half of it, a capsule's cap rows a quarter.
+ */
+export function arcSegments(radius: number): number {
+  const sag = MAX_SAGITTA / Math.max(radius, SURFACE_EPS)
+  const ideal = sag >= 1 ? MIN_ARC_SEGMENTS : Math.PI / Math.acos(1 - sag)
+  return clamp(4 * Math.ceil(ideal / 4), MIN_ARC_SEGMENTS, LATHE_SEGMENTS)
 }
 
 /** Real roots of a t^2 + b t + c, nearest first. */
@@ -414,33 +489,45 @@ export class BoxSurface implements SurfaceDef {
 
 // --- Sphere ----------------------------------------------------------------
 
-const SPHERE_SEGMENTS = 64
-const SPHERE_RINGS = 40
+/**
+ * A UV sphere cut for its own size, with RINGS AT HALF THE SEGMENTS.
+ *
+ * That ratio is the one that makes a facet square: segments divide a full turn
+ * and rings divide a half one, so the two angular steps are equal exactly when
+ * rings are half the segments -- which is the assumption `ballTolerance` reads
+ * a facet's depth off, one step covering both directions.
+ *
+ * The pair this replaces was 64 by 40 at every size from a bead to a boulder:
+ * 4992 triangles, finer up the rings than round the equator, and no relation to
+ * how big the thing being drawn actually was.
+ */
+function sphereGeometry(radius: number): BufferGeometry {
+  const segments = arcSegments(radius)
+  return new SphereGeometry(radius, segments, segments / 2)
+}
 
 export class SphereSurface implements SurfaceDef {
   readonly kind = 'sphere'
   constructor(private radius: number) {}
 
   geometry(): BufferGeometry {
-    return new SphereGeometry(this.radius, SPHERE_SEGMENTS, SPHERE_RINGS)
+    return sphereGeometry(this.radius)
   }
 
   offsetGeometry(d: number): BufferGeometry | null {
     const r = this.radius + d
     if (r <= SURFACE_EPS) return null
-    return new SphereGeometry(r, SPHERE_SEGMENTS, SPHERE_RINGS)
+    return sphereGeometry(r)
   }
 
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
     const len = point.length()
-    // Width segments are the coarser direction (a half step of PI/64 against
-    // the rings' PI/80), so they set the sagitta -- about 1.2e-3 at r = 1. A
-    // flat 1e-3 sat under that, and a hit in the middle of a facet fell through
-    // to derived geometry and lost its exact radial normal.
-    if (
-      Math.abs(len - this.radius) > latheTolerance(this.radius, SPHERE_SEGMENTS) ||
-      len === 0
-    ) {
+    // A facet sags both ways here, and by however much the radius earned it, so
+    // the bound is derived rather than read off a constant. A tighter one lets
+    // a hit in the middle of a facet fall through to derived geometry and lose
+    // its exact radial normal.
+    const tolerance = ballTolerance(this.radius, arcSegments(this.radius))
+    if (Math.abs(len - this.radius) > tolerance || len === 0) {
       return null
     }
     return {
@@ -1096,7 +1183,18 @@ export class ConeSurface implements SurfaceDef {
 
 // --- Capsule ("bean") -------------------------------------------------------
 
-const CAPSULE_CAP_SEGMENTS = 16
+/**
+ * A capsule cut for its own size, with CAP ROWS AT A QUARTER OF THE SEGMENTS.
+ *
+ * The sphere's reasoning one step on: a cap is a QUARTER turn, so a quarter of
+ * the segments makes its rows as tall as the columns are wide. The pair this
+ * replaces was 16 cap rows against 48 segments -- a third finer up the caps
+ * than round them, at every size.
+ */
+function capsuleGeometry(radius: number, height: number): BufferGeometry {
+  const segments = arcSegments(radius)
+  return new CapsuleGeometry(radius, height, segments / 4, segments)
+}
 
 /**
  * The set of points exactly `radius` from the axis SEGMENT, i.e. a sphere swept
@@ -1163,25 +1261,23 @@ export class CapsuleSurface implements SurfaceDef {
   }
 
   geometry(): BufferGeometry {
-    return new CapsuleGeometry(
-      this.radius,
-      this.height,
-      CAPSULE_CAP_SEGMENTS,
-      LATHE_SEGMENTS
-    )
+    return capsuleGeometry(this.radius, this.height)
   }
 
   offsetGeometry(d: number): BufferGeometry | null {
     const r = this.radius + d
     if (r <= SURFACE_EPS) return null
-    return new CapsuleGeometry(r, this.height, CAPSULE_CAP_SEGMENTS, LATHE_SEGMENTS)
+    return capsuleGeometry(r, this.height)
   }
 
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
     const hh = this.height / 2
     const r = this.radius
     const dist = point.distanceTo(this.nearestAxisPoint(point))
-    if (Math.abs(dist - r) > latheTolerance(r, LATHE_SEGMENTS) || dist < SURFACE_EPS) {
+    // A bean's caps are a sphere's, so they sag both ways; its middle is a
+    // barrel and sags one. The looser of the two bounds is the one that has to
+    // hold, or a hit on a cap would read as derived geometry.
+    if (Math.abs(dist - r) > ballTolerance(r, arcSegments(r)) || dist < SURFACE_EPS) {
       return null
     }
     const quarter = (Math.PI / 2) * r

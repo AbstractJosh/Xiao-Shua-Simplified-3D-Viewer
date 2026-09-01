@@ -60,9 +60,16 @@ import {
   ringHeight,
   sculpt,
   wallBounds,
+  widestRadius,
 } from '../src/geometry/clay'
 import type { Clay, Dab } from '../src/geometry/clay'
 import { TURN_FACETS, revolveClay } from '../src/geometry/revolve'
+import {
+  CREASE_TURN,
+  PROFILE_TOLERANCE,
+  meridian,
+  roundFacets,
+} from '../src/geometry/meridian'
 import {
   CLAY_SIDES,
   CLAY_SIDES_MAX,
@@ -73,6 +80,7 @@ import {
   withWall,
 } from '../src/geometry/clay'
 import type { Bore } from '../src/geometry/clay'
+import type { Pt } from '../src/geometry/curve'
 import { mirrorMesh, registerMesh } from '../src/geometry/meshLibrary'
 import { platonicFaces } from '../src/geometry/solids'
 import {
@@ -93,7 +101,13 @@ import {
 import type { TurnGrab } from '../src/viewport/gizmoDrag'
 import { snapAlongAxis } from '../src/geometry/snap'
 import type { SnapSource, SnapTarget } from '../src/geometry/snap'
-import { hostSurfaceFor, maxShapeSize, samePatch, slideAnchor } from '../src/geometry/surfaces'
+import {
+  arcSegments,
+  hostSurfaceFor,
+  maxShapeSize,
+  samePatch,
+  slideAnchor,
+} from '../src/geometry/surfaces'
 import { endFaceFrame } from '../src/geometry/prism'
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
 import { DAB_SPACING, ROUND_MIN } from '../src/store/toolStore'
@@ -326,11 +340,14 @@ console.log('\n4. Sphere: boss follows the curvature')
   const max = Math.max(...radii)
   const spread = max - min
 
-  // The offset sphere is a 64x40 tessellation, so its facets sag below the true
+  // The offset sphere is a tessellation, so its facets sag below the true
   // radius by the chord sagitta. That is the floor on any honest measurement
-  // here -- tolerate it, but nothing larger.
+  // here -- tolerate it, but nothing larger. The count is asked for rather than
+  // written down, because it MOVES WITH THE RADIUS now: see `arcSegments`.
   const R = 1 + depth
-  const sagitta = R * (1 - Math.cos(Math.PI / 64)) + R * (1 - Math.cos(Math.PI / 40))
+  const segments = arcSegments(R)
+  const sagitta =
+    R * (1 - Math.cos(Math.PI / segments)) + R * (1 - Math.cos(Math.PI / (segments / 2)))
   // What a straight prism capped flat would have produced, for contrast: the
   // outline corners would sit further from the centre than its middle.
   const halfDiagonal = Math.hypot(0.5, 0.5) / 2
@@ -2954,9 +2971,9 @@ console.log('\nThe erode brush survives curved surfaces and merged assemblies')
    * The shortest edge anywhere in the mesh, ignoring the ones that were already
    * zero.
    *
-   * `CapsuleGeometry` arrives with forty-eight degenerate triangles at its
-   * poles -- an edge of 3e-18 -- and that is three.js's business, not the
-   * torch's. What is being asserted is that erosion does not CLOSE a mesh up,
+   * `CapsuleGeometry` arrives with one degenerate triangle per radial segment
+   * at each of its poles -- an edge of 3e-18 -- and that is three.js's
+   * business, not the torch's. What is being asserted is that erosion does not CLOSE a mesh up,
    * so the measurement has to start from the mesh as it was handed over.
    */
   const shortestEdge = (geom: BufferGeometry): number => {
@@ -4121,6 +4138,54 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
     return sum
   }
 
+  /**
+   * HOW MANY FACETS THIS PIECE IS ACTUALLY SWEPT WITH, and the share of a
+   * circle's area the polygon that many facets holds.
+   *
+   * Both used to be constants and neither is one any more: a round piece's
+   * count is worked out from how wide it is (see `roundFacets`) and a polygonal
+   * one's is its own side count. Every volume below is measured against the
+   * polygon the mesh REALLY is, so the deficit stays predicted rather than
+   * tolerated and the checks stay tight enough to catch a dropped cap.
+   */
+  const sweptWith = (c: Clay): number =>
+    c.sides === null ? roundFacets(widestRadius(c)) : c.sides
+  const deficitOf = (n: number): number => (n * Math.sin((2 * Math.PI) / n)) / (2 * Math.PI)
+
+  /**
+   * The volume the SWEPT profile encloses, as against the stored one.
+   *
+   * The wall is remembered as ninety-six rings and swept as however few the
+   * shape earns -- see `meridian` -- so on a curved piece the mesh is built
+   * from chords across the profile rather than from the profile itself, and
+   * comes out a shade light exactly as the inscribed polygon does going round.
+   * Measuring against the chords is what keeps these checks at 1e-5: the
+   * thinning is predicted here, and how far it moves the answer is pinned as a
+   * fact of its own rather than hidden inside a loosened tolerance.
+   */
+  const sweptVolume = (c: Clay): number => {
+    const span = pieceSpan(c)
+    if (span === null) return 0
+    const heights: number[] = []
+    const radii: number[] = []
+    for (let i = span.lo; i <= span.hi; i += 1) {
+      heights.push(ringHeight(c, i))
+      radii.push(c.wall[i])
+    }
+    const line = meridian(heights, radii)
+    let sum = 0
+    for (let i = 0; i < line.radii.length - 1; i += 1) {
+      // Nothing between the two copies of a creased ring: they stand at the
+      // same height, so the frustum has no depth and the mesh builds no band.
+      if (line.seams[i]) continue
+      const step = line.heights[i + 1] - line.heights[i]
+      const a = line.radii[i]
+      const b = line.radii[i + 1]
+      sum += (Math.PI * step * (a * a + a * b + b * b)) / 3
+    }
+    return sum
+  }
+
   /** The sharpest step between neighbouring rings: what a crease looks like as
    *  a number. */
   const roughest = (c: Clay): number => {
@@ -4440,27 +4505,64 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
     const solid = revolveClay(cylinder)
 
     // A regular n-gon inscribed in a circle holds n*sin(2pi/n) / 2pi of its
-    // area -- 0.99839 at 64 facets -- so a swept cylinder comes out a sixth of
-    // a percent light, and that is the mesh being RIGHT rather than wrong. The
-    // deficit is predicted rather than tolerated, so the check stays tight
-    // enough that a missing cap or a dropped ring fails it outright.
+    // area -- 0.99715 at the 48 facets a 4 cm piece is swept with -- so a swept
+    // cylinder comes out three tenths of a percent light, and that is the mesh
+    // being RIGHT rather than wrong. The deficit is predicted rather than
+    // tolerated, so the check stays tight enough that a missing cap or a
+    // dropped ring fails it outright.
     const exact = Math.PI * 0.4 * 0.4 * 1.5
-    const facets = (TURN_FACETS * Math.sin((2 * Math.PI) / TURN_FACETS)) / (2 * Math.PI)
+    const facets = deficitOf(sweptWith(cylinder))
     near('a swept cylinder holds a cylinder of clay', signedVolume(solid), exact * facets, 1e-5)
+
+    // AND A CYLINDER COSTS WHAT A CYLINDER SHOULD. The wall is stored as
+    // ninety-six rings whatever shape is on it, and sweeping the storage rather
+    // than the shape is what used to put 12,288 triangles into the scene for a
+    // lump with no detail in it at all -- the same count as a fluted bowl,
+    // because the count had nothing to do with the piece. A straight wall is
+    // two rings; the rest is the caps. See `meridian`.
+    const plainTris = (solid.getIndex()?.count ?? 0) / 3
+    const swept = sweptWith(cylinder)
+    check(
+      'and it costs one band of facets and two caps, not ninety-five bands',
+      plainTris === swept * 4,
+      `${plainTris} triangles at ${swept} facets`
+    )
     check(
       'and it is wound the right way out',
       signedVolume(solid) > 0,
       `${signedVolume(solid).toFixed(5)}`
     )
 
-    // The same, on a piece that has actually been worked: the frustum sum the
-    // section is measured by, times the same 64-gon deficit.
+    // The same, on a piece that has actually been worked: the frustum sum of the
+    // profile AS SWEPT, times the same polygon deficit.
     const worked = hold(cylinder, { y: 0.9, radius: 0.15, reach: 0.35, bite: 1, tool: 'push' }, 60)
     near(
       'and a shaped piece holds what its profile says',
       signedVolume(revolveClay(worked)),
-      clayVolume(worked) * facets,
+      sweptVolume(worked) * deficitOf(sweptWith(worked)),
       1e-4
+    )
+
+    // AND THINNING THE PROFILE COSTS ALMOST NONE OF IT, which is the claim
+    // `PROFILE_TOLERANCE` is making and the one worth measuring rather than
+    // asserting. A curve swept as chords comes out light the same way an
+    // inscribed polygon does; a tenth of a millimetre of chord error on a piece
+    // 4 cm across is a couple of parts in a thousand of the clay, and it is
+    // systematically INWARD rather than noisy, which is what a chord is.
+    const lost = 1 - sweptVolume(worked) / clayVolume(worked)
+    check(
+      'and thinning the rings costs a fraction of a percent of the clay',
+      lost > 0 && lost < 0.005,
+      `${(lost * 100).toFixed(3)}% light against the stored profile`
+    )
+    // The other half of the same claim: it is cheap. A shaped piece keeps the
+    // rings its curve earns and drops the rest, so it is a fraction of what
+    // sweeping the storage cost -- and still far more rings than the cylinder.
+    const workedTris = (revolveClay(worked).getIndex()?.count ?? 0) / 3
+    check(
+      'while the piece costs a fraction of the 12,288 it used to',
+      workedTris < 4000 && workedTris > plainTris,
+      `${workedTris} triangles, against 12,288 before and ${plainTris} for the bare lump`
     )
 
     // Standing on the faceplate and no taller than the lump, which is what
@@ -4487,12 +4589,27 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
 
     // The seam closes on itself exactly rather than within a float: the last
     // column is written from the first column's own angle.
+    //
+    // WALKED OVER THE RINGS THAT ARE THERE rather than over `CLAY_RINGS`. The
+    // wall is stored at ninety-six and swept at however few the shape earns, so
+    // a loop counting the storage reads off the end of the buffer and compares
+    // undefined with undefined -- which passes. The count comes off the
+    // meridian itself, and the check fails if that disagrees with the buffer.
     const pos = solid.getAttribute('position')
-    const columns = TURN_FACETS + 1
+    const columns = sweptWith(cylinder) + 1
+    const bands = meridian(
+      [0, cylinder.height],
+      [cylinder.radius, cylinder.radius]
+    ).heights.length
+    check(
+      'a straight wall is swept as its two ends and nothing between',
+      bands === 2,
+      `${bands} rings`
+    )
     let seam = 0
-    for (let i = 0; i < CLAY_RINGS; i += 1) {
+    for (let i = 0; i < bands; i += 1) {
       const first = i * columns
-      const last = first + TURN_FACETS
+      const last = first + columns - 1
       if (pos.getX(first) !== pos.getX(last) || pos.getZ(first) !== pos.getZ(last)) seam += 1
     }
     check('and the seam meets itself to the bit', seam === 0, `${seam} rings apart`)
@@ -4536,11 +4653,11 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
     for (const sides of CLAY_SIDES) {
       const piece = { ...worked, sides }
       const mesh = revolveClay(piece)
-      const deficit = (sides * Math.sin((2 * Math.PI) / sides)) / (2 * Math.PI)
+      const deficit = deficitOf(sides)
       near(
         `a ${sides}-sided piece holds the ${sides}-gon of its profile`,
         signedVolume(mesh),
-        clayVolume(piece) * deficit,
+        sweptVolume(piece) * deficit,
         1e-4
       )
       check(
@@ -4559,10 +4676,23 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
     // was copied from.
     const pos = hexMesh.getAttribute('position')
     const width = 12
+    // The rings the wall is SWEPT at, which is no longer the rings it is stored
+    // at: the profile is thinned to what its shape earns before it is turned
+    // into triangles. Reading the radii back off the meridian rather than off
+    // `hexagonal.wall` is what keeps this a check on the buffer instead of a
+    // walk past the end of it.
+    const hexSpan = pieceSpan(hexagonal) as { lo: number; hi: number }
+    const hexHeights: number[] = []
+    const hexRadii: number[] = []
+    for (let i = hexSpan.lo; i <= hexSpan.hi; i += 1) {
+      hexHeights.push(ringHeight(hexagonal, i))
+      hexRadii.push(hexagonal.wall[i])
+    }
+    const hexLine = meridian(hexHeights, hexRadii)
     let worstCorner = 0
     let worstFlat = 0
-    for (let i = 0; i < CLAY_RINGS; i += 1) {
-      const r = hexagonal.wall[i]
+    for (let i = 0; i < hexLine.radii.length; i += 1) {
+      const r = hexLine.radii[i]
       for (let j = 0; j < width; j += 1) {
         const v = i * width + j
         worstCorner = Math.max(worstCorner, Math.abs(Math.hypot(pos.getX(v), pos.getZ(v)) - r))
@@ -4584,7 +4714,8 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
     // both of those wrong at once and the piece arrives looking like a badly
     // tessellated cylinder, which no triangle count would ever show.
     const nrm = hexMesh.getAttribute('normal')
-    const ring = 40 * width
+    // A ring in the middle of the swept wall, wherever that now falls.
+    const ring = Math.floor(hexLine.radii.length / 2) * width
     let flatFacet = 0
     let sharpest = Math.PI
     for (let k = 0; k < 6; k += 1) {
@@ -4633,6 +4764,219 @@ console.log('\nThe lathe shapes a wall of radii, and keeps its promises about it
       hexTris * 5 < roundTris,
       `${hexTris} triangles against ${roundTris}`
     )
+  }
+
+  // WHAT THE SWEEP COSTS, which for a long time was one number whatever was
+  // being swept. The wall is STORED as ninety-six rings because that is what a
+  // brush needs to have somewhere to put a millimetre of clay -- and it was
+  // SWEPT as ninety-six rings too, so a bare cylinder and a fluted bowl both
+  // arrived in the scene at 12,288 triangles. The count said nothing about the
+  // shape. See `meridian`, which fits the rings to the profile and the facets
+  // to the size, both against one tolerance.
+  {
+    const along = (c: Clay) => {
+      const span = pieceSpan(c) as { lo: number; hi: number }
+      const heights: number[] = []
+      const radii: number[] = []
+      for (let i = span.lo; i <= span.hi; i += 1) {
+        heights.push(ringHeight(c, i))
+        radii.push(c.wall[i])
+      }
+      return { heights, radii }
+    }
+    const thinned = (c: Clay) => {
+      const { heights, radii } = along(c)
+      return meridian(heights, radii)
+    }
+    const trisOf = (c: Clay) => (revolveClay(c).getIndex()?.count ?? 0) / 3
+
+    // A STRAIGHT RUN IS ITS TWO ENDS. Nothing between them stands off the chord
+    // at all, so every ring in the middle was a band of triangles describing a
+    // straight line with a straight line.
+    const cylinder = freshClay(1.5, 0.4)
+    check('a cylinder is swept as two rings', thinned(cylinder).heights.length === 2, `${thinned(cylinder).heights.length}`)
+    const cone = sculpt(cylinder, [
+      [0, 0.4],
+      [1.5, 0.05],
+    ])
+    check('and a cone as two as well', thinned(cone).heights.length === 2, `${thinned(cone).heights.length}`)
+    check(
+      'so a cone costs what a cylinder costs',
+      trisOf(cone) === trisOf(cylinder),
+      `${trisOf(cone)} against ${trisOf(cylinder)}, where both were 12,288`
+    )
+
+    // AND BOTH ENDS SURVIVE WHATEVER IS DROPPED BETWEEN THEM, which the caps
+    // depend on: a sweep whose first ring had been thinned away would close the
+    // piece at the wrong height.
+    const ends = thinned(cone)
+    near('the foot is kept exactly', ends.heights[0], 0, 1e-12)
+    near('and the crown', ends.heights[ends.heights.length - 1], 1.5, 1e-12)
+    near('at the radii the wall stands at', ends.radii[0], 0.4, 1e-12)
+
+    // A CURVE KEEPS WHAT IT NEEDS. The claim `PROFILE_TOLERANCE` makes is not
+    // "fewer rings" but "no ring further than a tenth of a millimetre from the
+    // wall it came from", so it is measured rather than asserted: every stored
+    // ring is checked against the thinned line at its own height.
+    {
+      const curved = hold(cylinder, { y: 0.9, radius: 0.15, reach: 0.35, bite: 1, tool: 'push' }, 60)
+      const line = thinned(curved)
+      const { heights, radii } = along(curved)
+      // PERPENDICULAR to the swept surface, which is what the tolerance means
+      // and what the eye sees: how far the mesh stands off the profile,
+      // measured square to it rather than along one axis. A radial reading
+      // would call a steep wall out of tolerance for being steep -- the same
+      // surface error read across instead of square is bigger by a factor of
+      // one over the cosine, and says nothing about the shape.
+      let worst = 0
+      for (let i = 0; i < heights.length; i += 1) {
+        let near = Infinity
+        for (let k = 0; k < line.heights.length - 1; k += 1) {
+          const ay = line.heights[k]
+          const ar = line.radii[k]
+          const dy = line.heights[k + 1] - ay
+          const dr = line.radii[k + 1] - ar
+          const len2 = dy * dy + dr * dr
+          const t =
+            len2 === 0 ? 0 : Math.min(1, Math.max(0, ((heights[i] - ay) * dy + (radii[i] - ar) * dr) / len2))
+          near = Math.min(near, Math.hypot(heights[i] - (ay + dy * t), radii[i] - (ar + dr * t)))
+        }
+        worst = Math.max(worst, near)
+      }
+      check(
+        'a thinned curve stands within a tenth of a millimetre of the wall',
+        worst <= PROFILE_TOLERANCE,
+        `worst ${(worst * 100).toFixed(4)} mm against ${(PROFILE_TOLERANCE * 100).toFixed(2)}`
+      )
+      check(
+        'and it keeps enough rings to do it',
+        line.heights.length > 10 && line.heights.length < CLAY_RINGS,
+        `${line.heights.length} of ${CLAY_RINGS}`
+      )
+      // A CURVE IS NOT A CORNER. Every ring a fitted curve keeps turns by a few
+      // degrees -- that is what staying within the tolerance means -- so a
+      // threshold that creased them would face a dome like a lampshade.
+      check('and creases none of them', line.seams.every((x) => !x), `${line.seams.filter(Boolean).length} creases`)
+    }
+
+    // THE CORNERS POINT SCULPT IS FOR. With `Fit to line` off the tool states
+    // the wall in straight segments, and a step drawn that way used to arrive
+    // shaded ROUND: the sweep read every normal from a central difference, so
+    // the ring at the corner faced half way between the wall below it and the
+    // shoulder above. The one thing on this screen that can leave a corner was
+    // the one thing the mesh would not show.
+    {
+      const step = sculpt(cylinder, [
+        [0.2, 0.35],
+        [0.8, 0.35],
+        [0.8, 0.2],
+        [1.3, 0.2],
+      ])
+      const line = thinned(step)
+      const creases = line.seams.filter(Boolean).length
+      check('a stepped profile creases where it turns', creases > 0, `${creases} creases`)
+      // A creased ring is the same ring TWICE, which is what lets each copy
+      // take the slope of its own side. Standing at one height and one radius
+      // is what makes it an edge rather than a chamfer nobody asked for.
+      let doubled = 0
+      for (let i = 0; i < line.seams.length; i += 1) {
+        if (!line.seams[i]) continue
+        if (line.heights[i] === line.heights[i + 1] && line.radii[i] === line.radii[i + 1]) doubled += 1
+      }
+      check('and every crease is one ring written twice', doubled === creases, `${doubled} of ${creases}`)
+
+      // AND THE MESH SHOWS IT. Two copies at one place with two normals is a
+      // hard edge; the same two with one normal is the smooth shoulder this
+      // fixes. Measured on the built buffer rather than on the intention.
+      const mesh = revolveClay(step)
+      const nrm = mesh.getAttribute('normal')
+      const columns = roundFacets(widestRadius(step)) + 1
+      let sharpest = 0
+      for (let i = 0; i < line.seams.length; i += 1) {
+        if (!line.seams[i]) continue
+        const a = i * columns
+        const b = (i + 1) * columns
+        const dot =
+          nrm.getX(a) * nrm.getX(b) + nrm.getY(a) * nrm.getY(b) + nrm.getZ(a) * nrm.getZ(b)
+        sharpest = Math.max(sharpest, Math.acos(Math.min(1, Math.max(-1, dot))))
+      }
+      check(
+        'the two copies of a corner face plainly different ways',
+        sharpest > CREASE_TURN,
+        `${((sharpest * 180) / Math.PI).toFixed(1)} degrees apart, against a ${((CREASE_TURN * 180) / Math.PI).toFixed(0)} degree threshold`
+      )
+
+      // NOTHING BETWEEN THE TWO COPIES. They stand at the same height and the
+      // same radius, so a band there would be a full turn of triangles with no
+      // area in them -- invisible, and real enough to trip a welder that trusts
+      // a triangle to have a normal.
+      const index = mesh.getIndex() as BufferAttribute
+      const pos = mesh.getAttribute('position')
+      let flat = 0
+      for (let t = 0; t < index.count; t += 3) {
+        const ax = pos.getX(index.getX(t))
+        const ay = pos.getY(index.getX(t))
+        const az = pos.getZ(index.getX(t))
+        const bx = pos.getX(index.getX(t + 1))
+        const by = pos.getY(index.getX(t + 1))
+        const bz = pos.getZ(index.getX(t + 1))
+        const cx = pos.getX(index.getX(t + 2))
+        const cy = pos.getY(index.getX(t + 2))
+        const cz = pos.getZ(index.getX(t + 2))
+        const ux = bx - ax
+        const uy = by - ay
+        const uz = bz - az
+        const vx = cx - ax
+        const vy = cy - ay
+        const vz = cz - az
+        const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2
+        if (area < 1e-12) flat += 1
+      }
+      check('and the mesh carries no triangle with no area in it', flat === 0, `${flat} degenerate`)
+
+      // The whole point of the exercise: a shape made of five straight runs
+      // costs about what five straight runs should.
+      check(
+        'a stepped piece costs a fraction of the 12,288 it used to',
+        trisOf(step) < 1200,
+        `${trisOf(step)} triangles`
+      )
+    }
+
+    // HOW MANY FACETS GO ROUND, asked of the piece instead of named once. The
+    // deepest a chord falls inside the circle it spans is `r(1 - cos(pi/n))`,
+    // so the count is whatever holds that under the same tolerance the rings
+    // are thinned to -- which is the property worth having: a piece is no
+    // coarser up the meridian than it is round the axis.
+    {
+      for (const r of [0.05, 0.1, 0.2, 0.4, 0.8, 1.6]) {
+        const n = roundFacets(r)
+        const sag = r * (1 - Math.cos(Math.PI / n))
+        // The ceiling is a ceiling: past the width where 64 facets stop being
+        // enough, a piece is swept at 64 anyway rather than at two hundred.
+        if (n < TURN_FACETS) {
+          check(
+            `a piece ${(r * 20).toFixed(0)} cm wide is swept fine enough`,
+            sag <= PROFILE_TOLERANCE,
+            `${n} facets, ${(sag * 100).toFixed(3)} mm off the circle`
+          )
+          const coarser = r * (1 - Math.cos(Math.PI / (n - 8)))
+          check('and no finer than it has to be', coarser > PROFILE_TOLERANCE, `${n - 8} would be ${(coarser * 100).toFixed(3)} mm off`)
+        }
+      }
+      check('a wide piece is capped rather than run away with', roundFacets(4) === TURN_FACETS, `${roundFacets(4)}`)
+      check('and a hair-thin one still reads as round', roundFacets(1e-6) >= 16, `${roundFacets(1e-6)}`)
+      check('a piece of no width at all is not a division by zero', Number.isFinite(roundFacets(0)), `${roundFacets(0)}`)
+
+      // IT SCALES, which is the whole reason to compute it. A fixed count is
+      // always wrong somewhere: too coarse for the widest piece the stock
+      // allows and several times too fine for a stem.
+      check(
+        'a thin piece is swept with fewer facets than a fat one',
+        roundFacets(0.05) < roundFacets(0.4) && roundFacets(0.4) < roundFacets(1.2),
+        `${roundFacets(0.05)}, ${roundFacets(0.4)}, ${roundFacets(1.2)}`
+      )
+    }
   }
 }
 
@@ -4834,7 +5178,7 @@ console.log('\nThe lathe fairs itself and bores itself out')
   // the ends that are open. It is the same instrument that proved the outer
   // sweep, pointed at the harder shape.
   {
-    const facets = (TURN_FACETS * Math.sin((2 * Math.PI) / TURN_FACETS)) / (2 * Math.PI)
+    const facets = (roundFacets(0.4) * Math.sin((2 * Math.PI) / roundFacets(0.4))) / (2 * Math.PI)
     const solid = Math.PI * 0.4 * 0.4 * 1.5
     const cavityOf = (h: number) => Math.PI * 0.34 * 0.34 * h
     const cases: [string, { thickness: number; capTop: boolean; capBottom: boolean }, number][] = [
@@ -5082,6 +5426,157 @@ console.log('\nPoint Sculpt states the wall, over the span its line covers')
       [lump.height * 3, 0.1],
     ])
     check('a line drawn clear of the piece leaves it alone', past === lump, '')
+  }
+
+  // A CORNER DRAWN BETWEEN TWO RINGS IS STILL A CORNER, which is the one thing
+  // this tool exists for and the one thing it used to lose.
+  //
+  // Every check above draws its knots AT ring heights -- `at(i)` -- which is
+  // exactly the case that always worked, and is why none of them caught this.
+  // A hand does not click on ring heights. A knot that falls BETWEEN two rings
+  // was never visited by the sampling: both rings either side landed short by
+  // about the same amount, and two neighbouring rings at nearly one radius is
+  // not a point, it is a FLAT. A zigzag of six corners came back with six
+  // little chamfers on it. See `onRings`.
+  {
+    const step = lump.height / (CLAY_RINGS - 1)
+    /** Half a ring up from ring `i`: the worst place a knot can fall. */
+    const between = (i: number) => at(i) + step / 2
+
+    const zig: Pt[] = [
+      [between(4), 0.3],
+      [between(20), 0.08],
+      [between(38), 0.3],
+      [between(55), 0.08],
+      [between(72), 0.3],
+    ]
+    const cut = sculpt(lump, zig)
+
+    // THE RADIUS IS EXACT. What gives is the HEIGHT, by under half a ring, and
+    // that is the trade: a corner has a height and a radius, the grid can hold
+    // one of them, and the sharp one is the one worth keeping.
+    let worstRadius = 0
+    let worstHeight = 0
+    for (const [h, r] of zig) {
+      let nearest = Infinity
+      let where = 0
+      for (let i = 0; i < CLAY_RINGS; i += 1) {
+        if (Math.abs(at(i) - h) > step) continue
+        if (Math.abs(cut.wall[i] - r) < nearest) {
+          nearest = Math.abs(cut.wall[i] - r)
+          where = at(i)
+        }
+      }
+      worstRadius = Math.max(worstRadius, nearest)
+      worstHeight = Math.max(worstHeight, Math.abs(where - h))
+    }
+    check(
+      'a corner drawn between two rings lands on the wall exactly',
+      worstRadius < 1e-9,
+      `worst ${(worstRadius * 100).toExponential(1)} mm out in radius`
+    )
+    check(
+      'and pays for it in height, by under half a ring',
+      worstHeight <= step / 2 + 1e-9,
+      `worst ${(worstHeight * 100).toFixed(2)} mm, against a ${((step / 2) * 100).toFixed(2)} mm half-ring`
+    )
+
+    // AND THERE IS NO FLAT. This is the failure as the eye met it: the section
+    // drew a little vertical facet where a point had been asked for. Two
+    // neighbouring rings at one radius, inside a run that is sloping everywhere
+    // else, is that facet as a number.
+    //
+    // Measured strictly INSIDE the span. Outside it the wall is the untouched
+    // lump, which is flat because it is a cylinder -- see the tool's own rule
+    // that it leaves the wall above and below the line alone.
+    let flats = 0
+    for (let i = 1; i < CLAY_RINGS; i += 1) {
+      if (at(i - 1) < between(4) || at(i) > between(72)) continue
+      if (Math.abs(cut.wall[i] - cut.wall[i - 1]) < 1e-9) flats += 1
+    }
+    check('and no flat where a point was asked for', flats === 0, `${flats} pairs of rings at one radius`)
+
+    // THE RUNS BETWEEN THE CORNERS STAY STRAIGHT, which is the other half of
+    // what `Fit to line` off promises -- and the thing a fix that only nudged
+    // the ring nearest each corner would have broken, leaving a kink a ring
+    // short of every knot.
+    //
+    // STRAIGHTNESS IS MEASURED ON THE WALL ITSELF, as a second difference: a
+    // run of rings whose radius steps by the same amount every time is a
+    // straight segment, and it says so without restating where the tool decided
+    // to put the corners.
+    let worstBend = 0
+    const corner = zig.map(([h]) => Math.round(h / step))
+    for (let k = 1; k < corner.length; k += 1) {
+      for (let i = corner[k - 1] + 2; i <= corner[k]; i += 1) {
+        const second = cut.wall[i] - 2 * cut.wall[i - 1] + cut.wall[i - 2]
+        worstBend = Math.max(worstBend, Math.abs(second))
+      }
+    }
+    check(
+      'and the straight runs between them stay straight',
+      worstBend < 1e-12,
+      `worst kink ${(worstBend * 100).toExponential(1)} mm between one ring and the next`
+    )
+
+    // AND IT SWEEPS AS CORNERS. The mesh reads the wall, so a corner the wall
+    // does not hold is a corner no amount of creasing can put back -- which is
+    // why this had to be fixed here rather than in `meridian`. Five knots is
+    // three interior corners, and the two ends are where the line meets the
+    // wall it was drawn onto.
+    const span = pieceSpan(cut) as { lo: number; hi: number }
+    const heights: number[] = []
+    const radii: number[] = []
+    for (let i = span.lo; i <= span.hi; i += 1) {
+      heights.push(ringHeight(cut, i))
+      radii.push(cut.wall[i])
+    }
+    const line = meridian(heights, radii)
+    check(
+      'so the sweep finds a crease at every corner drawn',
+      line.seams.filter(Boolean).length >= 3,
+      `${line.seams.filter(Boolean).length} creases for ${zig.length} knots`
+    )
+    check(
+      'and the whole zigzag costs a dozen rings, not ninety-six',
+      line.heights.length < 20,
+      `${line.heights.length} rings`
+    )
+
+    // TWO KNOTS INSIDE ONE RING GAP land on the same ring, and a wall of one
+    // radius per height cannot hold two. It reads as a STEP -- the outermost of
+    // the two, which is the rule the whole tool is read by -- rather than as a
+    // hole or a NaN, and that is the only case snapping the heights can create
+    // that the drawn line could not.
+    const tight = sculpt(lump, [
+      [at(20), 0.35],
+      [at(40) + step * 0.1, 0.35],
+      [at(40) + step * 0.3, 0.15],
+      [at(70), 0.15],
+    ])
+    check(
+      'two knots inside one ring gap read as a step, not a hole',
+      tight.wall[40] === 0.35 && tight.wall[41] === 0.15,
+      `${tight.wall[40].toFixed(3)} then ${tight.wall[41].toFixed(3)}`
+    )
+    check('with a whole wall behind it', tight.wall.every(Number.isFinite), '')
+
+    // AND A KNOT DRAWN CLEAR OF THE PIECE IS NOT DRAGGED BACK ONTO IT. A profile
+    // is often aimed past the stock -- run the line out above the lump to hold
+    // an angle -- and clamping that knot to the rim would tilt the segment
+    // reaching it, changing the shape everywhere it crosses clay. The grid
+    // carries on past both ends instead.
+    const over = sculpt(lump, [
+      [at(50), 0.3],
+      [lump.height + step * 3.4, 0.1],
+    ])
+    const held = (over.wall[95] - over.wall[50]) / (at(95) - at(50))
+    near(
+      'a line aimed past the rim keeps the angle it was drawn at',
+      held,
+      (0.1 - 0.3) / (lump.height + step * 3 - at(50)),
+      1e-12
+    )
   }
 }
 

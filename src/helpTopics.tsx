@@ -804,6 +804,11 @@ export const HELP_SECTIONS: HelpSection[] = [
             result: 'Makes it the one you are shaping: its handles come out, and the last one’s go in.',
           },
           {
+            action: 'Delete, Backspace',
+            result:
+              'Takes the point you are shaping off the line. One at an end shortens it; one in the middle is bridged by its neighbours.',
+          },
+          {
             action: 'Fit to line',
             result: 'On, a smooth curve through every point; off, straight segments between them.',
           },
@@ -824,6 +829,19 @@ export const HELP_SECTIONS: HelpSection[] = [
             chamfer or a flat-topped bead.
           </>,
           <>
+            <b>And the corner survives the copy.</b> A step drawn this way arrives in the scene as
+            a hard edge, lit as two faces meeting rather than as one smoothly rounded one -- and it
+            costs two rings rather than the thirty a rounded corner takes to fake. A curve is left
+            smooth; only a turn sharper than about thirty degrees reads as a corner.
+          </>,
+          <>
+            A corner lands at the nearest of the piece's own rings, which is a millimetre and a
+            half apart on a lump this tall. So a point may settle up to three quarters of a
+            millimetre above or below where you clicked -- but it settles at exactly the radius you
+            put it at, and the runs either side of it stay dead straight. The alternative was a
+            corner in the right place with the wrong width and a small flat across its tip.
+          </>,
+          <>
             <b>One point wears its handles at a time</b> -- the one you just placed, or the one you
             last clicked -- so the bars that bend the curve never pile up over the curve they are
             bending. Nothing is lost by looking away: every point keeps the tangent you aimed for
@@ -834,6 +852,15 @@ export const HELP_SECTIONS: HelpSection[] = [
             Only the span the points cover is touched: the wall above the topmost point and below
             the bottom one is left alone, so a foot can be re-cut on a piece whose belly is already
             right. That is also why it has no Tool size -- where the points went says it.
+          </>,
+          <>
+            <b>A point you did not mean goes with Delete.</b> Click it, so the filled knot is the
+            one you want gone, and press the key. Take one off an END and the line simply stops at
+            the knot before it -- along with the span it covered, so that stretch of wall is left as
+            it stands. Take one out of the MIDDLE and its two neighbours join up: straight with{' '}
+            <b>Fit to line</b> off, and a fresh curve between them with it on. Every other point
+            keeps the tangent you aimed for it, and the one before the gap comes up wearing its
+            handles.
           </>,
           <>
             <b>Apply</b> and <b>Reset</b> stand in the bottom-left corner rather than under the
@@ -965,6 +992,19 @@ export const HELP_SECTIONS: HelpSection[] = [
             It is swept on the base you chose and named for it. What lands is a mesh, so everything
             the Modelling screen does works on it. It is a SNAPSHOT: shape the clay further and
             press again for a second copy.
+          </>,
+          <>
+            <b>The triangle count is fitted to the shape</b>, which is what the receipt reports
+            beside the piece's height. A straight wall costs its two ends whether it is a
+            centimetre of the piece or the whole of it; a curve keeps as many rings as it takes to
+            stay a tenth of a millimetre from the profile you turned; a corner is a corner rather
+            than thirty rings pretending to be one. So a plain lump arrives at a couple of hundred
+            triangles and a fluted bowl at a few thousand, where both used to arrive at 12,288.
+          </>,
+          <>
+            How many facets go round is fitted the same way -- to how WIDE the piece is, against
+            the same tenth of a millimetre -- so a stem is not swept as finely as a bowl, and
+            neither is coarser up its side than it is round its middle.
           </>,
         ],
       },
@@ -1158,6 +1198,17 @@ export const HELP_SECTIONS: HelpSection[] = [
             what the numbers are READ in, never the model.
           </>
         ),
+        notes: [
+          <>
+            <b>It reaches the tools as well as the readouts.</b> Brush and tool sizes, the wall on
+            the lathe and the flying speed are all read in the unit you pick here. The one thing
+            they cannot take is <b>auto</b>, which chooses a unit per value: a size slider dragged
+            under it would renumber its own scale mid-drag, and a scale that moves cannot be aimed.
+            On auto they keep the last unit they were given, and the mm / cm switch beside each one
+            is how to change it from there -- or to read one panel in something other than the rest
+            of the app.
+          </>,
+        ],
       },
       {
         title: 'Theme',
@@ -1168,6 +1219,42 @@ export const HELP_SECTIONS: HelpSection[] = [
         title: 'Outlines',
         summary:
           'The edge lines drawn around every solid, under Theme. Switch them off to see the surfaces bare -- a selected object still glows, so nothing is lost by it.',
+      },
+      {
+        title: 'Game Controls',
+        summary: (
+          <>
+            The last row in the same panel, and the only one that changes what your HANDS do rather
+            than what the app looks like. Switched on, the modelling camera is driven the way a
+            game's is: <b>W A S D</b> to walk, <b>Space</b> and <b>C</b> to rise and sink, and the
+            right mouse button held down to look about. The cursor disappears while you look,
+            so a turn can carry on as far as your hand does.
+          </>
+        ),
+        notes: [
+          <>
+            WASD stays on the ground and the height is Space and C alone, so looking down at a part
+            and holding <b>W</b> walks ACROSS the scene rather than diving into it.
+          </>,
+          <>
+            The wheel no longer closes in on anything -- <b>W</b> does that now -- so it sets how
+            fast you fly instead. The speed appears at the top of the viewport as you turn it, and
+            the <b>Speed</b> field under the switch says the same number.
+          </>,
+          <>
+            Middle-drag still orbits, and with something selected it swings around THAT rather than
+            around the middle of the scene. The compass in the corner still flies to a view.
+          </>,
+          <>
+            <b>M</b>, <b>R</b> and <b>S</b> stop switching the gizmo while this is on -- S is the
+            key that walks backwards. The three buttons on the island do the same job. Everything
+            else answers as usual: Ctrl+Z, Delete and Esc are untouched.
+          </>,
+          <>
+            Only the modelling screen has a room to walk about in, so the switch is dimmed on the
+            lathe and the laser cutter. It keeps its setting while you are over there.
+          </>,
+        ],
       },
     ],
   },
@@ -1231,7 +1318,42 @@ export const HELP_SECTIONS: HelpSection[] = [
           <>
             <b>M</b>, <b>R</b> and <b>S</b> are bare rather than chorded, which is where every 3D
             application puts them -- and they are ignored mid-drag, so a gesture in flight cannot
-            have its gizmo swapped out from under it.
+            have its gizmo swapped out from under it. With <b>Game Controls</b> on they stand down
+            entirely: <b>S</b> is the key that walks backwards.
+          </>,
+        ],
+      },
+      {
+        title: 'Game Controls',
+        steps: [
+          { action: 'W, S', result: 'Walk forward and back, along the ground, whichever way you are looking.' },
+          { action: 'A, D', result: 'Strafe left and right. This is what panning used to do.' },
+          { action: 'Space', result: 'Rise, straight up.' },
+          { action: 'C', result: 'Sink, straight down.' },
+          { action: 'Right-drag', result: 'Look about. Turns the view in place rather than swinging it round anything, and the cursor goes for the length of the drag so the turn is never stopped by the edge of the screen.' },
+          { action: 'Right-click', result: 'Still opens the object menu, as long as you have not moved the mouse.' },
+          { action: 'Wheel', result: 'Sets how fast you fly, shown for a moment at the top of the viewport.' },
+          { action: 'Middle-drag', result: 'Orbits the selected object. Alt+left-drag does the same.' },
+        ],
+        notes: [
+          <>
+            Switched on under <b>Settings</b>, and only on the modelling screen -- the lathe and the
+            laser cutter each draw one flat picture with nowhere to walk to.
+          </>,
+          <>
+            <b>C</b> sinks rather than Ctrl, which is what this scheme normally uses. Ctrl+W closes
+            a browser tab and no page is allowed to stop it, so walking forward while sinking would
+            have thrown the scene away. It leaves Ctrl whole: <b>Ctrl+Z</b>, <b>Ctrl+C</b> and{' '}
+            <b>Ctrl+V</b> all answer while you fly.
+          </>,
+          <>
+            <b>Space</b> belongs to the camera while this is on, so it no longer presses the button
+            under the finger -- <b>Enter</b> still does, on every control that answered either.
+          </>,
+          <>
+            A press in the scene is refused while you are moving: let go of the keys before grabbing
+            a solid or starting a stroke, or the grab would be measured against a view sliding out
+            from under it. A gesture already under way carries on regardless.
           </>,
         ],
       },
@@ -1240,7 +1362,8 @@ export const HELP_SECTIONS: HelpSection[] = [
         steps: [
           {
             action: 'Delete, Backspace',
-            result: 'Takes the lit ruler off the piece. With no ruler lit, nothing.',
+            result:
+              'With Point Sculpt in hand, takes the point you are shaping off the profile. Otherwise takes the lit ruler off the piece, and with neither, nothing.',
           },
           { action: 'Esc', result: 'Puts a lit ruler out. The ruler stays; only its highlight goes.' },
           { action: 'Ctrl+Z', result: 'Walks the strokes back, one push or pull at a time.' },

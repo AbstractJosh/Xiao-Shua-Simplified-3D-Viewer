@@ -131,7 +131,7 @@ import {
 import { useCutDraft, draftLine, draftReady } from '../src/viewport/cutDraft'
 import { BLOCK_MAX, BLOCK_MIN, DEFAULT_BLOCK, bedIsUncut, useLaser } from '../src/store/laserStore'
 import { bedGeometry } from '../src/geometry/laserCut'
-import { BLOCK_NAME, CopyBlockButton, bedName, sizeIn } from '../src/viewport/CopyBlockButton'
+import { BLOCK_NAME, CopyBlockButton, bedName } from '../src/viewport/CopyBlockButton'
 import { ZoomControl } from '../src/viewport/ZoomControl'
 import { ViewResetButton } from '../src/viewport/ViewResetButton'
 import { fitToEnvelope } from '../src/geometry/importers'
@@ -155,9 +155,25 @@ import {
   wallAt,
   widestRadius,
 } from '../src/geometry/clay'
-import { ISLAND_PANELS, armedBrush, armedLatheTool } from '../src/store/toolStore'
+import {
+  ISLAND_PANELS,
+  activates,
+  armedBrush,
+  armedLatheTool,
+  flyingHere,
+} from '../src/store/toolStore'
+import {
+  FLIGHT_SPEED_DEFAULT,
+  FLIGHT_SPEED_MAX,
+  FLIGHT_SPEED_MIN,
+  WHEEL_NOTCH,
+  flightStep,
+  lookTarget,
+  moveFor,
+  speedAfterWheel,
+} from '../src/viewport/gameCamera'
 import { SculptPanel } from '../src/viewport/SculptPanel'
-import { useSculptDraft } from '../src/viewport/sculptDraft'
+import { sculptLine, useSculptDraft } from '../src/viewport/sculptDraft'
 import { useLathe } from '../src/store/latheStore'
 import {
   NO_PAN,
@@ -216,7 +232,15 @@ import { SolidList, SolidPalette } from '../src/console/SolidPalette'
 import { NGON_LABEL } from '../src/console/ngon'
 import { SOLID_TEMPLATES, restingSides } from '../src/console/solidIcons'
 import { SOLID_SIDES } from '../src/console/solidMorph'
-import { UNIT_MODES, fromDisplay, resolveUnit, stepIn, suffixOf, toDisplay } from '../src/units'
+import {
+  UNIT_MODES,
+  formatSize,
+  fromDisplay,
+  resolveUnit,
+  stepIn,
+  suffixOf,
+  toDisplay,
+} from '../src/units'
 import {
   MAX_FACE_OFFSET,
   MAX_SIZE,
@@ -1528,7 +1552,10 @@ check('and it is selected', featureId !== '', featureId)
   hides('and nothing to reset', panel, 'Reset face')
 
   const tree = markupOf('SceneTree (projection)', SceneTree)
-  shows('the tree nests the sketch under its object', tree, 'Circle r0.15 - ')
+  // In the app's own unit, not the scene number: 0.15 units is 1.5 cm, and the
+  // file is pinned to cm above. A row of the tree is a readout like a ruler's
+  // label, and it used to be the one length in the app shown in nothing at all.
+  shows('the tree nests the sketch under its object', tree, 'Circle r1.50 cm - ')
   shows('and says it is still flat', tree, 'class="feature-action">projection<')
   shows('and counts it', tree, '>1f<')
 
@@ -1558,7 +1585,11 @@ const docAfterExtrude = doc().doc
   shows('and the hint that the face is draggable too', panel, 'drag the end face itself')
 
   const tree = markupOf('SceneTree (extruded)', SceneTree)
-  shows('the tree says extrude now', tree, 'feature-action feature-out">extrude 0.15<')
+  shows(
+    'the tree says extrude now, and how deep in the unit on screen',
+    tree,
+    'feature-action feature-out">extrude 1.50 cm<'
+  )
 }
 
 // --- 3b. Signing the sketch off -------------------------------------------
@@ -1596,7 +1627,7 @@ console.log('\n3b. Confirming an extrusion retires its sketch')
 
   // Gone from both places a user could see it.
   const after = markupOf('SceneTree (confirmed)', SceneTree)
-  hides('the tree drops the sketch row', after, 'Circle r0.15 - ')
+  hides('the tree drops the sketch row', after, 'Circle r1.50 cm - ')
   hides('and stops counting it against the object', after, '>1f<')
   hides(
     'the panel stops offering to confirm it again',
@@ -1624,7 +1655,7 @@ console.log('\n3b. Confirming an extrusion retires its sketch')
   shows(
     'undo hands the sketch back',
     markupOf('SceneTree (unconfirmed)', SceneTree),
-    'Circle r0.15 - '
+    'Circle r1.50 cm - '
   )
   // And the sections below this one expect it selected, the way commitPlacing
   // left it: undo restores the document, not the selection.
@@ -4659,6 +4690,253 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     'a dense import would outline its triangulation'
   )
 
+  // THE FOURTH ROW: the camera you drive instead of orbiting.
+  shows('the settings panel carries a Game Controls row', bar, 'tool-group game-modes')
+  shows('captioned like the other three', bar, '<p class="subhead">Game Controls</p>')
+  shows('and drawn as the same chooser', bar, 'aria-pressed="true"')
+  check(
+    'the app opens with the orbit camera, not the game one',
+    useTools.getState().gameControls === false,
+    String(useTools.getState().gameControls)
+  )
+  // The speed is the one control in the panel that is not a segment, and it is
+  // MOUNTED with the mode off rather than appearing with it -- a row that
+  // materialises only once you have found the switch is a row nobody knows the
+  // switch leads to. Dimmed, though, because it means nothing yet.
+  shows('the speed field stands even with the mode off', bar, 'tool-group game-speed')
+  shows('and is dimmed until there is something to fly', bar, 'game-speed" disabled=""')
+  // Pinned to a concrete unit rather than shown in `auto`: that picks a unit
+  // per value, so a field scrubbed across a 200:1 range would renumber its own
+  // scale under the hand aiming it. See `erodeSizeUnit` for the same argument
+  // one panel over. WHICH unit is the picker three rows above it -- the app is
+  // on cm here -- with centimetres as the fallback `auto` gets.
+  shows('written in one settled unit so the scale cannot move mid-scrub', bar, '>cm<')
+
+  useTools.getState().setGameControls(true)
+  check('switching it on holds', useTools.getState().gameControls === true)
+  const flying = markupOf('NavBar (game controls on)', NavBar)
+  hides('and the speed field wakes up with it', flying, 'game-speed" disabled=""')
+
+  // ONLY THE MODELLING SCREEN FLIES, and the flag itself is not what says so --
+  // `flyingHere` is, so that a switch left on cannot make the lathe answer to
+  // WASD. The switch is still SHOWN on the other two, dimmed, because Settings
+  // is one panel that follows you between screens.
+  useTools.getState().setScreen('lathe')
+  check(
+    'the switch keeps its state on a screen with nowhere to walk',
+    useTools.getState().gameControls === true
+  )
+  check('but nothing is flying there', flyingHere(useTools.getState()) === false)
+  // Changing screens shuts whatever panel was open -- every one of them hangs
+  // off a bar or an island that is about to be replaced -- so it is opened
+  // again to read the row in its dimmed state.
+  useTools.setState({ openPanel: 'settings' })
+  const onLathe = markupOf('NavBar (lathe, game controls on)', NavBar)
+  shows('and the whole group is dimmed rather than taken away', onLathe, 'game-modes" disabled=""')
+  useTools.getState().setScreen('modelling')
+  useTools.setState({ openPanel: 'settings' })
+  check('and it flies again back on the bench', flyingHere(useTools.getState()) === true)
+
+  // SPACE BELONGS TO THE CAMERA WHILE IT IS FLYING, and to the control under
+  // the finger otherwise. Enter always activates, which is what stops anything
+  // becoming unreachable by keyboard when the camera takes the other key.
+  check('Enter activates whatever the mode', activates('Enter') === true)
+  check('and Space does not, while flying', activates(' ') === false)
+  check('nor does any other key, ever', activates('w') === false)
+  useTools.getState().setGameControls(false)
+  check('Space activates again with the camera parked', activates(' ') === true)
+
+  // The keys themselves. CTRL IS NOT ONE OF THEM and must never become one:
+  // Ctrl+W closes a browser tab and is one of the chords a page may not
+  // intercept, so a descend key on Ctrl would throw the unsaved document away
+  // the first time anybody sank while walking forward. This check is the
+  // memory of that.
+  check('W walks forward', moveFor('w') === 'forward')
+  check('S walks back', moveFor('S') === 'back', String(moveFor('S')))
+  check('A and D strafe', moveFor('a') === 'left' && moveFor('d') === 'right')
+  check('Space rises', moveFor(' ') === 'up')
+  check('C sinks', moveFor('c') === 'down')
+  check('and Control is not a movement key', moveFor('Control') === null)
+  check('nor is any letter the gizmo uses', moveFor('m') === null && moveFor('r') === null)
+
+  // WASD STAYS ON THE GROUND. The whole scheme rests on it: a camera looking
+  // down at a part on the grid must be able to walk ACROSS the scene rather
+  // than dive into it.
+  const level = new Quaternion()
+  const step = new Vector3()
+  flightStep(new Set(['forward']), level, 10, 1, step)
+  near('walking forward covers the speed asked for', step.length(), 10, 1e-9)
+  near('and does not change height', step.y, 0, 1e-12)
+  // Looking a long way down, which is where a view-axis camera would bury
+  // itself in the floor.
+  const stooped = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -1.2)
+  flightStep(new Set(['forward']), stooped, 10, 1, step)
+  near('and still does not, with the view pointed at the ground', step.y, 0, 1e-12)
+  near('while still covering the same distance', step.length(), 10, 1e-9)
+  // Straight down has no heading at all to project. The fallback reads the
+  // camera's own up vector, which at that angle is exactly what the screen is
+  // showing as "away" -- so W must still go somewhere.
+  const underfoot = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -Math.PI / 2)
+  flightStep(new Set(['forward']), underfoot, 10, 1, step)
+  near('looking straight down, forward still means something', step.length(), 10, 1e-9)
+  near('and it is still along the ground', step.y, 0, 1e-12)
+
+  flightStep(new Set(['up']), level, 10, 1, step)
+  near('Space climbs the world axis', step.y, 10, 1e-9)
+  flightStep(new Set(['down']), level, 10, 1, step)
+  near('and C sinks down it', step.y, -10, 1e-9)
+
+  // No direction may be faster than another, which is the oldest bug in this
+  // genre: two unit vectors added give one of length 1.41.
+  flightStep(new Set(['forward', 'right']), level, 10, 1, step)
+  near('the diagonal is no faster than the straight line', step.length(), 10, 1e-9)
+  flightStep(new Set(['forward', 'up']), level, 10, 1, step)
+  near('and neither is climbing while walking', step.length(), 10, 1e-9)
+  flightStep(new Set(['forward', 'back']), level, 10, 1, step)
+  near('opposed keys stand still', step.length(), 0, 1e-12)
+  flightStep(new Set(), level, 10, 1, step)
+  near('and an empty hand asks for nothing', step.length(), 0, 1e-12)
+  flightStep(new Set(['forward']), level, 10, 0.5, step)
+  near('travel is per SECOND, so half a second is half as far', step.length(), 5, 1e-9)
+
+  // THE WHEEL SETS THE SPEED, by a ratio rather than a step: the range is 200:1
+  // and a fixed step could only ever suit one end of it.
+  check(
+    'a notch up is faster',
+    speedAfterWheel(FLIGHT_SPEED_DEFAULT, -WHEEL_NOTCH) > FLIGHT_SPEED_DEFAULT
+  )
+  check(
+    'and a notch down is slower',
+    speedAfterWheel(FLIGHT_SPEED_DEFAULT, WHEEL_NOTCH) < FLIGHT_SPEED_DEFAULT
+  )
+  near(
+    'a notch each way comes back to where it started',
+    speedAfterWheel(speedAfterWheel(FLIGHT_SPEED_DEFAULT, -WHEEL_NOTCH), WHEEL_NOTCH),
+    FLIGHT_SPEED_DEFAULT,
+    1e-9
+  )
+  check(
+    'it cannot be wheeled past the top',
+    speedAfterWheel(FLIGHT_SPEED_MAX, -WHEEL_NOTCH * 50) === FLIGHT_SPEED_MAX
+  )
+  check(
+    'nor down to a standstill',
+    speedAfterWheel(FLIGHT_SPEED_MIN, WHEEL_NOTCH * 50) === FLIGHT_SPEED_MIN
+  )
+  // A trackpad sends a stream of much smaller deltas than a wheel detent, and
+  // must not cross the whole range on one flick.
+  check(
+    'a trackpad nudge moves it less than a full notch',
+    speedAfterWheel(FLIGHT_SPEED_DEFAULT, -4) < speedAfterWheel(FLIGHT_SPEED_DEFAULT, -WHEEL_NOTCH)
+  )
+  // The field and the wheel write the same value through the same clamp, so a
+  // typed number cannot get anywhere the wheel could not.
+  useTools.getState().setFlightSpeed(1e6)
+  check('and a typed number is held to the same ceiling', useTools.getState().flightSpeed === FLIGHT_SPEED_MAX)
+  useTools.getState().setFlightSpeed(-5)
+  check('and the same floor', useTools.getState().flightSpeed === FLIGHT_SPEED_MIN)
+  useTools.getState().setFlightSpeed(FLIGHT_SPEED_DEFAULT)
+
+  // FREE-LOOK TURNS THE EYE IN PLACE, which the orbit rig has no gesture for.
+  // It is expressed as a new target, and the DISTANCE to it must survive: the
+  // rig clamps how far the camera may sit from its target, so a turn that
+  // changed the distance would be a turn that also crept forward or back.
+  const eye = new Vector3(0, 2, 5)
+  const aim = new Vector3(0, 2, 0)
+  const turned = new Vector3()
+  lookTarget(eye, aim, 200, 0, turned)
+  near('a turn leaves the eye the same distance from what it looks at', turned.distanceTo(eye), aim.distanceTo(eye), 1e-9)
+  check('dragging right turns the view right', turned.x > eye.x)
+  lookTarget(eye, aim, -200, 0, turned)
+  check('and dragging left turns it left', turned.x < eye.x)
+  lookTarget(eye, aim, 0, 200, turned)
+  check('dragging down looks down', turned.y < eye.y)
+  lookTarget(eye, aim, 0, -200, turned)
+  check('and dragging up looks up', turned.y > eye.y)
+  // Clamped short of the pole rather than wrapped: past it the world is upside
+  // down and the rig would be orbiting about an up vector fighting the very
+  // drag that got it there.
+  lookTarget(eye, aim, 0, 100000, turned)
+  check('and it cannot be dragged through the floor', turned.y > eye.y - aim.distanceTo(eye))
+  lookTarget(eye, aim, 0, -100000, turned)
+  check('nor through the ceiling', turned.y < eye.y + aim.distanceTo(eye))
+
+  // THE VIEWPORT HAS TO ACTUALLY READ ALL THIS. Three gates live inside a fibre
+  // tree this headless check cannot mount, and each is a contradiction that
+  // would otherwise ship silently: S both walking backwards and switching the
+  // gizmo to Scale, the right button both looking and panning, and an arrow
+  // resizing on the button that looks.
+  const viewport = readFileSync(new URL('../src/viewport/Viewport.tsx', import.meta.url), 'utf8')
+  check(
+    'the gizmo letters stand down while the camera has the keyboard',
+    viewport.includes('if (flyingHere(useTools.getState())) return'),
+    'S would resize the solid you were backing away from'
+  )
+  check(
+    'and the right button stops panning, so it can look',
+    viewport.includes('flyingHere(useTools.getState()) ? null : MOUSE.PAN'),
+    'the scene would slide sideways every time you turned your head'
+  )
+  check(
+    'and the rig stops answering the wheel, which now sets the speed',
+    viewport.includes('enableZoom={!game}'),
+    'one notch would be answered twice'
+  )
+  const gizmo = readFileSync(new URL('../src/viewport/TransformGizmo.tsx', import.meta.url), 'utf8')
+  check(
+    'a size arrow stops answering the button that looks about',
+    gizmo.includes("e.button === 2 && sizeOnly && !flyingHere(useTools.getState())"),
+    'turning to face a solid would drag it out of shape'
+  )
+  // The press guard: a gesture measures its grab on the frame it starts, and
+  // every one of those measurements is against a viewport sliding out from
+  // under it. One listener rather than the dozen places a gesture can begin.
+  const gameControls = readFileSync(
+    new URL('../src/viewport/GameControls.tsx', import.meta.url),
+    'utf8'
+  )
+  check(
+    'and a press that lands mid-flight is refused before it reaches the scene',
+    gameControls.includes('e.stopPropagation()') && gameControls.includes('!moving()'),
+    'a solid grabbed on the move would jump to the pointer'
+  )
+  check(
+    'while the buttons that steer are let through',
+    gameControls.includes('if (e.button !== 0 || e.altKey) return'),
+    'you could not turn to see where you were going while going there'
+  )
+  // THE LOOK TAKES THE POINTER once it is plainly a look, which is what stops a
+  // turn dying against the edge of the screen -- the cursor runs out of window
+  // long before a hand runs out of desk.
+  check(
+    'a look takes the mouse away from the window',
+    gameControls.includes('requestPointerLock') && gameControls.includes('exitPointerLock'),
+    'a turn would stop halfway round, against the edge of the screen'
+  )
+  // And the bug that follows from it. The menu tells a click from a drag by how
+  // far the pointer travelled, and a LOCKED pointer does not travel: every look
+  // would release within a pixel of its own start and open a menu over the
+  // middle of the turn. So the gesture says outright that it is no longer a
+  // click, rather than leaving the menu to measure a cursor that is not there.
+  check(
+    'and says so, so its release is not read as a click',
+    gameControls.includes('cancelRightPress()'),
+    'every look would end with an object menu open over it'
+  )
+  check(
+    'at the same distance the menu itself judges by',
+    gameControls.includes('const LOOK_SLOP = CLICK_SLOP'),
+    'a band of drags would neither turn the camera nor open anything'
+  )
+  const objectMenu = readFileSync(new URL('../src/viewport/ObjectMenu.tsx', import.meta.url), 'utf8')
+  check(
+    'which the menu offers a way to say',
+    objectMenu.includes('export function cancelRightPress'),
+    'nothing could cancel a press that became a drag'
+  )
+
+  useTools.getState().setGameControls(false)
+
   // It is not an island panel any more, so collapsing the island must leave it
   // alone. The invariant that DOES shut a panel with the island is asserted
   // where the panels it still owns are -- snap and ruler.
@@ -5223,11 +5501,12 @@ console.log('\nThe erode tool says what it will melt before it melts it')
   shows('and a smoothing', panel, '>Smoothing<')
 
   {
-    // THE BRUSH SIZE OWNS ITS UNIT, and it is the only length in the app that
-    // does. Under `auto` -- the app's own default -- one drag of this slider
-    // crosses both of `resolveUnit`'s switching points, and the number under
-    // the pointer goes 9.9, 1.00, 99.9, 1.00 while the hand travels one way.
-    // That is correct for reading a length and wrong for setting one.
+    // THE BRUSH SIZE CANNOT BE READ IN `auto`. Under it -- the app's own
+    // default -- one drag of this slider crosses both of `resolveUnit`'s
+    // switching points, and the number under the pointer goes 9.9, 1.00, 99.9,
+    // 1.00 while the hand travels one way. That is correct for reading a length
+    // and wrong for setting one, so the field is always on a concrete unit and
+    // carries a picker for choosing it.
     tools().setDisplayUnit('auto')
     const auto = markupOf('ErodeTool (app on auto)', ErodeTool)
     shows('the brush size carries a unit picker', auto, 'aria-label="Brush size unit"')
@@ -5241,20 +5520,46 @@ console.log('\nThe erode tool says what it will melt before it melts it')
       tools().erodeSizeUnit === 'cm',
       tools().erodeSizeUnit
     )
-    // 0.3 scene units is 3 cm. The app-wide mode is `auto`, which at 0.3 units
-    // would resolve to centimetres too -- so the field is driven to a unit auto
-    // would NOT pick, and read back, or the pin proves nothing.
+    // AND SETTINGS IS WHAT USUALLY CHOOSES IT. The brush is 0.1 scene units,
+    // which is 1 cm and 10 mm, so the number in the box says which unit reached
+    // the field -- a brush that ignored the app-wide picker would still read 1.
     tools().setDisplayUnit('mm')
-    const pinned = markupOf('ErodeTool (app on mm)', ErodeTool)
-    shows('and stays there when the app goes to millimetres', pinned, 'value="3"')
+    const asked = markupOf('ErodeTool (app on mm)', ErodeTool)
+    shows('asking for millimetres app-wide reaches the brush size', asked, 'value="10"')
+    check(
+      'and the field remembers the unit it was moved to',
+      tools().erodeSizeUnit === 'mm',
+      tools().erodeSizeUnit
+    )
 
-    // Picking one changes the SPELLING and not the brush: the radius is held in
-    // scene units and never passes through the picker.
+    // `auto` writes nothing through, because there is nothing here that could
+    // adopt it. The field keeps the last concrete unit rather than falling back
+    // to a default the user never asked for.
+    tools().setDisplayUnit('auto')
+    check('and auto leaves it where it stands', tools().erodeSizeUnit === 'mm', tools().erodeSizeUnit)
+    shows(
+      'so the field reads on with the app back on auto',
+      markupOf('ErodeTool (app back on auto, field in mm)', ErodeTool),
+      'value="10"'
+    )
+
+    // THE PICKER STILL OVERRIDES IT, which is what it is for now: one panel
+    // read in a unit that suits it, while the app says something else. Set the
+    // app one way and the field the other, and the field wins.
+    tools().setDisplayUnit('cm')
+    check('the app-wide choice moves it back', tools().erodeSizeUnit === 'cm', tools().erodeSizeUnit)
     const before = tools().erodeRadius
     tools().setErodeSizeUnit('mm')
-    const asMm = markupOf('ErodeTool (in mm)', ErodeTool)
-    shows('picking millimetres restates the same brush', asMm, 'value="30"')
+    const asMm = markupOf('ErodeTool (app on cm, field in mm)', ErodeTool)
+    // Picking one changes the SPELLING and not the brush: the radius is held in
+    // scene units and never passes through the picker.
+    shows('picking millimetres restates the same brush', asMm, 'value="10"')
     check('and does not resize it', tools().erodeRadius === before, `${tools().erodeRadius}`)
+    check(
+      'and the app-wide readouts are left alone',
+      tools().displayUnit === 'cm',
+      tools().displayUnit
+    )
     tools().setErodeSizeUnit('cm')
     tools().setDisplayUnit('cm')
   }
@@ -5700,17 +6005,18 @@ console.log('\nThe Smoother is the brush that arrives somewhere and stops')
   tools().setSmootherRadius(DEFAULT_SMOOTHER_RADIUS)
   tools().setSmootherStrength(DEFAULT_BRUSH_ROUND)
 
-  // AND IT OPENS FINER THAN THE OTHER TWO, which is the one place the three
-  // brushes' defaults are deliberately not the same number. The torch and the
-  // sculpt tool are how a shape is arrived at and open wide enough to move a
-  // face; this one is aimed at an edge, and an edge is a thin thing. Pinned
-  // rather than left to drift, because the bounds and the clamps are shared and
-  // nothing else in the code would notice this going back to 3 cm.
+  // ALL THREE OPEN AT A CENTIMETRE, and each is pinned SEPARATELY rather than
+  // checked against the others. They agree today for two different reasons --
+  // the Smoother because its mark is an edge, the other two because a brush
+  // costs the area it refines -- so a check that only asserted the agreement
+  // would go on passing while both drifted together, which is the regression
+  // worth catching. The bounds and the clamps are shared, and nothing else in
+  // the code would notice either of these going back to 3 cm.
   check('the Smoother opens at a centimetre', DEFAULT_SMOOTHER_RADIUS === 0.1, `${DEFAULT_SMOOTHER_RADIUS}`)
   check(
-    'which is finer than the brushes that move the surface',
-    DEFAULT_SMOOTHER_RADIUS < DEFAULT_BRUSH_RADIUS,
-    `${DEFAULT_SMOOTHER_RADIUS} against ${DEFAULT_BRUSH_RADIUS}`
+    'and so do the brushes that move the surface',
+    DEFAULT_BRUSH_RADIUS === 0.1,
+    `${DEFAULT_BRUSH_RADIUS}`
   )
 
   // WHAT THE ARMED BRUSH HANDS THE STROKE. One place knows which dials to read,
@@ -6342,6 +6648,142 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
 
     draft.clear()
     check('and Reset leaves nothing in hand', useSculptDraft.getState().selected === null, `${useSculptDraft.getState().selected}`)
+  }
+
+  // AND A POINT CAN COME BACK OFF, which the drawing went without for as long
+  // as "drag it where you meant" was the only way back from a misplaced knot.
+  // That answer holds for a point in the wrong PLACE and not at all for a point
+  // that should not be there: a run of four dragged into a run of three leaves
+  // a knot doubled up on a neighbour, still bending the fit through both.
+  //
+  // THE LINE IS THE ORDER, so the shape of a delete falls out of the splice.
+  // An END point BACKTRACKS the line -- it stops at the knot before, and the
+  // stretch of wall it used to reach falls outside the span the profile covers.
+  // A MIDDLE one is BRIDGED: the two either side join up, straight with the
+  // curve off and a freshly fitted arc with it on. See `removePoint`.
+  {
+    const draft = () => useSculptDraft.getState()
+    draft().clear()
+    for (const at of [[0.2, 0.2], [0.5, 0.4], [0.8, 0.25], [1.1, 0.3]] as [number, number][]) {
+      draft().addPoint(at)
+    }
+
+    // A MIDDLE POINT: the neighbours bridge, and the line still runs the whole
+    // length it did -- the ends did not move, so the span the wall is cut over
+    // is the span it was.
+    const spanned = [draft().points[0][0], draft().points[3][0]]
+    draft().removePoint(1)
+    check('taking a middle point out leaves the rest of the line', draft().points.length === 3, `${draft().points.length}`)
+    check(
+      'and the knot that went is the one asked for',
+      draft().points.every((p) => p[0] !== 0.5),
+      JSON.stringify(draft().points)
+    )
+    check(
+      'while its neighbours bridge the gap it left',
+      draft().points[0][0] === spanned[0] && draft().points[1][0] === 0.8,
+      'the point below the gap now runs straight to the one above it'
+    )
+    check(
+      'so the profile still reaches from end to end',
+      draft().points[draft().points.length - 1][0] === spanned[1],
+      'a delete in the middle is not a delete of the span'
+    )
+    // WITH THE CURVE OFF the bridge IS the straight segment between the two,
+    // which is the reading that makes a bridge checkable: three points, three
+    // points on the line, and the middle one is the far side of the gap.
+    const straight = sculptLine(draft(), false)
+    check('with Fit off the bridge is the segment between them', straight.length === 3, `${straight.length}`)
+    check('drawn straight from the one to the other', straight[1][0] === 0.8, `${straight[1]}`)
+
+    // AN END POINT: the line backtracks, and the span goes with it -- which is
+    // the whole difference between the two cases, and the reason the tool can
+    // say "the wall above the topmost point is left alone" after a delete as
+    // truthfully as before one.
+    const wasTop = draft().points[draft().points.length - 1][0]
+    draft().removePoint(draft().points.length - 1)
+    check('taking the last point off shortens the line', draft().points.length === 2, `${draft().points.length}`)
+    check(
+      'and the profile backtracks to the knot before it',
+      draft().points[draft().points.length - 1][0] === 0.8 && wasTop === 1.1,
+      'the span the deleted point reached is no longer covered'
+    )
+
+    // NEIGHBOURS KEEP WHAT THEY WERE AIMED TO. A tangent is a property of its
+    // point -- the rule a drag already follows -- so a delete somewhere else on
+    // the line must not quietly hand a shaped point back to the fit.
+    draft().clear()
+    for (const at of [[0.2, 0.2], [0.5, 0.4], [0.8, 0.25]] as [number, number][]) {
+      draft().addPoint(at)
+    }
+    draft().moveHandle(2, [0.9, 0.3], 1)
+    const aimed = JSON.stringify(draft().handles[2])
+    draft().removePoint(1)
+    check(
+      'a delete leaves an aimed tangent exactly alone',
+      JSON.stringify(draft().handles[1]) === aimed,
+      `${draft().handles[1]}`
+    )
+    check('and the handles come away with their own point', draft().handles.length === 2, `${draft().handles.length}`)
+
+    // THE SELECTION IS WALKED RATHER THAN DROPPED, or every delete would cost
+    // the user the handles they were working with. Delete the LIVE knot and the
+    // one before it takes over; delete below a live knot and it slides down
+    // with the rest, still the same point.
+    draft().clear()
+    for (const at of [[0.2, 0.2], [0.5, 0.4], [0.8, 0.25]] as [number, number][]) {
+      draft().addPoint(at)
+    }
+    draft().selectPoint(2)
+    draft().removePoint(2)
+    check('deleting the live knot hands the shaping to the one before it', draft().selected === 1, `${draft().selected}`)
+    draft().selectPoint(1)
+    draft().removePoint(0)
+    check('and a delete below it follows the point rather than the index', draft().selected === 0, `${draft().selected}`)
+    check('which is still the very knot that was live', draft().points[0][0] === 0.5, JSON.stringify(draft().points))
+
+    // Deleting the FIRST point when it is the live one: there is no knot before
+    // it, so the one that becomes first takes the handles.
+    draft().clear()
+    draft().addPoint([0.2, 0.2])
+    draft().addPoint([0.5, 0.4])
+    draft().selectPoint(0)
+    draft().removePoint(0)
+    check('with nothing before it, the new first point takes the handles', draft().selected === 0, `${draft().selected}`)
+
+    // AND AN INDEX NAMING NO POINT IS IGNORED, the way `selectPoint` ignores
+    // one: a stale index must not cut the drawing short.
+    const before = draft().points.length
+    draft().removePoint(9)
+    draft().removePoint(-1)
+    check('a point that is not there cannot be deleted', draft().points.length === before, `${draft().points.length}`)
+
+    // Emptying the drawing leaves nothing in hand, exactly as Reset does.
+    draft().removePoint(0)
+    check('and the last point off leaves nothing in hand', draft().selected === null, `${draft().selected}`)
+    check('with an empty drawing behind it', draft().points.length === 0, `${draft().points.length}`)
+    draft().clear()
+  }
+
+  // THE KNOT IN HAND WINS THE KEY, and the order is the check. Putting a tool
+  // in hand does not put a lit ruler out, so a screen can have both a selected
+  // ruler and a live sculpt point -- and a Delete that took the ruler off while
+  // the user was plainly editing a profile would delete the thing they were not
+  // looking at. A source check because nothing else can see the order: both
+  // branches are correct on their own.
+  {
+    const screen = readFileSync(new URL('../src/viewport/LatheViewport.tsx', import.meta.url), 'utf8')
+    const key = screen.slice(screen.indexOf("e.key === 'Delete'"))
+    check(
+      'the lathe asks the drawing before it asks the rulers',
+      key.indexOf('.removePoint(') > 0 && key.indexOf('.removePoint(') < key.indexOf('.removeLatheRuler('),
+      'a live knot is what a Delete over Point Sculpt is aimed at'
+    )
+    check(
+      'and only with Point Sculpt in hand',
+      key.slice(0, key.indexOf('.removePoint(')).includes("latheTool === 'points'"),
+      'with a brush held there is no drawing to take a point out of'
+    )
   }
 
   // EVERY STROKED MARK ON THE LATHE IS NON-SCALING, and this is a source check
@@ -7180,13 +7622,33 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
 
     tools().setOpenPanel('hollow')
     lathe().setHollow({ thickness: 0.06, capTop: false, capBottom: true })
+    // MILLIMETRES TO START WITH, because that is the unit a wall thickness is
+    // spoken in -- read off the store's own initial state rather than the live
+    // one, which the Settings picker moves along with every other pinned unit.
+    // See `PINNED_UNITS`. The panel is then put back on it, since the checks
+    // above this one have been driving the app-wide choice about.
+    check(
+      'read in millimetres to start with',
+      useTools.getInitialState().hollowSizeUnit === 'mm',
+      useTools.getInitialState().hollowSizeUnit
+    )
+    tools().setHollowSizeUnit('mm')
     const cup = markupOf('HollowTool (a cup)', HollowTool)
     shows('the panel sets a wall thickness', cup, '>Wall<')
     shows('and each end independently', cup, 'aria-label="Bottom end"')
     shows('both of them', cup, 'aria-label="Top end"')
     shows('with a unit of its own at the top right', cup, 'nav-panel-setting')
-    check('read in millimetres to start with', tools().hollowSizeUnit === 'mm', tools().hollowSizeUnit)
     shows('and the wall field wears it', cup, '>mm<')
+    // AND SETTINGS REACHES IT, like every other control that sets a length:
+    // 0.06 units is 6 mm and 0.60 cm, so the box says which unit arrived.
+    tools().setDisplayUnit('cm')
+    check('the app-wide picker moves the panel', tools().hollowSizeUnit === 'cm', tools().hollowSizeUnit)
+    shows(
+      'and the wall is restated in it',
+      markupOf('HollowTool (app on cm)', HollowTool),
+      'value="0.6"'
+    )
+    tools().setHollowSizeUnit('mm')
     // WHAT CAME OF IT, which is the only thing on this screen that can say so.
     shows('the panel says what the piece became', cup, 'Open at the top, standing on a floor.')
 
@@ -9255,7 +9717,7 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       // different units inside one size -- and even where they agreed, the
       // suffix would be said three times over.
       const mixed: Vec3 = [2, 0.005, 1.5]
-      const said = sizeIn(mixed, resolveUnit(Math.max(...mixed), 'auto'))
+      const said = formatSize(mixed, 'auto')
       // Three numbers and ONE word: anything else means a unit crept in beside
       // a side rather than standing once at the end of all three.
       check(

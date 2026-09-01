@@ -103,3 +103,27 @@ export const SCREEN_SNAPS: Record<ScreenId, boolean> = {
   laser: true,
 }
 
+
+/**
+ * Whether this screen can be WALKED, which is what the Game Controls switch
+ * turns on.
+ *
+ * A third table rather than a reading of either of the other two, because it is
+ * a third question and it happens to have a different answer from both. What
+ * the switch offers is a camera you drive from the keyboard -- WASD across the
+ * ground, Space and Ctrl for height, the right button to look -- and that is a
+ * way of getting about a ROOM. Only one screen has one. The lathe and the laser
+ * cutter each draw a flat picture the camera looks straight at: there is no
+ * ground to walk on, no depth to walk into, and nothing behind you to turn
+ * round and see. Given WASD they would have nowhere to go.
+ *
+ * The switch is still SHOWN on all three, dimmed where it is false -- see
+ * `SettingsTool`. Settings is one panel that follows you between screens, and a
+ * preference that vanished on two of them would be a feature nobody could find
+ * from the screen they happened to be on.
+ */
+export const SCREEN_HAS_GAME_CONTROLS: Record<ScreenId, boolean> = {
+  modelling: true,
+  lathe: false,
+  laser: false,
+}

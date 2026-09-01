@@ -1,5 +1,4 @@
-import { Box3, BufferAttribute, BufferGeometry } from 'three'
-import type { Matrix4 } from 'three'
+import { Box3, BufferAttribute, BufferGeometry, Matrix4, Vector3 } from 'three'
 import type { Brush } from 'three-bvh-csg'
 import {
   ADDITION,
@@ -375,6 +374,60 @@ function baseBrush(base: BaseSolid, paint: string): Brush | null {
  * goes, and a step that did it itself would free a brush a live cache slot is
  * still holding.
  */
+/**
+ * How much a part is swollen before it is unioned in. Relative to its own size,
+ * so a bead and a wall are nudged off the degenerate point by the same amount
+ * of their own extent rather than by the same absolute distance.
+ *
+ * At the app's ten centimetres to the unit this is half a micron on a
+ * hand-sized part -- below any printer, any screen, and any dimension the
+ * inspector will ever show. See `swell` for what it buys.
+ */
+const WELD_SWELL = 1e-6
+
+/**
+ * Grow a part a hair about its own centre, so a flush contact becomes an
+ * overlapping one.
+ *
+ * WHY A BOOLEAN NEEDS THIS. The union asks one question of every triangle: is
+ * it inside the other solid, or outside it. That question has an answer
+ * everywhere except exactly ON the other surface, and two faces laid flush
+ * against each other are nothing but that case. The splitter cannot cut a
+ * triangle against a plane it already lies in, so it falls back to clipping
+ * against the other triangle's EDGES -- three planes per triangle -- and
+ * nothing it produces can be discarded as interior, because every piece sits
+ * exactly on the boundary. A 32-triangle cylinder cap laid on a 2-triangle box
+ * face turned twelve triangles into 1,866, all of them slivers.
+ *
+ * The app walks users straight into it: snapping "lands the solid flush against"
+ * a neighbour's face by design -- see `snapping.ts` -- so the exact coplanarity
+ * that detonates the boolean is the thing the placement tools aim for.
+ *
+ * SWOLLEN RATHER THAN SHRUNK, and the direction is the whole of the choice. A
+ * union of two solids that overlap is a well-posed question with a robust
+ * answer; a union of two that merely touch is the degenerate one above; and a
+ * union of two separated by even a hair is two shells that a merge was supposed
+ * to weld into one. Growing can only ever turn a touch into an overlap, so it
+ * moves every contact off the bad case and none of them into a worse one.
+ *
+ * THE DOCUMENT IS NOT TOUCHED. This runs on the baked tool geometry on its way
+ * into the boolean, so what the user placed, what the inspector reports and what
+ * a reopened file rebuilds are all still exactly the numbers they typed.
+ */
+function swell(geom: BufferGeometry): void {
+  geom.computeBoundingBox()
+  const box = geom.boundingBox
+  if (!box) return
+  const at = box.getCenter(new Vector3())
+  const k = 1 + WELD_SWELL
+  geom.applyMatrix4(
+    new Matrix4()
+      .makeTranslation(at.x, at.y, at.z)
+      .multiply(new Matrix4().makeScale(k, k, k))
+      .multiply(new Matrix4().makeTranslation(-at.x, -at.y, -at.z))
+  )
+}
+
 function weldPart(prev: Brush, part: SceneObject): Step {
   const failed: string[] = []
   let welded: BufferGeometry | null = null
@@ -389,6 +442,8 @@ function weldPart(prev: Brush, part: SceneObject): Step {
     // way in would flatten it to one colour before the union ever saw it.
     welded = bakeWorld(evaluated.geometry, objectMatrix(part.transform), true)
     evaluated.geometry.dispose()
+    // Off the degenerate point before the boolean ever sees it. See `swell`.
+    swell(welded)
     tool = makeBrush(welded, evaluated.paints)
     return { brush: csg(prev, tool, ADDITION), owned: true, failed }
   } catch (err) {
