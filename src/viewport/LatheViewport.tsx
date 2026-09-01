@@ -22,6 +22,7 @@ import { CopyPieceButton } from './CopyPieceButton'
 import { LatheRulers } from './LatheRulers'
 import { SculptLayer, useSculptGesture } from './SculptLayer'
 import { SculptPanel } from './SculptPanel'
+import { useSculptDraft } from './sculptDraft'
 import { StockPanel } from './StockPanel'
 import { ViewResetButton } from './ViewResetButton'
 import { IslandShell } from './ToolIsland'
@@ -291,21 +292,44 @@ export function LatheViewport() {
 
       // ESCAPE AND DELETE, which this screen used to answer to neither of --
       // "there is nothing to select and nothing to delete" was true right up
-      // until something on it could be selected. A ruler is that something, and
-      // the two keys mean here exactly what they mean on the bench: put the
-      // handles down, and take that away.
+      // until something on it could be selected. A ruler was the first such
+      // thing and a sculpt knot is the second, and the two keys mean here
+      // exactly what they mean on the bench: put the handles down, and take
+      // that away.
       if (e.key === 'Escape') {
         useTools.getState().selectLatheRuler(null)
         return
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        // Only ever a selected RULER. The piece itself is not deletable and
-        // must not become so by a key held down over the wrong window: the way
-        // out of a lump gone wrong is Reset, which says what it will do.
-        const chosen = useTools.getState().selectedLatheRuler
+        // THE KNOT IN HAND FIRST, and only while Point Sculpt is the tool
+        // held. A press on a knot already makes it the live one -- that is how
+        // its handles come out -- so "click a point, press Delete" needs no
+        // gesture of its own: the selection the tool already keeps is the
+        // thing the key acts on. The filled knot says which. See `removePoint`
+        // in `sculptDraft` for what taking one off does to the line: an end
+        // point backtracks it, a middle one is bridged by its neighbours.
+        const tools = useTools.getState()
+        if (tools.latheTool === 'points') {
+          const drawn = useSculptDraft.getState()
+          if (drawn.selected !== null) {
+            e.preventDefault()
+            drawn.removePoint(drawn.selected)
+            return
+          }
+        }
+        // THEN a selected RULER, and the order matters rather than merely
+        // being one: putting a tool in hand does not put a lit ruler out, so
+        // both can be true at once, and a key that took the ruler off the
+        // piece while the user was plainly editing a profile would delete the
+        // thing they were not looking at.
+        //
+        // The piece itself is not deletable either way and must not become so
+        // by a key held down over the wrong window: the way out of a lump gone
+        // wrong is Reset, which says what it will do.
+        const chosen = tools.selectedLatheRuler
         if (chosen === null) return
         e.preventDefault()
-        useTools.getState().removeLatheRuler(chosen)
+        tools.removeLatheRuler(chosen)
         return
       }
 

@@ -5,6 +5,12 @@ import { BRUSH_SMOOTH_MIN, ROUND_MIN } from '../geometry/erode'
 import { DEFAULT_SNAP_DISTANCE } from '../geometry/snap'
 import { DEFAULT_LASER_SNAP, LASER_SNAP_MAX, LASER_SNAP_MIN } from '../viewport/pointSnap'
 import {
+  FLIGHT_SPEED_DEFAULT,
+  FLIGHT_SPEED_MAX,
+  FLIGHT_SPEED_MIN,
+  clearMoves,
+} from '../viewport/gameCamera'
+import {
   DEFAULT_LATHE_SNAP,
   LATHE_SNAP_MAX,
   LATHE_SNAP_MIN,
@@ -14,7 +20,12 @@ import type { LatheEnd, LatheRuler, LatheRulerEnd } from '../viewport/latheRuler
 import { fromDisplay } from '../units'
 import { DEFAULT_HELP_SECTION } from '../helpTopics'
 import type { HelpSectionId } from '../helpTopics'
-import { DEFAULT_SCREEN, SCREEN_HAS_DOCUMENT, SCREEN_SNAPS } from '../screens'
+import {
+  DEFAULT_SCREEN,
+  SCREEN_HAS_DOCUMENT,
+  SCREEN_HAS_GAME_CONTROLS,
+  SCREEN_SNAPS,
+} from '../screens'
 import type { ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
@@ -324,20 +335,43 @@ export const BRUSH_RADIUS_MAX = 12.5
  */
 export const DAB_SPACING = 0.34
 
-/** A brush a third of the span a fresh solid lands at: big enough to see what
- *  it does on a palette cube, small enough to aim at a corner of one. */
-export const DEFAULT_BRUSH_RADIUS = 0.3
+/**
+ * Where the torch's and the sculpt tool's brushes start: a centimetre.
+ *
+ * A FINE BRUSH TO OPEN WITH: these tools now start where the Smoother does, on
+ * detail rather than on blocking a shape out. It used to be 3 cm, on the
+ * reasoning that a brush a third of the span a fresh solid lands at is big
+ * enough to see what it does on a palette cube. That is true, and it is still
+ * one dial away.
+ *
+ * NOT A PERFORMANCE ARGUMENT, and it is worth writing down which way round the
+ * cost actually runs, because the plausible version of it is false. One PRESS
+ * is cheaper, since a dab refines the region it covers and that goes with the
+ * area of the sphere. But a DRAG is not one dab: dabs are laid every
+ * `DAB_SPACING` of a radius, so a finer brush lays proportionally more of them
+ * over the same ground and resolves it finer when it gets there. Measured on a
+ * 0.9-unit drag across a palette cube -- 3 cm: 10 dabs, 1,024 triangles; 1 cm:
+ * 27 dabs, 1,652. The finer brush is the SMOOTHER one to hold, the worst frame
+ * falling from 17 ms to 4, and it is the heavier mesh to leave behind.
+ *
+ * The same number as `DEFAULT_SMOOTHER_RADIUS` now, and still a separate
+ * constant, because the two are separate arguments that happen to land in the
+ * same place -- see the note there. Collapsing them would mean a later change
+ * to one silently moving the other.
+ */
+export const DEFAULT_BRUSH_RADIUS = 0.1
 
 /**
- * Where the SMOOTHER's brush starts: a centimetre, a third of the other two.
+ * Where the SMOOTHER's brush starts: a centimetre.
  *
- * It does not share `DEFAULT_BRUSH_RADIUS` because the three brushes are not
- * reached for at the same moment. The torch and the sculpt tool are how a shape
- * is arrived at, so they open wide enough to move a face; the Smoother is
- * aimed at an edge that is already where it should be, and an edge is a thin
- * thing. At 3 cm the first press on a palette cube took a bite out of a corner
- * you can see across the viewport, which reads as a mistake rather than as a
- * finish.
+ * It does not share `DEFAULT_BRUSH_RADIUS` even though the two are the same
+ * number today, because they are the same number for different reasons and
+ * either could move without the other. This one is about the MARK: the Smoother
+ * is aimed at an edge that is already where it should be, and an edge is a thin
+ * thing -- at 3 cm the first press on a palette cube took a bite out of a
+ * corner you can see across the viewport, which reads as a mistake rather than
+ * as a finish. The other is about what a brush COSTS. A tool that widened its
+ * default tomorrow should not drag this one along behind it.
  *
  * A centimetre is also the honest scale for the number beside it. Strength is a
  * share of this -- see `smootherStrength` -- so the brush is the ceiling on the
@@ -803,7 +837,9 @@ export type ToolState = {
    * which owns the range as well.
    */
   latheSnapDistance: number
-  /** Which unit lengths are SHOWN in. Purely a display choice: nothing in the
+  /** Which unit lengths are SHOWN in -- every readout, every field, and the
+   *  controls that keep a concrete unit of their own, which `setDisplayUnit`
+   *  writes the choice through to. Purely a display choice: nothing in the
    *  document or the geometry changes with it. */
   displayUnit: UnitMode
   /** Which palette the app wears. Display-only in exactly the same sense the
@@ -830,6 +866,47 @@ export type ToolState = {
    * too, rather than carving out an exception nobody asked for.
    */
   showOutlines: boolean
+  /**
+   * Whether the modelling viewport is driven like a game rather than orbited.
+   *
+   * IT IS HERE TO LOWER THE DOOR. The orbit rig this app has always used is
+   * what every CAD package uses and it is not what anybody arrives knowing:
+   * middle-drag to turn, right-drag to slide, wheel to close in, and the whole
+   * scheme built on a pivot point that is invisible and has to be guessed at.
+   * WASD is the one 3D control scheme a person can be assumed to have already
+   * learned somewhere else. Switching this on hands them that instead -- walk
+   * with the letters, rise and sink with Space and C, hold the right button to
+   * look about -- and nothing in the document changes by it.
+   *
+   * A PREFERENCE rather than a tool, which is why it sits with the unit, the
+   * theme and the outlines instead of on the island: it says how you drive this
+   * app, and it is still true of the next document you open. Nothing in the
+   * scene, the file or an export knows it exists.
+   *
+   * SHOWN EVERYWHERE, LIVE ON ONE SCREEN. The lathe and the laser cutter draw a
+   * flat picture with no room to walk about in, so the switch is dimmed on both
+   * -- see `SCREEN_HAS_GAME_CONTROLS`, which owns that judgement, and
+   * `SettingsTool`, which draws it. The flag itself is left alone by the screen
+   * you are on, so coming back to the modelling screen finds the camera the way
+   * you left it.
+   */
+  gameControls: boolean
+  /**
+   * How fast that camera travels, in scene units a second.
+   *
+   * A NUMBER THE USER OWNS, rather than one derived from how far the camera
+   * stands from something. Deriving it was the first plan and it is wrong for
+   * this app in particular: the scenes run from a millimetre boss to a five
+   * metre wall, so the same gesture has to mean two hundred different speeds,
+   * and a speed that reads the scene guesses at which of them you wanted every
+   * time you move. Set once, it is a fact about how you like to fly.
+   *
+   * Reachable two ways, and the wheel is the one that matters: with the mode on
+   * the wheel no longer closes in on anything -- W does that -- so it is free,
+   * and it is exactly where a hand already is. The field in Settings is for
+   * saying a number rather than hunting for one. See `speedAfterWheel`.
+   */
+  flightSpeed: number
   cutActive: boolean
   cutPlane: CutPlaneState
   openPanel: NavPanel
@@ -890,19 +967,25 @@ export type ToolState = {
   /** The torch's brush radius in scene units -- the sphere the ghost draws. */
   erodeRadius: number
   /**
-   * The unit the brush size is READ AND TYPED in, chosen here and nowhere else.
+   * The unit the brush size is READ AND TYPED in.
    *
-   * The one length in the app that does not follow `displayUnit`, and the
-   * reason is the range: the brush runs from 1 mm to 1.25 m, so under `auto`
-   * -- which is the app's default -- a single drag of the size slider crosses
-   * both switching points and the number under the pointer goes 9.9, 1.00,
-   * 99.9, 1.00 while the hand never changes direction. `auto` reads a length;
-   * this control SETS one, and a scale that renumbers itself mid-gesture cannot
-   * be aimed.
+   * The one thing this field does NOT take from `displayUnit` is `auto`, and
+   * the reason is the range: the brush runs from 1 mm to 1.25 m, so under
+   * `auto` -- which is the app's default -- a single drag of the size slider
+   * crosses both switching points and the number under the pointer goes 9.9,
+   * 1.00, 99.9, 1.00 while the hand never changes direction. `auto` reads a
+   * length; this control SETS one, and a scale that renumbers itself
+   * mid-gesture cannot be aimed.
    *
-   * So the field is pinned, and to a unit the user picks rather than one this
-   * file asserts. Centimetres to start: the default brush is 3 cm, which is two
-   * digits at both ends of the useful range where millimetres is four.
+   * So the field is always pinned to a concrete unit, and this is where that
+   * unit is remembered. Asking for millimetres or centimetres in Settings
+   * writes straight through to it -- see `PINNED_UNITS` -- and the picker on
+   * the field itself overrides that afterwards, for a brush a user wants read
+   * in something other than the rest of the app. Under `auto` there is nothing
+   * to write through, so what is remembered here is all there is.
+   *
+   * Centimetres to start: the range runs from a millimetre to 125 cm, which is
+   * two digits at both ends in centimetres where millimetres is four.
    */
   erodeSizeUnit: Unit
   /** How hard one of the torch's dabs bites, 0..1. */
@@ -1117,9 +1200,10 @@ export type ToolState = {
    * user alternating between them would spend the sitting re-dialling a single
    * size back and forth.
    *
-   * The sizes are LENGTHS in scene units, pinned to a unit of their own the way
-   * the brushes' are -- see `erodeSizeUnit` for why a control that SETS a
-   * length cannot be read in `auto`.
+   * The sizes are LENGTHS in scene units, pinned the way the brushes' are and
+   * following Settings the same way -- see `erodeSizeUnit` for why a control
+   * that SETS a length cannot be read in `auto`, and `PINNED_UNITS` for what
+   * the app-wide picker does to all of them at once.
    */
   pushReach: number
   pushSizeUnit: Unit
@@ -1134,7 +1218,8 @@ export type ToolState = {
    * The unit the Hollow panel is read and typed in.
    *
    * Pinned rather than `auto`, like every other control that SETS a length --
-   * see `erodeSizeUnit` -- and it starts at MILLIMETRES rather than at the
+   * see `erodeSizeUnit` -- and following the app-wide picker whenever that
+   * names a unit, like all of them. It STARTS at millimetres rather than at the
    * centimetres the tool sizes use, because that is the unit a wall thickness
    * is actually spoken in. Nobody says a pot has a 0.6 cm wall.
    *
@@ -1214,6 +1299,10 @@ export type ToolState = {
   setDisplayUnit: (unit: UnitMode) => void
   setTheme: (theme: Theme) => void
   setShowOutlines: (on: boolean) => void
+  setGameControls: (on: boolean) => void
+  /** Clamped to the range the camera will actually fly at, because this one can
+   *  be typed into as well as wheeled. See `FLIGHT_SPEED_MIN`. */
+  setFlightSpeed: (speed: number) => void
   /**
    * Arm or stand down the cut tool.
    *
@@ -1334,6 +1423,39 @@ export type ToolState = {
   noteRecentColor: (color: string) => void
 }
 
+/**
+ * Every control that REMEMBERS a unit of its own.
+ *
+ * These are the lengths a user SETS rather than reads, so none of them can be
+ * shown in `auto` -- see `pinnedUnit` in `units.ts` for why a scale that
+ * renumbers itself mid-drag cannot be aimed. Each keeps a concrete unit, and
+ * the app-wide picker in Settings writes its choice through to all of them, so
+ * asking for millimetres there puts the brush size, the lathe tools and the
+ * wall thickness in millimetres too. Each picker still overrides its own field
+ * afterwards, which is what it was for: one panel read in a unit that suits it
+ * is a preference, and every panel disagreeing with Settings was a bug.
+ *
+ * ONE LIST rather than seven lines in the setter, because the day an eighth
+ * pinned control lands the only way it can be missed is if there is somewhere
+ * else to add it. See `setDisplayUnit`.
+ */
+const PINNED_UNITS = [
+  'erodeSizeUnit',
+  'sculptSizeUnit',
+  'smootherSizeUnit',
+  'pushSizeUnit',
+  'pullSizeUnit',
+  'smoothSizeUnit',
+  'hollowSizeUnit',
+] as const satisfies readonly (keyof ToolState)[]
+
+type PinnedUnits = Pick<ToolState, (typeof PINNED_UNITS)[number]>
+
+/** The app-wide choice, spelled out for every control that holds one. */
+function pinAll(unit: Unit): PinnedUnits {
+  return Object.fromEntries(PINNED_UNITS.map((key) => [key, unit])) as PinnedUnits
+}
+
 export const useTools = create<ToolState>((set) => ({
   // The general editor, which is the only screen there was.
   screen: DEFAULT_SCREEN,
@@ -1360,6 +1482,12 @@ export const useTools = create<ToolState>((set) => ({
   // one solid stops and the next starts. Off is the deliberate act, for the
   // moment the drawing gets in the way of the shape.
   showOutlines: true,
+  // Off. The orbit rig is what this app has always been driven with and what
+  // its own documentation describes, so it stays the camera you get; this is an
+  // alternative offered to somebody who has gone looking for one, not a change
+  // of scheme sprung on everybody who opens the app.
+  gameControls: false,
+  flightSpeed: FLIGHT_SPEED_DEFAULT,
   cutActive: false,
   cutPlane: DEFAULT_CUT_PLANE,
   openPanel: null,
@@ -1380,7 +1508,8 @@ export const useTools = create<ToolState>((set) => ({
   eraseScope: 'all',
   brushTool: null,
   erodeRadius: DEFAULT_BRUSH_RADIUS,
-  // Never 'auto', whatever the rest of the app is set to -- see `erodeSizeUnit`.
+  // Never 'auto', whatever the rest of the app is set to, and moved by the
+  // Settings picker whenever that names a unit -- see `erodeSizeUnit`.
   erodeSizeUnit: 'cm',
   erodeHeat: DEFAULT_BRUSH_FORCE,
   erodeSmooth: DEFAULT_BRUSH_SMOOTH,
@@ -1496,11 +1625,35 @@ export const useTools = create<ToolState>((set) => ({
     set({
       laserSnapDistance: Math.min(LASER_SNAP_MAX, Math.max(LASER_SNAP_MIN, pixels)),
     }),
-    setDisplayUnit: (displayUnit) => set({ displayUnit }),
+  // THE ONE PICKER, and it reaches the controls that cannot show `auto` as
+  // well as the readouts that can. A brush size pinned to centimetres while
+  // Settings said millimetres was the app answering "what are these numbers in"
+  // two different ways in two panels, and the panel the user had just told was
+  // the one that lost. Asking for `auto` writes nothing through: it is a rule
+  // for reading a length and there is nothing for a control that sets one to
+  // adopt, so those keep whichever unit they were last put in. See
+  // `PINNED_UNITS`.
+  setDisplayUnit: (displayUnit) =>
+    set(displayUnit === 'auto' ? { displayUnit } : { displayUnit, ...pinAll(displayUnit) }),
 
-    setTheme: (theme) => set({ theme }),
+  setTheme: (theme) => set({ theme }),
 
-    setShowOutlines: (showOutlines) => set({ showOutlines }),
+  setShowOutlines: (showOutlines) => set({ showOutlines }),
+
+  // Every held key forgotten on the way through, in BOTH directions. Off with
+  // a hand still on W, the key-up lands on a mode that is no longer listening
+  // and the direction would stay held -- so switching back on later would set
+  // the camera off on its own. On is cleared for the mirror of the same
+  // reason: whatever was held before the mode existed was never a movement.
+  setGameControls: (gameControls) => {
+    clearMoves()
+    set({ gameControls })
+  },
+
+  setFlightSpeed: (speed) =>
+    set({
+      flightSpeed: Math.min(FLIGHT_SPEED_MAX, Math.max(FLIGHT_SPEED_MIN, speed)),
+    }),
 
   // Leaving the tool rearms it, so the next cut starts from a predictable plane
   // rather than wherever the previous one happened to be dragged to. Arming it
@@ -1834,6 +1987,42 @@ export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.scree
  * screen arrives it is answered there rather than here.
  */
 export const snapsHere = (s: ToolState): boolean => SCREEN_SNAPS[s.screen]
+
+/**
+ * Is the camera being driven from the keyboard RIGHT NOW?
+ *
+ * Two facts, and both have to hold: the switch is on, and this screen is one
+ * with a room to walk about in. Kept as one predicate rather than written out
+ * at each call site, because the sites are scattered across two folders -- the
+ * viewport that flies, the palettes and panels that have to let a key past --
+ * and half of them would be checking the switch alone. A screen where the
+ * switch is on but nothing flies must still answer Space the ordinary way, and
+ * that is the case the second half exists to catch.
+ */
+export const flyingHere = (s: ToolState): boolean =>
+  s.gameControls && SCREEN_HAS_GAME_CONTROLS[s.screen]
+
+/**
+ * Does a bare key press still ACTIVATE the control it lands on?
+ *
+ * ENTER ALWAYS; SPACE ONLY WHEN NOTHING IS FLYING. Space is how the camera
+ * rises in game controls, and it is also how a browser presses whichever button
+ * happens to hold focus -- so with the mode on, a Space aimed at climbing would
+ * drop a solid on the grid, or re-press the very switch that turned the mode
+ * on. The camera takes the key, and Enter is left doing the same job on every
+ * one of these controls, so nothing becomes unreachable by keyboard.
+ *
+ * Asked by the handful of controls that answer Space in JAVASCRIPT -- the
+ * palette's rows and the clipboard's, which are `role="button"` divs and have
+ * to implement activation themselves. A real `<button>` needs none of this: the
+ * browser's own Space activation is the key's DEFAULT action, and the key
+ * handler in `GameControls` prevents it.
+ */
+export const activates = (key: string): boolean => {
+  if (key === 'Enter') return true
+  if (key !== ' ') return false
+  return !flyingHere(useTools.getState())
+}
 
 /**
  * The tool in the user's hand and its two dials, gathered.

@@ -127,9 +127,11 @@ function PushPullTool({ tool, label }: { tool: ClayTool; label: string }) {
       panelTitle={label}
     >
       <div className="tool-group">
-        {/* Pinned to its own unit, as the modelling brushes' sizes are: this
-            control SETS a length rather than reporting one, and `auto`
-            renumbers the scale mid-drag. See `erodeSizeUnit`. */}
+        {/* Pinned to a concrete unit, as the modelling brushes' sizes are:
+            this control SETS a length rather than reporting one, and `auto`
+            renumbers the scale mid-drag. Which unit is Settings' choice
+            whenever it names one, and this picker's the rest of the time. See
+            `erodeSizeUnit`. */}
         <NumberField
           ownUnit={{ unit: sizeUnit, onChange: setSizeUnit }}
           label="Tool size"

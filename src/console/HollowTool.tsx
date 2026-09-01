@@ -97,7 +97,8 @@ export function HollowTool() {
   // ONE UNIT FOR THE PANEL, chosen at its top right rather than on the row.
   // Every length in here is the same kind of thing -- a thickness of clay --
   // so the switch belongs to the panel, and the field wears the answer instead
-  // of a picker of its own. Millimetres to start with: see `hollowSizeUnit`.
+  // of a picker of its own. Millimetres to START with, and Settings moves it
+  // from there like every other length in the app: see `hollowSizeUnit`.
   const sizeUnit = useTools((s) => s.hollowSizeUnit)
   const setSizeUnit = useTools((s) => s.setHollowSizeUnit)
 

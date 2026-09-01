@@ -9,7 +9,7 @@ import { useDoc } from '../store/docStore'
 import type { GizmoAxis, GizmoHandle } from '../store/docStore'
 import type { Vec3 } from '../geometry/types'
 import { AXIS_COLORS } from './axisColors'
-import { useTools } from '../store/toolStore'
+import { flyingHere, useTools } from '../store/toolStore'
 import { useSceneColors } from './useSceneColors'
 import type { TransformMode } from '../store/toolStore'
 
@@ -581,8 +581,18 @@ function Arrow({
     // A size-only arrow still answers both, because there is no second thing
     // for the right button to mean on it and a handle that ignored a button
     // reads as broken.
+    //
+    // AND NOT AT ALL WITH GAME CONTROLS ON, where the right button is how you
+    // look about: an arrow that resized on it would have you dragging a solid
+    // out of shape every time you turned to face one. The left gesture is
+    // untouched, so the arrow still does everything a mode says it does -- the
+    // right button is simply the camera's on this screen while you are flying,
+    // the way it already is everywhere else in the viewport. See
+    // `gameControls`.
     if (e.button === 0) onGrab({ mode: sizeOnly ? 'size' : 'move', axis }, e)
-    else if (e.button === 2 && sizeOnly) onGrab({ mode: 'size', axis }, e)
+    else if (e.button === 2 && sizeOnly && !flyingHere(useTools.getState())) {
+      onGrab({ mode: 'size', axis }, e)
+    }
   }
 
   return (

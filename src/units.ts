@@ -74,6 +74,27 @@ export function resolveUnit(sceneValue: number, mode: UnitMode): Unit {
   return 'm'
 }
 
+/**
+ * The unit a control that SETS a length is pinned to.
+ *
+ * `auto` is a rule for READING a length: it picks a unit per value, so a slider
+ * scrubbed across a wide range renumbers its own scale under the hand aiming
+ * it, and a scale that moves cannot be aimed. A brush size, a wall thickness
+ * and a flying speed are all set rather than read, so none of them can be shown
+ * in `auto` -- which is what the app is set to out of the box.
+ *
+ * So they take the app-wide unit WHENEVER IT NAMES ONE, and fall back to a
+ * remembered one only when it does not. That is what makes the picker in
+ * Settings mean the same thing everywhere: choosing millimetres there puts the
+ * brush size in millimetres too, and `auto` is the one choice these controls
+ * cannot honour, so it leaves them where they were rather than picking for
+ * them. See `setDisplayUnit`, which writes the choice through to the controls
+ * that remember one, and `pinUnit` in `Field.tsx` for the ones that do not.
+ */
+export function pinnedUnit(mode: UnitMode, remembered: Unit): Unit {
+  return mode === 'auto' ? remembered : mode
+}
+
 /** Scene units to the unit on screen. */
 export function toDisplay(sceneValue: number, unit: Unit): number {
   return sceneValue * PER_UNIT[unit]
@@ -96,6 +117,24 @@ export function fromDisplay(shown: number, unit: Unit): number {
 export function formatLength(sceneValue: number, mode: UnitMode): string {
   const unit = resolveUnit(sceneValue, mode)
   return `${toDisplay(sceneValue, unit).toFixed(PLACES[unit])} ${SUFFIX[unit]}`
+}
+
+/**
+ * SEVERAL lengths in one unit, said once at the end.
+ *
+ * `formatLength` resolves a unit per value, which is right for a lone reading
+ * and wrong for a size: under `auto` a 20 cm side beside a 5 mm one would print
+ * two different units inside one measurement, and even where every side agreed
+ * the suffix would be said once per number. So the unit is chosen off the
+ * longest side and written once for all of them.
+ *
+ * Two sides or three -- a rectangle in the scene tree and a block on the
+ * clipboard are the same sentence at different lengths.
+ */
+export function formatSize(values: readonly number[], mode: UnitMode): string {
+  const unit = resolveUnit(Math.max(...values.map(Math.abs)), mode)
+  const places = PLACES[unit]
+  return `${values.map((n) => toDisplay(n, unit).toFixed(places)).join(' x ')} ${SUFFIX[unit]}`
 }
 
 export function suffixOf(unit: Unit): string {

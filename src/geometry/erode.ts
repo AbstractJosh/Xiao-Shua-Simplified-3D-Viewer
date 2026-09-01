@@ -363,9 +363,9 @@ const ROUND_WALL = 0.2
  * near zero spends the entire vertex budget on an arc nobody can see.
  *
  * MEASURED at the WIDE end, because that is where a floor has to hold: a 3 cm
- * brush -- the torch's default, and three times the Smoother's own -- dragged a
- * hundred dabs along a cube's edge, against the torch over the same ground at
- * 59 ms. At a quarter the Smoother takes 109 ms, at a fifth 337, at a tenth
+ * brush -- three times what either tool now opens at, and well up the dial --
+ * dragged a hundred dabs along a cube's edge, against the torch over the same
+ * ground at 59 ms. At a quarter the Smoother takes 109 ms, at a fifth 337, at a tenth
  * several seconds -- and erosion is REPLAYED from the document on every
  * evaluation, so that is not a one-off cost but the frame time for the rest of
  * the drag. A quarter is where it stops being about twice the torch and starts
@@ -1050,6 +1050,51 @@ type Work = {
    * rest of any tunnel it touches so the wound stays a shape it can close.
    */
   rim: Uint8Array
+  /**
+   * The finest edge target each triangle has already been brought to, and
+   * Infinity for ground refinement has never covered.
+   *
+   * WHAT MAKES REFINEMENT IDEMPOTENT, which it has to be because a live drag
+   * calls `refine` once a frame on a mesh the dabs before it have already
+   * moved. Splitting is decided on edge LENGTH, and displacement changes
+   * lengths -- so without a record the second frame re-splits ground the first
+   * one had already finished, the third re-splits that, and the triangles the
+   * splitting leaves behind get thinner every time round.
+   *
+   * They get thinner because of how a partial split closes: when two edges of a
+   * triangle are split and the third is not, the leftover corner piece is shut
+   * off by an edge joining the two midpoints, which is HALF the side that was
+   * not split. The target only ever bounds the long dimension, so the narrow
+   * one halves per frame with nothing to stop it. Measured on a 60-dab torch
+   * stroke across a cube: 135,194 triangles, the shortest edge at literally
+   * zero, and a last frame of twenty-three seconds -- for a stroke the batch
+   * replay draws with 786 triangles and cuts DEEPER, because the sliver churn
+   * was spending the bite on itself. The slivers also shade badly enough that
+   * `facingRoom` starts reading folds as thin walls, and `breakThrough` burns
+   * holes through a solid metre of cube.
+   *
+   * So a triangle records what it has been refined for, and a later dab asking
+   * for the same target or coarser leaves it alone. A FINER brush still gets
+   * its refinement -- the record is a length, not a flag -- and untouched
+   * ground is still Infinity, so a stroke moving into new territory refines it
+   * exactly as it always did. What is ruled out is only the thing nobody
+   * wanted: re-cutting ground already cut to the size that was asked for.
+   *
+   * FLOAT64 RATHER THAN FLOAT32, and that is not a rounding nicety. The test is
+   * `record <= target`, a stored value against a freshly computed one, so a
+   * target that does not survive the round trip exactly is a coin flip on
+   * whether the record is ever believed. The torch's 0.15 x 0.4 rounds DOWN
+   * through float32 and skips correctly; the Smoother's 0.15 x 0.25 x 0.6
+   * rounds UP, fails its own test every frame, and goes on cascading exactly as
+   * it did before -- which is how a first cut of this fix left two brushes
+   * mended and the third still at 50,786 triangles. Eight bytes a triangle buys
+   * an exact comparison.
+   *
+   * Slots past `triangleCount` are Infinity too, so a triangle appended
+   * part-way through a call starts unrefined rather than inheriting a
+   * zero-filled "finer than anything you could ask for" that would freeze it.
+   */
+  atTarget: Float64Array
 }
 
 function grow32(array: Float32Array, needed: number): Float32Array {
@@ -1062,6 +1107,13 @@ function grow32(array: Float32Array, needed: number): Float32Array {
 function growU32(array: Uint32Array, needed: number): Uint32Array {
   if (array.length >= needed) return array
   const next = new Uint32Array(Math.max(needed, array.length * 2))
+  next.set(array)
+  return next
+}
+
+function grow64(array: Float64Array, needed: number): Float64Array {
+  if (array.length >= needed) return array
+  const next = new Float64Array(Math.max(needed, array.length * 2))
   next.set(array)
   return next
 }
@@ -1084,6 +1136,9 @@ function workingCopy(welded: Welded): Work {
     // Nothing has burnt yet, and on the overwhelming majority of strokes
     // nothing ever will -- this stays all zeroes and costs a byte a triangle.
     rim: new Uint8Array(welded.triangleCount),
+    // Nothing has been refined yet, so every triangle is coarser than any
+    // target that could be asked of it.
+    atTarget: new Float64Array(welded.triangleCount).fill(Infinity),
   }
 }
 
@@ -1292,6 +1347,12 @@ function refine(work: Work, dabs: ErodeDab[]): void {
     work.cornerNormal = grow32(work.cornerNormal, needed * 3)
     work.group = growU32(work.group, work.triangleCount + count)
     work.rim = growU8(work.rim, work.triangleCount + count)
+    // Filled rather than merely grown: `grow64` zeroes what it adds, and a zero
+    // here reads as "finer than anything you could ask for", which would freeze
+    // whatever triangle lands in the slot.
+    const had = work.atTarget.length
+    work.atTarget = grow64(work.atTarget, work.triangleCount + count)
+    if (work.atTarget.length > had) work.atTarget.fill(Infinity, had)
   }
 
   /** Whether the p-q diagonal of a quad is the shorter of the two. */
@@ -1311,6 +1372,27 @@ function refine(work: Work, dabs: ErodeDab[]): void {
   let candidates: number[] = []
   for (let t = 0; t < work.triangleCount; t++) candidates.push(t)
 
+  /**
+   * Every slot this call cut, written into the record once the rounds are over.
+   *
+   * AT THE END RATHER THAN AS EACH PIECE IS CUT, and the difference is the
+   * whole of whether the tool works at all. A piece is not at target for having
+   * been split once -- bringing a metre-long cube edge down to a five-
+   * millimetre brush is what the ten rounds are FOR -- so marking a piece as it
+   * is emitted makes the very next round skip its own children, and refinement
+   * stops after a single halving. That leaves a cube torched by two triangles'
+   * worth of movement, which is the tool doing nothing at all.
+   *
+   * Slots are reused between rounds, so one can be listed more than once;
+   * taking the minimum makes that harmless.
+   */
+  const patch: number[] = []
+  const settle = (): void => {
+    for (const t of patch) {
+      if (work.atTarget[t] > minTarget) work.atTarget[t] = minTarget
+    }
+  }
+
   const n0 = new Vector3()
   const n1 = new Vector3()
   const n2 = new Vector3()
@@ -1319,7 +1401,7 @@ function refine(work: Work, dabs: ErodeDab[]): void {
   const m2 = new Vector3()
 
   for (let round = 0; round < REFINE_ROUNDS; round++) {
-    if (candidates.length === 0 || work.vertexCount >= MAX_VERTICES) return
+    if (candidates.length === 0 || work.vertexCount >= MAX_VERTICES) return settle()
 
     // Pass one: mint the midpoints, over the candidates alone. Shared by both
     // triangles either side of an edge, which is what keeps the surface closed
@@ -1346,6 +1428,10 @@ function refine(work: Work, dabs: ErodeDab[]): void {
       // back apart across the surface on every dab whatever the user has set
       // Smoothing to. With that in place a cylinder at Smoothing zero folds
       // nothing over eight dabs, and neither does a cone.
+      // Already cut this fine, by an earlier frame of the same drag or by an
+      // earlier stroke. See `Work.atTarget`: re-splitting it is what turns a
+      // stroke into slivers.
+      if (work.atTarget[t] <= minTarget) continue
       for (let e = 0; e < 3; e++) {
         const va = work.corner[t * 3 + e]
         const vb = work.corner[t * 3 + ((e + 1) % 3)]
@@ -1362,7 +1448,7 @@ function refine(work: Work, dabs: ErodeDab[]): void {
         midpoints.set(key, index)
       }
     }
-    if (midpoints.size === 0) return
+    if (midpoints.size === 0) return settle()
 
     // Pass two: close every triangle over whatever midpoints landed on its
     // edges. This sweeps the WHOLE mesh, not just the candidates: a triangle
@@ -1448,12 +1534,14 @@ function refine(work: Work, dabs: ErodeDab[]): void {
         setCorner(slot, 1, piece[1], piece[4])
         setCorner(slot, 2, piece[2], piece[5])
         work.group[slot] = group
+        patch.push(slot)
         next.push(slot)
       }
     }
 
     candidates = next
   }
+  settle()
 }
 
 // --- Adjacency --------------------------------------------------------------
@@ -2712,6 +2800,12 @@ function breakThrough(
     work.cornerNormal = grow32(work.cornerNormal, work.triangleCount * 9)
     work.group = growU32(work.group, work.triangleCount)
     work.rim = growU8(work.rim, work.triangleCount)
+    // A tunnel wall is surface that did not exist a moment ago, so it is
+    // unrefined ground however fine the face it was cut out of happened to be.
+    const had = work.atTarget.length
+    work.atTarget = grow64(work.atTarget, work.triangleCount)
+    if (work.atTarget.length > had) work.atTarget.fill(Infinity, had)
+    work.atTarget[t] = Infinity
     work.corner[t * 3] = a
     work.corner[t * 3 + 1] = b
     work.corner[t * 3 + 2] = c
@@ -2812,6 +2906,7 @@ function breakThrough(
       }
       work.group[kept] = work.group[t]
       work.rim[kept] = work.rim[t]
+      work.atTarget[kept] = work.atTarget[t]
     }
     kept++
   }

@@ -7,8 +7,7 @@ import type { BaseSolid, Vec3 } from '../geometry/types'
 import { bedIsUncut, useLaser } from '../store/laserStore'
 import { useLibrary } from '../store/libraryStore'
 import { useTools } from '../store/toolStore'
-import { decimalsOf, resolveUnit, suffixOf, toDisplay } from '../units'
-import type { Unit } from '../units'
+import { formatSize } from '../units'
 
 /**
  * The way off the laser cutter: take what is on the bed and put it on the
@@ -69,13 +68,6 @@ export const BLOCK_NAME = 'Laser block'
 export function bedName(pieces: number, uncut: boolean): string {
   if (uncut) return BLOCK_NAME
   return pieces === 1 ? 'Cut piece' : `Cut pieces (${pieces})`
-}
-
-/** Three sides in one unit, said once. Exported for the check suite, which
- *  pins the mixed-unit case an auto reading can otherwise produce. */
-export function sizeIn(size: Vec3, unit: Unit): string {
-  const places = decimalsOf(unit)
-  return `${size.map((n) => toDisplay(n, unit).toFixed(places)).join(' x ')} ${suffixOf(unit)}`
 }
 
 export function CopyBlockButton() {
@@ -158,10 +150,12 @@ export function CopyBlockButton() {
     // ONE UNIT FOR THE TRIPLE, resolved off the longest side, rather than three
     // calls to `formatLength`. That helper picks a unit per value, so in auto a
     // 20 cm side beside a 5 mm one would print two different units in one size
-    // -- and even where they agreed, the suffix would be said three times.
+    // -- and even where they agreed, the suffix would be said three times. The
+    // rule lives in `units.ts` now, because the scene tree wanted the same
+    // sentence for a rectangle's two sides. See `formatSize`.
     setNoted(
       uncut
-        ? `Copied · ${sizeIn(size, resolveUnit(Math.max(...size), displayUnit))}`
+        ? `Copied · ${formatSize(size, displayUnit)}`
         : `Copied · ${pieces.length} piece${pieces.length === 1 ? '' : 's'}` +
             ` · ${tris.toLocaleString()} tris`
     )

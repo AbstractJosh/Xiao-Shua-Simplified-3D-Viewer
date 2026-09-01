@@ -31,6 +31,12 @@ import { DEFAULT_LATHE_SNAP, LATHE_SNAP_MAX, LATHE_SNAP_MIN } from '../viewport/
 // island's tools are defined; the island itself is a viewport component, and
 // `compassViews` is plain arithmetic with no React and no renderer in it.
 import { compass } from '../viewport/compassViews'
+import {
+  FLIGHT_SPEED_DEFAULT,
+  FLIGHT_SPEED_MAX,
+  FLIGHT_SPEED_MIN,
+} from '../viewport/gameCamera'
+import { SCREEN_HAS_GAME_CONTROLS } from '../screens'
 import { NumberField } from './Field'
 import { NavTool } from './NavTool'
 import {
@@ -47,7 +53,7 @@ import {
   SmootherIcon,
   SnapIcon,
 } from './navIcons'
-import { UNIT_MODES, formatLength, fromDisplay } from '../units'
+import { UNIT_MODES, formatLength, fromDisplay, pinnedUnit } from '../units'
 import { THEMES, THEME_LABELS } from '../theme'
 
 /**
@@ -478,9 +484,7 @@ export function ErodeTool() {
       panelTitle="Blowtorch"
     >
       <div className="tool-group">
-        {/* A length, and one of the two in the app that do NOT follow the
-            app-wide unit -- it carries its own picker and starts in
-            centimetres.
+        {/* A length, and one of the ones that cannot be shown in `auto`.
 
             The brush runs from 1 mm to 1.25 m, so under `auto`, which is what
             the app is set to out of the box, one drag of this slider crosses
@@ -490,6 +494,13 @@ export function ErodeTool() {
             any magnitude -- and it is the wrong job here, because this control
             sets one. A scale that renumbers itself under the pointer cannot be
             aimed. See `erodeSizeUnit`.
+
+            So it wears a concrete unit, and Settings is what usually chooses
+            it: picking mm or cm there writes through to this field as it does
+            to every other length on screen. The picker beside the number is
+            the override, for a brush you want read in something other than the
+            rest of the app -- and the only way to choose at all while the app
+            is on `auto`, which this field cannot show.
 
             The other two are pure ratios and carry no unit at all, which is why
             only this one is marked. */}
@@ -573,9 +584,10 @@ export function SculptTool() {
       panelTitle="Sculpt"
     >
       <div className="tool-group">
-        {/* Pinned to its own unit for the reason the torch's is, and pinned
-            separately so the two can be read in whatever suits each. See
-            `erodeSizeUnit`. */}
+        {/* Pinned to a concrete unit for the reason the torch's is, and
+            remembered separately so the two can be read in whatever suits
+            each -- Settings moves both, and either picker overrides its own
+            field afterwards. See `erodeSizeUnit`. */}
         <NumberField
           ownUnit={{ unit: sizeUnit, onChange: setSculptSizeUnit }}
           label="Brush size"
@@ -661,9 +673,10 @@ export function SmootherTool() {
       // things a first press has to know are on the dots inside the panel.
     >
       <div className="tool-group">
-        {/* Pinned to its own unit for the reason the torch's is, and pinned
-            separately so each brush can be read in whatever suits it. See
-            `erodeSizeUnit`. */}
+        {/* Pinned to a concrete unit for the reason the torch's is, and
+            remembered separately so each brush can be read in whatever suits
+            it -- Settings moves all three, and a picker overrides its own
+            field afterwards. See `erodeSizeUnit`. */}
         <NumberField
           ownUnit={{ unit: sizeUnit, onChange: setSmootherSizeUnit }}
           label="Brush size"
@@ -1080,6 +1093,30 @@ const OUTLINE_CHOICES = [
 ] as const
 
 /**
+ * The same two labels for the camera scheme, and the titles carry the whole of
+ * what each one means.
+ *
+ * Longer than the outline titles because there is more to say and nowhere else
+ * to say it: this changes what four keys, a mouse button and the wheel all do,
+ * and somebody reading the switch for the first time has no way to guess any of
+ * it. A tooltip is the right place -- the panel stays two rows of short
+ * buttons, and the explanation is one hover away from the control it explains
+ * rather than a paragraph parked under it.
+ */
+const GAME_CHOICES = [
+  {
+    on: true,
+    label: 'On',
+    title: 'Drive the camera like a game: W A S D to walk across the ground, Space to rise and C to sink, and hold the right mouse button to look about -- the cursor goes while you do, so a turn is never stopped by the edge of the screen. The wheel sets how fast you fly. M, R and S stop switching the gizmo while this is on -- S is the key that walks backwards -- so use the three buttons on the island instead.',
+  },
+  {
+    on: false,
+    label: 'Off',
+    title: 'Orbit the scene the usual way: middle-drag (or Alt and the left button) to turn, right-drag to slide the view, and the wheel to close in.',
+  },
+] as const
+
+/**
  * Everything about how the app is READ rather than what it contains.
  *
  * A panel-only tool, like Help: there is nothing here to switch on or off, so
@@ -1116,6 +1153,15 @@ export function SettingsTool() {
   const setTheme = useTools((s) => s.setTheme)
   const showOutlines = useTools((s) => s.showOutlines)
   const setShowOutlines = useTools((s) => s.setShowOutlines)
+  const gameControls = useTools((s) => s.gameControls)
+  const setGameControls = useTools((s) => s.setGameControls)
+  const flightSpeed = useTools((s) => s.flightSpeed)
+  const setFlightSpeed = useTools((s) => s.setFlightSpeed)
+  // Dimmed rather than hidden on the screens with no room to walk about in.
+  // The same bargain the bar strikes with the document controls: a panel that
+  // changed shape between screens would hide the feature from the two screens
+  // it is most likely to be looked for from. See `SCREEN_HAS_GAME_CONTROLS`.
+  const flies = SCREEN_HAS_GAME_CONTROLS[useTools((s) => s.screen)]
 
   return (
     // Opens leftwards like everything else in this cluster, and more so than
@@ -1203,6 +1249,82 @@ export function SettingsTool() {
             ))}
           </div>
         </div>
+
+        {/* THE FOURTH ROW, and the first one here that is not about how the app
+            LOOKS -- it is about how it is DRIVEN. It sits with the other three
+            anyway, and for the reason they sit with each other: nothing in the
+            document knows it exists, and it is still true of the next document
+            you open. A unit, a palette, a line weight and a camera are four
+            answers to "how do I want to work", which is what a preferences
+            panel is.
+
+            LAST, because it is the largest claim of the four. The three above
+            change what you are looking at; this one changes what your hands do,
+            and a row that rebinds the keyboard belongs below the rows that
+            recolour the background rather than above them.
+
+            A fieldset rather than a dimmed div, so the disabled state reaches
+            both buttons and the field without either having to be told
+            separately -- and so a screen reader is told the group is off rather
+            than finding four controls that happen to be grey. */}
+        <fieldset className="tool-group game-modes" disabled={!flies}>
+          <p className="subhead">Game Controls</p>
+          <div
+            className="seg"
+            // On the group rather than on either button: what is worth saying
+            // on the screens that cannot fly is why, and it is the same
+            // sentence whichever half the pointer lands on.
+            title={flies ? undefined : 'Only the Modelling screen has a room to walk about in. The lathe and the laser cutter each draw one flat picture the camera looks straight at.'}
+          >
+            {GAME_CHOICES.map((choice) => (
+              <button
+                key={choice.label}
+                type="button"
+                className={`seg-btn${gameControls === choice.on ? ' seg-active' : ''}`}
+                aria-pressed={gameControls === choice.on}
+                title={choice.title}
+                onClick={() => setGameControls(choice.on)}
+              >
+                {choice.label}
+              </button>
+            ))}
+          </div>
+          {/* The one control in this panel that is not a segment, and it earns
+              the exception: a speed is a number over a two-hundred-to-one range
+              and there is no pair of words that names it. It stays MOUNTED with
+              the mode off rather than appearing with it -- the same rule the
+              snap distance follows a panel away -- because a row that materialises
+              only once you have found the switch is a row nobody knows the
+              switch leads to.
+
+              PINNED to a concrete unit, which is the `erodeSizeUnit` argument
+              exactly: `auto` picks a unit per value, so a field being scrubbed
+              across this range would renumber its own scale under the hand
+              aiming it. It takes that unit from the picker two rows above it
+              whenever that names one -- the two controls are in the same
+              panel, and a speed written in centimetres under a picker set to
+              millimetres is one panel disagreeing with itself. Centimetres is
+              the fallback for `auto`, which it cannot show, because a 200:1
+              range in millimetres is five digits at the top of it.
+
+              NO PICKER OF ITS OWN, unlike the brushes: there is one unit
+              control already in this panel and it is the app's, so a second
+              one on the row beneath it would be two answers to one question a
+              centimetre apart. */}
+          <fieldset className="tool-group game-speed" disabled={!gameControls}>
+            <NumberField
+              label="Speed"
+              pinUnit={pinnedUnit(displayUnit, 'cm')}
+              value={flightSpeed}
+              min={FLIGHT_SPEED_MIN}
+              max={FLIGHT_SPEED_MAX}
+              step={0.2}
+              resetTo={FLIGHT_SPEED_DEFAULT}
+              tip="How far the camera travels in a second. The wheel sets it too, without leaving the scene -- which is what the wheel does in this mode, since W and S are what close the distance now."
+              onChange={setFlightSpeed}
+            />
+          </fieldset>
+        </fieldset>
       </div>
     </NavTool>
   )

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { SceneObject } from '../geometry/types'
 import { surfaceFor } from '../geometry/surfaces'
 import { useDoc } from '../store/docStore'
+import { activates } from '../store/toolStore'
 import type { CustomObject } from '../store/libraryStore'
 import { templateOf, useLibrary } from '../store/libraryStore'
 import { Section } from './Field'
@@ -243,7 +244,7 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
           startPlacingSolidTemplate(object)
         }}
         onKeyDown={(e) => {
-          if (e.key !== 'Enter' && e.key !== ' ') return
+          if (!activates(e.key)) return
           e.preventDefault()
           drop(false)
         }}
@@ -315,7 +316,7 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
           startPlacingSolidTemplate(object, true)
         }}
         onKeyDown={(e) => {
-          if (e.key !== 'Enter' && e.key !== ' ') return
+          if (!activates(e.key)) return
           e.preventDefault()
           drop(true)
         }}

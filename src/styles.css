@@ -870,9 +870,20 @@ body {
    other, which is the thing you actually notice. */
 .units-modes .seg-btn,
 .theme-modes .seg-btn,
-.outline-modes .seg-btn {
+.outline-modes .seg-btn,
+.game-modes .seg-btn {
   flex: 1;
   padding-inline: 8px;
+}
+
+/* The speed under the switch it belongs to, closer to it than the four rows are
+   to each other: the 12px between groups says "different question", and this is
+   the same question's second half. It sits inside the Game Controls fieldset
+   and gets a second one of its own, so it dims twice over -- once with the
+   screen that cannot fly, once with the mode being off -- without either state
+   having to know about the other. */
+.game-speed {
+  margin-top: 8px;
 }
 
 @keyframes nav-panel-in {
@@ -3508,6 +3519,51 @@ body {
 .viewport-hint-bad {
   border-color: color-mix(in srgb, var(--danger) 55%, transparent);
   color: var(--danger);
+}
+
+/* HOW FAST THE CAMERA FLIES, said for a moment when it changes.
+
+   The drag hint's twin at the other end of the viewport -- same float surface,
+   same edge, same radius -- because it is the same kind of thing: a sentence
+   about the gesture in hand rather than a control. Top rather than bottom
+   because the hint already has the bottom, and the two can be up at once: the
+   wheel is spun mid-drag.
+
+   MONOSPACE AND TABULAR, which the hint is not. This one is a number that is
+   revised several times a second while the wheel turns, and in a proportional
+   face every digit is a different width -- so the label would twitch wider and
+   narrower under the eye trying to read it. See `FlightSpeedReadout`.
+
+   IT NEVER TAKES A PRESS. It hangs over the middle of the canvas, which is
+   where the model usually is; a readout that swallowed a click meant for the
+   solid behind it would be a worse fault than the one it was added to fix. */
+.flight-speed {
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: var(--surface-float);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--lift-1);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  /* Faded rather than unmounted, so it can fade OUT: a label that vanished on a
+     frame would read as a flicker at the top of the scene. The fade in is quick
+     and the fade out is slow, which is the shape every momentary readout wants
+     -- there the instant you ask, gone without being watched go. */
+  opacity: 0;
+  transition: opacity 0.45s ease-out;
+}
+
+.flight-speed-shown {
+  opacity: 1;
+  transition-duration: 0.08s;
 }
 
 /* The selection box.

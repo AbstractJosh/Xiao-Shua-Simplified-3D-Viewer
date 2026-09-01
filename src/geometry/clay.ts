@@ -941,9 +941,11 @@ function outermostAt(line: Pt[], height: number): number | null {
 export function sculpt(clay: Clay, line: Pt[]): Clay {
   if (line.length < 2) return clay
 
+  const drawn = onRings(clay, line)
+
   let lo = Infinity
   let hi = -Infinity
-  for (const [height] of line) {
+  for (const [height] of drawn) {
     if (height < lo) lo = height
     if (height > hi) hi = height
   }
@@ -952,10 +954,62 @@ export function sculpt(clay: Clay, line: Pt[]): Clay {
   for (let i = 0; i < CLAY_RINGS; i += 1) {
     const y = ringHeight(clay, i)
     if (y < lo || y > hi) continue
-    const r = outermostAt(line, y)
+    const r = outermostAt(drawn, y)
     if (r !== null) wall[i] = r
   }
   return withWall(clay, wall)
+}
+
+/**
+ * THE LINE WITH EVERY CORNER STOOD ON A RING, which is the whole of how this
+ * tool leaves a corner rather than a facet where one was asked for.
+ *
+ * The wall is a fixed row of radii -- one per ring, at fractions of the height
+ * (see `CLAY_RINGS`) -- so the only heights it can say ANYTHING at are the ring
+ * heights. Sampling the drawn line at each of them, which is what this used to
+ * do and nothing else, is exact along a straight run and loses precisely one
+ * thing: the corner between two runs. A knot that falls BETWEEN two rings is
+ * never visited. Both rings either side of it land short, both by about the
+ * same amount -- and two neighbouring rings at nearly the same radius is not a
+ * point, it is a FLAT. So a drawn V came out as a little vertical facet a
+ * millimetre and a half tall, blunted by up to half a ring's rise times the
+ * slope, and a zigzag of six corners came out with six chamfers on it.
+ *
+ * IT IS THE HEIGHT THAT GIVES, NOT THE RADIUS, and that is the trade this makes
+ * deliberately. A corner has a height and a radius and the grid can hold only
+ * one of them exactly; the old arrangement kept the height and lost the radius
+ * AND the sharpness, which is the worst of the three outcomes. Moving the knot
+ * to its nearest ring costs it under half a ring -- 0.8 mm on a 15 cm piece,
+ * finer than the wall is stored at anywhere -- and buys the corner back
+ * exactly: the ring lands ON the knot, the rings either side lie on the two
+ * straight runs, and what the section draws is a single vertex.
+ *
+ * ONLY THE KNOTS MOVE. Every ring between two of them is still read off the
+ * line by `outermostAt` in the ordinary way, and since both ends of every
+ * segment now sit on the grid, every ring along it lies exactly on the segment.
+ * A straight run stays straight, which is the other thing `Fit to line` off is
+ * for.
+ *
+ * A KNOT OFF THE PIECE KEEPS THE SAME GRID rather than being clamped to the
+ * rim. A profile is often aimed past the stock -- the wall may be pulled wider,
+ * or the line run out above the lump to hold an angle -- and dragging that knot
+ * down to the last ring would tilt the segment that reaches it, changing the
+ * shape everywhere the segment crosses clay. The grid simply carries on past
+ * both ends, where it costs nothing and keeps the arithmetic one rule.
+ */
+function onRings(clay: Clay, line: Pt[]): Pt[] {
+  const last = CLAY_RINGS - 1
+  const step = clay.height / last
+  // A lump of no height has no rings to stand on, and the caller is about to
+  // find that out anyway. Hand the line back rather than divide by zero.
+  if (!(step > 0)) return line
+  return line.map(([height, radius]): Pt => {
+    const i = Math.round(height / step)
+    // `ringHeight` rather than `i * step` where there is a ring, so the knot and
+    // the ring are the same number to the bit and the interpolation at that
+    // height is the knot's own radius rather than a float away from it.
+    return [i >= 0 && i <= last ? ringHeight(clay, i) : i * step, radius]
+  })
 }
 
 export function withWall(clay: Clay, wall: number[]): Clay {

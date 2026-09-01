@@ -71,8 +71,20 @@ function handleEnds(point: Pt, handle: Pt): { out: Pt; back: Pt } {
 
 const between = (a: Pt, b: Pt): number => Math.hypot(a[0] - b[0], a[1] - b[1])
 
-/** What the tool has hold of between a press and its release. */
-type Grab = { kind: 'point'; index: number } | { kind: 'handle'; index: number; side: 1 | -1 }
+/**
+ * What the tool has hold of between a press and its release.
+ *
+ * `count` is how long the line was when it was taken hold of, and it is there
+ * because an index is only as good as the array under it. Delete answers while
+ * a knot is held -- see the lathe's key handler -- and a splice slides every
+ * knot above the gap down one, so a grab that went on believing its index
+ * would quietly start dragging the point NEXT to the one under the pointer. A
+ * line that changed length under a drag is a drag aimed at something that is no
+ * longer there, so the drag lets go instead. See `removePoint`.
+ */
+type Grab =
+  | { kind: 'point'; index: number; count: number }
+  | { kind: 'handle'; index: number; side: 1 | -1; count: number }
 
 /**
  * The press, the drag and the release, hung off the drawing itself.
@@ -126,6 +138,13 @@ export function useSculptGesture(svgRef: RefObject<SVGSVGElement | null>, frame:
       if (!held) return
       const at = toClay(e)
       const draft = useSculptDraft.getState()
+      // The line is not the line the grab was taken on -- a knot has been
+      // deleted out from under the drag -- so let go rather than move whatever
+      // has slid into its place. See `Grab`.
+      if (draft.points.length !== held.count) {
+        onUp()
+        return
+      }
       if (held.kind === 'point') draft.movePoint(held.index, at)
       else draft.moveHandle(held.index, at, held.side)
     }
@@ -162,9 +181,9 @@ export function useSculptGesture(svgRef: RefObject<SVGSVGElement | null>, frame:
         const aim = curveHandles(draft.points, draft.handles)
         const ends = handleEnds(draft.points[live], aim[live])
         if (between(ends.out, at) <= reach) {
-          grab.current = { kind: 'handle', index: live, side: 1 }
+          grab.current = { kind: 'handle', index: live, side: 1, count: draft.points.length }
         } else if (between(ends.back, at) <= reach) {
-          grab.current = { kind: 'handle', index: live, side: -1 }
+          grab.current = { kind: 'handle', index: live, side: -1, count: draft.points.length }
         }
       }
       // A PRESS ON A KNOT TAKES HOLD OF IT AND MAKES IT LIVE, which is the whole
@@ -177,7 +196,7 @@ export function useSculptGesture(svgRef: RefObject<SVGSVGElement | null>, frame:
       if (!grab.current) {
         for (let i = 0; i < draft.points.length; i += 1) {
           if (between(draft.points[i], at) <= reach) {
-            grab.current = { kind: 'point', index: i }
+            grab.current = { kind: 'point', index: i, count: draft.points.length }
             draft.selectPoint(i)
             break
           }
@@ -190,7 +209,7 @@ export function useSculptGesture(svgRef: RefObject<SVGSVGElement | null>, frame:
       // one: the tangent on screen is always the one you are drawing with.
       if (!grab.current) {
         draft.addPoint(at)
-        grab.current = { kind: 'point', index: draft.points.length }
+        grab.current = { kind: 'point', index: draft.points.length, count: draft.points.length + 1 }
       }
 
       window.addEventListener('pointermove', onMove)

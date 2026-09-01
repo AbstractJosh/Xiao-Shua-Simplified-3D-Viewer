@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
-import { Edges } from '@react-three/drei'
+import { Edges, Line } from '@react-three/drei'
 import type { ThreeEvent } from '@react-three/fiber'
 import type { BufferGeometry, Mesh } from 'three'
 import { lighten } from '../color'
 import { assemblyAnchor, assemblyColors } from '../geometry/assembly'
 import { evaluateDoc } from '../geometry/evaluate'
+import { outlineOf } from '../geometry/laserCut'
 import type { SnapEntry } from '../geometry/snap'
 import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
@@ -126,6 +127,70 @@ const EDGE_WIDTH_SELECTED = 2.5
  * off.
  */
 const OUTLINE_TRIANGLE_LIMIT = 10_000
+
+/**
+ * Up to here the outline is worked out PROPERLY, by `outlineOf`.
+ *
+ * That function is the answer to everything the note above complains about: it
+ * settles an unpartnered edge by asking what actually lies against its middle
+ * rather than by trusting a position hash, so a boolean's T-junctions stop
+ * coming back as silhouettes and a flat face merged across stays flat. On the
+ * post-on-a-slab that prompted this it draws 124 segments where `EdgesGeometry`
+ * drew 397 -- the shape, instead of the shape plus its triangulation.
+ *
+ * WHY IT IS A CEILING AND NOT THE WHOLE ANSWER. Resolving those edges walks the
+ * triangles for each one, and on a boolean's output -- which is the only thing
+ * that has unpartnered edges, and so the only thing that can be slow -- the cost
+ * turns over hard:
+ *
+ *     1,437 tris  ->    18 ms        10,491 tris  ->   397 ms
+ *     2,558 tris  ->    34 ms        20,618 tris  -> 1,643 ms
+ *     5,423 tris  ->    87 ms        28,022 tris  -> 3,171 ms
+ *
+ * THREE THOUSAND is the last point that still lands inside a frame's worth of
+ * work, and it covers what people actually build by hand -- the post and slab
+ * above is 337. Past it the old path stands as it did, wrong outline and all,
+ * up to `OUTLINE_TRIANGLE_LIMIT`: this raises the floor without taking anything
+ * away from the sizes it cannot yet serve.
+ *
+ * Outlines are already dropped for the whole of a drag, so this is paid when the
+ * geometry settles rather than per frame.
+ */
+const OUTLINE_EXACT_LIMIT = 3_000
+
+/**
+ * The outline as line-segment endpoints, for drei's `Line`.
+ *
+ * `Edges` cannot be handed a ready-made outline -- it runs `EdgesGeometry` on
+ * whatever geometry it is given, which is the thing being avoided -- but it is
+ * only a `Line` with `segments` set underneath, so going straight to that keeps
+ * the fat-line width that a selected object's heavier ring depends on.
+ */
+function ExactOutline({
+  geometry,
+  color,
+  lineWidth,
+}: {
+  geometry: BufferGeometry
+  color: string
+  lineWidth: number
+}) {
+  const points = useMemo(() => {
+    const outline = outlineOf(geometry)
+    const array = outline.getAttribute('position').array
+    const out: [number, number, number][] = []
+    for (let i = 0; i < array.length; i += 3) {
+      out.push([array[i], array[i + 1], array[i + 2]])
+    }
+    outline.dispose()
+    return out
+  }, [geometry])
+
+  // Two points make a segment, so an empty outline has nothing to draw -- and a
+  // `Line` with no points is a runtime error rather than an empty drawing.
+  if (points.length < 2) return null
+  return <Line segments points={points} color={color} lineWidth={lineWidth} raycast={() => null} />
+}
 
 /** Triangles in an evaluated geometry, index or soup. Mirrors the evaluator's
  *  own `triangleCount`, which is not exported. */
@@ -734,18 +799,32 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                   dropped is a drawing of the triangulation rather than a
                   drawing of the shape. */}
               {showOutlines && !dragging && triangleCountOf(geometry) <= OUTLINE_TRIANGLE_LIMIT && (
-                <Edges
-                  threshold={18}
-                  color={
-                    object.erase
-                      ? scene.eraseEdge
-                      : isSelected
-                        ? scene.edgeSelected
-                        : scene.edgeIdle
-                  }
-                  lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
-                />
-              )}
+                triangleCountOf(geometry) <= OUTLINE_EXACT_LIMIT ? (
+                  // The shape's own edges. See `OUTLINE_EXACT_LIMIT`.
+                  <ExactOutline
+                    geometry={geometry}
+                    color={
+                      object.erase
+                        ? scene.eraseEdge
+                        : isSelected
+                          ? scene.edgeSelected
+                          : scene.edgeIdle
+                    }
+                    lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
+                  />
+                ) : (
+                  <Edges
+                    threshold={18}
+                    color={
+                      object.erase
+                        ? scene.eraseEdge
+                        : isSelected
+                          ? scene.edgeSelected
+                          : scene.edgeIdle
+                    }
+                    lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
+                  />
+                ))}
             </mesh>
 
             <ObjectSketches object={object} controlsRef={controlsRef} />

@@ -4,6 +4,7 @@ import type { BaseSolid } from '../geometry/types'
 import { defaultBaseFor, solidLabel } from '../geometry/types'
 import { surfaceFor } from '../geometry/surfaces'
 import { useDoc } from '../store/docStore'
+import { activates } from '../store/toolStore'
 import { Section } from './Field'
 import { prefersReducedMotion } from './motion'
 import { EraseIcon } from './navIcons'
@@ -193,7 +194,7 @@ function SolidRow({
       }}
       onPointerDown={(e) => place(e, false)}
       onKeyDown={(e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return
+        if (!activates(e.key)) return
         // A keyboard "drag" would leave the ghost following nothing, with no
         // release to end it, so activation drops the solid on the grid outright.
         e.preventDefault()
@@ -254,7 +255,7 @@ function SolidRow({
         aria-label={`${name} eraser, drag into the scene`}
         onPointerDown={(e) => place(e, true)}
         onKeyDown={(e) => {
-          if (e.key !== 'Enter' && e.key !== ' ') return
+          if (!activates(e.key)) return
           e.preventDefault()
           e.stopPropagation()
           addObject(base, groundedPosition(base), true)

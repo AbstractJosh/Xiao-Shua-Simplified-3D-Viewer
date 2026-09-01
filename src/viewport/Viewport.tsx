@@ -35,10 +35,13 @@ import {
   CUT_SIZE_MIN,
   DAB_SPACING,
   armedBrush,
+  flyingHere,
   useTools,
 } from '../store/toolStore'
 import type { StrokeBrush, TransformMode } from '../store/toolStore'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
+import { GameControls } from './GameControls'
+import { FlightSpeedReadout } from './FlightSpeedReadout'
 import { BrushScopePanel } from './BrushScopePanel'
 import { brushAllows } from './brushTarget'
 import { STAGE_CAMERA, STAGE_MAX_DISTANCE, STAGE_MIN_DISTANCE, Stage } from './Stage'
@@ -1877,6 +1880,7 @@ function Scene({
   meshes: RefObject<Map<string, Mesh>>
 }) {
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
+  const game = useTools(flyingHere)
 
   return (
     <>
@@ -1905,6 +1909,14 @@ function Scene({
           the probe off there is not even a frame callback to skip. */}
       {PERF_ON && <PerfProbe />}
 
+      {/* Mounted only while the mode is on, so with it off there is not a
+          listener or a frame callback left in the app that could have changed
+          how the camera behaves. It goes AFTER the compass so that a step taken
+          during a compass flight is the last word on where the camera is --
+          the flight recomputes the position from the target every frame, and
+          this carries both. See `GameControls`. */}
+      {game && <GameControls controlsRef={controlsRef} />}
+
       <OrbitControls
         ref={controlsRef as never}
         makeDefault
@@ -1913,6 +1925,11 @@ function Scene({
         dampingFactor={0.12}
         minDistance={STAGE_MIN_DISTANCE}
         maxDistance={STAGE_MAX_DISTANCE}
+        // The wheel changes how FAST you fly in game mode rather than how close
+        // you are standing, so the rig's own zoom stands down -- otherwise one
+        // notch would be answered twice, and the camera would creep forward
+        // every time the speed was set. See `onWheel` in `GameControls`.
+        enableZoom={!game}
       />
     </>
   )
@@ -2222,7 +2239,14 @@ export function Viewport() {
       if (!controls) return
       controls.mouseButtons.LEFT = e.altKey ? MOUSE.ROTATE : null
       controls.mouseButtons.MIDDLE = MOUSE.ROTATE
-      controls.mouseButtons.RIGHT = MOUSE.PAN
+      // GAME CONTROLS TAKE THE RIGHT BUTTON, which is the one gesture the two
+      // schemes cannot both have: holding right is how you look about, and a
+      // pan running underneath it would slide the whole scene sideways every
+      // time you turned your head. Panning is not replaced by anything, because
+      // in that mode it has nothing to do -- walking is what moves you now, and
+      // A and D strafe exactly where a pan used to. Read per press rather than
+      // once, so switching the mode is felt on the very next press.
+      controls.mouseButtons.RIGHT = flyingHere(useTools.getState()) ? null : MOUSE.PAN
     }
     // A window that loses focus never sees the keyup, so a flag would stay
     // stuck on and the next object drag would go vertical -- or the next gizmo
@@ -2299,6 +2323,16 @@ export function Viewport() {
         // running against a gizmo that had left the screen -- and the turn or
         // the resize would carry on, invisibly, until the button came up.
         if (s.drag.kind !== 'idle') return
+        // AND IGNORED WHILE THE CAMERA IS DRIVEN FROM THE KEYBOARD. S is the
+        // key that walks backwards, and it cannot also be the one that puts
+        // Scale on the gizmo -- a user backing away from a solid would resize
+        // it. Taking all three rather than the one that collides is deliberate:
+        // a scheme where two of the three letter shortcuts survive and the
+        // third silently means something else is worse to learn than one where
+        // the letters are simply the camera's while you are flying. The three
+        // buttons on the island do the same job and are always there. See
+        // `gameControls`.
+        if (flyingHere(useTools.getState())) return
         const wanted = MODE_KEYS[e.key.toLowerCase()]
         const { pressTransformMode } = useTools.getState()
         // Deferred whole to the store, which is the only place that knows
@@ -2391,6 +2425,10 @@ export function Viewport() {
       </Canvas>
       <ToolIsland />
       <BrushScopePanel />
+      {/* Top-middle, over the scene and clear of everything else: the island is
+          in a corner, the compass in another, and the drag hint sits along the
+          bottom. See `FlightSpeedReadout`. */}
+      <FlightSpeedReadout />
       <AxisCompass />
       <SelectionHud />
       <MarqueeRect />

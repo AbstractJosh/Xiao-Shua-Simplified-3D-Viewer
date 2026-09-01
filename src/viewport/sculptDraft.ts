@@ -69,8 +69,9 @@ type SculptState = {
    * same press that makes it live.
    *
    * AN INDEX RATHER THAN A POINT, so a selected point that is then dragged is
-   * still the selected one. Nothing removes points, so an index that is valid
-   * stays valid until `clear`.
+   * still the selected one. `removePoint` is the one thing that can make an
+   * index mean a different knot than it did, and it walks this field itself
+   * rather than leaving the drawing pointing at a stranger.
    */
   selected: number | null
   /** Put another point down at the end of the line, with the curve's own
@@ -97,13 +98,32 @@ type SculptState = {
   /** Hand one point's tangent back to the curve. The way out of an aimed
    *  handle, and the reason aiming one is not a trap. */
   refitHandle: (index: number) => void
-  /* THERE IS NO REMOVE-A-POINT, and the omission is the cutter's too: the way
-     back from a misplaced knot is to drag it where you meant, and the way back
-     from a line you have lost faith in is Reset. A delete would need a gesture
-     of its own -- a modifier, or a second meaning for a press that already
-     means "take hold of this" -- and neither tool has found one worth the
-     ambiguity. Whatever it turns out to be, both screens should grow it
-     together. */
+  /**
+   * Take one point out of the line.
+   *
+   * THE LINE IS THE ORDER, so this is a splice and the shape of the answer
+   * falls straight out of that -- which is exactly what the tool promises.
+   * Take an END point off and the line BACKTRACKS: it now stops at the knot
+   * before it, and the wall over the stretch that point used to reach is
+   * outside the span the profile covers, so Apply leaves it alone. Take a
+   * MIDDLE one out and its two neighbours BRIDGE: the segment between them is
+   * whatever the pair make on their own -- straight with the curve off, and a
+   * fitted arc with it on, since `curveHandles` reads the run that is there
+   * rather than the run that was.
+   *
+   * NEIGHBOURS KEEP WHAT THEY WERE AIMED TO, on the rule `movePoint` already
+   * follows: a tangent is a property of its point, and a delete somewhere else
+   * on the line has not asked that question again. The fitted ones re-fit
+   * because that is what fitted means.
+   *
+   * AND THE SELECTION IS WALKED RATHER THAN DROPPED. Every index above the gap
+   * slides down one, so a knot you were shaping is still the one wearing its
+   * handles; delete the LIVE knot and the one before it takes over, which is
+   * the point the line now runs to. Emptying the drawing leaves nothing in
+   * hand, the way `clear` does. An index naming no point is ignored, so a
+   * stale one cannot cut the drawing short.
+   */
+  removePoint: (index: number) => void
   /** Throw the drawing away. */
   clear: () => void
 }
@@ -151,7 +171,31 @@ export const useSculptDraft = create<SculptState>((set) => ({
       if (s.handles[index] == null) return s
       return { handles: s.handles.map((h, i) => (i === index ? null : h)) }
     }),
+
+  removePoint: (index) =>
+    set((s) => {
+      if (index < 0 || index >= s.points.length) return s
+      const points = s.points.filter((_, i) => i !== index)
+      const handles = s.handles.filter((_, i) => i !== index)
+      return { points, handles, selected: afterRemoval(s.selected, index, points.length) }
+    }),
 }))
+
+/**
+ * Where the handles go when a knot is taken off the line.
+ *
+ * Three cases and no more, which is why it is worth a name: the live knot was
+ * the one deleted, so the knot BEFORE it takes over -- back down the line, the
+ * way the eye is already travelling, and the first point's neighbour is the one
+ * that becomes first; the live knot was above the gap, so it has slid down one
+ * and the index has to follow it; or it was below, and nothing about it moved.
+ * An emptied drawing has nothing in hand at all.
+ */
+function afterRemoval(selected: number | null, index: number, left: number): number | null {
+  if (left === 0 || selected === null) return null
+  if (selected === index) return Math.max(0, index - 1)
+  return selected > index ? selected - 1 : selected
+}
 
 /**
  * The line a draft actually describes: the one the preview draws and the one
