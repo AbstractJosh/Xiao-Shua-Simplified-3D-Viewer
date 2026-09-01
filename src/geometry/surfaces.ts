@@ -61,8 +61,6 @@ export type Sweep = { tIn: number; tOut: number }
 export interface SurfaceDef {
   kind: string
   geometry(): BufferGeometry
-  /** The solid offset by `d` (signed). null when the offset collapses to nothing. */
-  offsetGeometry(d: number): BufferGeometry | null
   /** Classify a raycast hit against this primitive. null means derived geometry. */
   anchorFromHit(point: Vector3): SurfaceAnchor | null
   frame(anchor: SurfaceAnchor): SurfaceFrame
@@ -102,11 +100,43 @@ export function tangentBasis(n: Vector3): { uDir: Vector3; vDir: Vector3 } {
 }
 
 /**
- * Radial rays converge on the axis (or the centre), so a prism swept inward
- * past it folds through itself and silently corrupts the CSG result. Every
- * curved surface stays this fraction short of the convergence point.
+ * How far the inward end of the depth slider reaches past the far side of the
+ * solid, as a multiple of the crossing it has to make.
+ *
+ * A pocket has to be ABLE to go clean through -- that is what the end of the
+ * slider is for -- and the one depth that cannot work is the one that lands
+ * exactly on the back face: the boolean is then handed two coplanar surfaces to
+ * reconcile, which it does badly. Everything past the back removes nothing, so
+ * the overshoot costs slider travel and nothing else.
  */
-const CURVED_MAX_INWARD = 0.85
+const THROUGH_DEPTH = 1.5
+
+/**
+ * The prism a curved patch sweeps, which is the SAME shape of answer a flat
+ * face gives: the created end lands at exactly `depth` from the anchor, and
+ * the other end is buried only far enough to keep the boolean off a coplanar
+ * seam.
+ *
+ * It used to be neither. An extrude overshot by a margin and was trimmed back
+ * against the base offset by `depth`, and an intrude was clamped short of the
+ * point where radial rays meet the axis -- both artefacts of sweeping every
+ * ring point along its own normal, which is what made a feature follow the host
+ * instead of the sketch. Along one axis the rays never converge, and there is
+ * nothing left to trim.
+ *
+ * What curvature still costs is paid in one place, `buildSweptPrism`: it drops
+ * the buried end by however far the footprint dips behind the anchor's tangent
+ * plane. That number depends on the SKETCH, which is not something a surface
+ * can be asked for in advance of one.
+ *
+ * `reach` is how far inward this patch has room for. Half of it buries a boss
+ * well clear of the surface without punching out of a thin solid.
+ */
+function curvedSweep(depth: number, op: FeatureOp, reach: number): Sweep {
+  return op === 'extrude'
+    ? { tIn: reach * 0.5, tOut: depth }
+    : { tIn: depth, tOut: Math.max(0.05, depth * 0.1) }
+}
 
 /**
  * The widest cap one sketch may cover on a CLOSED smooth surface, as the
@@ -354,14 +384,6 @@ export class BoxSurface implements SurfaceDef {
     return new BoxGeometry(this.size[0], this.size[1], this.size[2])
   }
 
-  offsetGeometry(d: number): BufferGeometry | null {
-    const sx = this.size[0] + 2 * d
-    const sy = this.size[1] + 2 * d
-    const sz = this.size[2] + 2 * d
-    if (sx <= SURFACE_EPS || sy <= SURFACE_EPS || sz <= SURFACE_EPS) return null
-    return new BoxGeometry(sx, sy, sz)
-  }
-
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
     const h = this.half()
     const tol = 1e-3
@@ -452,11 +474,25 @@ export class BoxSurface implements SurfaceDef {
       : { tIn: depth, tOut: margin }
   }
 
-  maxDepth(op: FeatureOp): number {
+  /**
+   * How far a feature on this face may sweep.
+   *
+   * Inward, the bound is the thickness THIS FACE looks through, not the box's
+   * thinnest side. A pocket has to be able to pierce a twenty-by-two slab
+   * end to end, and measuring the crossing on the wrong axis stopped it three
+   * units into the twenty it needed. Without an anchor the honest answer is
+   * still the thinnest crossing, because nobody has said which face they mean.
+   *
+   * Outward it stays the conservative number: how far a boss may stand proud is
+   * a question about the solid, not about the direction it is standing in.
+   */
+  maxDepth(op: FeatureOp, anchor?: SurfaceAnchor): number {
     const h = this.half()
     const minThickness = Math.min(h.x, h.y, h.z) * 2
-    // Intruding past the far side is a legitimate through-cut, so allow it.
-    return op === 'extrude' ? minThickness * 2 : minThickness * 1.5
+    if (op === 'extrude') return minThickness * 2
+    const crossing =
+      anchor && anchor.on === 'box-face' ? [h.x, h.y, h.z][anchor.face >> 1] * 2 : minThickness
+    return crossing * THROUGH_DEPTH
   }
 
   /**
@@ -512,12 +548,6 @@ export class SphereSurface implements SurfaceDef {
 
   geometry(): BufferGeometry {
     return sphereGeometry(this.radius)
-  }
-
-  offsetGeometry(d: number): BufferGeometry | null {
-    const r = this.radius + d
-    if (r <= SURFACE_EPS) return null
-    return sphereGeometry(r)
   }
 
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
@@ -583,15 +613,13 @@ export class SphereSurface implements SurfaceDef {
   }
 
   sweep(_anchor: SurfaceAnchor, depth: number, op: FeatureOp): Sweep {
-    const margin = Math.max(0.05, depth * 0.1)
-    const maxIn = this.radius * CURVED_MAX_INWARD
-    return op === 'extrude'
-      ? { tIn: Math.min(this.radius * 0.5, maxIn), tOut: depth + margin }
-      : { tIn: Math.min(depth + margin, maxIn), tOut: margin }
+    return curvedSweep(depth, op, this.radius)
   }
 
+  /** Every normal on a sphere is a radius, so a pocket's crossing is the
+   *  diameter wherever the sketch was drawn. */
   maxDepth(op: FeatureOp): number {
-    return op === 'extrude' ? this.radius * 2 : this.radius * 0.8
+    return op === 'extrude' ? this.radius * 2 : this.radius * 2 * THROUGH_DEPTH
   }
 
   /** There is no rim on a sphere, so the bound is the projection's, not an
@@ -670,14 +698,6 @@ export class FacetedSurface implements SurfaceDef {
     return facesToGeometry(this.faces)
   }
 
-  offsetGeometry(): BufferGeometry | null {
-    // Flat anchors take the exact-prism path in evaluate.ts -- the swept prism
-    // already ends exactly `depth` from the face -- so no offset shell is ever
-    // asked for here. Building one would only be a slower way to get the same
-    // answer, and a wrong one at the solid's edges.
-    return null
-  }
-
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
     const tol = 1e-3
     for (let i = 0; i < this.faces.length; i++) {
@@ -749,9 +769,9 @@ export class FacetedSurface implements SurfaceDef {
   }
 
   maxDepth(op: FeatureOp, anchor?: SurfaceAnchor): number {
+    // A face's thickness IS its crossing, so a pocket reaches through and out.
     const thickness = this.thicknessFor(anchor)
-    // Intruding past the far side is a legitimate through-cut, so allow it.
-    return op === 'extrude' ? thickness * 2 : thickness * 1.5
+    return op === 'extrude' ? thickness * 2 : thickness * THROUGH_DEPTH
   }
 
   /**
@@ -816,13 +836,6 @@ export class CylinderSurface implements SurfaceDef {
 
   geometry(): BufferGeometry {
     return new CylinderGeometry(this.radius, this.radius, this.height, LATHE_SEGMENTS)
-  }
-
-  offsetGeometry(d: number): BufferGeometry | null {
-    const r = this.radius + d
-    const h = this.height + 2 * d
-    if (r <= SURFACE_EPS || h <= SURFACE_EPS) return null
-    return new CylinderGeometry(r, r, h, LATHE_SEGMENTS)
   }
 
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
@@ -905,16 +918,15 @@ export class CylinderSurface implements SurfaceDef {
 
   sweep(anchor: SurfaceAnchor, depth: number, op: FeatureOp): Sweep {
     if (anchor.on === 'planar-face') return this.caps.sweep(anchor, depth, op)
-    const margin = Math.max(0.05, depth * 0.1)
-    const maxIn = this.radius * CURVED_MAX_INWARD
-    return op === 'extrude'
-      ? { tIn: Math.min(this.radius * 0.5, maxIn), tOut: depth + margin }
-      : { tIn: Math.min(depth + margin, maxIn), tOut: margin }
+    return curvedSweep(depth, op, this.radius)
   }
 
   maxDepth(op: FeatureOp, anchor?: SurfaceAnchor): number {
     if (anchor && anchor.on === 'planar-face') return this.caps.maxDepth(op, anchor)
-    return op === 'extrude' ? this.radius * 2 : this.radius * 0.8
+    // The wall's normal is radial, so a pocket drawn on it crosses a diameter
+    // of the barrel -- and the caps answer for themselves, through a thickness
+    // that is the height instead.
+    return op === 'extrude' ? this.radius * 2 : this.radius * 2 * THROUGH_DEPTH
   }
 
   /**
@@ -1007,25 +1019,6 @@ export class ConeSurface implements SurfaceDef {
 
   geometry(): BufferGeometry {
     return new ConeGeometry(this.radius, this.height, LATHE_SEGMENTS)
-  }
-
-  /**
-   * A cone offset by `d` is another cone with the SAME half-angle, so the wall
-   * moves out by exactly `d` everywhere. Both ends have to move for that to
-   * hold: the apex climbs by d*L/R while the base drops by d, which keeps the
-   * wall's plane constant at (R*h)/(2L) + d.
-   */
-  offsetGeometry(d: number): BufferGeometry | null {
-    if (this.radius <= SURFACE_EPS || this.height <= SURFACE_EPS) return null
-    const apexY = this.height / 2 + (d * this.slant) / this.radius
-    const baseY = -this.height / 2 - d
-    const h = apexY - baseY
-    if (h <= SURFACE_EPS) return null
-    const r = (this.radius / this.height) * h
-    if (r <= SURFACE_EPS) return null
-    const geom = new ConeGeometry(r, h, LATHE_SEGMENTS)
-    geom.translate(0, (apexY + baseY) / 2, 0)
-    return geom
   }
 
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
@@ -1139,18 +1132,19 @@ export class ConeSurface implements SurfaceDef {
 
   sweep(anchor: SurfaceAnchor, depth: number, op: FeatureOp): Sweep {
     if (anchor.on === 'planar-face') return this.base.sweep(anchor, depth, op)
-    const margin = Math.max(0.05, depth * 0.1)
-    const reach = this.inwardReach(anchor.on === 'cone' ? anchor.t : 0.5)
-    const maxIn = reach * CURVED_MAX_INWARD
-    return op === 'extrude'
-      ? { tIn: Math.min(reach * 0.5, maxIn), tOut: depth + margin }
-      : { tIn: Math.min(depth + margin, maxIn), tOut: margin }
+    return curvedSweep(depth, op, this.inwardReach(anchor.on === 'cone' ? anchor.t : 0.5))
   }
 
   maxDepth(op: FeatureOp, anchor?: SurfaceAnchor): number {
     if (anchor && anchor.on === 'planar-face') return this.base.maxDepth(op, anchor)
     if (op === 'extrude') return Math.max(this.radius, this.height) * 2
-    return this.inwardReach(anchor && anchor.on === 'cone' ? anchor.t : 0.5) * 0.8
+    // A wall normal leans inward and downward at once, so the crossing is not a
+    // diameter and not the slant either. Both ends of it lie in the solid's own
+    // bounding box, which caps the chord at a diameter across and the height
+    // down -- generous, and it is the bound that lets the cut leave the far
+    // wall rather than stopping short of it the way the old reach-to-the-axis
+    // number did.
+    return Math.hypot(this.radius * 2, this.height) * THROUGH_DEPTH
   }
 
   /**
@@ -1264,12 +1258,6 @@ export class CapsuleSurface implements SurfaceDef {
     return capsuleGeometry(this.radius, this.height)
   }
 
-  offsetGeometry(d: number): BufferGeometry | null {
-    const r = this.radius + d
-    if (r <= SURFACE_EPS) return null
-    return capsuleGeometry(r, this.height)
-  }
-
   anchorFromHit(point: Vector3): SurfaceAnchor | null {
     const hh = this.height / 2
     const r = this.radius
@@ -1355,15 +1343,13 @@ export class CapsuleSurface implements SurfaceDef {
   }
 
   sweep(_anchor: SurfaceAnchor, depth: number, op: FeatureOp): Sweep {
-    const margin = Math.max(0.05, depth * 0.1)
-    const maxIn = this.radius * CURVED_MAX_INWARD
-    return op === 'extrude'
-      ? { tIn: Math.min(this.radius * 0.5, maxIn), tOut: depth + margin }
-      : { tIn: Math.min(depth + margin, maxIn), tOut: margin }
+    return curvedSweep(depth, op, this.radius)
   }
 
+  /** A bean's normals are radial too, off the axis segment rather than off a
+   *  point, so the crossing is again the diameter. */
   maxDepth(op: FeatureOp): number {
-    return op === 'extrude' ? this.radius * 2 : this.radius * 0.8
+    return op === 'extrude' ? this.radius * 2 : this.radius * 2 * THROUGH_DEPTH
   }
 
   /** Closed and smooth, exactly like a sphere: no rim, so the projection sets
@@ -1394,9 +1380,6 @@ export class DerivedSurface implements SurfaceDef {
 
   geometry(): BufferGeometry {
     throw new Error('DerivedSurface hosts sketches only; it is never a base solid')
-  }
-  offsetGeometry(): BufferGeometry | null {
-    return null
   }
   anchorFromHit(): SurfaceAnchor | null {
     return null
@@ -1482,12 +1465,6 @@ export class MeshSurface implements SurfaceDef {
 
   geometry(): BufferGeometry {
     return meshGeometry(this.meshId, this.size)
-  }
-
-  offsetGeometry(): BufferGeometry | null {
-    // No analytic offset exists, and none is ever asked for: an offset shell is
-    // only consulted for a CURVED anchor, and every anchor on a mesh is derived.
-    return null
   }
 
   anchorFromHit(): SurfaceAnchor | null {
@@ -1610,13 +1587,17 @@ export function reseat(base: BaseSolid, f: Feature): Feature {
  * How far a feature on this patch may sweep each way, as a pair of POSITIVE
  * magnitudes.
  *
- * The two are not the same number and never were: a boss may stand a couple of
- * thicknesses proud of a face, where a pocket that reached as far would be a
- * hole out the other side of a solid the user never meant to pierce. That
- * asymmetry is why the depth slider does not simply run from -max to +max, and
- * why it is derived here rather than at each of the three places that ask --
- * the panel that draws the slider, the store that clamps what is typed into it,
- * and the arrow that drags it.
+ * The two are not the same number, because they are not the same question. How
+ * far a boss may stand proud of a face is a matter of taste, and a couple of
+ * thicknesses is as far as the slider offers. How deep a pocket may sink is a
+ * matter of fact: far enough to come out the other side, which is a real thing
+ * to want and a thing this used to refuse -- a curved host fenced a pocket off
+ * at eight tenths of its radius, so a hole through a ball or a barrel could not
+ * be asked for at all.
+ *
+ * Derived here rather than at each of the three places that ask -- the panel
+ * that draws the slider, the store that clamps what is typed into it, and the
+ * arrow that drags it -- so the three cannot drift apart.
  */
 export function depthLimits(
   host: SurfaceDef,

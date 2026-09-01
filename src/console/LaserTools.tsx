@@ -1,9 +1,10 @@
-import { MAX_ROPE, useTools } from '../store/toolStore'
+import { MAX_ROPE, mirrorOn, useTools } from '../store/toolStore'
 import { useCutDraft } from '../viewport/cutDraft'
 import { useReference } from '../store/referenceStore'
+import type { FaceAxis } from '../geometry/laserCut'
 import { NumberField } from './Field'
 import { NavTool } from './NavTool'
-import { FreehandIcon, MoveIcon, PointCutIcon } from './navIcons'
+import { FreehandIcon, MoveIcon, PointCutIcon, SymmetryIcon } from './navIcons'
 import { Tip } from './Tip'
 
 /**
@@ -121,6 +122,32 @@ export function FreehandTool() {
 }
 
 /**
+ * What the panel is waiting for, or offering, given how much has been drawn.
+ *
+ * A FUNCTION RATHER THAN A LADDER IN THE JSX because it is now four sentences
+ * rather than two, and because the last two are the only place the loop is
+ * explained in words. The gesture that closes a loop is a click on a knot -- it
+ * is shown on the face by the ring `closeRing` draws round that knot, which is
+ * where a hand already working will find it -- and this is the same thing said
+ * to somebody who is looking at the panel instead.
+ *
+ * WHICH IS WHY THERE IS NO BUTTON HERE FOR IT. A "Close loop" button would be a
+ * second way to say something the drawing can already be told directly, sitting
+ * in a panel that shuts the moment you press on the face -- and it would have
+ * to be dimmed under three points, explained, and kept in step with a ring that
+ * says the same thing better. What is left is the sentence.
+ */
+function pointHint(points: number, closed: boolean): string | null {
+  if (points === 0) return 'Click the face to place the first point.'
+  if (points === 1) return 'One more point.'
+  if (closed) {
+    return 'The loop is closed. The cut drops out what it encircles -- click the first point again to open it.'
+  }
+  if (points === 2) return 'One more point, and the line can be closed into a loop.'
+  return 'Click the ringed first point to close the loop and cut out what it encircles.'
+}
+
+/**
  * Point Cut: place the cut a point at a time, and decide afterwards whether the
  * line through them bends.
  *
@@ -144,6 +171,14 @@ export function FreehandTool() {
  * curve on each point carries a handle. Aiming one keeps it; the rest go on
  * being fitted, which is a thing none of the three modes could say. See
  * `fitCurve` and `handles` in `cutDraft`.
+ *
+ * IT IS ALSO THE ONE TOOL THAT CAN ENCIRCLE, and that is not a third mode
+ * either. Clicking the first point bridges the last one back to it, and the
+ * loop that makes cuts out what it surrounds instead of crossing the face --
+ * the whole difference downstream being a wall bent round into a ring rather
+ * than carried off to the border. Freehand cannot do it and is not missing
+ * anything: it has no knots to click and a rope would never bring the hand back
+ * to the exact point it set off from. See `closed` in `cutDraft`.
  */
 export function PointCutTool() {
   const armed = useTools((s) => s.laserTool === 'points')
@@ -151,6 +186,8 @@ export function PointCutTool() {
   const fit = useTools((s) => s.fitCurve)
   const setFit = useTools((s) => s.setFitCurve)
   const points = useCutDraft((s) => s.points.length)
+  const closed = useCutDraft((s) => s.closed)
+  const hint = pointHint(points, closed)
 
   return (
     <NavTool
@@ -189,16 +226,102 @@ export function PointCutTool() {
         </div>
       </div>
 
-      {/* What the tool is waiting for, while it is waiting for it. Two points
+      {/* What the tool is waiting for, or what it is now offering. Two points
           is the whole requirement and it is not obvious from an empty face --
-          the modelling screen's own hint idiom, in the panel that is asking. */}
-      {points < 2 && (
-        <p className="empty">
-          {points === 0 ? 'Click the face to place the first point.' : 'One more point.'}
-        </p>
-      )}
+          the modelling screen's own hint idiom, in the panel that is asking --
+          and past two the same line is where the loop is put into words. It
+          never goes empty now, which is deliberate: this is the one row that
+          changes as you draw, so a hand that has learned to read it is never
+          left looking at a blank. See `pointHint`. */}
+      {hint && <p className="empty">{hint}</p>}
 
     </NavTool>
+  )
+}
+
+/**
+ * SYMMETRY: a mirror stood on the face, and the hand that aims it.
+ *
+ * WHAT IT IS. A green line through the middle of the face, swung to any angle
+ * and holding at every 45 degrees, that cuts the face into two parts -- or a
+ * cross, which cuts it into four. One part is lit and the rest are dimmed; a
+ * line drawn in the lit one is clipped to it and reflected into the others, and
+ * every copy is burned in the same act. The pieces that come off it are lit and
+ * thrown away together, because four quarters of one shape are one decision
+ * rather than four. See `faceMirror` for the arithmetic and `MirrorLayer` for
+ * the drawing.
+ *
+ * IT IS A GUIDE THAT OUTLIVES THE HAND HOLDING IT, which is the whole shape of
+ * the tool and the reason it behaves unlike its neighbours. Taking it up puts
+ * the cutter down -- swinging the line and picking a part are both a left press
+ * on the face, the very press a cutter draws with -- but the AXIS does not go
+ * down with it. It stands on the face like a ruler stands in a scene and goes
+ * on mirroring every cut while Freehand or Point Cut is in hand, which is the
+ * only arrangement in which the tool is of any use at all.
+ *
+ * SO THE BUTTON IS LIT FOR THE AXIS, NOT FOR THE HAND. What a tool button is
+ * usually saying is "this is what you are holding"; what this one says is "cuts
+ * are being mirrored", because that is the fact that outlives the hand and the
+ * fact a user needs at a glance. A button that went dark the moment you picked
+ * up a cutter would be dark for the whole of the time the mirror was actually
+ * doing its work, which is exactly backwards.
+ *
+ * WHICH GIVES THE PRESS TWO MEANINGS, and they are the two a hand wants at each
+ * of those moments. Dark, there is no mirror: the press stands one up and takes
+ * it. Lit with a cutter in hand, the press TAKES the mirror, so the line can be
+ * swung and a new part picked without losing anything. Lit and already held,
+ * the press puts it away. Nothing is destroyed except by a press on a button
+ * you are already holding, and even then the aim survives -- see `mirrors` --
+ * so putting one back up gives back the axis you had.
+ *
+ * The state the button cannot show is which of those two lit states you are in,
+ * and it does not need to: with the mirror in hand every other tool on the
+ * island is dark and the viewport says what the two gestures are.
+ *
+ * PER FACE, which is why it needs to be told which one. A mirror is a pair of
+ * numbers in one face's own (u, v) and means something else on any other, so
+ * each face keeps its own -- turn the compass and the front's 45-degree mirror
+ * is still the front's. See `mirrors`.
+ *
+ * NO PANEL, like Move and for a sharper reason than Move's. Everything it can
+ * be told is either on the face already -- the angle is the line, the part is
+ * the lit region -- or lives in `SymmetryPanel`, standing in the corner for as
+ * long as the axis does. An island flyout could not hold it: the panel shuts on
+ * any press outside the island, and every press this tool takes is on the
+ * scene. That is the lesson `CutPanel` was written to record.
+ */
+export function SymmetryTool({ face }: { face: FaceAxis }) {
+  const inHand = useTools((s) => s.laserTool === 'symmetry')
+  const standing = useTools(mirrorOn(face)) !== null
+  const setLaserTool = useTools((s) => s.setLaserTool)
+  const setMirror = useTools((s) => s.setMirror)
+
+  return (
+    <NavTool
+      label="Symmetry"
+      icon={<SymmetryIcon />}
+      // LIT FOR THE AXIS, NOT FOR THE HAND. See the note above: the button says
+      // whether cuts are being mirrored, which goes on being true while a
+      // cutter is in hand.
+      active={standing}
+      onToggle={(on) => {
+        if (on) {
+          // Dark, so there is no mirror here: stand one up and take it, which
+          // is one press for what is really one act.
+          setMirror(face, true)
+          setLaserTool('symmetry')
+          return
+        }
+        // Lit, and the press means two different things -- see the note above.
+        // With a cutter in hand it means take the mirror; holding it already,
+        // it means put it away.
+        if (!inHand) setLaserTool('symmetry')
+        else {
+          setMirror(face, false)
+          setLaserTool(null)
+        }
+      }}
+    />
   )
 }
 

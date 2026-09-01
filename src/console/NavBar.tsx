@@ -164,15 +164,17 @@ export function NavBar() {
 
     const onDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement | null
-      // `.help-screen` is the CARD, deliberately not the backdrop behind it:
-      // a press on the dark surround finds no card above it, falls through to
-      // this, and closes the screen -- which is what a modal surround is for.
+      // `.overlay-card` is the CARD of a screen -- Help's or Settings' --
+      // deliberately not the backdrop behind it: a press on the dark surround
+      // finds no card above it, falls through to this, and closes the screen,
+      // which is what a modal surround is for. One class for both, so a third
+      // screen is dismissable without this list learning its name.
       // `.cut-panel` is chrome, not scene. It exists BECAUSE this listener
       // closes a flyout on any press outside the island -- which is what shut
       // the Apply button under the first stroke of the line it was going to
       // apply, see `CutPanel` -- and a press on it must not shut the dial that
       // aimed the very line it is about to burn.
-      if (target?.closest?.('.topbar, .tool-island, .help-screen, .cut-panel')) return
+      if (target?.closest?.('.topbar, .tool-island, .overlay-card, .cut-panel')) return
       setOpenPanel(null)
     }
 

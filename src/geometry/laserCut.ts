@@ -103,6 +103,28 @@ const WELD = 1e-5
  *  not a piece. Cubic, because it is a volume against the unit cube's own. */
 const MIN_PIECE = 1e-7
 
+/**
+ * Whether a line comes back to where it started -- the only way anything
+ * downstream is ever told that a cut is a LOOP rather than a stroke.
+ *
+ * A FACT ABOUT THE POINTS RATHER THAN A FLAG CARRIED BESIDE THEM, and that is
+ * the decision worth defending. One line is drawn in `CutLayer`, previewed by
+ * `ribbon`, evened out by `stations`, thinned by `simplify` and swept by
+ * `buildKerfWall`, and a boolean travelling alongside it is a boolean any one
+ * of those five can drop -- a preview that drew the bridge over a wall that
+ * capped the ends instead would burn something other than what it showed. The
+ * repeated point IS the closure, so the line cannot be handed on without it,
+ * and every step above already keeps its first and last points.
+ *
+ * Four entries, because three are two segments doubling back along themselves
+ * and enclose no area to cut out. The tolerance is `WELD`, the same grid a
+ * boolean's own corners are rounded onto, so a seam that has been through a
+ * float and back is still one seam.
+ */
+export function isClosedLine(line: Pt[]): boolean {
+  return line.length >= 4 && len(sub(line[0], line[line.length - 1])) <= WELD
+}
+
 const perp = (p: Pt): Pt => [-p[1], p[0]]
 const sub = (a: Pt, b: Pt): Pt => [a[0] - b[0], a[1] - b[1]]
 const add = (a: Pt, b: Pt): Pt => [a[0] + b[0], a[1] + b[1]]
@@ -337,9 +359,18 @@ export function simplify(points: Pt[], tolerance = SIMPLIFY): Pt[] {
  * the curvature, which on a stroke that ended on a wobble sends the cut
  * somewhere nobody asked for; a tangent is the one continuation that cannot
  * surprise.
+ *
+ * A CLOSED LINE IS HANDED BACK UNTOUCHED, which is what makes encircling work
+ * at all. The reason ends are carried is that an open slot separates nothing --
+ * and a loop has no ends and already separates what it surrounds from what it
+ * does not. Carrying one would do the exact opposite of the job: two rays fired
+ * off the seam and out through the border, turning the ring into a stroke that
+ * wanders off the face. The test is on the line itself, so no caller can
+ * assemble this pipeline and get it wrong. See `isClosedLine`.
  */
 export function carryToBorder(points: Pt[], reach = CARRY): Pt[] {
   if (points.length < 2) return points.slice()
+  if (isClosedLine(points)) return points.slice()
 
   const head = unit(sub(points[0], points[1]))
   const tail = unit(sub(points[points.length - 1], points[points.length - 2]))
@@ -402,7 +433,19 @@ export function ropeFollow(anchor: Pt, pointer: Pt, slack: number): Pt {
  * out negative. A closed mesh has exactly two consistent windings and only one
  * of them encloses positive volume, so this is a proof rather than a guess --
  * and it is one line against a page of sign conventions that would have to be
- * re-derived for all six faces.
+ * re-derived for all six faces. It holds for the loop below just as well: a
+ * tube bent round into a ring is still a closed mesh, and the volume it
+ * encloses is still positive exactly one way about.
+ *
+ * A LOOP IS THIS SAME TUBE WITH THE CAPS TAKEN OFF, which is the whole of what
+ * a closed line changes here. The stations wrap instead of running out, so the
+ * last is joined back to the first; and both caps go, because there is no end
+ * to close and a cap at the seam would be a membrane lying across the very slot
+ * being burned -- material the boolean would leave standing in the middle of
+ * the kerf. What comes out is a torus of quads, which subtracts to a ring of
+ * slot and drops the encircled island out of the block. Nothing else here knows
+ * the difference: the offsetting, the winding and the sweep are the same
+ * arithmetic either way. See `isClosedLine`.
  */
 export function buildKerfWall(
   line: Pt[],
@@ -411,12 +454,26 @@ export function buildKerfWall(
   through = THROUGH
 ): BufferGeometry | null {
   if (line.length < 2) return null
+  const closed = isClosedLine(line)
+  // The seam is written twice on a closed line -- being written twice is how it
+  // says it is closed -- and two stations in one place have no direction
+  // between them to offset a wall from. Dropped here, and put back by the wrap.
+  const path = closed ? line.slice(0, -1) : line
+  const n = path.length
+  if (n < 2) return null
   const basis = faceBasis(face)
 
-  // The sideways offset at each station, in face coordinates.
-  const normals: Pt[] = line.map((_, i) => {
-    const before = i > 0 ? unit(sub(line[i], line[i - 1])) : null
-    const after = i < line.length - 1 ? unit(sub(line[i + 1], line[i])) : null
+  /** Station `i`, which on a loop wraps round rather than running out. */
+  const wrap = (i: number): number => ((i % n) + n) % n
+  const at = (i: number): Pt => path[wrap(i)]
+
+  // The sideways offset at each station, in face coordinates. On a loop every
+  // station has a segment on both sides of it, the seam included -- which is
+  // what keeps the wall its full width there rather than pinching to a cap's
+  // worth in the one place the ends meet.
+  const normals: Pt[] = path.map((_, i) => {
+    const before = closed || i > 0 ? unit(sub(at(i), at(i - 1))) : null
+    const after = closed || i < n - 1 ? unit(sub(at(i + 1), at(i))) : null
     const dir =
       before && after ? unit(add(before, after)) : (after ?? before ?? ([1, 0] as Pt))
     // A station where the line doubles straight back on itself averages to
@@ -429,8 +486,8 @@ export function buildKerfWall(
 
   /** The four corners of the cross-section at station `i`, in block space. */
   const ring = (i: number): Vector3[] => {
-    const left = add(line[i], scale(normals[i], half))
-    const right = sub(line[i], scale(normals[i], half))
+    const left = add(path[i], scale(normals[i], half))
+    const right = sub(path[i], scale(normals[i], half))
     return [
       faceToBlock(basis, left, through),
       faceToBlock(basis, right, through),
@@ -450,11 +507,15 @@ export function buildKerfWall(
   }
 
   let previous = ring(0)
-  // The near cap, closing the tube at the end the line starts from.
-  quad(previous[3], previous[2], previous[1], previous[0])
+  // The near cap, closing the tube at the end the line starts from -- and only
+  // on a line that has an end. See the note above.
+  if (!closed) quad(previous[3], previous[2], previous[1], previous[0])
 
-  for (let i = 1; i < line.length; i += 1) {
-    const next = ring(i)
+  // One span per gap between stations, and on a loop one more than that: the
+  // gap from the last station back round to the first.
+  const spans = closed ? n : n - 1
+  for (let i = 1; i <= spans; i += 1) {
+    const next = ring(wrap(i))
     for (let c = 0; c < 4; c += 1) {
       const d = (c + 1) % 4
       quad(previous[c], previous[d], next[d], next[c])
@@ -463,7 +524,7 @@ export function buildKerfWall(
   }
 
   // And the far cap.
-  quad(previous[0], previous[1], previous[2], previous[3])
+  if (!closed) quad(previous[0], previous[1], previous[2], previous[3])
 
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
@@ -599,7 +660,22 @@ const BLOCK_PAINT = 'laser-block'
  * back untouched. It is also the only answer this screen can give, having no
  * selection to ask about.
  *
- * The wall is built once and cloned per piece, because `makeBrush` normalises
+ * SEVERAL LINES, AND ALL OF THEM ARE ONE CUT. A plain cut hands in one; a
+ * mirrored one hands in the two or four the axis makes of it -- see
+ * `mirrorLines` -- and the difference has to stop at this door. What comes out
+ * is one bed, one `made` list and one act for the caller to remember, because
+ * the two halves of a symmetrical cut are not two things that happened: undoing
+ * half of one would leave a block nobody asked for.
+ *
+ * THE LINES ARE BURNED ONE AFTER ANOTHER rather than merged into a single
+ * blade, and that is not laziness. Two mirrored walls MEET on the axis -- the
+ * clip keeps the crossing point on both sides of it, so the pair touch exactly
+ * where they should -- and a brush handed two shells that touch is a brush that
+ * self-intersects, which is the one input a CSG evaluator cannot be trusted
+ * with. Each wall on its own is a clean single shell. The cost is one boolean
+ * per line rather than one per cut, and a cross is four.
+ *
+ * Each wall is built once and cloned per piece, because `makeBrush` normalises
  * the geometry it is handed in place and the library forbids touching it
  * afterwards.
  *
@@ -620,7 +696,7 @@ const BLOCK_PAINT = 'laser-block'
  */
 export function cutPieces(
   pieces: BufferGeometry[],
-  line: Pt[],
+  lines: Pt[][],
   face: FaceAxis,
   kerf = KERF
 ): { pieces: BufferGeometry[]; split: number; made: number[] } {
@@ -636,53 +712,88 @@ export function cutPieces(
   // freehand stroke has already been through `resample` on its way here -- see
   // `draftLine` -- so it arrives evenly spaced and passes through this
   // unchanged.
-  const wall = buildKerfWall(carryToBorder(simplify(stations(line))), face, kerf)
-  if (!wall) return { pieces, split: 0, made: [] }
+  //
+  // AND AN ENCIRCLING LOOP GOES THROUGH THE VERY SAME FOUR STEPS. Each of them
+  // keeps the line's first and last points, so a line that arrived closed is
+  // still closed when it reaches the sweep: the carry stands aside for it, and
+  // the sweep bends the tube round into a ring whose slot drops the encircled
+  // island out. That is why encircling needed no branch here -- it is one more
+  // shape of line rather than a second kind of cut. See `isClosedLine`.
+  const walls: BufferGeometry[] = []
+  for (const line of lines) {
+    const wall = buildKerfWall(carryToBorder(simplify(stations(line))), face, kerf)
+    if (wall) walls.push(wall)
+  }
+  if (walls.length === 0) return { pieces, split: 0, made: [] }
 
-  const out: BufferGeometry[] = []
+  /**
+   * The bed as the last wall left it, and which of its pieces this cut made.
+   *
+   * A FLAG PER PIECE rather than a list of indices, because indices do not
+   * survive a second wall: the array is rebuilt by every line, so a piece that
+   * was the fifth after one pass is somewhere else entirely after the next. The
+   * flag rides on the piece instead, which is also what keeps a piece made by
+   * the first line and then split again by the second counted once, as one of
+   * this cut's own.
+   *
+   * `own` is whether the geometry is ours to free. The caller's pieces are on
+   * screen -- freeing one would pull a buffer out from under the viewport --
+   * but a piece made by an earlier wall of THIS cut and then cut up by a later
+   * one was never seen by anybody, and is dropped here rather than left lying
+   * about.
+   */
+  let bed = pieces.map((geometry) => ({ geometry, made: false, own: false }))
   let split = 0
-  const made: number[] = []
 
   try {
-    for (const piece of pieces) {
+    for (const wall of walls) {
+      const next: typeof bed = []
+      for (const item of bed) {
       // The caller's geometry is on screen: brushing it directly would let the
       // disposal below free a buffer the viewport is still drawing.
-      const solid = makeBrush(piece.clone(), BLOCK_PAINT)
-      const blade = makeBrush(wall.clone(), BLOCK_PAINT)
-      let result
-      try {
-        result = csg(solid, blade, SUBTRACTION)
-      } finally {
-        disposeBrush(solid)
-        disposeBrush(blade)
-      }
-
-      const parts = splitComponents(result.geometry).filter(
-        (p) => Math.abs(signedVolume(p)) > MIN_PIECE
-      )
-      disposeBrush(result)
-
-      // A wall that missed leaves the piece whole, and a piece the wall merely
-      // grazed can come back as nothing at all -- keep the original in both
-      // cases rather than handing back a hole in the bed.
-      if (parts.length === 0) out.push(piece)
-      else {
-        if (parts.length > 1) {
-          split += 1
-          // Every one of them, not the smallest: which piece goes is a choice,
-          // and a function that made it here would be one that could not be
-          // asked for the other answer. `splitComponents` hands them back
-          // biggest first, so the list is already in an order worth showing.
-          for (let i = 0; i < parts.length; i += 1) made.push(out.length + i)
+      const solid = makeBrush(item.geometry.clone(), BLOCK_PAINT)
+        const blade = makeBrush(wall.clone(), BLOCK_PAINT)
+        let result
+        try {
+          result = csg(solid, blade, SUBTRACTION)
+        } finally {
+          disposeBrush(solid)
+          disposeBrush(blade)
         }
-        out.push(...parts)
+
+        const parts = splitComponents(result.geometry).filter(
+          (p) => Math.abs(signedVolume(p)) > MIN_PIECE
+        )
+        disposeBrush(result)
+
+        // A wall that missed leaves the piece whole, and a piece the wall merely
+        // grazed can come back as nothing at all -- keep the original in both
+        // cases rather than handing back a hole in the bed.
+        if (parts.length === 0) {
+          next.push(item)
+          continue
+        }
+        if (parts.length > 1) split += 1
+        // Every one of them, not the smallest: which piece goes is a choice,
+        // and a function that made it here would be one that could not be
+        // asked for the other answer. `splitComponents` hands them back
+        // biggest first, so the list is already in an order worth showing.
+        for (const part of parts) {
+          next.push({ geometry: part, made: item.made || parts.length > 1, own: true })
+        }
+        if (item.own) item.geometry.dispose()
       }
+      bed = next
     }
   } finally {
-    wall.dispose()
+    for (const wall of walls) wall.dispose()
   }
 
-  return { pieces: out, split, made }
+  return {
+    pieces: bed.map((item) => item.geometry),
+    split,
+    made: bed.flatMap((item, at) => (item.made ? [at] : [])),
+  }
 }
 
 /**
@@ -934,6 +1045,27 @@ export function freshBlock(): BufferGeometry {
  *  choice on the smallest of them. */
 export function pieceVolume(geometry: BufferGeometry): number {
   return Math.abs(signedVolume(geometry))
+}
+
+/**
+ * Where a piece sits, as one point in block space: the middle of the box that
+ * holds it.
+ *
+ * FOR PAIRING MIRRORED PIECES UP and nothing else, which is what decides how
+ * exact it has to be. A symmetrical cut leaves pieces that are reflections of
+ * each other, and the question asked of this is "which piece over there is the
+ * image of this one" -- see `twinsOf` in `laserStore`. Two pieces that are
+ * reflections have exactly reflected boxes, so the middles of those boxes
+ * answer it, and they answer it at a fraction of the cost of a true centre of
+ * mass over a boolean's triangle soup.
+ *
+ * It is emphatically NOT a centre of gravity, and nothing should start using it
+ * as one: an L-shaped piece's box centre is out in the air beside it.
+ */
+export function pieceCentre(geometry: BufferGeometry): Vector3 {
+  geometry.computeBoundingBox()
+  const box = geometry.boundingBox
+  return box ? box.getCenter(new Vector3()) : new Vector3()
 }
 
 /**

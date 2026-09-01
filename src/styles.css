@@ -56,6 +56,49 @@
   --line-3: #3a444f;
   --line-4: #4d5665;
 
+  /* --- the edge weight -------------------------------------------------------
+
+     How wide an outline is drawn, in one number, for the whole app.
+
+     The ramp above decides how BRIGHT an edge is; this decides how much of it
+     there is, and brightness alone was not carrying the job. A square corner
+     puts the entire burden of "this is an object" on the stroke around it --
+     there is no curve left to carry any of it -- and a hairline was losing that
+     argument: a button beside a button, a field inside a section, a panel over
+     the scene all flattened into one grey field with words on it.
+
+     Doubling costs nothing. Everything in this file is `border-box`, so no box
+     changes size and nothing moves; the second pixel comes out of padding,
+     which every control here has to spare.
+
+     IT GOES ON OUTLINES ONLY -- what draws a box round something. The hairlines
+     that DIVIDE keep their literal 1px and are meant to: the bar's underline,
+     the seam inside a segmented control, the caret's left edge, the rule under
+     a section head. A 2px divider is not a clearer divider, it is a bar. */
+  --edge: 2px;
+
+  /* And the colour an outline takes on a surface that FLOATS OVER THE SCENE --
+     the tool island, the shelves in the corners, the compact console, the
+     panels that hang off the bar, the object menu.
+
+     --line-4, the top of the ramp, where the console's own boxes sit on
+     --line-1 and --line-2. Those are edges between one dark grey and another
+     and have only to hint. These have to hold an outline against whatever the
+     scene happens to be behind them, which is a lit solid, a patch of grid or
+     black depending on where the camera is pointing.
+
+     `.tool-island::before` reached half of this on its own -- --line-2 rather
+     than --border, "because this is floating over the SCENE, not sitting in the
+     console" -- and every floating panel added afterwards copied the value
+     without the reasoning that produced it. This is that reasoning taken the
+     rest of the way and given a name to be taken by.
+
+     Neutral, and deliberately not the accent: in this app accent means a tool
+     is ON, so a blue box round every panel would say every panel was engaged.
+     A panel stands out here by being brighter than the console, not by
+     borrowing the one colour that already means something else. */
+  --edge-float: var(--line-4);
+
   /* --- the text ramp ---------------------------------------------------------
 
      Four voices: what you read, what qualifies it, what labels it, and what is
@@ -158,13 +201,41 @@
      not a scale but a record of somebody nudging one label until it sat right
      next to another. On a tool whose whole surface is labels and figures, a type
      ramp you can name is the difference between a panel that looks measured and
-     one that looks assembled. */
-  --t-micro: 9px;
-  --t-fine: 10px;
-  --t-label: 11px;
-  --t-body: 12px;
-  --t-base: 13px;
-  --t-title: 14px;
+     one that looks assembled.
+
+     Every rung is a pixel taller than it was, because the face under it changed.
+     Rajdhani is condensed and its stems are light, and this ramp was measured
+     against a system stack: 9px of that stack is a readable label, and 9px of
+     Rajdhani is a smudge. The whole ramp moved rather than the two rungs that
+     hurt most -- a scale bent where it pinches stops being a scale, which is the
+     same argument that took this one from nine steps to six.
+
+     It costs nothing sideways. A condensed face at 12px is narrower than the old
+     stack at 11, so no panel this ramp measures had to grow to hold it. */
+  --t-micro: 10px;
+  --t-fine: 11px;
+  --t-label: 12px;
+  --t-body: 13px;
+  --t-base: 14px;
+  --t-title: 15px;
+
+  /* THE SAME RAMP, ONE STEP BACK, for the figures.
+
+     Every rule that sets --mono reads this instead: the number boxes, the
+     readouts, the hex field, the scene tree's cut tags. The pixel above was
+     bought to make a condensed face legible, and a monospace figure is the
+     opposite of condensed -- it is the widest glyph in the console by
+     construction, and growing it would have widened every number box in the app
+     to pay for legibility it already had.
+
+     So the figures keep the sizes the panels were drawn to. Two ramps rather
+     than one ramp used twice, because that is what these are: two faces measured
+     to the same apparent size. Only the four rungs the mono seam actually uses
+     are here; a fifth would be a token nothing reads. */
+  --tm-micro: 9px;
+  --tm-fine: 10px;
+  --tm-label: 11px;
+  --tm-body: 12px;
 
   /* --- elevation -------------------------------------------------------------
 
@@ -178,19 +249,34 @@
   --lift-1: 0 10px 24px rgba(0, 0, 0, 0.5);
   --lift-2: 0 14px 32px rgba(0, 0, 0, 0.55);
 
-  --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* THE APP'S FACE, in every theme, everywhere text is read: labels, buttons,
+     headings, the scene tree, every page of Help.
 
-  /* The face for DISPLAY text only: the uppercase tracked headings, and the
-     wordmark. The same as the body face here, so this is inert until a theme
-     sets it -- but the split has to exist for a theme to be allowed a
-     characterful face at all.
+     Rajdhani came in as the Cyberpunk theme's own and was kept off everything
+     but that theme's headings, on the finding that a condensed face with light
+     stems turned 11px labels and 10px figures into texture. The finding was
+     right, and it was about the SIZES rather than the face -- so the sizes
+     moved. The ramp above is a pixel taller and the body below is set in Medium
+     rather than Regular. That is what this face costs; what it buys is a console
+     that looks drawn rather than defaulted.
 
-     A condensed display face is a liability everywhere except a heading. This
-     app sets labels at 11px and figures at 10, and at those sizes narrow
-     counters and light stems cost more legibility than any amount of colour
-     tuning gets back. Headings are 11px uppercase with wide tracking and few
-     words: that is exactly where a face like this earns its place. */
+     The old system stack is still behind it, unchanged. A window that never
+     reaches fonts.googleapis.com comes up in the system face at Rajdhani's
+     sizes -- a shade large, entirely usable, and never an empty panel. */
+  --font: 'Rajdhani', ui-sans-serif, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+  /* The face for DISPLAY text: the uppercase tracked headings, the screen tabs
+     and the wordmark. It points at the body face, and the body face is now the
+     characterful one, so this is inert -- but the seam stays. It is the one
+     place a theme may reach for a face of its own without that reach landing on
+     10px figures, and the app having settled on Rajdhani everywhere does not
+     make the next theme's want safe. */
   --font-display: var(--font);
+
+  /* The figures, and not for how they look: a number box is scrubbed and typed
+     into, and a column of readings has to hold still while the digits under it
+     change. That is a monospace job. It is also why the ramp above has a mono
+     half -- this face is not condensed and must not be sized as though it is. */
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
   color-scheme: dark;
@@ -342,17 +428,11 @@
   --on-accent: #05171a;
   --on-erase: #1a0605;
 
-  /* Rajdhani is the face the source theme asks for, and it is on the HEADINGS
-     rather than on everything. It went on everything first and that was the
-     single biggest thing wrong with the theme's readability: Rajdhani is a
-     condensed face with light stems, and this app's body text is 11px labels and
-     10px figures, where narrow counters close up and the whole console turns
-     into texture. On tracked uppercase headings it is unmistakable and perfectly
-     legible, which is the job it is actually for.
-
-     It is a link in index.html and this stack degrades to the app's own if it
-     does not arrive, so the theme never waits on a network to be usable. */
-  --font-display: 'Rajdhani', ui-sans-serif, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  /* No face here any more. Rajdhani was this theme's, and setting it on
+     everything was once the single biggest thing wrong with the theme's
+     readability -- but the fix for that was the type ramp, and a ramp is not a
+     theme's to own. Both went up to :root, and the face this theme asked for is
+     the app's. What is left to say down here is colour and the notch. */
 
   /* The corner cut off every panel and control. Square is still the app's shape
      language -- this does not round anything -- it takes a bite out of it, which
@@ -368,6 +448,21 @@
   box-sizing: border-box;
 }
 
+/* A form control does not inherit its font. The UA hands a button Arial at
+   13.33px and an input the system field face, and the app's own stack was near
+   enough to those that the rules which forget to say `font: inherit` were never
+   caught at it. Rajdhani is not near them, so each of those would now read as a
+   control borrowed from a different app.
+
+   Family only: every control keeps whatever size and weight its own rule sets.
+   This fixes the face, it does not flatten the ramp. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
 html,
 body,
 #root {
@@ -380,6 +475,11 @@ body {
   color: var(--text);
   font-family: var(--font);
   font-size: var(--t-base);
+  /* Medium, not Regular. Rajdhani's 400 is a hairline at console sizes, and its
+     500 is what reads as normal weight beside a system Regular -- so this is the
+     weight the ramp was measured at, not emphasis. The 600s scattered through
+     this file still land above it. */
+  font-weight: 500;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -503,7 +603,7 @@ body {
   font-family: var(--font-display);
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
   cursor: pointer;
@@ -538,7 +638,9 @@ body {
 }
 
 .brand-mark {
-  font-weight: 650;
+  /* 650 was a variable-font weight and Rajdhani ships static instances, so the
+     browser was already rounding it. Said as the weight that actually draws. */
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   /* Near-zero tracking: the wide spacing here suited a short uppercase
@@ -585,7 +687,7 @@ body {
 .stats {
   color: var(--muted);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -608,7 +710,7 @@ body {
 .nav-group {
   display: flex;
   align-items: stretch;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-2);
   overflow: hidden;
@@ -772,7 +874,7 @@ body {
      to. The full value comes out when one is chosen. */
   color: color-mix(in srgb, var(--axis) 62%, var(--muted));
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
@@ -828,7 +930,7 @@ body {
   width: 268px;
   padding: 11px 12px 12px;
   background: var(--panel);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-2);
   animation: nav-panel-in 0.13s ease-out;
@@ -839,51 +941,6 @@ body {
 .nav-panel-right {
   left: auto;
   right: 0;
-}
-
-/* And the other end of the same idea. The settings menu is two rows of short
-   buttons, and at the shared 268px it was mostly empty air: a strip of controls
-   parked in the corner of a box sized for a field it does not have. It takes its
-   width from its content instead, with a floor so the head -- the title and the
-   close cross -- is never the thing that overflows.
-
-   The floor is wider than the units menu's old 150px because there are two rows
-   under one head now, and a panel that fits `mm cm auto` exactly is a panel the
-   word Settings hangs out of. */
-.nav-panel:has(.settings-groups) {
-  width: max-content;
-  min-width: 188px;
-}
-
-/* Stacked with air between them, because they are two different questions. At
-   the panel's own line spacing the Theme caption sat closer to the units row
-   above it than to the control it names. */
-.settings-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-/* Each row divides the panel between its options. Left at their natural widths
-   they would huddle at one end of the segment's outline, which is the empty
-   space again, one level in -- and the two rows would not line up with each
-   other, which is the thing you actually notice. */
-.units-modes .seg-btn,
-.theme-modes .seg-btn,
-.outline-modes .seg-btn,
-.game-modes .seg-btn {
-  flex: 1;
-  padding-inline: 8px;
-}
-
-/* The speed under the switch it belongs to, closer to it than the four rows are
-   to each other: the 12px between groups says "different question", and this is
-   the same question's second half. It sits inside the Game Controls fieldset
-   and gets a second one of its own, so it dims twice over -- once with the
-   screen that cannot fly, once with the mode being off -- without either state
-   having to know about the other. */
-.game-speed {
-  margin-top: 8px;
 }
 
 @keyframes nav-panel-in {
@@ -942,7 +999,7 @@ body {
 .nav-panel-title {
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -1022,12 +1079,12 @@ body {
   max-width: 340px;
   padding: 7px 10px;
   background: var(--panel);
-  border: 1px solid color-mix(in srgb, var(--out) 45%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--out) 45%, transparent);
   border-radius: var(--radius);
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5);
   color: var(--out);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   line-height: 1.45;
   word-break: break-all;
   animation: nav-panel-in 0.13s ease-out;
@@ -1082,7 +1139,7 @@ body {
   max-width: 240px;
   padding: 8px 10px;
   background: var(--surface-3);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-2);
   color: var(--text);
@@ -1143,7 +1200,7 @@ body {
 
 .seg {
   display: flex;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -1256,7 +1313,7 @@ body {
   flex-direction: column;
   gap: 6px;
   padding: 8px 9px;
-  border: 1px solid color-mix(in srgb, var(--brush-tint) 40%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--brush-tint) 60%, transparent);
   border-radius: var(--radius);
   /* Opaque enough to read against a solid parked underneath it. */
   background: color-mix(in srgb, var(--brush-tint) 12%, var(--panel));
@@ -1281,7 +1338,7 @@ body {
 .brush-scope-head {
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--brush-tint);
 }
@@ -1337,7 +1394,7 @@ body {
   margin: 0 0 10px;
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -1377,12 +1434,12 @@ body {
 .section-unit {
   margin-left: auto;
   padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--accent) 38%, transparent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
   font-family: var(--mono);
-  font-size: var(--t-micro);
+  font-size: var(--tm-micro);
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;
@@ -1481,7 +1538,7 @@ body {
      panel the one you look at least: the scene tree and the selected object
      both sat below the fold. Derived from the row's own metrics rather than a
      measured pixel count, so restyling a row keeps the count honest. */
-  --solid-row: 42px; /* 30px icon + 2 x 5px padding + 2 x 1px border */
+  --solid-row: 44px; /* 30px icon + 2 x 5px padding + 2 x 2px border */
   --solid-gap: 2px;
   max-height: calc(4 * var(--solid-row) + 3 * var(--solid-gap));
   overflow-y: auto;
@@ -1499,7 +1556,7 @@ body {
   gap: 10px;
   padding: 5px 7px;
   appearance: none;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   background: transparent;
   color: var(--muted);
@@ -1638,7 +1695,7 @@ body {
   place-items: center;
   padding: 0;
   appearance: none;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   background: transparent;
   color: var(--text-4);
@@ -1678,12 +1735,12 @@ body {
 .tree-erase {
   flex: 0 0 auto;
   padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--erase) 45%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--erase) 45%, transparent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--erase) 14%, transparent);
   color: var(--erase);
   font-family: var(--mono);
-  font-size: var(--t-fine);
+  font-size: var(--tm-fine);
   line-height: 1.5;
 }
 
@@ -1699,7 +1756,7 @@ body {
   gap: 8px;
   margin-bottom: 10px;
   padding: 9px 10px;
-  border: 1px solid color-mix(in srgb, var(--erase) 40%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--erase) 40%, transparent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--erase) 9%, transparent);
 }
@@ -1792,7 +1849,7 @@ body {
   gap: 8px;
   margin-bottom: 10px;
   padding: 9px 10px;
-  border: 1px solid color-mix(in srgb, var(--sketch) 40%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--sketch) 40%, transparent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--sketch) 9%, transparent);
 }
@@ -1873,7 +1930,7 @@ body {
      landed on the frame rather than across a tile's name; there is nothing down
      there for it to land on any more. */
   padding: 8px;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   scroll-snap-type: x proximity;
   scrollbar-width: thin;
@@ -1909,7 +1966,7 @@ body {
   /* The same dashed, inert square the colour shelf uses for a slot it has not
      filled yet, and deliberately so: two shelves in one console that mean the
      same thing should look like they do. */
-  border: 1px dashed var(--border);
+  border: var(--edge) dashed var(--border);
   border-radius: var(--radius);
   scroll-snap-align: start;
 }
@@ -1923,7 +1980,7 @@ body {
   place-items: center;
   aspect-ratio: 1;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-2);
   color: var(--text-2);
@@ -2028,7 +2085,7 @@ body {
   min-width: 0;
   padding: 2px 4px;
   appearance: none;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   /* A ground of its own, because a MODEL TURNS UNDER THIS. A transparent label
      over a turntable is legible on one frame of the spin and lost against the
@@ -2090,7 +2147,7 @@ body {
   place-items: center;
   padding: 0;
   appearance: none;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
   color: var(--text-4);
@@ -2146,7 +2203,7 @@ body {
   place-items: center;
   padding: 0;
   appearance: none;
-  border: 1px solid color-mix(in srgb, var(--erase) 45%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--erase) 45%, transparent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--erase) 16%, var(--panel));
   color: var(--erase);
@@ -2193,7 +2250,7 @@ body {
   min-width: 178px;
   padding: 4px;
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
 }
@@ -2202,7 +2259,7 @@ body {
   padding: 4px 8px 6px;
   font-size: var(--t-fine);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
   white-space: nowrap;
@@ -2247,7 +2304,7 @@ body {
 .menu-hint {
   flex: 0 0 auto;
   font-family: var(--mono);
-  font-size: var(--t-fine);
+  font-size: var(--tm-fine);
   color: var(--text-4);
 }
 
@@ -2273,7 +2330,7 @@ body {
   height: 56px;
   padding: 0;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--muted);
   font: inherit;
@@ -2417,7 +2474,7 @@ body {
   padding: 6px 0 4px;
   appearance: none;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--muted);
   font: inherit;
@@ -2478,11 +2535,11 @@ body {
   width: 64px;
   padding: 3px 6px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -2593,7 +2650,7 @@ body {
 
 .vec3-axis {
   font-family: var(--mono);
-  font-size: var(--t-fine);
+  font-size: var(--tm-fine);
   font-weight: 600;
   text-align: center;
   user-select: none;
@@ -2617,11 +2674,11 @@ body {
   width: 100%;
   padding: 2px 4px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -2636,7 +2693,7 @@ body {
 .btn {
   padding: 7px 10px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   font: inherit;
@@ -2759,7 +2816,7 @@ body {
   width: 16px;
   color: var(--text-4);
   font-family: var(--mono);
-  font-size: var(--t-fine);
+  font-size: var(--tm-fine);
   text-align: right;
 }
 
@@ -2857,7 +2914,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   color: var(--text);
   cursor: pointer;
@@ -2930,7 +2987,7 @@ body {
   align-items: center;
   gap: 7px;
   padding: 4px 7px;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   color: var(--text);
   font-size: var(--t-body);
@@ -2992,7 +3049,7 @@ body {
   margin: 8px 0 0;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   line-height: 1.45;
 }
@@ -3034,7 +3091,7 @@ body {
   margin-top: 4px;
   padding: 7px;
   background: transparent;
-  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--danger) 40%, transparent);
   border-radius: var(--radius);
   color: var(--danger);
   font: inherit;
@@ -3065,13 +3122,20 @@ body {
    alone resolves the other axis to `auto` too, and `clip` is not a scrolling
    value, so this cannot become a sideways-scrolling element whatever a future
    gesture line overflows by. */
-/* --- the help screen -------------------------------------------------------
+/* --- screens over the app --------------------------------------------------
 
-   The manual, over the whole app. It was a `nav-panel` holding a 330px column
-   of sentences; see HelpScreen.tsx for why a document does not fit in a
-   dropdown.
+   The shell two things wear now: the manual, and the preferences. Both were
+   `nav-panel`s hanging off a button -- Help a 330px column of sentences, and
+   Settings four rows of two-word switches with nowhere to say what they
+   switched -- and both outgrew it. See HelpScreen.tsx and SettingsScreen.tsx.
 
-   Nothing in here is a new colour. The screen is the app's own ramp at a bigger
+   Everything down to `.overlay-close` is the shell and belongs to neither of
+   them; what follows it is Help's own, and the Settings rows are further down
+   again. The one thing the shell deliberately does not set is the card's SIZE:
+   a document wants a reading width and a fixed height, and a short list of
+   preferences at the same measure would be a mostly empty box.
+
+   Nothing in here is a new colour. A screen is the app's own ramp at a bigger
    size -- surface-1 for the card, surface-2 for the rail, the line ramp for the
    seams -- which is what keeps a full-window overlay reading as part of the
    app rather than as a web page that opened on top of it. */
@@ -3079,7 +3143,7 @@ body {
 /* Dark enough to put the app behind glass and light enough to still see it
    there: a modal that blacks out its own context makes you forget what you
    were doing while you read about it. */
-.help-backdrop {
+.overlay-backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
@@ -3088,7 +3152,7 @@ body {
   justify-content: center;
   padding: 32px;
   background: color-mix(in srgb, var(--surface-0) 76%, transparent);
-  animation: help-fade-in 0.12s ease-out;
+  animation: overlay-fade-in 0.12s ease-out;
 }
 
 /* Leaving. Its own keyframes rather than the entrance played backwards: an
@@ -3098,18 +3162,32 @@ body {
    durations. `forwards` holds the finished state for the frame or two between
    the animation ending and React taking the element away.
 
-   The length comes from `--help-exit`, which HelpScreen writes from the same
-   constant it unmounts on. The fallback is only for a stylesheet read without
-   the component -- in the app the property is always there. */
-.help-leaving {
+   The length comes from `--overlay-exit`, which ScreenOverlay writes from the
+   same constant it unmounts on. The fallback is only for a stylesheet read
+   without the component -- in the app the property is always there. */
+.overlay-leaving {
   /* A press landing on a surface that is already dismissing itself does
      nothing anybody meant by it. */
   pointer-events: none;
-  animation: help-fade-out var(--help-exit, 110ms) ease-in forwards;
+  animation: overlay-fade-out var(--overlay-exit, 110ms) ease-in forwards;
 }
 
-.help-leaving .help-screen {
-  animation: help-screen-out var(--help-exit, 110ms) ease-in forwards;
+.overlay-leaving .overlay-card {
+  animation: overlay-card-out var(--overlay-exit, 110ms) ease-in forwards;
+}
+
+/* The card itself, minus its size: the surface, the seam around it, the lift
+   off the backdrop and the way it arrives. Every screen wears this and then
+   says how big it is. */
+.overlay-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel);
+  border: var(--edge) solid var(--line-3);
+  border-radius: var(--radius);
+  box-shadow: var(--lift-2);
+  animation: overlay-card-in 0.14s ease-out;
 }
 
 /* A reading width, not the window's width. The pane inside caps its own
@@ -3117,8 +3195,6 @@ body {
    and a card that stops growing is what tells you the screen is a document
    rather than a second application. */
 .help-screen {
-  display: flex;
-  flex-direction: column;
   width: min(880px, 100%);
   /* A FIXED height, not a cap. With `max-height` the card grew and shrank to
      whatever section was open -- 445px on Getting around, the full 720 on
@@ -3127,15 +3203,9 @@ body {
      change size when you turn it. Short sections end in empty space instead,
      which is the correct cost. */
   height: min(720px, 100%);
-  overflow: hidden;
-  background: var(--panel);
-  border: 1px solid var(--line-3);
-  border-radius: var(--radius);
-  box-shadow: var(--lift-2);
-  animation: help-screen-in 0.14s ease-out;
 }
 
-.help-head {
+.overlay-head {
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -3143,7 +3213,7 @@ body {
   border-bottom: 1px solid var(--line-2);
 }
 
-.help-head-text {
+.overlay-head-text {
   flex: 1;
   min-width: 0;
 }
@@ -3151,22 +3221,22 @@ body {
 /* The one uppercase tracked heading on the screen, matching every other
    section head in the app. Everything below it is sentence case, because
    everything below it is prose. */
-.help-screen-title {
+.overlay-title {
   margin: 0;
   color: var(--text-1);
   font-size: var(--t-title);
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
 }
 
-.help-lede {
+.overlay-lede {
   margin: 4px 0 0;
   color: var(--text-3);
   font-size: var(--t-body);
 }
 
-.help-close {
+.overlay-close {
   flex: none;
   display: grid;
   place-items: center;
@@ -3174,19 +3244,19 @@ body {
   height: 24px;
   padding: 0;
   background: none;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   color: var(--text-4);
   cursor: pointer;
 }
 
-.help-close:hover {
+.overlay-close:hover {
   background: var(--surface-3);
   border-color: var(--line-2);
   color: var(--text-1);
 }
 
-.help-close svg {
+.overlay-close svg {
   width: 10px;
   height: 10px;
 }
@@ -3314,7 +3384,7 @@ body {
 .help-key {
   padding: 1px 5px 2px;
   background: var(--surface-3);
-  border: 1px solid var(--line-3);
+  border: var(--edge) solid var(--line-3);
   border-bottom-width: 2px;
   border-radius: var(--radius);
   color: var(--text-2);
@@ -3401,26 +3471,26 @@ body {
   font-weight: 600;
 }
 
-@keyframes help-fade-in {
+@keyframes overlay-fade-in {
   from {
     opacity: 0;
   }
 }
 
-@keyframes help-fade-out {
+@keyframes overlay-fade-out {
   to {
     opacity: 0;
   }
 }
 
-@keyframes help-screen-in {
+@keyframes overlay-card-in {
   from {
     opacity: 0;
     transform: translateY(6px);
   }
 }
 
-@keyframes help-screen-out {
+@keyframes overlay-card-out {
   to {
     opacity: 0;
     transform: translateY(4px);
@@ -3433,20 +3503,21 @@ body {
    disappears between two frames is exactly the jump-cut a fade exists to
    prevent, and it is no gentler for being still. */
 @media (prefers-reduced-motion: reduce) {
-  .help-screen {
-    animation-name: help-fade-in;
+  .overlay-card {
+    animation-name: overlay-fade-in;
   }
 
-  .help-leaving .help-screen {
-    animation-name: help-fade-out;
+  .overlay-leaving .overlay-card {
+    animation-name: overlay-fade-out;
   }
+
 }
 
 /* Under about 720px the rail cannot hold a name and a count and still leave the
    pane a readable measure, so the two columns become one: the sections run
    across the top as a wrapping row, and the page reads below them. */
 @media (max-width: 720px) {
-  .help-backdrop {
+  .overlay-backdrop {
     padding: 12px;
   }
 
@@ -3494,6 +3565,391 @@ body {
   }
 }
 
+/* --- the settings screen ---------------------------------------------------
+
+   The preferences, over the whole app, wearing the shell Help wears. It was
+   four rows of two-word switches in a 188px panel, and what each of them meant
+   lived in a `title` -- a tooltip, which is to say invisible to a touch screen,
+   invisible to the keyboard, and gone the moment the pointer moves. See
+   SettingsScreen.tsx.
+
+   The shape is a question on the left and its answer on the right, which is
+   what the extra width is FOR: the sentence beside each control is the whole
+   reason this stopped being a dropdown. */
+
+/* Narrower than Help and, unlike Help, sized by its contents up to a ceiling.
+   The fixed height there is to stop the card resizing as pages are turned;
+   there are no pages here, so nothing can move under the pointer -- and a list
+   of four preferences held to 720px would be half a card of empty air.
+
+   ROOM ON ALL FOUR SIDES. It was 760 while every row carried a paragraph, then
+   520 once the paragraphs went -- which was the width of the content and not a
+   width to READ at: four rows packed to the edges of a small box, each one a
+   name a hair from its switch. This is the same four rows given air. The number
+   is not free space for its own sake: 640 is what lets the control column grow
+   to 280 -- `DARK LIGHT CYBERPUNK` at the size these switches are now -- and
+   still leave the names a column they are not crushed into.
+
+   `overflow-x: clip` below is what guarantees nothing is ever scrolled
+   sideways, whatever the width. */
+.settings-screen {
+  width: min(640px, 100%);
+  max-height: min(680px, 100%);
+}
+
+/* The lid gets the same margins the rows do, so the title starts on the same
+   line down the left edge as every name under it and the whole card reads as
+   one column rather than two indents. It is scoped: Help's head is a document's
+   and is tighter on purpose. */
+.settings-screen .overlay-head {
+  padding: 22px 20px 20px 28px;
+}
+
+/* Scrolls, though at four rows it never has to: the rows are the part that can
+   grow, and a fifth or sixth must push against the ceiling above rather than
+   off the bottom of the card past the lid.
+
+   `scroll` RATHER THAN `auto`, AND A STABLE GUTTER, which are two halves of one
+   decision. A bar that appears only once the content outgrows the card takes
+   its width out of the rows at the moment it arrives, so every sentence on the
+   screen rewraps and every control slides left -- a layout that changes shape
+   because a row was added. Reserving the gutter always, and always drawing the
+   bar in it, costs the same handful of pixels on every screen and never moves
+   anything. The bar sits in space of its own; it is never over a control.
+
+   `clip` on the other axis, and it has to be said explicitly: `overflow-y` on
+   its own resolves the other axis to `auto` as well, so this box could grow a
+   horizontal bar the moment anything inside it were a pixel too wide -- which
+   is exactly what a native range input's 2px of UA margin did. `clip` is not a
+   scrolling value, so the box cannot scroll sideways whatever lands in it. */
+/* THE TITLE, AS BIG AS THE HEAD CAN CARRY. Help's stays at `--t-title`: it is a
+   document, and a 32px word over a page of prose is a poster rather than a
+   heading. Settings is four rows, so the name of the screen can be the largest
+   thing on it.
+
+   `clamp` rather than a number, and that is what keeps it from stretching
+   anything. The head is one line of title over one line of lede beside a fixed
+   close cross, so the only way this can push the layout about is by outgrowing
+   the window on a narrow one -- at which point the middle term takes over and
+   the word shrinks with the card instead of wrapping or overflowing it. The
+   ceiling is where the word stops being a title and starts being a banner. */
+.settings-screen .overlay-title {
+  font-size: clamp(20px, 3.8vw, 36px);
+  line-height: 1.05;
+  letter-spacing: 0.09em;
+}
+
+.settings-rows {
+  min-height: 0;
+  padding: 6px 28px 24px;
+  overflow-x: clip;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-3) var(--surface-2);
+}
+
+/* A name and its switch, on one line, with a hairline between rows: four
+   answers an inch from four questions need something saying which belongs to
+   which, and a rule does it without boxing every row in.
+
+   CENTRED rather than aligned to the top. That was the right way round while a
+   row held a paragraph -- the switch stood level with the first line of it --
+   and it is the wrong way round now that a row is one word and one control.
+
+   THE PADDING IS THE SPACING between one setting and the next, and it is the
+   number that decides whether this screen reads as a list of four choices or as
+   four things stacked because they had to go somewhere. 22px above and below a
+   34px control gives each row about 80px of its own -- enough that the rule
+   between two of them is separating rather than dividing.
+
+   THE CONTROL COLUMN IS SIZED BY THE LONGEST LABEL IN IT, and the longest is
+   `Cyberpunk` in a three-cell track -- so the column has to hold three times
+   that word plus its padding, or the cell that holds it grows at its
+   neighbours' expense and the switch below stops lining up with its own words.
+   340px gives one cell 110px against the 95px that word needs set in Rajdhani,
+   and still clears the 107px it needs in the fallback stack, which is what a
+   window that never reached the font is reading. The names have 198px left and
+   the longest of them is 97px, so the slack is on the side that can spare it. */
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  align-items: center;
+  gap: 14px 32px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line-1);
+}
+
+/* The last rule would be a line across the bottom of the card with nothing
+   under it -- an edge, drawn twice. */
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+/* The one row whose answer is TWO controls -- the switch and the speed it flies
+   at. Centring the name against the pair of them left it floating between the
+   two, level with neither; it belongs beside the switch, which is the control
+   it names. The offset is the segment's own top padding, so the name sits on
+   the same line as the word inside it -- see `.settings-row .seg-btn`. */
+.settings-row.game-modes {
+  align-items: start;
+}
+
+.settings-row.game-modes .subhead {
+  padding-top: 9px;
+}
+
+/* The name of the setting, in the app's own display face, with the margin taken
+   off: the row is what spaces it now.
+
+   HEAVIER AND BRIGHTER THAN A `subhead` ELSEWHERE. Everywhere else that class
+   captions a group of controls inside a panel that already has a title, so it
+   is deliberately quiet. Here it is the whole of the left half of the row --
+   the only thing the eye has to run down looking for the setting it came
+   for -- so it is set at reading size and in the weight a name deserves. */
+.settings-row .subhead {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--t-title);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+/* THE SWITCHES: a channel with the options written across it, and ONE moving
+   part that slides to whichever is chosen.
+   -----------------------------------------------------------------------
+   A `seg` in a console panel is 24px of quiet chrome beside twenty other
+   controls, and it should stay that: every rule here is scoped to a settings
+   row and changes nothing anywhere else in the app.
+
+   WHY A SLIDER AND NOT A LIT CELL. Four cells that take turns being filled is
+   a set of buttons that remembers which was pressed; a part that TRAVELS is a
+   switch, and the difference is entirely in the animation. Watching the accent
+   leave one cell and arrive at another says the control has a position, that
+   the position just changed, and which way it went -- three things a fill that
+   simply appears somewhere else says none of.
+
+   HOW IT KNOWS WHERE TO GO. The track is divided into `--of` cells and the
+   moving part stands in cell `--at`, both written on the element by `Switch` in
+   SettingsScreen.tsx. So a press changes one number and the transition does the
+   rest -- no measuring, no ref, nothing in React that moves a pixel, and a
+   track that re-divides itself correctly at any width.
+
+   Nothing here is a new colour: the same ramp for the channel, the same accent
+   for the part that moves, the same square corner every control in this app
+   has. */
+.settings-row .seg {
+  position: relative;
+  /* --of CELLS, ALL EXACTLY EQUAL, which is the whole of what keeps the moving
+     part under the word it lights: the part below travels in whole multiples of
+     one cell, so a track whose cells are not identical puts it permanently out
+     of step with its own labels.
+
+     This was flex, and flex cannot promise it. A flex item will not shrink
+     below its own content, so `Cyberpunk` -- the longest label on the screen --
+     took 7px of the track for itself and left `Dark` and `Light` 87.5px each
+     against its 95. The part still moved in thirds of 90px, so every word on
+     that row sat 2.5px off the accent under it, worst on the one that caused it.
+
+     A grid of `repeat(var(--of), minmax(0, 1fr))` cannot drift, because it is
+     divided by the same number the part counts in -- one value, read twice,
+     with no way for the two readings to disagree. `minmax(0, 1fr)` rather than
+     `1fr`: a bare `1fr` has an auto minimum and would reintroduce exactly the
+     content-driven widening this replaces. Sizing the column so the longest
+     label fits a cell is the other half, and it is up on `.settings-row`. */
+  display: grid;
+  grid-template-columns: repeat(var(--of, 1), minmax(0, 1fr));
+  /* The channel the part slides in. The padding IS the rail -- it is what
+     leaves a hairline of trough visible around the moving part on all four
+     sides, which is what makes it read as sitting IN something rather than as a
+     panel with a coloured quarter. */
+  padding: 3px;
+  border-color: var(--line-2);
+  background: var(--surface-2);
+  /* Sunk rather than flat: one inset line along the top edge, in the darkest
+     surface the theme has, is the whole of the recess. Anything more is a
+     bevel, and this app does not draw bevels. */
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-0) 55%, transparent);
+}
+
+/* THE MOVING PART. A pseudo-element rather than a fifth node among the
+   buttons: it is not a control, it takes no clicks, and a screen reader has
+   nothing to say about it -- the buttons above it are the control and already
+   report which is pressed.
+
+   The width is one cell of the track: `100%` here is the track's padding box,
+   so taking the 6px of rail back off it and dividing by `--of` gives exactly
+   what one button is wide. The travel is then a whole number of its OWN widths,
+   which is why the arithmetic cannot drift as the card is resized. */
+.settings-row .seg::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / var(--of, 1));
+  transform: translateX(calc(var(--at, 0) * 100%));
+  background: var(--accent);
+  border-radius: var(--radius);
+  /* The inset line along the bottom gives it an edge to sit on; the soft drop
+     under it lifts it off the channel. Both are mixes of tokens, so both are
+     right in every theme. */
+  box-shadow:
+    inset 0 -2px 0 color-mix(in srgb, var(--on-accent) 28%, transparent),
+    0 1px 3px color-mix(in srgb, var(--surface-0) 55%, transparent);
+  /* Out fast, in slow: the curve is nearly all deceleration, so the part leaves
+     the old cell at once and settles into the new one, which is how a thing
+     with mass moves. 0.22s is long enough to be followed by the eye and short
+     enough that a second press never has to wait for the first.
+
+     The gather is a SEPARATE property on a separate clock. Crossing a cell and
+     answering a finger are different events and want different durations, and
+     two durations need two properties -- packed into one `transform` they
+     would have to share. Hence `scale` on its own, which the browser applies
+     before `transform` and about the part's own centre, so it narrows where it
+     stands and is then carried by the translate rather than fighting it. */
+  transition:
+    transform 0.22s cubic-bezier(0.32, 0.72, 0, 1),
+    scale 0.1s ease-out;
+}
+
+.settings-row .seg-btn {
+  /* Above the moving part, and drawing no box of its own: the channel is the
+     background here, and the accent under the chosen label is the slider. */
+  position: relative;
+  z-index: 1;
+  padding: 11px 12px;
+  border-right: 0;
+  background: none;
+  color: var(--text-3);
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: color 0.16s, translate 0.1s ease-out;
+}
+
+/* Hover brightens the WORD and paints nothing. A hover box would be a second
+   rectangle moving about the track, arguing with the one that means something. */
+.settings-row .seg-btn:hover:not(:disabled) {
+  background: none;
+  color: var(--text-1);
+}
+
+/* The chosen one is the label the slider is under, so it carries the ink that
+   reads on the accent and nothing else -- the fill it used to wear is the
+   moving part now. */
+.settings-row .seg-active,
+.settings-row .seg-active:hover {
+  background: none;
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+/* THE PRESS, which the travel says nothing about.
+   -----------------------------------------------------------------------
+   The part slides on RELEASE. That reports where the switch ended up and how
+   far it came, and it is silent about the push that sent it -- so on a control
+   this large, drawn as a physical thing sunk into a channel, the moment a
+   finger is actually on it was the one moment nothing moved.
+
+   Two halves, both downward, because everything in this app answers a press by
+   sinking rather than lifting. The word takes a pixel. The moving part gathers,
+   narrowing about its own centre while the button is held and springing back to
+   full width as it travels -- wind up, then throw, which is also why the gather
+   is quick and the travel is not.
+
+   IT GATHERS WHEREVER IT IS STANDING, not under the finger: it is one part in a
+   channel and it cannot be in two places, so pressing a far cell winds up the
+   part at the near one and then throws it across. Pressing the cell it is
+   already in gathers and releases on the spot, which is the honest answer to a
+   press that changes nothing.
+
+   Reached with `:has` rather than by putting the rule on the track's own
+   `:active`: the active state runs up the ancestor chain, so a press on the
+   3px of rail or on a disabled button would spring a switch that nobody
+   touched. */
+.settings-row .seg:has(.seg-btn:active:not(:disabled))::before {
+  scale: 0.94 1;
+}
+
+.settings-row .seg-btn:active:not(:disabled) {
+  translate: 0 1px;
+}
+
+/* The part stops travelling, the press stops giving, and the control simply IS
+   where it was put. Movement is the one thing on this switch that this setting
+   is asking about; the accent still marks the chosen option and the label still
+   lights, so nothing is lost but the journey.
+
+   BELOW EVERYTHING IT TURNS OFF, and repeating the `:active` selectors rather
+   than writing the bare ones: each of these has to match at least as tightly as
+   the rule it is cancelling, or the pressed states above would take the setting
+   straight back. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-row .seg::before,
+  .settings-row .seg:has(.seg-btn:active:not(:disabled))::before {
+    transition: none;
+    scale: none;
+  }
+
+  .settings-row .seg-btn,
+  .settings-row .seg-btn:active:not(:disabled) {
+    transition: color 0.16s;
+    translate: none;
+  }
+}
+
+/* The native range input carries 2px of UA margin on each side, so at the full
+   width of its column it is 4px wider than the column -- which is a horizontal
+   scrollbar on a box that has no business having one. Cancelled here rather
+   than on `.field-range` itself, which is in every console panel in the app and
+   is laid out against those paddings. */
+.settings-row-control .field-range {
+  margin-inline: 0;
+}
+
+/* The speed's own label, in the same tracked capitals as the switch above it.
+   It is the only control on the screen that is not a segment, and at the
+   console's quiet 12px it read as a stray line of prose that had wandered into
+   the control column rather than as the second half of the row it belongs to. */
+.settings-row-control .field-label {
+  color: var(--text-3);
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* The Game Controls answer is two controls, not one: the switch, and the speed
+   it flies at. They stack in the row's right-hand column, closer to each other
+   than the rows are to their neighbours -- the rule between rows says
+   "different question", and this is the same question's second half. */
+.settings-row-control {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* NumberField carries its own bottom margin for a console panel full of them.
+   It is the last thing in this column, so here that margin is a gap under the
+   final row of the card. */
+.settings-row-control .field {
+  margin-bottom: 0;
+}
+
+/* Under about 720px the control cannot have 340px of its own and still leave
+   the name a readable measure, so the row becomes one column: the question,
+   then its answer under it, full width. The track divides whatever width it is
+   given into --of equal cells, so the switch needs nothing said to it here. */
+@media (max-width: 720px) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+}
+
 /* --- viewport overlay --- */
 
 .viewport-hint {
@@ -3507,7 +3963,7 @@ body {
      one was a 20px pill -- the roundest thing in the app -- so squaring it took
      away more shape than it took from anything else, and the edge has to carry
      all of what is left. */
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
   color: var(--text);
@@ -3544,12 +4000,12 @@ body {
   transform: translateX(-50%);
   padding: 6px 12px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
   color: var(--text);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   white-space: nowrap;
@@ -3613,9 +4069,9 @@ body {
      fight the pair the island was left on. */
   z-index: 24;
   width: 176px;
-  /* Kept for the 1px of layout it contributes and nothing else: what is drawn
+  /* Kept for the line of layout it contributes and nothing else: what is drawn
      is `::before` below, which is where the surface went. */
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
 }
 
@@ -3639,18 +4095,19 @@ body {
    nothing to separate it from a lit solid or a patch of grid, and squaring the
    corner took away the other half of what made it an object.
 
-   `inset: -1px` puts it back out over the transparent border above, so the edge
-   lands exactly where it always did and nothing inside the island moves.
+   A negative inset of one --edge puts it back out over the transparent border
+   above, so the edge lands where it always did and nothing inside the island
+   moves.
    `z-index: -1` keeps it behind the tools without leaving the island: the
    island's own z-index makes a stacking context, and a negative child paints at
    the bottom of THAT rather than falling through to the scene. */
 .tool-island::before {
   content: '';
   position: absolute;
-  inset: -1px;
+  inset: calc(-1 * var(--edge));
   z-index: -1;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: inherit;
   box-shadow: var(--lift-1);
   pointer-events: none;
@@ -3673,7 +4130,7 @@ body {
   padding: 7px 9px;
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
   cursor: grab;
@@ -4239,11 +4696,11 @@ body {
   gap: 7px;
   padding: 6px 10px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   user-select: none;
@@ -4257,8 +4714,8 @@ body {
    reads as one stack: how big the piece is, and how big it is being drawn.
 
    The bottom offset clears the readout rather than being a round number --
-   14px of margin, the readout's own 6+6 of padding and its line -- so the two
-   sit a gap apart however the label metrics fall.
+   14px of margin, the readout's own 6+6 of padding and the two edges of its
+   outline -- so the two sit a gap apart however the label metrics fall.
 
    It is a control where the readout is a label, so unlike the readout it takes
    pointer events, and it carries the panel float rather than a background of
@@ -4266,14 +4723,14 @@ body {
 .lathe-zoom {
   position: absolute;
   right: 14px;
-  bottom: 52px;
+  bottom: 54px;
   z-index: 20;
   display: flex;
   align-items: stretch;
   gap: 4px;
   padding: 4px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   user-select: none;
 }
@@ -4395,7 +4852,7 @@ body {
   width: max-content;
   padding: 8px 10px 10px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
 }
@@ -4416,7 +4873,7 @@ body {
   width: max-content;
   padding: 6px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
 }
@@ -4425,7 +4882,7 @@ body {
    of press and the eye should not have to ask whether they are. */
 .view-reset-btn {
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.10em;
 }
 
 /* The head and the buttons are one panel, not a title with a gap under it. */
@@ -4441,7 +4898,7 @@ body {
   width: 232px;
   padding: 8px 10px 10px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
 }
@@ -4461,7 +4918,7 @@ body {
   align-items: center;
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -4485,7 +4942,7 @@ body {
   width: 100%;
   margin-top: 5px;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.10em;
 }
 
 /* THE WAY OFF THE LATHE, in the top-right corner: the piece as a solid, on the
@@ -4547,11 +5004,11 @@ body {
   margin: 0;
   padding: 5px 9px;
   background: var(--surface-float);
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
   text-align: right;
@@ -4624,7 +5081,7 @@ body {
   background: var(--surface-float);
   /* Floating over the scene, so it takes the floating edge -- see `.tool-island`
      for why that is a step up from the console's own. */
-  border: 1px solid var(--line-2);
+  border: var(--edge) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: var(--lift-1);
   transform: translateX(calc(100% + 18px));
@@ -4668,7 +5125,7 @@ body {
 .selection-hud .section-title {
   margin-bottom: 5px;
   font-size: var(--t-micro);
-  letter-spacing: 0.07em;
+  letter-spacing: 0.10em;
 }
 
 .selection-hud h3.section-title {
@@ -4818,7 +5275,7 @@ body {
   padding: 6px 8px;
   appearance: none;
   background: transparent;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   color: var(--text);
   font: inherit;
@@ -4845,7 +5302,7 @@ body {
   width: 38px;
   color: var(--accent);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
 }
 
 .export-gist {
@@ -4878,11 +5335,11 @@ body {
   padding: 5px 8px;
   appearance: none;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   font-family: var(--mono);
-  font-size: var(--t-body);
+  font-size: var(--tm-body);
 }
 
 .export-name:focus {
@@ -4917,11 +5374,11 @@ body {
   margin: 14px 0 0 14px;
   padding: 3px 8px;
   background: var(--surface-float);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: var(--radius);
   color: var(--accent);
   font-family: var(--mono);
-  font-size: var(--t-body);
+  font-size: var(--tm-body);
   font-variant-numeric: tabular-nums;
   line-height: 1.35;
   white-space: nowrap;
@@ -4950,11 +5407,11 @@ body {
   left: 0;
   padding: 2px 7px;
   background: var(--surface-float);
-  border: 1px solid color-mix(in srgb, var(--ruler) 40%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--ruler) 40%, transparent);
   border-radius: var(--radius);
   color: var(--ruler);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   line-height: 1.35;
   white-space: nowrap;
@@ -4991,7 +5448,7 @@ body {
   display: flex;
   align-items: stretch;
   gap: 2px;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
 }
 
@@ -5045,7 +5502,7 @@ body {
   margin-left: auto;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: var(--t-fine);
+  font-size: var(--tm-fine);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -5159,7 +5616,7 @@ body {
 .nav-action {
   padding: 4px 9px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   font: inherit;
@@ -5351,7 +5808,7 @@ body {
   height: 92px;
   flex: 0 0 auto;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   cursor: crosshair;
   touch-action: none;
 }
@@ -5405,7 +5862,7 @@ body {
   gap: 7px;
   padding: 3px 7px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
 }
 
@@ -5434,7 +5891,7 @@ body {
   border: 0;
   color: var(--text);
   font-family: var(--mono);
-  font-size: var(--t-label);
+  font-size: var(--tm-label);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
 }
@@ -5467,7 +5924,7 @@ body {
   aspect-ratio: 1;
   padding: 0;
   appearance: none;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   cursor: pointer;
   transition: border-color 0.12s, transform 0.08s;
@@ -5525,6 +5982,40 @@ body {
   font-size: var(--t-label);
 }
 
+/* --- the lit edge -----------------------------------------------------------
+
+   Every surface that floats over the scene AND is acted in, wearing the one
+   outline colour named for the job -- see --edge-float.
+
+   They were a scatter of --line-2 declarations, each copied off the one written
+   before it: the bar's own tool panels, the island's backdrop, the two corner
+   shelves, the reset button beside them, the compact console. Six rules on one
+   value, with nothing saying they were meant to match -- so the next panel to
+   arrive took whichever neighbour it happened to be written next to, and the
+   object menu, which floats over the scene exactly as the rest of them do, was
+   still on --border: a console hairline drawn over a 3D scene.
+
+   WHAT IS ON THIS LIST: a floating surface with controls in it, on any screen.
+   What is not: a floating surface that is only read -- the drag hint, the
+   flight speed, the lathe's readout, the perf HUD, the copy note, a hover
+   bubble. Those keep the plain container edge, and the difference earns itself:
+   a lit box is one you can do something in.
+
+   The brush scope panel belongs to this group and is not in it, because it is
+   tinted by whichever brush is armed and that identity outranks a shared grey.
+   It is raised to the same strength in its own rule instead.
+
+   COLOUR ONLY. The width is --edge, which every outline in the app takes. */
+.nav-panel,
+.object-menu,
+.tool-island::before,
+.selection-hud,
+.cut-panel,
+.stock-panel,
+.view-reset {
+  border-color: var(--edge-float);
+}
+
 /* --- the cut corner --------------------------------------------------------
 
    Cyberpunk's one piece of geometry, and the only place any theme changes the
@@ -5560,7 +6051,7 @@ body {
 .tool-island::before,
 .selection-hud,
 .viewport-hint,
-.help-screen,
+.overlay-card,
 .object-menu {
   clip-path: polygon(
     0 0,
@@ -5603,7 +6094,7 @@ body {
 :root[data-theme='cyberpunk'] .nav-btn:focus-visible,
 :root[data-theme='cyberpunk'] .nav-caret:focus-visible,
 :root[data-theme='cyberpunk'] .nav-panel-close:focus-visible,
-:root[data-theme='cyberpunk'] .help-close:focus-visible,
+:root[data-theme='cyberpunk'] .overlay-close:focus-visible,
 :root[data-theme='cyberpunk'] .help-rail-btn:focus-visible,
 :root[data-theme='cyberpunk'] .collapse-btn:focus-visible,
 :root[data-theme='cyberpunk'] .reset-btn:focus-visible {
@@ -5616,26 +6107,29 @@ body {
    place the app sets a few words in tracked uppercase rather than setting text
    to be read at length.
 
-   Unscoped, and therefore a no-op in themes that leave --font-display pointing
-   at --font. It is the seam a theme is allowed a characterful face THROUGH, so
-   that wanting one never turns into setting one on 10px figures. */
+   A no-op today: --font-display points at --font, and the app is set in one
+   face throughout. The rule stays because it is the seam a theme is allowed a
+   characterful face THROUGH, so that wanting one never turns into setting one on
+   10px figures -- which is the mistake this file has already made once, and the
+   reason the ramp has a mono half. */
 .brand-mark,
 .section-title,
 .nav-panel-title,
-.help-screen-title,
+.overlay-title,
 .island-head,
 .subhead {
   font-family: var(--font-display);
 }
 
-/* Opened up further under cyberpunk, because wide-tracked capitals over a
-   machined plate is the other half of that game's typographic voice -- and
-   because Rajdhani is condensed, so the tracking it wants is wider than the
-   stack this app otherwise uses. Only on the headings, which is now the only
-   place that face is set at all. */
+/* Opened up further under cyberpunk. Half of this rule's reason has moved out
+   of it: the tracking a condensed face wants now sits on the headings
+   themselves, because every theme wears that face. What is left is the half that
+   is actually this theme's -- wide-tracked capitals over a machined plate are
+   the other half of that game's typographic voice, and it wants them wider than
+   the app does. */
 :root[data-theme='cyberpunk'] .section-title,
 :root[data-theme='cyberpunk'] .nav-panel-title,
-:root[data-theme='cyberpunk'] .help-screen-title,
+:root[data-theme='cyberpunk'] .overlay-title,
 :root[data-theme='cyberpunk'] .island-head,
 :root[data-theme='cyberpunk'] .subhead {
   letter-spacing: 0.16em;
@@ -5667,7 +6161,7 @@ body {
   height: 24px;
   padding: 0 6px;
   background: var(--surface-3);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text-1);
   font: inherit;
@@ -5682,7 +6176,7 @@ body {
   height: 24px;
   padding: 0;
   background: var(--surface-3);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text-3);
   cursor: pointer;
@@ -5712,7 +6206,7 @@ body {
   margin-bottom: 8px;
   padding: 0 6px;
   background: transparent;
-  border: 1px solid transparent;
+  border: var(--edge) solid transparent;
   border-radius: var(--radius);
   color: var(--text-2);
   font: inherit;
@@ -5739,7 +6233,7 @@ body {
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   padding: 8px;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-2);
 }
@@ -5753,7 +6247,7 @@ body {
   background: transparent;
   /* The same dashed, inert square the Clipboard and the colour shelf use for a
      place something will go. */
-  border: 1px dashed var(--border);
+  border: var(--edge) dashed var(--border);
   border-radius: var(--radius);
   color: var(--text-4);
   cursor: pointer;
@@ -5784,7 +6278,7 @@ body {
   display: block;
   aspect-ratio: 1;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   /* Checkered, so a drawing on transparency reads as one rather than as a
      picture of the panel behind it. */
@@ -5871,7 +6365,7 @@ body {
   padding: 0;
   appearance: none;
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text-4);
   cursor: pointer;
@@ -5912,7 +6406,7 @@ body {
   justify-content: center;
   padding: 32px;
   background: color-mix(in srgb, var(--surface-0) 76%, transparent);
-  animation: help-fade-in 0.12s ease-out;
+  animation: overlay-fade-in 0.12s ease-out;
 }
 
 .ref-editor {
@@ -5922,10 +6416,10 @@ body {
   max-height: min(660px, 100%);
   overflow: hidden;
   background: var(--panel);
-  border: 1px solid var(--line-3);
+  border: var(--edge) solid var(--line-3);
   border-radius: var(--radius);
   box-shadow: var(--lift-2);
-  animation: help-screen-in 0.14s ease-out;
+  animation: overlay-card-in 0.14s ease-out;
 }
 
 .ref-editor-head {
@@ -6058,7 +6552,7 @@ body {
   height: 26px;
   padding: 0 9px;
   background: var(--surface-3);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text-2);
   font: inherit;
@@ -6103,7 +6597,7 @@ body {
   height: 26px;
   padding: 0 12px;
   background: var(--surface-3);
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   border-radius: var(--radius);
   color: var(--text-2);
   font: inherit;
@@ -6158,11 +6652,11 @@ body {
   margin: 0 14px 14px 0;
   padding: 6px 10px;
   background: var(--surface-float);
-  border: 1px solid color-mix(in srgb, var(--text-3) 35%, transparent);
+  border: var(--edge) solid color-mix(in srgb, var(--text-3) 35%, transparent);
   border-radius: var(--radius);
   color: var(--text-3);
   font-family: var(--mono);
-  font-size: var(--t-fine);
+  font-size: var(--tm-fine);
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
   white-space: pre;

@@ -2,7 +2,6 @@ import { Box3, BufferAttribute, BufferGeometry, Matrix4, Vector3 } from 'three'
 import type { Brush } from 'three-bvh-csg'
 import {
   ADDITION,
-  INTERSECTION,
   SUBTRACTION,
   csg,
   disposeBrush,
@@ -13,8 +12,8 @@ import {
 } from './brush'
 import { applyCuts } from './cut'
 import { erodeGeometry } from './erode'
-import { buildSweptPrism, endPlaneFor, outlineOnSurface } from './prism'
-import { anchorIsCurved, hostSurfaceFor, surfaceFor } from './surfaces'
+import { buildSweptPrism, endPlaneFor, outlineOnSurface, sweepAxisFor } from './prism'
+import { hostSurfaceFor, surfaceFor } from './surfaces'
 import { objectMatrix } from './transform'
 import { signedVolume } from './volume'
 import { sweepOp } from './types'
@@ -88,21 +87,17 @@ function isInert(f: Feature): boolean {
 /**
  * Build the solid that a single feature adds or removes.
  *
- * Flat and curved anchors diverge here, and they have to: a derived face has no
- * analytic offset, so an offset-shell trim is impossible for it. Since the
- * branch is forced anyway, flat surfaces take the cheaper exact-prism path.
+ * One path, flat host or curved. The tool is a prism swept along the anchor's
+ * own normal between two planes square to it, so its walls stay parallel and
+ * both caps stay flat wherever it was drawn -- and a boss on a barrel is the
+ * sketch standing proud of the barrel rather than a wedge of the shell around
+ * it. Curvature enters in one place only, the FOOTPRINT: the ring `project`
+ * wraps onto the surface, which is what the boolean welds the base to.
  *
- *   flat    -> the swept prism already ends exactly `depth` from the surface
- *   curved  -> trim the prism against the base offset by `depth`, so the new
- *              face follows the curvature instead of capping it flat
- *
- * A tilted or slid face takes the flat path even on a curved host. The end
- * plane already terminates the created end exactly where `endFaceRing` draws
- * the drag handle, and the shell is a surface of constant `depth`: intersecting
- * the two would shave every part of the tilted face that reaches past `depth`
- * straight back onto the shell, so the handle would float free of a solid that
- * had quietly ignored most of the tilt. The buried end is untouched either way,
- * so the boolean still has material to bite into.
+ * There used to be a second path here that trimmed a curved feature back
+ * against the base offset by `depth`. It was what made a boss follow the
+ * curvature, which is exactly the bug: the created face came back moulded to
+ * the host, and the walls fanned out with the surface normals on the way to it.
  */
 function buildTool(base: BaseSolid, feature: Feature, paint: string): Brush | null {
   const host = hostSurfaceFor(base, feature.anchor)
@@ -112,28 +107,13 @@ function buildTool(base: BaseSolid, feature: Feature, paint: string): Brush | nu
   // raises in front of it -- so handing it a signed number would only move that
   // branch inside seven implementations of it.
   const op = sweepOp(feature.depth)
-  const { tIn, tOut } = host.sweep(feature.anchor, Math.abs(feature.depth), op)
-  const endPlane = endPlaneFor(host, feature.anchor, feature)
-  const prism = buildSweptPrism(ring, tIn, tOut, endPlane)
+  const depth = Math.abs(feature.depth)
+  const axis = sweepAxisFor(host, feature.anchor, feature.depth, host.sweep(feature.anchor, depth, op))
+  const prism = buildSweptPrism(ring, axis, endPlaneFor(host, feature.anchor, feature))
   // A null prism means the tilt drove the tool degenerate; the caller reports
   // the feature as failed and keeps the solid.
   if (!prism) return null
-
-  if (endPlane || !anchorIsCurved(feature.anchor)) return makeBrush(prism, paint)
-
-  const offset = host.offsetGeometry(feature.depth)
-  // A collapsed offset means the feature passes clean through: the untrimmed
-  // prism is then exactly the right tool.
-  if (!offset) return makeBrush(prism, paint)
-
-  // Both halves of the trim take the SAME paint, so the intersection folds them
-  // back into one group instead of splitting a feature's own surface in two.
-  const prismBrush = makeBrush(prism, paint)
-  const offsetBrush = makeBrush(offset, paint)
-  const trimmed = csg(prismBrush, offsetBrush, op === 'extrude' ? INTERSECTION : SUBTRACTION)
-  disposeBrush(prismBrush)
-  disposeBrush(offsetBrush)
-  return trimmed
+  return makeBrush(prism, paint)
 }
 
 // --- Prefix cache ----------------------------------------------------------

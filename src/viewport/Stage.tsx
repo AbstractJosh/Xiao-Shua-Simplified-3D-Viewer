@@ -1,3 +1,4 @@
+import type { Box3 } from 'three'
 import { GuideGrid } from './GuideGrid'
 import { useSceneColors } from './useSceneColors'
 
@@ -15,16 +16,33 @@ import { useSceneColors } from './useSceneColors'
  * Everything here is inside a `<Canvas>` and draws nothing on its own account:
  * a viewport mounts this and then adds whatever it is for.
  *
- * THE GROUND CAN BE BOUNDED, and that is the one thing a screen gets to say
- * about the room. `reach` is how far past the middle the grid is still drawn,
- * in world units; left off, it never ends. Endless is right where the camera
- * travels -- the modelling screen orbits a scene and pans across it, and ground
- * that stopped somewhere would be a wall you could walk to. It is wrong where
- * the camera does not: under a PROJECTION, distance no longer dims anything, so
- * an endless grid is drawn at very nearly one brightness all the way to the
- * edge of the window, and seen edge-on -- which is what a level camera makes of
- * a ground plane -- it is one hard line straight across the screen with no end
- * to it. A reach gives that line two ends. See `LaserViewport`.
+ * THE GROUND IS ALWAYS A PATCH, never a floor without end, and how far it
+ * reaches is the one thing a screen gets to say about the room. `reach` is how
+ * far past the middle the grid is still drawn, in world units; past it the fade
+ * has taken the ground to nothing and the quad it was ruled on stops shortly
+ * after. The laser screen asks for a bed three blocks wide; the modelling
+ * screen asks for whatever holds the model -- see `groundReach`.
+ *
+ * IT USED TO BE ENDLESS ON THE SCREEN THAT TRAVELS, and that is what had the
+ * grid trembling for the better part of a second after every camera move. Drei
+ * draws an endless grid by blowing the quad up by the fade distance, which put
+ * the coarse grid's four corners some 3,600 units from the middle -- and the
+ * grid pattern is a `fract` of a varying interpolated across exactly those
+ * corners. A float32 varying carrying values that big is quantised to about
+ * 2.4e-4 of a unit, and the shader's `fwidth` -- which is what sets how thick a
+ * line is drawn -- is a difference between neighbouring fragments that, at
+ * arm's length from a solid, is only some 3.3e-3 of a unit wide. So better than
+ * seven per cent of every line's thickness was rounding noise, nearer thirty
+ * when zoomed in, and it re-rolled itself on every frame the camera moved.
+ * OrbitControls' damping keeps the camera creeping for about a second after the
+ * hand stops: that is the "and for a while afterwards".
+ *
+ * Bounded, the same arithmetic lands under a tenth of a per cent, because the
+ * quad's corners are now tens of units out rather than thousands. Nothing about
+ * the shader changed -- it is the magnitude of the numbers going into it. See
+ * `groundPlan`, which now cuts each grid a quad of its own so the fine one, the
+ * one you are looking at when you are zoomed in far enough to care, is never
+ * more than 35 units across whatever the reach.
  */
 
 /**
@@ -37,10 +55,10 @@ const GRID_Y = -0.002
  * The two grids draw before every other transparent thing in the scene, coarse
  * first and fine over it.
  *
- * Stated rather than left to the sort, which is the whole of what stopped the
- * grid shimmering: they are centred on the same point half a thousandth of a
- * unit apart, so three had nothing to separate them by and the order flipped as
- * the camera came round. Negative, because the ground goes under the gizmo, the
+ * Stated rather than left to the sort, which is half of what stopped the grid
+ * shimmering: they are centred on the same point half a thousandth of a unit
+ * apart, so three had nothing to separate them by and the order flipped as the
+ * camera came round. Negative, because the ground goes under the gizmo, the
  * rulers, the cut plane and the snap marker without any of them having to say
  * so. See `GuideGrid`.
  */
@@ -48,99 +66,144 @@ const GRID_ORDER_COARSE = -2
 const GRID_ORDER_FINE = -1
 
 /**
- * How far each grid reaches on the endless ground, and how wide a quad the two
- * of them are ruled onto.
+ * How far either grid may fade out at, however much ground is asked for.
  *
- * The fine one gives out at about a metre and a half, which is roughly where
+ * The fine one gives out by about a metre and a half, which is roughly where
  * centimetre cells stop being countable and start being moire; the coarse one
- * carries on to thirty metres. `infiniteGrid` blows the quad up by the fade
- * itself, so the 24 is a unit of reach rather than a size -- what actually gets
- * drawn is some 360 units across for the fine grid and 7,000 for the coarse.
+ * would carry on to thirty metres, which is past the largest scene this app can
+ * hold.
  */
-const PLANE = 24
 const FINE_FADE = 14
 const COARSE_FADE = 300
 
 /**
- * How much wider than its reach a BOUNDED ground's quad is cut.
+ * How much wider than its own fade each grid's quad is cut.
  *
- * The fade is measured from the point under the CAMERA rather than from the
- * middle of the plane -- drei projects the camera onto the grid and fades
- * radially out from there -- so a quad exactly two reaches across would have
- * its own edge inside the fade circle on any view the camera is not directly
- * above, and a hard edge is the one thing a fade is for avoiding. Two and a
- * half leaves the whole circle inside the quad with a standoff's worth to
- * spare, at the cost of some fragments that discard themselves.
+ * The fade completes at the fade distance and every fragment past it discards
+ * itself, so the quad only has to be wide enough that the CIRCLE is inside it
+ * -- a hard edge is the one thing a fade is for avoiding. Two would do it
+ * exactly and leave the corners of the fade circle on the very edge of the
+ * quad; two and a half leaves a standoff, at the cost of some fragments that
+ * discard themselves.
+ *
+ * And no wider than that, which is now a rule with teeth: every unit of quad
+ * past the fade is precision spent on ground nobody sees. See the note at the
+ * top of the file.
  */
-const BOUNDED_PLANE = 2.5
+const PLANE_MARGIN = 2.5
 
 /**
- * Where the fade is measured FROM, which is the other half of what bounding the
- * ground means.
+ * Where the fade is measured FROM.
  *
  * Drei fades radially outward from a point, and the point is the camera
  * projected onto the grid plane scaled by this: one puts it under the camera,
  * zero puts it at the middle of the world.
  *
- * ENDLESS GROUND FADES FROM THE CAMERA, because there is nowhere else for it to
- * fade from -- a floor with no middle has to dim around whoever is standing on
- * it, and that is what keeps it from ending in front of a camera that travels.
- *
- * A BOUNDED ONE FADES FROM THE MIDDLE, because it has one and the middle is the
- * whole point: the bed is a patch of ground around the thing standing on it,
- * and it should be the same patch from every side. Faded from the camera it
- * would slide about as the view came round -- brightest under the camera, which
- * on a level view is a standoff's worth OFF the block, so the ground would be
- * lit in front of the stock and dark behind it. See `LaserViewport`, where the
- * block never leaves the middle.
+ * THE MIDDLE, on every screen. The ground is a patch around the thing standing
+ * on it, and it should be the same patch from every side; faded from the camera
+ * it would slide about as the view came round -- brightest under the camera,
+ * which on a level view is a standoff's worth OFF the object, so the ground
+ * would be lit in front of it and dark behind. That mattered least when the
+ * ground was endless, which is the only place the camera-centred fade was ever
+ * used, and there is no endless ground any more.
  */
-const FADE_FROM_CAMERA = 1
 const FADE_FROM_MIDDLE = 0
 
 /**
  * What the two grids are drawn on and where each of them gives out, for a
- * ground that reaches `reach` -- or for the endless one, when it does not
- * reach anywhere.
+ * ground that reaches `reach`.
  *
  * A function of its own, and exported, for the reason `withLogDepth` is: it is
  * the whole of the decision, it is arithmetic, and `ui-check` can put a reach
  * through it and read the answer without a canvas to draw on.
  *
- * THE FINE GRID IS CAPPED EVEN WHEN THE REACH IS NOT. Its cells are a
- * centimetre, and a bed three blocks wide is 150 units across for the largest
- * stock this app allows: ruled that far the fine grid is moire and nothing
- * else, and the coarse one is already there to take the ground over. So the
- * reach can pull it in, but never push it past where it stops being readable.
+ * THE FINE GRID IS CAPPED. Its cells are a centimetre, and a bed three blocks
+ * wide is 150 units across for the largest stock this app allows: ruled that
+ * far the fine grid is moire and nothing else, and the coarse one is already
+ * there to take the ground over. So the reach can pull it in, but never push it
+ * past where it stops being readable.
+ *
+ * AND EACH GRID GETS ITS OWN QUAD, sized to its own fade rather than to the
+ * reach they share. It costs nothing -- the fragments outside a fade discard
+ * either way -- and it means the fine grid is at most 35 units across no matter
+ * how much ground the coarse one has been asked to cover. The fine grid is what
+ * fills the screen when you are close enough to a part for a rounding wobble in
+ * a line to be visible at all, so that is the quad worth keeping small.
  */
-export function groundPlan(reach?: number): {
-  endless: boolean
-  plane: [number, number]
+export function groundPlan(reach: number): {
+  finePlane: [number, number]
+  coarsePlane: [number, number]
   fadeFrom: number
   fineFade: number
   coarseFade: number
 } {
-  if (reach === undefined) {
-    return {
-      endless: true,
-      plane: [PLANE, PLANE],
-      fadeFrom: FADE_FROM_CAMERA,
-      fineFade: FINE_FADE,
-      coarseFade: COARSE_FADE,
-    }
-  }
-  const side = reach * BOUNDED_PLANE
+  const fineFade = Math.min(reach, FINE_FADE)
+  const coarseFade = Math.min(reach, COARSE_FADE)
+  const fine = fineFade * PLANE_MARGIN
+  const coarse = coarseFade * PLANE_MARGIN
   return {
-    endless: false,
-    plane: [side, side],
+    finePlane: [fine, fine],
+    coarsePlane: [coarse, coarse],
     fadeFrom: FADE_FROM_MIDDLE,
-    fineFade: Math.min(reach, FINE_FADE),
-    coarseFade: Math.min(reach, COARSE_FADE),
+    fineFade,
+    coarseFade,
   }
 }
 
-export function Stage({ reach }: { reach?: number }) {
+/**
+ * The patch of ground the modelling screen opens on: twenty units across, two
+ * metres, which holds the 10 cm solid the palette drops with a room's worth of
+ * floor around it.
+ */
+const GROUND_REACH_MIN = 10
+
+/**
+ * How much further the ground reaches than the model standing on it, and the
+ * step the answer is rounded up to.
+ *
+ * TWICE, because the fade is measured from the middle of the world and the
+ * ground is at its dimmest where it ends: a reach that stopped exactly at the
+ * far corner of the model would leave that corner standing on nothing. At twice
+ * the span the model's own edge sits at half brightness, which still reads as
+ * ground.
+ *
+ * ROUNDED UP TO A WHOLE TEN, because the answer feeds `planeGeometry`'s `args`,
+ * and a reach that moved with the model would rebuild both grids on every frame
+ * of a drag. Ten units is a step nobody can catch happening -- the ground grows
+ * by a metre, once, somewhere in the middle of dragging a part out past the two
+ * it already covers.
+ */
+const GROUND_HEADROOM = 2
+const GROUND_STEP = 10
+
+/**
+ * How far the ground has to reach to hold this model.
+ *
+ * The modelling screen's answer to `reach`, and the whole of what "if the model
+ * outgrows the patch, draw the rest" means. Measured from the MIDDLE OF THE
+ * WORLD rather than from the middle of the model, because that is where drei
+ * fades from -- a model set down off to one side is held by a bigger circle
+ * rather than by a circle that moved, which is also what keeps the grid lines
+ * standing still in world space while it grows.
+ *
+ * The corner rather than the wider of the two sides: the fade is a circle, so
+ * what has to be inside it is the model's furthest CORNER. Height is not asked
+ * about at all -- this is a floor, and a tall part does not need a wider one.
+ *
+ * An empty document reaches the minimum, which is the same patch the app opens
+ * on before anything has been dropped into it.
+ */
+export function groundReach(model: Box3): number {
+  if (model.isEmpty()) return GROUND_REACH_MIN
+  const x = Math.max(Math.abs(model.min.x), Math.abs(model.max.x))
+  const z = Math.max(Math.abs(model.min.z), Math.abs(model.max.z))
+  const wanted = Math.hypot(x, z) * GROUND_HEADROOM
+  return Math.max(GROUND_REACH_MIN, Math.ceil(wanted / GROUND_STEP) * GROUND_STEP)
+}
+
+export function Stage({ reach }: { reach: number }) {
   const scene = useSceneColors()
-  const { endless, plane, fadeFrom, fineFade, coarseFade } = groundPlan(reach)
+  const { finePlane, coarsePlane, fadeFrom, fineFade, coarseFade } = groundPlan(reach)
 
   return (
     <>
@@ -183,7 +246,7 @@ export function Stage({ reach }: { reach?: number }) {
       <GuideGrid
         renderOrder={GRID_ORDER_FINE}
         position={[0, GRID_Y + 0.0005, 0]}
-        args={plane}
+        args={finePlane}
         cellSize={0.1}
         cellThickness={0.6}
         cellColor={scene.gridCell}
@@ -193,12 +256,11 @@ export function Stage({ reach }: { reach?: number }) {
         fadeDistance={fineFade}
         fadeFrom={fadeFrom}
         fadeStrength={1}
-        infiniteGrid={endless}
       />
       <GuideGrid
         renderOrder={GRID_ORDER_COARSE}
         position={[0, GRID_Y, 0]}
-        args={plane}
+        args={coarsePlane}
         cellSize={1}
         cellThickness={0.6}
         cellColor={scene.gridCell}
@@ -208,7 +270,6 @@ export function Stage({ reach }: { reach?: number }) {
         fadeDistance={coarseFade}
         fadeFrom={fadeFrom}
         fadeStrength={0.8}
-        infiniteGrid={endless}
       />
     </>
   )

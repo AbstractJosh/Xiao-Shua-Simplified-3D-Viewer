@@ -8,13 +8,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <!-- The face the Cyberpunk theme asks for. Preconnected rather than merely
-         linked because it is fetched from another origin, and loaded for every
-         theme rather than injected when that one is picked: a stylesheet that
-         arrives after a theme switch reflows the whole window, and this is one
-         small file. `display=swap` and the fallbacks in --font mean the app is
-         never waiting on it -- offline, the theme simply wears the app's own
-         stack. -->
+    <!-- THE APP'S FACE, in every theme. It arrived as the one the Cyberpunk
+         theme asks for and was worn only by that theme's headings; the whole
+         console is set in it now, which is why it is preconnected and fetched up
+         front rather than injected when a theme is picked. A stylesheet that
+         lands after first paint reflows every label in the window.
+
+         `display=swap` and the fallbacks in --font still mean the app never waits
+         on it. Offline, the console comes up in the system stack at the sizes
+         Rajdhani was measured for -- a shade large, and entirely usable.
+
+         Four weights, and all four are drawn: 500 is the body, 600 the headings
+         and the states that press, 700 the wordmark, 400 the few places this
+         file asks for something lighter than its own normal. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

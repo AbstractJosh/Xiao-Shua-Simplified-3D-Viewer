@@ -16,84 +16,52 @@
  * rotations, which are radians underneath and degrees on screen.
  */
 
-/** The unit a length is actually shown in, once `auto` has made up its mind. */
-export type Unit = 'mm' | 'cm' | 'm'
+/**
+ * The unit a length is shown in. One of these, always, everywhere.
+ *
+ * THERE IS NO `auto` AND NO RULE THAT CHOOSES. There used to be: a mode that
+ * picked a unit per value, so a 2 mm fillet read as 2 mm and a 4 m wall as
+ * 4 m. It bought readability at the two ends of the range and charged for it in
+ * the middle -- a scale that renames itself under the hand aiming it cannot be
+ * aimed, so every control that SETS a length had to opt out of it, and half the
+ * unit machinery in this app existed to hold the choice still for the length of
+ * a drag. A chosen unit is one number on screen and one number in the head.
+ *
+ * Metres went with it. They were only ever somewhere `auto` could arrive at on
+ * its own; nobody could ask for them, and nothing can reach them now.
+ */
+export type Unit = 'mm' | 'cm' | 'in'
 
 /**
- * What the user picked in the tool island.
+ * The units a person may pick, in the order every picker shows them.
  *
- * `auto` is not a fourth unit -- it is a rule for choosing one of the three per
- * value, so a 2 mm fillet and a 4 m wall are both readable without either
- * turning into a row of zeroes.
+ * Metric first and finest first, then the imperial one. `in` is the same kind
+ * of thing as the other two -- a fixed factor and a number of places -- so
+ * nothing downstream knows it is a different system.
  */
-export type UnitMode = Unit | 'auto'
+export const UNITS: Unit[] = ['mm', 'cm', 'in']
 
 /**
- * The units a person may pick by name, in the order every picker shows them.
+ * How many of each unit make one scene unit.
  *
- * Not all three of `Unit`: metres are somewhere `auto` can arrive at on its own
- * -- a five-metre envelope has to read as 5 m rather than 5000 mm -- but nobody
- * has ever been able to ASK for them, because at the sizes this app is worked
- * at a chosen metre is three leading zeroes.
- *
- * Its own list rather than `UNIT_MODES` minus a string, because `auto` is not a
- * unit and there are now two pickers that must offer only real ones -- the
- * app-wide mode below, and a field pinned to a unit of its own. See `ownUnit`
- * in `Field.tsx`.
+ * The inch is the only one that is not a power of ten, and it is exact: an inch
+ * is 25.4 mm by definition, so one scene unit is 100/25.4 of them. Written as
+ * the division rather than as a decimal nobody can check.
  */
-export const UNITS: Unit[] = ['mm', 'cm']
-
-/** The app-wide picker: the same units, plus the rule that chooses between
- *  them. Built from `UNITS` so a unit can never appear in one and not the
- *  other. */
-export const UNIT_MODES: UnitMode[] = [...UNITS, 'auto']
-
-/** How many of each unit make one scene unit. */
-const PER_UNIT: Record<Unit, number> = { mm: 100, cm: 10, m: 0.1 }
-
-/** Places to show, chosen so the finest step the app allows -- a hundredth of a
- *  unit, which is one millimetre -- is still visible in every unit. */
-const PLACES: Record<Unit, number> = { mm: 1, cm: 2, m: 3 }
-
-const SUFFIX: Record<Unit, string> = { mm: 'mm', cm: 'cm', m: 'm' }
+const PER_UNIT: Record<Unit, number> = { mm: 100, cm: 10, in: 100 / 25.4 }
 
 /**
- * Which unit to show a given length in.
+ * Places to show, chosen so the finest step the app allows -- a hundredth of a
+ * unit, which is one millimetre -- is still visible in every unit.
  *
- * The thresholds are round numbers in the unit being left, not in scene units:
- * `auto` switches out of millimetres at 10 mm and out of centimetres at 100 cm,
- * so the number on screen stays between roughly 1 and 1000 whatever is being
- * measured. Zero and anything near it stays in millimetres rather than becoming
- * "0.000 m".
+ * Three for inches, which is more than that rule needs (a millimetre is 0.039
+ * of one) and is what an inch is worked in: thousandths are the unit's own
+ * convention, and two places would round a 1 mm nudge to 0.04 and a 2 mm one to
+ * 0.08, so the field would read as though it were stepping in halves.
  */
-export function resolveUnit(sceneValue: number, mode: UnitMode): Unit {
-  if (mode !== 'auto') return mode
-  const mm = Math.abs(sceneValue) * PER_UNIT.mm
-  if (mm < 10) return 'mm'
-  if (mm < 1000) return 'cm'
-  return 'm'
-}
+const PLACES: Record<Unit, number> = { mm: 1, cm: 2, in: 3 }
 
-/**
- * The unit a control that SETS a length is pinned to.
- *
- * `auto` is a rule for READING a length: it picks a unit per value, so a slider
- * scrubbed across a wide range renumbers its own scale under the hand aiming
- * it, and a scale that moves cannot be aimed. A brush size, a wall thickness
- * and a flying speed are all set rather than read, so none of them can be shown
- * in `auto` -- which is what the app is set to out of the box.
- *
- * So they take the app-wide unit WHENEVER IT NAMES ONE, and fall back to a
- * remembered one only when it does not. That is what makes the picker in
- * Settings mean the same thing everywhere: choosing millimetres there puts the
- * brush size in millimetres too, and `auto` is the one choice these controls
- * cannot honour, so it leaves them where they were rather than picking for
- * them. See `setDisplayUnit`, which writes the choice through to the controls
- * that remember one, and `pinUnit` in `Field.tsx` for the ones that do not.
- */
-export function pinnedUnit(mode: UnitMode, remembered: Unit): Unit {
-  return mode === 'auto' ? remembered : mode
-}
+const SUFFIX: Record<Unit, string> = { mm: 'mm', cm: 'cm', in: 'in' }
 
 /** Scene units to the unit on screen. */
 export function toDisplay(sceneValue: number, unit: Unit): number {
@@ -114,25 +82,20 @@ export function fromDisplay(shown: number, unit: Unit): number {
  * three functions the fields do, so a ruler saying 50.0 mm and a dimension row
  * saying 50.0 mm cannot start disagreeing about what 0.5 units is.
  */
-export function formatLength(sceneValue: number, mode: UnitMode): string {
-  const unit = resolveUnit(sceneValue, mode)
+export function formatLength(sceneValue: number, unit: Unit): string {
   return `${toDisplay(sceneValue, unit).toFixed(PLACES[unit])} ${SUFFIX[unit]}`
 }
 
 /**
  * SEVERAL lengths in one unit, said once at the end.
  *
- * `formatLength` resolves a unit per value, which is right for a lone reading
- * and wrong for a size: under `auto` a 20 cm side beside a 5 mm one would print
- * two different units inside one measurement, and even where every side agreed
- * the suffix would be said once per number. So the unit is chosen off the
- * longest side and written once for all of them.
+ * `formatLength` would write the suffix after every number; a size is one
+ * measurement, so the unit is said once for all of its sides.
  *
  * Two sides or three -- a rectangle in the scene tree and a block on the
  * clipboard are the same sentence at different lengths.
  */
-export function formatSize(values: readonly number[], mode: UnitMode): string {
-  const unit = resolveUnit(Math.max(...values.map(Math.abs)), mode)
+export function formatSize(values: readonly number[], unit: Unit): string {
   const places = PLACES[unit]
   return `${values.map((n) => toDisplay(n, unit).toFixed(places)).join(' x ')} ${SUFFIX[unit]}`
 }

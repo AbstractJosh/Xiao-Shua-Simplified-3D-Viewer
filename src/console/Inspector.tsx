@@ -1,6 +1,7 @@
 import { MAX_FACE_OFFSET, MIN_SHAPE } from '../geometry/dimensions'
 import { depthLimits, hostSurfaceFor, maxShapeSize } from '../geometry/surfaces'
-import { isCurvedAnchor, shapeRadius } from '../geometry/types'
+import type { SurfaceDef } from '../geometry/surfaces'
+import { isCurvedAnchor, shapeRadius, sweepOp } from '../geometry/types'
 import type { Feature, Shape2D, SurfaceAnchor } from '../geometry/types'
 import { DEFAULT_FEATURE_DEPTH, selectedFeature, selectedObject, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
@@ -8,12 +9,6 @@ import { NumberField, Section, Vec2Field, Vec3Field } from './Field'
 import { Tip } from './Tip'
 
 const FACE_NAMES = ['+X', '-X', '+Y', '-Y', '+Z', '-Z']
-
-/** The lengths a sketch's shape puts on screen -- what the rows show, so the
- *  unit the panel settles on is the one those rows would have chosen. */
-function shapeLengths(shape: Shape2D): number[] {
-  return shape.type === 'rect' ? [shape.w, shape.h] : [shape.r]
-}
 
 /**
  * Outer stop on the tilt slider, past which the control stops being a useful
@@ -59,26 +54,40 @@ function anchorLabel(anchor: SurfaceAnchor): string {
 /**
  * Widest tilt this particular feature can be given and still build.
  *
- * The thing that breaks is not obliqueness. `buildSweptPrism` lands every ring
- * point on the tilted end plane along that point's own normal, and rejects the
- * whole tool the moment one of those travel distances stops being positive.
- * Tilting pivots the plane about the face centre, so the near side of the ring
- * gives up r*tan(tilt) of its depth and the sweep survives exactly while
- * tilt < atan(depth / shapeRadius). At the fixed 60 degrees the slider used to
- * offer, a freshly extruded feature -- depth equal to its own radius, so a real
- * limit of 45 -- had a quarter of its travel silently dropping the feature.
+ * The thing that breaks is not obliqueness. `buildSweptPrism` runs the tool
+ * between two planes square to the anchor's normal, and rejects it the moment
+ * the created plane dips through the buried one. Tilting pivots the created
+ * plane about the face centre, so the near side of the ring gives up
+ * r*tan(tilt), and the sweep survives exactly while
+ * tilt < atan((depth + buried) / shapeRadius).
+ *
+ * The BURIED end counts as reach, and only the surface layer knows how much of
+ * it there is: a boss is seated a margin deep into its host, and the low corner
+ * may spend that margin as well as the depth before the tool folds up. Reading
+ * the depth alone gave several degrees of honest travel away.
  *
  * Exact only for a flat host tilted about ONE axis. Two or three axes compose
  * into a larger off-normal angle this arithmetic cannot see (44 degrees on each
  * of three axes fails where 44 on one builds), which is why the `skipped` hint
  * below stays as the backstop rather than being retired in favour of this
  * number. A curved host is looser than the flat bound rather than tighter --
- * its ring normals fan out -- so it keeps the plain outer stop instead, or the
- * slider would take away reach the tool genuinely has.
+ * its footprint dips away from the tangent plane, which buys the low corner
+ * more room again -- so it keeps the plain outer stop instead, or the slider
+ * would take away reach the tool genuinely has.
  */
-function maxTiltDeg(anchor: SurfaceAnchor, shape: Shape2D, depth: number): number {
+function maxTiltDeg(
+  host: SurfaceDef,
+  anchor: SurfaceAnchor,
+  shape: Shape2D,
+  depth: number
+): number {
   if (isCurvedAnchor(anchor)) return MAX_TILT_DEG
-  const limit = (Math.atan(depth / Math.max(shapeRadius(shape), 1e-6)) * 180) / Math.PI
+  const op = sweepOp(depth)
+  const reach = Math.abs(depth)
+  const sweep = host.sweep(anchor, reach, op)
+  const buried = op === 'extrude' ? sweep.tIn : sweep.tOut
+  const limit =
+    (Math.atan((reach + buried) / Math.max(shapeRadius(shape), 1e-6)) * 180) / Math.PI
   // Floor, minus one: the bound has to be an angle that BUILDS, and the exact
   // limit is the angle at which travel reaches zero.
   return Math.max(MIN_TILT_DEG, Math.min(MAX_TILT_DEG, Math.floor(limit) - 1))
@@ -111,8 +120,9 @@ export function Inspector() {
   const depth = Math.max(-limit.in, Math.min(limit.out, feature.depth))
   // The tilt bound is about how far the pillar leans before the sweep gives
   // out, which is a question about its LENGTH; a pocket leans exactly as far as
-  // a boss of the same depth.
-  const tiltLimit = maxTiltDeg(feature.anchor, feature.shape, Math.abs(depth))
+  // a boss of the same depth. The sign still goes in, because which end of the
+  // sweep is the buried one turns on it.
+  const tiltLimit = maxTiltDeg(host, feature.anchor, feature.shape, depth)
   // The anchor is not optional here either, and for the same reason it is not
   // optional for the depth: a cylinder's cap holds a far bigger sketch than its
   // wall does, and a slab's broad top is not bounded by how thin the slab is.
@@ -127,7 +137,7 @@ export function Inspector() {
       // Every length the panel shows: the sketch's own size, how far it is
       // pushed or pulled, and how far it has been slid across its face. Not the
       // tilt or the rotation, which are degrees.
-      lengths={[...shapeLengths(feature.shape), depth, ...feature.faceOffset]}
+      hasLengths
     >
       {feature.shape.type === 'circle' && (
         <NumberField

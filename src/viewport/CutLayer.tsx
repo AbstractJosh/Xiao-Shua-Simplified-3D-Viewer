@@ -1,19 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
-import {
-  BufferAttribute,
-  BufferGeometry,
-  Plane,
-  Raycaster,
-  SphereGeometry,
-  Vector2,
-  Vector3,
-} from 'three'
+import { BufferAttribute, BufferGeometry, SphereGeometry, Vector3 } from 'three'
 import type { Object3D } from 'three'
-import { BLOCK_HALF, KERF, faceBasis, faceToBlock } from '../geometry/laserCut'
+import { BLOCK_HALF, faceBasis, faceToBlock } from '../geometry/laserCut'
 import type { FaceAxis, Pt } from '../geometry/laserCut'
-import { MAX_ROPE, isCutTool, useTools } from '../store/toolStore'
-import { curveHandles, draftLine, useCutDraft } from './cutDraft'
+import { MAX_ROPE, isCutTool, mirrorOn, useTools } from '../store/toolStore'
+import { curveHandles, draftCut, useCutDraft } from './cutDraft'
+import { LIFT, facePixelsFrom, pointerToFace } from './facePointer'
 import { pixelsToWorld } from './orthoFrame'
 import { faceTolerance, sideAlong, snapToPeers } from './pointSnap'
 import { useSceneColors } from './useSceneColors'
@@ -69,10 +62,6 @@ import { useSceneColors } from './useSceneColors'
  */
 export const PREVIEW_PX = 4
 
-/** A hair off the face, so the line sits ON the block rather than fighting it
- *  for the same depth. Well under the kerf, so it never reads as floating. */
-const LIFT = KERF
-
 /**
  * How big a placed point is drawn: a radius IN PIXELS, held there at every
  * zoom.
@@ -107,14 +96,33 @@ const MIN_GRIP_REACH = 0.06
  * screen rather than about the model: at any zoom the grab is the same size
  * under the finger. Twelve is the radius the gizmo and the ruler already use.
  */
-const GRAB_PX = 12
+export const GRAB_PX = 12
 
-/** Scratch, reused rather than allocated: these run on every pointer move. */
-const RAY = new Raycaster()
-const NDC = new Vector2()
-const PLANE = new Plane()
-const HIT = new Vector3()
-const PROJECTED = new Vector3()
+/**
+ * How far the pointer may wander between press and release and still count as a
+ * CLICK rather than a drag, in pixels.
+ *
+ * IT IS WHAT LETS ONE KNOT ANSWER TWO GESTURES. Pressing the first point of a
+ * run has to be able to mean either "bridge the loop shut" or "move this
+ * point", and the honest way to tell them apart is the one every pointer
+ * interface uses: a press that goes nowhere is a click. Below this the point is
+ * not moved AT ALL -- not moved and then put back -- so a hand that shook four
+ * pixels while clicking closes the loop and leaves the drawing exactly as it
+ * found it.
+ *
+ * Four, which is a third of `GRAB_PX`: comfortably more than a tremor and
+ * comfortably less than an intended nudge, and small enough that a drag reads
+ * as taking hold immediately rather than after a dead zone.
+ */
+const CLOSE_SLOP = 4
+
+/** How many sides the closing ring is drawn with. Enough to read as a circle at
+ *  the size it is drawn, which is a dozen pixels across. */
+const CLOSE_RING_SIDES = 32
+
+/* The ray, the plane and the projection that read a press as a place on the
+   face went to `facePointer` the moment the mirror needed the same three: two
+   copies of that arithmetic would agree exactly until one of them was fixed. */
 
 /**
  * A flat ribbon `world` units wide, laid along a line on the face.
@@ -199,8 +207,47 @@ export function ribbon(
   return geometry
 }
 
-/** The straight stalk from a point out to one of its two handles. */
-function stalk(from: Vector3, to: Vector3): BufferGeometry {
+/**
+ * The ring drawn round the first knot when clicking it would close the loop: a
+ * UNIT circle lying in the face's own plane, sized by `markScale` like every
+ * other mark here.
+ *
+ * IT IS THE INVITATION, and it is drawn rather than written because there is
+ * nowhere to write it. A knot that does two different things depending on
+ * whether the press moves is a good gesture and an invisible one -- nothing
+ * about a row of identical dots says the first is special, and a tooltip on a
+ * dot in a 3D scene is not a thing this app has. A ring round the one knot that
+ * closes the loop says which knot, and says it while the hand is over the face
+ * rather than in a panel across the window.
+ *
+ * DRAWN AT EXACTLY `GRAB_PX`, which is the radius the press really catches at.
+ * So the ring is the target rather than a decoration sitting near it: the
+ * pointer is inside the circle exactly when a click would take.
+ *
+ * In the face's plane, which is why the basis is needed: a circle built in some
+ * fixed plane and dropped on the block would be an edge-on line on four of the
+ * six faces. Its two components lie along the face's own u and v, both
+ * axis-aligned, so `markScale`'s per-axis divisor undoes the block's stretch
+ * and it comes out round on a sheet as well as on a cube.
+ */
+export function closeRing(basis: { u: Vector3; v: Vector3; n: Vector3 }): BufferGeometry {
+  const positions: number[] = []
+  for (let i = 0; i < CLOSE_RING_SIDES; i += 1) {
+    const a = (i / CLOSE_RING_SIDES) * Math.PI * 2
+    // Depth zero: the ring lies in the plane, and the mesh's own position
+    // carries it out to where the drawing sits.
+    const p = faceToBlock(basis, [Math.cos(a), Math.sin(a)], 0)
+    positions.push(p.x, p.y, p.z)
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+  return geometry
+}
+
+/** The straight stalk from a point out to one of its two handles -- and the one
+ *  way anything on this screen draws a bare segment. `MirrorLayer` draws its
+ *  axis with it. */
+export function stalk(from: Vector3, to: Vector3): BufferGeometry {
   const geometry = new BufferGeometry()
   geometry.setAttribute(
     'position',
@@ -273,7 +320,21 @@ export function markScale(
 /** What the pointer took hold of on the way down. */
 type Grab =
   | { kind: 'stroke' }
-  | { kind: 'point'; index: number }
+  | {
+      kind: 'point'
+      index: number
+      /**
+       * Where the press landed, on a knot whose click would open or close the
+       * loop -- and absent on every other knot, which is what makes this the
+       * flag as well as the anchor.
+       *
+       * Cleared the moment the pointer leaves `CLOSE_SLOP`, from which point
+       * the gesture is an ordinary drag and can no longer close anything. So
+       * the two readings are settled by the hand rather than by a mode, and
+       * neither one has to be chosen in advance.
+       */
+      closing?: { x: number; y: number }
+    }
   | { kind: 'handle'; index: number; side: 1 | -1 }
   | null
 
@@ -323,11 +384,16 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
   // no route by which half of this file thinks a line is being drawn.
   const tool = useTools((s) => (isCutTool(s.laserTool) ? s.laserTool : null))
   const fit = useTools((s) => s.fitCurve)
+  /* The mirror standing on the face being drawn on, or null. Subscribed to
+     rather than read once, because swinging the axis has to redraw the preview
+     under a line that is already down. See `mirrorOn`. */
+  const mirror = useTools(mirrorOn(face))
 
   const draftFace = useCutDraft((s) => s.face)
   const stroke = useCutDraft((s) => s.stroke)
   const points = useCutDraft((s) => s.points)
   const handles = useCutDraft((s) => s.handles)
+  const closed = useCutDraft((s) => s.closed)
 
   const grab = useRef<Grab>(null)
 
@@ -351,9 +417,24 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
 
   // The line the preview draws IS the line Apply cuts -- one function, so the
   // two cannot disagree about what is about to happen. See `draftLine`.
-  const line = useMemo(
-    () => draftLine({ kind: tool === 'points' ? 'points' : 'freehand', stroke, points, handles }, fit),
-    [tool, stroke, points, handles, fit]
+  /**
+   * EVERY LINE THIS PRESS WILL BURN, which is the drawn one until a mirror is
+   * standing on the face and is two or four of them after that.
+   *
+   * Through `draftCut`, which is the same call Apply makes -- see it for why
+   * the preview and the cut cannot be allowed to work the question out
+   * separately. It is also what makes a stroke wandering into a dimmed part of
+   * the face show as ending at the axis: the clip happens here, so what is
+   * drawn on screen is what is left of the line rather than what the hand did.
+   */
+  const cutting = useMemo(
+    () =>
+      draftCut(
+        { kind: tool === 'points' ? 'points' : 'freehand', stroke, points, handles, closed },
+        fit,
+        mirror
+      ),
+    [tool, stroke, points, handles, closed, fit, mirror]
   )
 
   // Rebuilt when the wheel turns, since its width is now a number of pixels:
@@ -361,10 +442,15 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
   // second transform hung off the mesh, which cannot hold a width constant
   // along a line that changes direction.
   const preview = useMemo(
-    () => (draftFace ? ribbon(line, draftFace, pixelsToWorld(PREVIEW_PX, zoom), dims) : null),
-    [line, draftFace, zoom, dims]
+    () =>
+      draftFace
+        ? cutting
+            .map((one) => ribbon(one, draftFace, pixelsToWorld(PREVIEW_PX, zoom), dims))
+            .filter((strip): strip is BufferGeometry => strip !== null)
+        : [],
+    [cutting, draftFace, zoom, dims]
   )
-  useEffect(() => () => preview?.dispose(), [preview])
+  useEffect(() => () => preview.forEach((strip) => strip.dispose()), [preview])
 
   // UNIT spheres: the size is on the mesh now, not in the geometry, because it
   // changes every time the wheel turns. See `markScale`.
@@ -378,6 +464,12 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
     [knot, grip]
   )
 
+  // Per face rather than per frame: the ring lies in the face's own plane, and
+  // the face only changes when the compass settles somewhere else -- which
+  // clears the drawing anyway. See `closeRing`.
+  const halo = useMemo(() => (draftFace ? closeRing(faceBasis(draftFace)) : null), [draftFace])
+  useEffect(() => () => halo?.dispose(), [halo])
+
   /**
    * The pointer, as a place on the face -- or null when the ray runs parallel
    * to it, which only a camera that has left its axis can manage.
@@ -387,36 +479,12 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
    * whole of the arithmetic, and it is why nothing else here has to know the
    * size.
    */
-  const toFace = (e: PointerEvent): Pt | null => {
-    const rect = gl.domElement.getBoundingClientRect()
-    if (!(rect.width > 0) || !(rect.height > 0)) return null
-    NDC.set(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -(((e.clientY - rect.top) / rect.height) * 2 - 1)
-    )
-    RAY.setFromCamera(NDC, camera)
-
-    const basis = faceBasis(face)
-    const centre = new Vector3(0, bh / 2, 0).addScaledVector(basis.n, BLOCK_HALF * dims[face.axis])
-    PLANE.setFromNormalAndCoplanarPoint(basis.n, centre)
-    if (!RAY.ray.intersectPlane(PLANE, HIT)) return null
-
-    const local = HIT.clone().sub(new Vector3(0, bh / 2, 0)).divide(new Vector3(bw, bh, bd))
-    return [local.dot(basis.u), local.dot(basis.v)]
-  }
+  const toFace = (e: PointerEvent): Pt | null =>
+    pointerToFace(e, camera, gl.domElement, face, dims)
 
   /** How far a face point lands from the pointer, in pixels. */
-  const pixelsFrom = (at: Pt, e: PointerEvent): number => {
-    const basis = faceBasis(face)
-    PROJECTED.copy(faceToBlock(basis, at, BLOCK_HALF + LIFT))
-      .multiply(new Vector3(bw, bh, bd))
-      .add(new Vector3(0, bh / 2, 0))
-      .project(camera)
-    const rect = gl.domElement.getBoundingClientRect()
-    const x = rect.left + ((PROJECTED.x + 1) / 2) * rect.width
-    const y = rect.top + ((1 - PROJECTED.y) / 2) * rect.height
-    return Math.hypot(x - e.clientX, y - e.clientY)
-  }
+  const pixelsFrom = (at: Pt, e: PointerEvent): number =>
+    facePixelsFrom(at, e, camera, gl.domElement, face, dims)
 
   /**
    * Where a knot should actually land, given where the pointer is and where the
@@ -490,7 +558,10 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
         // is grabbed exactly where it is drawn whether the tangent is the
         // user's or still the fit's.
         if (useTools.getState().fitCurve) {
-          const aim = curveHandles(draft.points, draft.handles)
+          // The same reading of the run the line itself is drawn from, loop and
+          // all: a grip has to be grabbed where it is drawn, and on a closed
+          // run the fit that draws it wraps round the seam. See `curveHandles`.
+          const aim = curveHandles(draft.points, draft.handles, draft.closed)
           for (let i = 0; i < draft.points.length; i += 1) {
             const ends = handleEnds(draft.points[i], aim[i])
             if (pixelsFrom(ends.out, e) <= GRAB_PX) {
@@ -506,7 +577,21 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
         if (!grab.current) {
           for (let i = 0; i < draft.points.length; i += 1) {
             if (pixelsFrom(draft.points[i], e) <= GRAB_PX) {
-              grab.current = { kind: 'point', index: i }
+              // THE FIRST KNOT IS ALSO THE LOOP'S CATCH, and taking hold of it
+              // does not decide which of the two this press is yet -- see
+              // `closing` and `CLOSE_SLOP`. A click bridges the last point back
+              // to it, or takes the bridge out again; a drag moves it, exactly
+              // as a drag on any other knot does.
+              //
+              // Only where there is a loop to make or unmake: under three
+              // points there is nothing to encircle, so the first knot is just
+              // a knot and behaves like every other one.
+              const catches = i === 0 && (draft.closed || draft.points.length >= 3)
+              grab.current = {
+                kind: 'point',
+                index: i,
+                ...(catches ? { closing: { x: e.clientX, y: e.clientY } } : null),
+              }
               break
             }
           }
@@ -562,6 +647,16 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
         // `freehandSmoothing`.
         draft.strokeTo(at, useTools.getState().freehandSmoothing * MAX_ROPE)
       } else if (held.kind === 'point') {
+        if (held.closing) {
+          // Inside the slop the knot is not moved at all, rather than moved and
+          // put back: a click that shook is a click, and the drawing must come
+          // out of it byte for byte as it went in.
+          if (Math.hypot(e.clientX - held.closing.x, e.clientY - held.closing.y) <= CLOSE_SLOP) {
+            return
+          }
+          // Past it, and this was a drag all along.
+          held.closing = undefined
+        }
         draft.movePoint(held.index, settle(at, held.index))
       } else {
         // NOR DOES A HANDLE. It aims the curve through a point rather than
@@ -572,8 +667,20 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
       }
     }
 
-    const onUp = () => {
+    const onUp = (e?: PointerEvent) => {
+      const held = grab.current
       grab.current = null
+      // A press that took the first knot and never left it is a CLICK on it,
+      // and that is the gesture that bridges the loop shut -- or opens it
+      // again, since one knot answering two things needs a way back.
+      //
+      // ONLY ON A REAL RELEASE. This same function is the cancel handler and
+      // the effect's own teardown, and neither of those is the user saying
+      // anything: a gesture the browser took away, or a tool put down mid-drag,
+      // must not leave a loop behind it.
+      if (e?.type === 'pointerup' && held?.kind === 'point' && held.closing) {
+        useCutDraft.getState().toggleClosed()
+      }
       // The guide belongs to the gesture, so it goes with it. What it was
       // showing is now visible in the drawing itself: two knots on a line.
       setGuide((was) => (was.u === null && was.v === null ? was : { u: null, v: null }))
@@ -596,18 +703,23 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
   // which a curve is drawn with its tangents hidden: if the line bends, the
   // things that bend it are on screen and can be taken hold of.
   const showHandles = tool === 'points' && fit
-  const aim = showHandles ? curveHandles(points, handles) : []
+  const aim = showHandles ? curveHandles(points, handles, closed) : []
+  // Where a click on the first knot would do something, and so where the ring
+  // that says so belongs. Only while the loop is OPEN: once it is shut the
+  // bridge is on screen saying it, and a ring still inviting the click would be
+  // furniture arguing with the drawing. The way back out is in the panel.
+  const canClose = tool === 'points' && !closed && points.length >= 3
 
   return (
     // The block's own transform, so block-space marks land on the block. See
     // the note at the top of the file, and `Pieces`, which carries the same one.
     <group position={[0, bh / 2, 0]} scale={dims}>
       {/* The slot the cut is about to burn, drawn where it will be burned. */}
-      {preview && (
-        <mesh geometry={preview} raycast={noRaycast} renderOrder={2}>
+      {preview.map((strip, i) => (
+        <mesh key={i} geometry={strip} raycast={noRaycast} renderOrder={2}>
           <meshBasicMaterial color={scene.in} toneMapped={false} depthTest={false} />
         </mesh>
-      )}
+      ))}
 
       {/* The points, in the colour material-being-taken-away wears everywhere
           else in this app: a knot on this line is a place the cut goes through.
@@ -626,6 +738,31 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
             <meshBasicMaterial color={scene.in} toneMapped={false} depthTest={false} />
           </mesh>
         ))}
+
+      {/* WHERE THE LOOP CLOSES: a ring round the first knot, drawn while a
+          click on it would bridge the line shut.
+
+          IT IS THE ONLY THING ON SCREEN THAT COULD SAY IT. The gesture is one
+          click on one dot, and a row of identical dots gives no reason to think
+          the first of them is different from the rest -- so without this the
+          feature is one a user finds by accident or not at all. Drawn at the
+          radius the press actually catches at, so it is the target itself. See
+          `closeRing` and `GRAB_PX`.
+
+          In the accent, with the handles, because it is furniture rather than
+          part of the line: nothing here is going to be burned. Over the knot it
+          rings, so the block cannot hide it. */}
+      {canClose && halo && (
+        <lineLoop
+          raycast={noRaycast}
+          geometry={halo}
+          renderOrder={5}
+          position={faceToBlock(basis, points[0], BLOCK_HALF + LIFT)}
+          scale={markScale(GRAB_PX, zoom, dims)}
+        >
+          <lineBasicMaterial color={scene.accent} toneMapped={false} depthTest={false} />
+        </lineLoop>
+      )}
 
       {/* WHAT THE KNOT IN HAND JUST CAUGHT: the row it took, the column it
           took, or both where a right angle turns.

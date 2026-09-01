@@ -48,6 +48,23 @@ export type SceneColors = {
   danger: string
   /** Mirrors --ruler: a measurement laid across the scene. */
   ruler: string
+  /**
+   * The Laser Cutter's symmetry axis, and the one colour here that mirrors no
+   * token in the stylesheet.
+   *
+   * IT HAS NO CSS TWIN because it has no counterpart in the console: the axis
+   * is drawn on the block and nowhere else, so there is nothing for the two
+   * halves of the window to agree about. Every colour above is in
+   * `SCENE_CSS_VARS` for exactly the opposite reason.
+   *
+   * GREEN, AND NOT `out`'s GREEN. Material added is a green in two of these
+   * palettes and an orange in the third, and the axis is neither adding nor
+   * taking away -- it burns nothing at all, which is the one thing it has to
+   * say at a glance against a face covered in the red of lines that do. So it
+   * is a green of its own, cooler than `out` where the two could be seen
+   * together and unmistakably not the erase red.
+   */
+  mirror: string
 
   /** The dark half of the stripes on a selected ruler. Never pure black: over
    *  the scene's own ground that reads as a gap, and the stripes as a dashed
@@ -116,6 +133,9 @@ const DARK: SceneColors = {
   round: '#9fc3d8',
   danger: '#e0574a',
   ruler: '#ffd60a',
+  // A green with more blue in it than the addition green next door, so the two
+  // never read as the same mark.
+  mirror: '#3ddc84',
   rulerStripe: '#20252e',
   rulerLit: '#fff3a3',
   sketchIdle: '#f0a848',
@@ -161,6 +181,8 @@ const LIGHT: SceneColors = {
   round: '#3f6a82',
   danger: '#b5352a',
   ruler: '#9a6b00',
+  // Taken down for the pale ground, like everything else here.
+  mirror: '#0f8f57',
   rulerStripe: '#f2f5f9',
   rulerLit: '#5c3f00',
   sketchIdle: '#a35d00',
@@ -213,6 +235,9 @@ const CYBERPUNK: SceneColors = {
   round: '#b9a5c4',
   danger: '#f44638',
   ruler: '#fcee0a',
+  // The one green this palette owns: nothing else in it is anywhere near, so a
+  // guide line cannot be mistaken for the orange that means material.
+  mirror: '#39ff88',
   rulerStripe: '#2a1016',
   rulerLit: '#fffbc9',
   sketchIdle: '#ffa500',

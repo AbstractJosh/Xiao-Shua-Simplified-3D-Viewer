@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { bezierChain, curveHandles } from '../geometry/curve'
+import { mirrorLines } from '../geometry/faceMirror'
+import type { MirrorAxis } from '../geometry/faceMirror'
 import { resample, ropeFollow } from '../geometry/laserCut'
 import type { FaceAxis, Pt } from '../geometry/laserCut'
 
@@ -71,6 +73,27 @@ type DraftState = {
    * shaping already done.
    */
   handles: (Pt | null)[]
+  /**
+   * Whether the run of points is a LOOP: the last one bridged back to the
+   * first, so the line encircles a region instead of crossing the face.
+   *
+   * ONE BOOLEAN AND NO EXTRA POINT, which is the choice the rest of the file
+   * follows from. The obvious alternative is to close the loop by appending a
+   * copy of the first point to `points`, and it goes wrong immediately: the
+   * copy is a knot the user can take hold of and drag, and dragging it opens a
+   * gap at the seam that nothing on screen explains. It would also want a
+   * handle of its own, giving the seam two tangents to disagree about.
+   *
+   * So the points stay exactly the points that were placed, and this says how
+   * to read the run. The repeated point appears once, in `draftLine`, at the
+   * moment the line is asked for -- which is also the only place anything needs
+   * it. See `isClosedLine`, which is how the geometry then reads it back.
+   *
+   * FREEHAND NEVER SETS IT. A stroke has no knots to click on, so there is
+   * nothing to press to close one, and the rope would never bring a hand back
+   * to the exact point it started from anyway.
+   */
+  closed: boolean
   /** Take up a tool on a face. Clears whatever was being drawn. */
   begin: (face: FaceAxis, kind: DraftKind) => void
   /** Start a fresh stroke at a point. One stroke is one line: a second press
@@ -107,6 +130,22 @@ type DraftState = {
    */
   moveHandle: (index: number, at: Pt, side: 1 | -1) => void
   /**
+   * Bridge the last point back to the first, or take the bridge out again.
+   *
+   * A TOGGLE RATHER THAN A ONE-WAY DOOR, because the gesture that fires it is
+   * one click on one knot and a gesture with no way back is a trap. Clicking
+   * the first point closes the loop; clicking it again opens it, and the points
+   * are untouched either way -- so nothing is lost by trying it.
+   *
+   * INERT UNDER THREE POINTS. Two points bridged back to each other are the
+   * same segment walked twice: it encircles nothing, there is no island for a
+   * cut to drop out, and the "loop" would look exactly like the line already on
+   * screen. A tool that reported itself closed while nothing had changed is
+   * worse than one that did nothing. Opening is always allowed, so a run that
+   * somehow arrived closed can always be opened again.
+   */
+  toggleClosed: () => void
+  /**
    * Hand one point's tangent back to the curve.
    *
    * The way out of an aimed handle, and the reason aiming one is not a trap:
@@ -118,7 +157,16 @@ type DraftState = {
   clear: () => void
 }
 
-const empty = { stroke: [] as Pt[], points: [] as Pt[], handles: [] as (Pt | null)[] }
+// `closed` is in here rather than beside it, so every road to an empty
+// drawing -- Reset, a new tool, a turn of the compass -- opens the line as well
+// as emptying it. A draft with no points that still called itself closed would
+// bridge the first two points placed after it.
+const empty = {
+  stroke: [] as Pt[],
+  points: [] as Pt[],
+  handles: [] as (Pt | null)[],
+  closed: false,
+}
 
 export const useCutDraft = create<DraftState>((set) => ({
   face: null,
@@ -163,6 +211,12 @@ export const useCutDraft = create<DraftState>((set) => ({
       if (s.handles[index] == null) return s
       return { handles: s.handles.map((h, i) => (i === index ? null : h)) }
     }),
+
+  toggleClosed: () =>
+    set((s) => {
+      if (!s.closed && s.points.length < 3) return s
+      return { closed: !s.closed }
+    }),
 }))
 
 /* `curveHandles` is re-exported at the top rather than written here: the rule
@@ -185,23 +239,78 @@ export const useCutDraft = create<DraftState>((set) => ({
  * mixture of aimed and fitted tangents `curveHandles` resolves -- which is also
  * why throwing the switch does not make the line jump: a run with nothing aimed
  * yet is exactly the fitted curve. See `fittedHandles`.
+ *
+ * AND THIS IS WHERE A LOOP BECOMES ONE. `closed` is a way of reading the run
+ * of points -- see the field -- and the reading is performed here, once, by
+ * writing the first point out again at the end. Downstream nothing is told
+ * anything: the preview offsets a strip along whatever line it is handed, and
+ * the cut sweeps a wall along it, and both find the repeated point for
+ * themselves. The bridge is therefore drawn and burned by the same arithmetic
+ * as every other segment, which is the one property that stops a loop being a
+ * second tool. See `isClosedLine`.
  */
 export function draftLine(
-  draft: Pick<DraftState, 'kind' | 'stroke' | 'points' | 'handles'>,
+  draft: Pick<DraftState, 'kind' | 'stroke' | 'points' | 'handles' | 'closed'>,
   fit: boolean
 ): Pt[] {
   if (draft.kind === 'freehand') {
     return draft.stroke.length < 2 ? [] : resample(draft.stroke)
   }
   if (draft.points.length < 2) return []
-  if (!fit) return draft.points
-  return bezierChain(draft.points, curveHandles(draft.points, draft.handles))
+  // Two points cannot enclose anything, so a run that is somehow marked closed
+  // and is too short to be is read as the open line it looks like.
+  const ring = draft.closed && draft.points.length > 2
+  if (!fit) return ring ? [...draft.points, draft.points[0]] : draft.points
+  return bezierChain(
+    draft.points,
+    curveHandles(draft.points, draft.handles, ring),
+    undefined,
+    ring
+  )
+}
+
+/**
+ * Every line the drawing is about to burn: the one that was drawn, or -- with a
+ * mirror standing on the face -- the part of it that falls inside the lit
+ * region, and that part's reflections.
+ *
+ * ONE MORE STEP ALONG THE ROAD `draftLine` ALREADY WALKS, and it is here for
+ * exactly the reason that one is. `draftLine` settles what the HAND drew; this
+ * settles what the LASER gets, and the moment a mirror is standing those stop
+ * being the same question. Both answers have to come from one place or the tool
+ * is one that shows two lines and burns four. See `mirrorLines`.
+ *
+ * A LINE THAT ENDS ON THE AXIS IS SEWN TO ITS OWN REFLECTION. Draw half a shape
+ * from the axis, round, and back to the axis, and what comes back is one CLOSED
+ * line rather than two open ones -- so the shape drops out of the block as an
+ * island, which is what the completed silhouette on screen was promising all
+ * along. The join is `mirrorLines`' own work, and it is the reason this hands
+ * back a set of lines rather than one copy per mirror: what comes out is not
+ * the number of reflections.
+ *
+ * A line that ends anywhere ELSE is carried out to the border along its own
+ * tangent, exactly as every open line on this screen always has been.
+ *
+ * Empty means there is nothing to burn, and it covers more than a drawing too
+ * short to cut: a perfectly good line drawn entirely in a DIMMED part of the
+ * face comes back empty as well, because none of it is inside the part being
+ * worked in. Both are the same fact to a caller.
+ */
+export function draftCut(
+  draft: Pick<DraftState, 'kind' | 'stroke' | 'points' | 'handles' | 'closed'>,
+  fit: boolean,
+  mirror: MirrorAxis | null
+): Pt[][] {
+  const line = draftLine(draft, fit)
+  if (line.length < 2) return []
+  return mirror ? mirrorLines(line, mirror) : [line]
 }
 
 /** Whether there is enough of a drawing to cut with. */
 export function draftReady(
-  draft: Pick<DraftState, 'kind' | 'stroke' | 'points' | 'handles'>,
-  fit: boolean
+  draft: Pick<DraftState, 'kind' | 'stroke' | 'points' | 'handles' | 'closed'>,
+  fit: boolean,
+  mirror: MirrorAxis | null = null
 ): boolean {
-  return draftLine(draft, fit).length >= 2
+  return draftCut(draft, fit, mirror).length > 0
 }

@@ -1,7 +1,16 @@
 import type { BufferGeometry } from 'three'
 import { create } from 'zustand'
 import { MAX_SIZE, MIN_DIMENSION } from '../geometry/dimensions'
-import { BLOCK_VOLUME, cutPieces, freshBlock, pieceVolume } from '../geometry/laserCut'
+import { images } from '../geometry/faceMirror'
+import type { MirrorAxis } from '../geometry/faceMirror'
+import {
+  BLOCK_VOLUME,
+  cutPieces,
+  faceBasis,
+  freshBlock,
+  pieceCentre,
+  pieceVolume,
+} from '../geometry/laserCut'
 import type { FaceAxis, Pt } from '../geometry/laserCut'
 import { DEFAULT_SPAN } from '../geometry/types'
 
@@ -124,9 +133,96 @@ export function bedIsUncut(pieces: Piece[]): boolean {
  */
 type Step = {
   pieces: Piece[]
-  offcut: string | null
-  choices: string[]
+  offcut: string[]
+  choices: string[][]
   dims?: [number, number, number]
+}
+
+/**
+ * How near two pieces' middles have to land before one is taken for the other's
+ * reflection, in block space, and how much their volumes may differ.
+ *
+ * GENEROUS ON BOTH COUNTS, because the question is not a close one. A mirrored
+ * cut is the same line reflected, fired at a block that is itself symmetrical
+ * about the very same plane, so the pieces it leaves either side are exact
+ * images of each other down to whatever noise the boolean left -- thousandths.
+ * What the tolerance has to survive is that noise; what it has to refuse is a
+ * DIFFERENT piece, which on any cut worth mirroring is a whole shape away. A
+ * hundredth of the block and a fiftieth of the volume sit in the wide gap
+ * between the two.
+ */
+const TWIN_NEAR = 0.01
+const TWIN_VOLUME = 0.02
+
+/**
+ * The pieces a cut made, gathered into the sets that are one piece of work.
+ *
+ * A SET RATHER THAN A PIECE is the whole of what symmetry changes about the
+ * choice at the end of a cut. Four quarters of a bracket cut with a cross are
+ * not four decisions -- they are one decision, made four times over, and a
+ * screen that asked for it four times would be one where the cut was symmetric
+ * and the tidying up was not. So the piece that is lit lights its images with
+ * it, and Discard takes the set.
+ *
+ * PAIRED BY WHERE THEY SIT, not by anything the cut carried out with it, and
+ * that is the only reading available: the boolean does not know it was handed a
+ * mirrored line, and the pieces come off it in whatever order the walk found
+ * them. What IS known is the mirror, so each piece's middle is reflected in it
+ * and the piece nearest that spot -- of about the right size, and at the same
+ * depth into the block -- is its twin. See `pieceCentre`.
+ *
+ * A piece whose image is missing stays a set of one, which is not a failure but
+ * the truth: cut a block that earlier cuts have already left lopsided and one
+ * side of the mirror really does have something the other has not.
+ *
+ * With no mirror standing, every set is one piece, which is exactly what this
+ * screen did before there was one.
+ */
+function twinSets(
+  made: Piece[],
+  face: FaceAxis,
+  mirror: MirrorAxis | null
+): string[][] {
+  if (!mirror) return made.map((piece) => [piece.id])
+
+  const basis = faceBasis(face)
+  const spots = made.map((piece) => {
+    const centre = pieceCentre(piece.geometry)
+    return {
+      at: [centre.dot(basis.u), centre.dot(basis.v)] as Pt,
+      depth: centre.dot(basis.n),
+    }
+  })
+
+  const taken = new Set<number>()
+  const sets: string[][] = []
+  for (let i = 0; i < made.length; i += 1) {
+    if (taken.has(i)) continue
+    taken.add(i)
+    const set = [made[i].id]
+    // The images of this piece's middle, the piece itself dropped: one to look
+    // for under a mirror, three under a cross.
+    for (const want of images(spots[i].at, mirror).slice(1)) {
+      let best = -1
+      let nearest = TWIN_NEAR
+      for (let j = 0; j < made.length; j += 1) {
+        if (taken.has(j)) continue
+        if (Math.abs(spots[j].depth - spots[i].depth) > TWIN_NEAR) continue
+        if (Math.abs(made[j].volume - made[i].volume) > made[i].volume * TWIN_VOLUME) continue
+        const off = Math.hypot(spots[j].at[0] - want[0], spots[j].at[1] - want[1])
+        if (off < nearest) {
+          nearest = off
+          best = j
+        }
+      }
+      if (best >= 0) {
+        taken.add(best)
+        set.push(made[best].id)
+      }
+    }
+    sets.push(set)
+  }
+  return sets
 }
 
 type LaserState = {
@@ -171,8 +267,16 @@ type LaserState = {
    * It is still not a selection. It is one thing with one verb -- what Delete
    * throws away -- and nothing else on this screen can be picked up or acted
    * on. What changed is who decides which piece wears it.
+   *
+   * A LIST, BECAUSE A MIRRORED CUT LEAVES ONE PIECE OF WORK IN TWO PLACES. Cut
+   * with the Symmetry axis standing and the offcut is the piece AND its images
+   * -- two under a mirror, up to four under a cross -- lit together and thrown
+   * away together, because they are one decision made twice over rather than
+   * two decisions. See `twinSets`. Empty is what `null` used to be, and an
+   * ordinary cut fills it with exactly one id, which is the whole of what this
+   * screen did before there was a mirror.
    */
-  offcut: string | null
+  offcut: string[]
   /**
    * The pieces the last cut made: the ones `offcut` may be moved between.
    *
@@ -186,8 +290,13 @@ type LaserState = {
    * Empty when there is nothing to choose: before the first cut, after the
    * discard that spends the choice, and after a fresh block. Biggest first, so
    * stepping through them is stepping down in size.
+   *
+   * A LIST OF SETS rather than of pieces, for the reason `offcut` is a list:
+   * under a mirror the thing being chosen between is a piece and its images
+   * taken together. Without one every set holds one piece and this reads
+   * exactly as it always did.
    */
-  choices: string[]
+  choices: string[][]
   past: Step[]
   future: Step[]
   /**
@@ -197,19 +306,34 @@ type LaserState = {
    */
   setDim: (axis: 0 | 1 | 2, value: number) => void
   /**
-   * Run one line across every piece on the bed.
+   * Run a cut across every piece on the bed.
+   *
+   * A SET OF LINES, ALL BURNED AS ONE ACT. A plain cut hands in one line and a
+   * mirrored one hands in the two or four the axis makes of it -- see
+   * `mirrorLines`, which is what both the preview and Apply go through. They
+   * arrive together because they happened together: one press, one bed, one
+   * step of history, so Ctrl+Z gives back the whole symmetrical cut rather than
+   * half of it.
+   *
+   * `mirror` is the axis they were made with, or null, and it is here for the
+   * choice at the end rather than for the burning: it is what lets the pieces
+   * be paired with their own images so that the set can be lit and thrown away
+   * as one. See `twinSets`.
    *
    * Answers how many pieces came apart, so the tool can tell a cut from a line
    * that missed. Nothing changes on a miss -- not the pieces, not the history
    * -- because an undo entry for an act that did nothing is an undo press that
    * appears to do nothing too.
    */
-  cut: (line: Pt[], face: FaceAxis) => number
+  cut: (lines: Pt[][], face: FaceAxis, mirror?: MirrorAxis | null) => number
   /**
-   * Mark one of the pieces the last cut made as the one to throw away.
+   * Mark the set one of the pieces the last cut made belongs to as the one to
+   * throw away.
    *
    * Ignores an id that is not among `choices`, which is what makes a press on
    * some piece from an older cut do nothing rather than something surprising.
+   * A press on any piece of a mirrored set lights the whole set: they are one
+   * thing, so which of them was under the pointer cannot matter.
    */
   markOffcut: (id: string) => void
   /**
@@ -224,7 +348,8 @@ type LaserState = {
    * Inert with fewer than two to step between.
    */
   nextOffcut: () => void
-  /** Throw the marked piece away. Inert when there is none. */
+  /** Throw the marked piece -- and its images, under a mirror -- away. Inert
+   *  when there is none. */
   discardOffcut: () => void
   /** Take everything off the bed and start from a fresh block of the same size. */
   freshStock: () => void
@@ -278,7 +403,7 @@ const remember = (s: LaserState) => ({
 export const useLaser = create<LaserState>((set, get) => ({
   dims: [DEFAULT_BLOCK, DEFAULT_BLOCK, DEFAULT_BLOCK],
   pieces: freshPieces(),
-  offcut: null,
+  offcut: [],
   choices: [],
   past: [],
   future: [],
@@ -294,11 +419,11 @@ export const useLaser = create<LaserState>((set, get) => ({
       return { dims }
     }),
 
-  cut: (line, face) => {
+  cut: (lines, face, mirror = null) => {
     const s = get()
     const result = cutPieces(
       s.pieces.map((p) => p.geometry),
-      line,
+      lines,
       face
     )
     if (result.split === 0) return 0
@@ -308,30 +433,51 @@ export const useLaser = create<LaserState>((set, get) => ({
       geometry,
       volume: pieceVolume(geometry),
     }))
+    // Gathered into sets before anything is sorted, because a set is what is
+    // being sorted: under a mirror the four quarters of one shape are one entry
+    // in the list rather than four, and the size they are ranked by is the size
+    // of the whole set.
+    const sets = twinSets(
+      result.made.map((i) => pieces[i]),
+      face,
+      mirror
+    )
+    const sizeOf = (set: string[]) =>
+      set.reduce((sum, id) => sum + (pieces.find((p) => p.id === id)?.volume ?? 0), 0)
     // Biggest first, which is the order the cut already hands them back in
     // within each piece it split -- sorted here as well because a cut that came
     // apart in two places contributes two runs, and stepping through them
     // should still be stepping down in size.
-    const made = [...result.made].sort((a, b) => pieces[b].volume - pieces[a].volume)
+    const choices = [...sets].sort((a, b) => sizeOf(b) - sizeOf(a))
     set({
       pieces,
-      choices: made.map((i) => pieces[i].id),
+      choices,
       // OPENS ON THE SMALLEST, which is the guess the cut used to make on its
       // own and is right far more often than not: most cuts trim something off
       // something. It is now a starting point rather than a verdict.
-      offcut: made.length === 0 ? null : (pieces[made[made.length - 1]]?.id ?? null),
+      offcut: choices.length === 0 ? [] : choices[choices.length - 1],
       ...remember(s),
     })
     return result.split
   },
 
   markOffcut: (id) =>
-    set((s) => (s.offcut === id || !s.choices.includes(id) ? s : { offcut: id })),
+    set((s) => {
+      // Any piece of a set names the set: they are one thing, so which of the
+      // images was under the pointer cannot matter.
+      const set = s.choices.find((choice) => choice.includes(id))
+      if (!set || set.includes(s.offcut[0])) return s
+      return { offcut: set }
+    }),
 
   nextOffcut: () =>
     set((s) => {
       if (s.choices.length < 2) return s
-      const at = s.offcut === null ? -1 : s.choices.indexOf(s.offcut)
+      // FOUND BY WHAT IS IN IT rather than by which array it is. The two are
+      // the same object today and would go on being the same object right up
+      // until a step of history handed back a copy, which is the kind of
+      // sameness that breaks silently and in one place only.
+      const at = s.choices.findIndex((choice) => choice.includes(s.offcut[0]))
       return { offcut: s.choices[(at + 1) % s.choices.length] }
     }),
 
@@ -343,15 +489,17 @@ export const useLaser = create<LaserState>((set, get) => ({
 
   discardOffcut: () =>
     set((s) => {
-      if (s.offcut === null) return s
-      const kept = s.pieces.filter((p) => p.id !== s.offcut)
+      if (s.offcut.length === 0) return s
+      const kept = s.pieces.filter((p) => !s.offcut.includes(p.id))
       // The last piece on the bed is not an offcut, whatever its size: throwing
       // it away would leave the screen empty with a Reset the only way back,
-      // which is a bigger act than the key that did it.
+      // which is a bigger act than the key that did it. It is the whole SET
+      // that is weighed against that now -- four quarters of a mirrored cut
+      // that are the only things on the bed go nowhere.
       if (kept.length === 0) return s
       // And the choice is spent with it: the pair it was a choice between is
       // broken, and what is left is one piece rather than an offer.
-      return { pieces: kept, offcut: null, choices: [], ...remember(s) }
+      return { pieces: kept, offcut: [], choices: [], ...remember(s) }
     }),
 
   // The size is kept and the cutting is not: this is "start again", not "start
@@ -360,7 +508,7 @@ export const useLaser = create<LaserState>((set, get) => ({
   // strikes on the lathe, and remembered for the same reason -- it is the one
   // button on this screen that throws work away wholesale.
   freshStock: () =>
-    set((s) => ({ pieces: freshPieces(), offcut: null, choices: [], ...remember(s) })),
+    set((s) => ({ pieces: freshPieces(), offcut: [], choices: [], ...remember(s) })),
 
   // Inert when the screen is already as it was found, so the button above it
   // can be dead rather than pushing a step that changes nothing -- and so that
@@ -370,7 +518,7 @@ export const useLaser = create<LaserState>((set, get) => ({
       if (isDefaultBlock(s)) return s
       return {
         pieces: freshPieces(),
-        offcut: null,
+        offcut: [],
         choices: [],
         dims: [DEFAULT_BLOCK, DEFAULT_BLOCK, DEFAULT_BLOCK],
         // Its own step rather than `remember`'s, because this is the one act

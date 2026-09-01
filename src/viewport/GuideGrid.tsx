@@ -32,10 +32,16 @@ import type { Mesh, ShaderMaterial, WebGLProgramParametersWithUniforms } from 't
  * a unit apart, and both wrote depth. On the hardware curve, in a frustum
  * running from 5 mm to a kilometre, half a thousandth of a unit is far below
  * what the buffer resolves at any distance the scene is worked at -- and the
- * coarse grid's quad, blown up by `infiniteGrid` to some seven thousand units
- * across, carries interpolation error across a single triangle that dwarfs the
- * gap several times over. So the two fought, pixel by pixel, and which one won
- * was decided by rounding that changed with every camera angle.
+ * coarse grid's quad, which drei's `infiniteGrid` blew up to some seven
+ * thousand units across, carried interpolation error over a single triangle
+ * that dwarfed the gap several times over. So the two fought, pixel by pixel,
+ * and which one won was decided by rounding that changed with every camera
+ * angle.
+ *
+ * That quad is gone -- the ground is a bounded patch on every screen now, for
+ * reasons that are the same rounding read off a different varying, and are
+ * written up in `Stage`. What is below stands whatever size the quad is: the
+ * two grids are still nearly coplanar and still transparent.
  *
  * On top of that they are both TRANSPARENT and centred on the same point, so
  * three sorted them against each other by a depth difference of essentially

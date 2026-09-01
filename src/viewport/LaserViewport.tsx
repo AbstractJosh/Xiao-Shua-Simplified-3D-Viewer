@@ -4,7 +4,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { MOUSE } from 'three'
 import type { Object3D } from 'three'
-import { FreehandTool, MoveRefTool, PointCutTool } from '../console/LaserTools'
+import { FreehandTool, MoveRefTool, PointCutTool, SymmetryTool } from '../console/LaserTools'
 import { ReferenceEditor } from '../console/ReferenceEditor'
 import { outlineOf } from '../geometry/laserCut'
 import type { FaceAxis } from '../geometry/laserCut'
@@ -20,6 +20,8 @@ import { CopyBlockButton } from './CopyBlockButton'
 import { CutPanel } from './CutPanel'
 import { nearestView } from './compassViews'
 import { CutLayer } from './CutLayer'
+import { MirrorLayer } from './MirrorLayer'
+import { SymmetryPanel } from './SymmetryPanel'
 import { ReferenceHandles, ReferenceMaterial, useReferencePointer } from './ReferenceDecals'
 import { useCutDraft } from './cutDraft'
 import { NO_PAN, panCorrection, panLimits } from './facePan'
@@ -128,10 +130,12 @@ import { useSceneColors } from './useSceneColors'
  * standing on a bed.
  *
  * WITH ITS FLOOR CUT DOWN TO THAT BED, which is the one thing this screen asks
- * the room to change. An endless grid is for a camera that travels, and this
- * one does not; under a projection it also stops fading, so endless means
- * endless at full brightness. The ground reaches three blocks out and is gone.
- * See `GROUND_REACH`.
+ * the room to change. Every screen stands on a patch of ground rather than a
+ * floor without end -- see `Stage` -- and this screen asks for the app's
+ * smallest: under a projection nothing dims with distance, so a patch sized
+ * for a camera that travels would arrive at the edge of the window at very
+ * nearly the brightness it has under the block. This one reaches three blocks
+ * out and is gone. See `GROUND_REACH`.
  *
  * AND A PROJECTION PUTS MOST OF WHAT IS LEFT AWAY, which is worth knowing here
  * rather than discovering. The camera rests level with the middle of the block,
@@ -249,20 +253,21 @@ const LASER_CAMERA = {
  * How far the ground reaches past the middle of the bed, as a multiple of the
  * block's longest side.
  *
- * THE ROOM'S GROUND IS ENDLESS AND THIS SCREEN CANNOT USE IT. Under a
- * projection nothing dims with distance, so drei's fade -- which is a function
- * of distance and nothing else -- has almost no work to do across a window that
- * is only a couple of units of world wide: the grid arrives at the edge of the
- * screen at very nearly the brightness it has under the block. And the camera
- * here rests LEVEL with the block, so on the four side views that endless
- * ground is edge-on: one hard line ruled clean across the window, with no end
- * to it in either direction and nothing about it that says where the bed is.
+ * THE ROOM'S GROUND IS SIZED FOR THE OTHER SCREEN AND THIS ONE CANNOT USE IT.
+ * Under a projection nothing dims with distance, so drei's fade -- which is a
+ * function of distance and nothing else -- has almost no work to do across a
+ * window that is only a couple of units of world wide: the grid arrives at the
+ * edge of the screen at very nearly the brightness it has under the block. And
+ * the camera here rests LEVEL with the block, so on the four side views that
+ * ground is edge-on: one hard line ruled clean across the window, with nothing
+ * about it that says where the bed is.
  *
- * The other screen has no such problem and needs no such bound: it orbits and
- * pans, its lens dims the far ground on its own, and ground that stopped would
- * be a wall you could walk to. This camera does not travel -- it rests on one
- * of six faces of one block that never leaves the middle -- so the ground can
- * be a patch under that block rather than a floor under a world.
+ * The other screen needs no bound as tight: it orbits and pans, its lens dims
+ * the far ground on its own, and it asks only for enough floor to hold the
+ * model standing on it -- see `groundReach`. This camera does not travel at
+ * all -- it rests on one of six faces of one block that never leaves the
+ * middle -- so the ground here can be a patch under that block rather than a
+ * patch under a scene.
  *
  * THREE BLOCKS, so the bed reads as bed. One is the footprint itself and shows
  * nothing outside the stock; much more and the fade is so far out that it is
@@ -401,8 +406,12 @@ function Pieces({ dims }: { dims: [number, number, number] }) {
         <Piece
           key={piece.id}
           piece={piece}
-          waste={piece.id === offcut}
-          choosable={!cutting && piece.id !== offcut && choices.includes(piece.id)}
+          waste={offcut.includes(piece.id)}
+          choosable={
+            !cutting &&
+            !offcut.includes(piece.id) &&
+            choices.some((set) => set.includes(piece.id))
+          }
         />
       ))}
     </group>
@@ -534,6 +543,24 @@ function HoldFrame({ controlsRef }: { controlsRef: RefObject<LaserOrbit> }) {
  * has grown around it -- the controls clamp the orbit radius to their own
  * `minDistance`, which this screen sets from the block's side. See
  * `BLOCK_CLEARANCE`.
+ *
+ * A LAYOUT EFFECT, for the reason `HoldFrame` is one: this has to be true of
+ * the FIRST frame drawn, not of the second.
+ *
+ * Nothing here aims the camera at the middle of the block until this runs, and
+ * two separate things aim it at the world ORIGIN until it does -- fiber points
+ * a camera it created with `lookAt(0, 0, 0)`, and the controls open with their
+ * pivot there. The origin is on the ground, the camera stands at the height of
+ * the block's middle, so a frame drawn before the pivot is seated is pitched
+ * DOWN by however tall the block is: the block rides high in the window and the
+ * ground, which a level camera sees exactly edge-on and which is the whole of
+ * what tells you this screen is square on, is spread out underneath it.
+ *
+ * An ordinary effect is flushed after the browser has painted, and fiber's loop
+ * is already running by then, so that pitched view is what the screen opened
+ * on. It is also the frame that costs the most -- a fresh canvas is compiling
+ * every shader in the scene -- so it stays up long enough to read, and then the
+ * view snaps level. A layout effect runs inside the commit, before any of it.
  */
 function FocusOnBlock({
   controlsRef,
@@ -551,7 +578,7 @@ function FocusOnBlock({
   // standing at that height. See `LASER_CAMERA`.
   const was = useRef<number | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const controls = controlsRef.current
     if (was.current === null) controls?.target.set(0, centre, 0)
     else {
@@ -745,6 +772,7 @@ export function LaserViewport() {
   // gets an open hand instead: it aims at nothing, it takes hold of things.
   const armed = isCutTool(tool)
   const moving = tool === 'move'
+  const aiming = tool === 'symmetry'
 
   return (
     <div className={`viewport laser${armed ? ' laser-armed' : ''}${moving ? ' laser-moving' : ''}`}>
@@ -773,8 +801,8 @@ export function LaserViewport() {
         dpr={[1, 2]}
       >
         {/* The room, with its ground cut down to the bed -- see `GROUND_REACH`
-            for why the one screen that does not travel is the one screen that
-            cannot have an endless floor. */}
+            for why the one screen that does not travel is the one that asks for
+            the smallest patch of floor. */}
         <Stage reach={Math.max(...dims) * GROUND_REACH} />
         <Pieces dims={dims} />
 
@@ -857,6 +885,15 @@ export function LaserViewport() {
             draws nothing with no tool in hand. See `CutLayer`. */}
         <CutLayer face={face} dims={dims} />
 
+        {/* The mirror standing on the face, if one is: the axis, the parts it
+            cuts the face into, and the hand that swings it. Its wash goes under
+            the drawing and over the block, so a line already drawn in a part
+            you have since dimmed is still visible -- it is still the line you
+            are about to lose. Unlike the cut layer it does not come and go with
+            the tool: an axis stands until it is taken away. See `MirrorLayer`,
+            and `LaserTool` for why aiming it puts the cutter down. */}
+        <MirrorLayer face={face} dims={dims} />
+
         {/* What is drawn ON the block for each reference: an outline always,
             and with Move in hand four corners to pull. Inside the canvas
             because they are objects on the faces rather than chrome over them,
@@ -889,6 +926,11 @@ export function LaserViewport() {
           it shut and sit on top of it when it opened. The flex gap is the one
           number, and neither panel has to know the other's height. */}
       <div className="laser-corner">
+        {/* Above the cut, because it governs it: the mirror is set up once and
+            then every line drawn under it is reflected. It stands as long as
+            the AXIS does rather than as long as a tool is held -- see
+            `SymmetryPanel`. */}
+        <SymmetryPanel face={face} />
         <CutPanel />
         <BlockPanel />
       </div>
@@ -907,14 +949,15 @@ export function LaserViewport() {
 
           A LIT PIECE COMES FIRST, because it is the one that is about something
           that has just happened rather than about something you might do. */}
-      {offcut !== null ? (
+      {offcut.length > 0 ? (
         <p className="viewport-hint">
           {/* What to do about it, and the half of that which is reachable
               depends on what is in your hand: the click is the direct way and
               is shut off while a cutter is armed, because a press on the block
               is the start of a line. The panel's step is open either way, and
               is what a hand fresh from Apply is already resting on. */}
-          The lit piece is the one <b>Del</b> throws away.{' '}
+          {offcut.length > 1 ? 'The lit pieces are one piece of work' : 'The lit piece is the one'}{' '}
+          <b>Del</b> throws {offcut.length > 1 ? 'them all away' : 'away'}.{' '}
           {armed ? (
             <>
               <b>Other piece</b> lights the next.
@@ -924,6 +967,14 @@ export function LaserViewport() {
               <b>Click</b> another to change it.
             </>
           )}
+        </p>
+      ) : aiming ? (
+        /* Symmetry in hand, which is the one tool here whose two gestures are
+           not guessable from the screen: the line is plainly draggable, and
+           nothing says that pressing a dimmed part of the face brings it over
+           to your side of the mirror. */
+        <p className="viewport-hint">
+          <b>Drag</b> the green line to swing it, <b>click</b> a part of the face to work in it
         </p>
       ) : tool === null ? (
         /* Empty hands, and the one thing to say about it -- the lathe's own
@@ -953,17 +1004,19 @@ export function LaserViewport() {
           remembers the one it was left in, because where your hand likes the
           tools is a fact about you rather than about which screen you are on.
 
-          MOVE FIRST, THEN A RULE, and only there. Move is what a hand reaches
+          MOVE FIRST, THEN SYMMETRY, THEN A RULE. Move is what a hand reaches
           for between cuts -- lay the references down, then burn to them -- so
           it stands at the head of the island where it is found without
-          hunting. The rule sits under it because it is the other kind of
-          thing: it burns nothing and takes hold of a reference rather than the
-          block, which is exactly what a rule is for saying. Freehand and Point
+          hunting. Symmetry follows it because the two are the same kind of
+          thing: neither burns anything, and each takes hold of something that
+          is not the block -- a picture, and a mirror. The rule sits under the
+          pair, which is exactly what a rule is for saying. Freehand and Point
           Cut are one kind of thing twice over -- two ways of putting a line on
           a face, sharing every step after the line exists -- so nothing stands
           between THEM. See `LaserTools`. */}
       <IslandShell>
         <MoveRefTool />
+        <SymmetryTool face={face} />
         <div className="island-rule" aria-hidden />
         <FreehandTool />
         <PointCutTool />
