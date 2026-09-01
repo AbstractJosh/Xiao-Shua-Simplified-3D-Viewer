@@ -592,6 +592,72 @@ const STITCH_ROUNDS = 4
  */
 let weldCache = new WeakMap<BufferGeometry, Welded>()
 
+/**
+ * Where the stroke had got to, so a live drag stops replaying itself.
+ *
+ * THE COST THIS EXISTS TO REMOVE. `erodeGeometry` is handed the whole run and
+ * melts it from the base every time, and a drag calls it once per pointer-move
+ * with one more dab than last time -- so a stroke of N dabs performs N(N+1)/2
+ * dab applications rather than N, and the frames get steadily heavier as the
+ * button is held. Measured on a 9,600-triangle box, the last frame of a
+ * 150-dab stroke cost 24 ms of dab work that the frame before it had already
+ * done 149/150ths of.
+ *
+ * WHAT MAKES RESUMING LEGAL is that a dab is a pure function of the surface it
+ * lands on: the run is applied strictly in order, and nothing later reaches
+ * back. So the mesh after dabs 0..k is a complete summary of them, and dab k+1
+ * cannot tell whether they were applied a moment ago or a hundred frames ago.
+ *
+ * KEYED ON THE GEOMETRY, and matched by dab IDENTITY rather than by value. The
+ * store appends to the stroke with `[...erosion, next]`, which copies the array
+ * and keeps every existing element -- so reference equality on the prefix is
+ * exact, cheap, and answers the only question that matters: is this the same
+ * stroke, one dab further on. Anything else -- a scrub backwards, an undo, a
+ * different object, a re-melt after the solid beneath changed -- fails the test
+ * and rebuilds from the base, which is the behaviour that was there before.
+ *
+ * A WeakMap for the reason `weldCache` is one: the entry dies with the geometry
+ * the evaluator's prefix cache eventually disposes.
+ *
+ * THE ONE THING IT DOES NOT PROMISE is a mesh identical to the batch replay's,
+ * and the difference is refinement rather than displacement. `refine` is hoisted
+ * over the whole run and splits the region to the FINEST dab in it, so a stroke
+ * that changes brush size partway refines ground the earlier dabs already
+ * crossed; resuming refines only what the new dab reaches, and cannot go back.
+ * On a stroke of one radius -- which is every stroke a drag produces, since the
+ * size dial cannot be turned mid-gesture -- there is nothing to go back for.
+ * See `carriedMelt` for why that is still not left to chance.
+ */
+type Melt = {
+  /** The run this state has already been through, held for the prefix test. */
+  dabs: ErodeDab[]
+  work: Work
+  adj: Adjacency
+  touched: Uint8Array
+}
+
+let meltCache = new WeakMap<BufferGeometry, Melt>()
+
+/**
+ * The cached state, if this call is the same stroke one or more dabs further on.
+ *
+ * The radius test is what keeps the refinement caveat above theoretical. A run
+ * whose dabs are not all the same size is one where resuming could leave the
+ * early ground coarser than a batch melt would have, so such a run is simply
+ * not resumed -- it is rare, it is never what a live drag produces, and paying
+ * full price for it costs nothing anybody is waiting on.
+ */
+function carriedMelt(geom: BufferGeometry, dabs: ErodeDab[]): Melt | null {
+  const cached = meltCache.get(geom)
+  if (!cached) return null
+  const done = cached.dabs.length
+  if (done === 0 || done > dabs.length) return null
+  for (let i = 0; i < done; i++) if (cached.dabs[i] !== dabs[i]) return null
+  const radius = dabs[0].radius
+  for (let i = 1; i < dabs.length; i++) if (dabs[i].radius !== radius) return null
+  return cached
+}
+
 function weld(geom: BufferGeometry): Welded {
   const cached = weldCache.get(geom)
   if (cached) return cached
@@ -2879,19 +2945,35 @@ export function erodeGeometry(geom: BufferGeometry, dabs: ErodeDab[]): BufferGeo
   const welded = weld(geom)
   if (welded.triangleCount === 0) return null
 
-  const work = workingCopy(welded)
-  refine(work, dabs)
+  const carried = carriedMelt(geom, dabs)
+  const work = carried ? carried.work : workingCopy(welded)
+  const fresh = carried ? dabs.slice(carried.dabs.length) : dabs
+
+  // Nothing new to lay down: the same prefix asked for twice, which is what a
+  // re-evaluation that changed something OTHER than the stroke looks like.
+  if (fresh.length === 0 && carried) {
+    return toGeometry(work, carried.adj, carried.touched)
+  }
+
+  refine(work, fresh)
   let adj = buildAdjacency(work)
-  const touched = new Uint8Array(work.vertexCount)
-  const reachable = reachableVertices(work, dabs)
+  // Grown rather than replaced, so what earlier dabs marked survives into the
+  // shading pass -- the batch replay marked the whole stroke on one array, and
+  // this has to end up saying the same thing.
+  const touched = carried
+    ? growU8(carried.touched, work.vertexCount)
+    : new Uint8Array(work.vertexCount)
+  const reachable = reachableVertices(work, fresh)
   const slot = new Int32Array(work.vertexCount).fill(-1)
   // REBUILT ONLY WHEN A DAB BURNS THROUGH. Refinement has finished, so for an
   // ordinary stroke the topology is fixed and this is built once for the whole
   // of it; a dab that opens a hole has taken triangles out and put a tunnel in,
   // and everything after it has to be told.
-  for (const spec of dabs) {
+  for (const spec of fresh) {
     if (dab(work, adj, spec, reachable, touched, slot)) adj = buildAdjacency(work)
   }
+
+  meltCache.set(geom, { dabs: dabs.slice(), work, adj, touched })
   return toGeometry(work, adj, touched)
 }
 
@@ -2935,4 +3017,5 @@ export function carryErosion(
 /** For the checks, which need a cold cache to time a weld honestly. */
 export function resetErodeCache(): void {
   weldCache = new WeakMap()
+  meltCache = new WeakMap()
 }
