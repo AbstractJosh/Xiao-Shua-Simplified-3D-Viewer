@@ -361,6 +361,16 @@ export type GizmoClaims = {
   rulerSelected: boolean
   sketchSelected: boolean
   marqueeing: boolean
+  /**
+   * The selected object is locked. See `SceneObject.locked`.
+   *
+   * The seventh claim, and the second that is not a guess: like `hidden` it is
+   * the user saying so, only about this one object rather than about the tool.
+   * Handles on a solid that refuses every one of them would be handles that
+   * answer a press with nothing, which is the lie the whole rule exists to
+   * avoid.
+   */
+  locked: boolean
 }
 
 /**
@@ -414,9 +424,12 @@ export type GizmoClaims = {
  * transformed right now: the user put the handles down, or a brush is up.
  */
 export function bodyCanBeDragged(
-  claims: Pick<GizmoClaims, 'hidden' | 'brushArmed'> & { mode: TransformMode }
+  claims: Pick<GizmoClaims, 'hidden' | 'brushArmed' | 'locked'> & { mode: TransformMode }
 ): boolean {
-  return claims.mode === 'move' && !claims.hidden && !claims.brushArmed
+  // THREE of the claims reach this far now. The lock is the third, and it is
+  // the plainest of them: a locked solid is not being transformed by anything,
+  // so its body offers no slide however the tool is set.
+  return claims.mode === 'move' && !claims.hidden && !claims.brushArmed && !claims.locked
 }
 
 export function selectionWearsGizmo(claims: GizmoClaims): boolean {
@@ -427,7 +440,8 @@ export function selectionWearsGizmo(claims: GizmoClaims): boolean {
     !claims.brushArmed &&
     !claims.rulerSelected &&
     !claims.sketchSelected &&
-    !claims.marqueeing
+    !claims.marqueeing &&
+    !claims.locked
   )
 }
 
@@ -642,6 +656,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
         mode: tools.transformMode,
         hidden: tools.gizmoHidden,
         brushArmed: tools.brushTool !== null,
+        locked: s.doc.objects.some((o) => o.id === id && o.locked === true),
       })
     ) {
       return
@@ -717,6 +732,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
         rulerSelected,
         sketchSelected,
         marqueeing,
+        locked: selected?.locked === true,
       }) &&
         selected && (
           <TransformGizmo

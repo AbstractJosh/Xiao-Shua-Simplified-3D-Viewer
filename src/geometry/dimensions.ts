@@ -262,6 +262,39 @@ export function resizeAlongAxis(base: BaseSolid, axis: Axis, travel: number): Ba
 }
 
 /**
+ * Resize along one axis by moving that axis's NEAR surface `travel` units
+ * outward while the far one stays where it is.
+ *
+ * `resizeAlongAxis` grows a solid about its centre: a pull on the +X arrow
+ * moves the +X face by `travel` and the -X face by the same amount the other
+ * way. This is the other reading of the same pull -- the face under the arrow
+ * goes where the pointer says and the face opposite does not move at all, so
+ * the solid gets longer toward the pointer and nowhere else. It is what a
+ * left-drag on a Scale arrow does; the right button keeps the reading above.
+ *
+ * A primitive is written about a centred origin, so the far face can only be
+ * held still by moving the origin. The dimension therefore grows by half what
+ * it would about the centre, and `shift` is how far the origin then has to
+ * slide along +axis, in the solid's own frame, to put the far face back where
+ * it was: half the growth, on every primitive, because the growth is what the
+ * far face would otherwise have moved by. Read off the dimension the solid
+ * actually ended up with rather than off `travel`, so a resize the clamp has
+ * stopped stops the origin with it -- a solid pinned at its ceiling that went
+ * on sliding would be a resize that had quietly turned into a move.
+ */
+export function resizeFromFar(
+  base: BaseSolid,
+  axis: Axis,
+  travel: number
+): { base: BaseSolid; shift: number } {
+  const dim = axisDimension(base, axis)
+  if (!dim) return { base, shift: 0 }
+  const next = withDimension(base, dim, dim.value + travel / 2 / dim.perUnit)
+  const grew = (axisDimension(next, axis)?.value ?? dim.value) - dim.value
+  return { base: next, shift: grew * dim.perUnit }
+}
+
+/**
  * How far each of the object's OWN AXES stretched when a base was resized: the
  * diagonal of the scale that carries the old primitive's skin onto the new
  * one.

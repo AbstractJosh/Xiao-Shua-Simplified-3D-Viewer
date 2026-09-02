@@ -418,6 +418,9 @@ blankBenches()
 // captured is a state the app can really be in.
 const solid = useDoc.getState().addObject({ kind: 'box', size: [1, 1, 1] }, [0, 0.5, 0])
 useDoc.getState().setObjectColor([solid], '#ff8800')
+// And locked, which is the newest optional key on a solid and the one a
+// week-old project would silently lose if `objectFrom` forgot to read it.
+useDoc.getState().setObjectLocked(solid, true)
 const turned = freshClay()
 // A waist: the wall pulled in around the middle, which is the whole of what
 // makes a lump a piece.
@@ -467,6 +470,11 @@ check(
   `${useDoc.getState().doc.objects.length}`
 )
 check('painted as it was left', useDoc.getState().doc.objects[0]?.color === '#ff8800')
+check(
+  'and still locked, the key having gone out with the solid',
+  captured.doc.objects[0]?.locked === true && useDoc.getState().doc.objects[0]?.locked === true,
+  `${shown(captured.doc.objects[0]?.locked)} out, ${shown(useDoc.getState().doc.objects[0]?.locked)} back`
+)
 check(
   'the lathe comes back turned rather than as a fresh lump',
   useLathe.getState().clay.wall.some((r) => Math.abs(r - useLathe.getState().clay.radius) > 1e-9)

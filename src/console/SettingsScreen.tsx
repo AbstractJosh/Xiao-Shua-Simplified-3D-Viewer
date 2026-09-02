@@ -1,4 +1,3 @@
-import type { CSSProperties } from 'react'
 import { MOTION_LABELS, MOTION_MODES } from '../motion'
 import { OPEN_TO, OPEN_TO_LABELS, SCREEN_HAS_GAME_CONTROLS } from '../screens'
 import { useTools } from '../store/toolStore'
@@ -9,90 +8,13 @@ import {
   FLIGHT_SPEED_MAX,
   FLIGHT_SPEED_MIN,
 } from '../viewport/gameCamera'
-import { NumberField } from './Field'
+import { NumberField, OFF_ON, Switch } from './Field'
 import { ScreenOverlay } from './ScreenOverlay'
 
-/**
- * One setting's answer: a track with the options written across it, and one
- * moving part that slides to whichever is chosen.
- *
- * WHY A COMPONENT AND NOT FOUR `map`S. The moving part has to know WHICH option
- * is lit -- an index, not a boolean -- and the track has to know how many there
- * are to divide itself into. Written per row that is the same arithmetic four
- * times, and the day a fifth option is added to one of them the slider is the
- * thing that quietly stops lining up with its own labels. Here the index is
- * derived from the value, once, beside the list it indexes.
- *
- * THE MOVING PART IS `::before` ON THE TRACK, not a fifth element among the
- * buttons -- see `.settings-row .seg` in the stylesheet. It is told where to go
- * by two custom properties written here: `--of` divides the track into cells,
- * and `--at` says which cell to stand in. So a press changes ONE number and
- * CSS animates the travel; nothing in React moves anything, and there is no
- * measuring, no ref and no resize to keep up with.
- *
- * The buttons keep the classes every segment in the app uses -- `seg`,
- * `seg-btn`, `seg-active` -- so a settings switch is still recognisably the
- * same control, wearing a physical face the console's rows have no room for.
- */
-function Switch<T extends string | boolean>({
-  options,
-  value,
-  onPick,
-}: {
-  /** In the order they are shown, which is the order the slider travels. */
-  options: readonly { value: T; label: string }[]
-  value: T
-  onPick: (value: T) => void
-}) {
-  // Clamped rather than left at -1: a value that matches no option would park
-  // the slider a cell to the LEFT of the track and hang it out of the box.
-  const at = Math.max(0, options.findIndex((o) => o.value === value))
-  return (
-    <div
-      className="seg"
-      style={{ '--at': at, '--of': options.length } as CSSProperties}
-    >
-      {options.map((o) => (
-        <button
-          key={String(o.value)}
-          type="button"
-          className={`seg-btn${o.value === value ? ' seg-active' : ''}`}
-          aria-pressed={o.value === value}
-          onClick={() => onPick(o.value)}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-/**
- * The two states of the outline switch, in the order the slider travels.
- *
- * Off first, and ordered by STATE rather than by default. These two rows do
- * not share a default -- outlines start on, game controls start off -- so
- * ordering each from its own default outwards aimed two identical-looking
- * tracks opposite ways, and the slider sitting right would have meant "on" in
- * one row and "off" in the other. Off then On in both: the slider travels from
- * nothing to something, so how far right it sits is how much is turned on.
- *
- * A list rather than two hand-written buttons, so the row is built by the same
- * `Switch` the units and the themes are and cannot drift into a different
- * control. It stays local -- unlike `THEMES` and `UNITS`, which are exported
- * because the geometry and the stylesheet have to agree with them, this is two
- * labels for one boolean and nothing outside this screen needs them.
- */
-const OUTLINE_CHOICES = [
-  { value: false, label: 'Off' },
-  { value: true, label: 'On' },
-] as const
-
-/** The same two labels for the camera scheme. See `OUTLINE_CHOICES`. */
-const GAME_CHOICES = [
-  { value: false, label: 'Off' },
-  { value: true, label: 'On' },
-] as const
+// The switch itself, and the `Off | On` pair the yes-or-no rows share, live in
+// `Field.tsx` with the rest of the console's controls: the Object panel's Lock
+// row asks the same shape of question, and one switch is what keeps the two
+// alike. See `Switch` and `OFF_ON` there.
 
 /** The units, as the switch wants them: the suffix is its own label. */
 const UNIT_CHOICES = UNITS.map((unit) => ({ value: unit, label: unit }))
@@ -207,7 +129,7 @@ export function SettingsScreen() {
             alternative is, which an empty square leaves you to infer. */}
         <div className="tool-group settings-row outline-modes">
           <p className="subhead">Outlines</p>
-          <Switch options={OUTLINE_CHOICES} value={showOutlines} onPick={setShowOutlines} />
+          <Switch options={OFF_ON} value={showOutlines} onPick={setShowOutlines} />
         </div>
 
         {/* Three cells rather than two, because the middle one is a real answer
@@ -232,7 +154,7 @@ export function SettingsScreen() {
         <fieldset className="tool-group settings-row game-modes" disabled={!flies}>
           <p className="subhead">Game Controls</p>
           <div className="settings-row-control">
-            <Switch options={GAME_CHOICES} value={gameControls} onPick={setGameControls} />
+            <Switch options={OFF_ON} value={gameControls} onPick={setGameControls} />
             {/* The one control on this screen that is not a segment, and it
                 earns the exception: a speed is a number over a two-hundred-to-
                 one range and there is no pair of words that names it. It stays

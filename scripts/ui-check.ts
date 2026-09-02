@@ -255,6 +255,7 @@ import {
   MAX_SIZE,
   MIN_DIMENSION,
   resizeAlongAxis,
+  resizeFromFar,
   scaleShape,
   scaleUniform,
 } from '../src/geometry/dimensions'
@@ -273,6 +274,7 @@ import {
   assemblyAnchor,
   assemblyCentre,
   assemblyExtent,
+  assemblyHalfExtent,
   objectBounds,
 } from '../src/geometry/assembly'
 import { turnedRotation } from '../src/viewport/gizmoDrag'
@@ -1278,6 +1280,7 @@ doc().selectObject(pyramidId)
       rulerSelected: false,
       sketchSelected: false,
       marqueeing: false,
+      locked: false,
     }
     check('a selected object wears a gizmo', selectionWearsGizmo(wearing), 'shown')
     check(
@@ -1306,12 +1309,24 @@ doc().selectObject(pyramidId)
       !selectionWearsGizmo({ ...wearing, hidden: true }),
       'hidden'
     )
+    // And the seventh, which is the user saying so about this ONE object: a
+    // locked solid refuses every handle, so it wears none.
+    check(
+      'and so does a lock on the object',
+      !selectionWearsGizmo({ ...wearing, locked: true }),
+      'hidden'
+    )
+    check(
+      'which takes the body with it, in Move and all',
+      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: true }),
+      'fixed'
+    )
     // A brush in particular, since that is the tool the rule was extended
     // for: arming one must clear the handles without the user asking twice.
     check(
       'an armed brush alone is enough to clear them',
-      !selectionWearsGizmo({ ...wearing, brushArmed: true }) &&
-        selectionWearsGizmo({ ...wearing, brushArmed: false }),
+      !selectionWearsGizmo({ ...wearing, brushArmed: true, locked: false }) &&
+        selectionWearsGizmo({ ...wearing, brushArmed: false, locked: false }),
       'cleared by the brush'
     )
   }
@@ -1323,17 +1338,17 @@ doc().selectObject(pyramidId)
   {
     check(
       'an object wearing handles can be dragged by its body',
-      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false }),
+      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: false }),
       'draggable'
     )
     check(
       'putting the handles down stops that too',
-      !bodyCanBeDragged({ mode: 'move', hidden: true, brushArmed: false }),
+      !bodyCanBeDragged({ mode: 'move', hidden: true, brushArmed: false, locked: false }),
       'fixed'
     )
     check(
       'and so does arming a brush',
-      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: true }),
+      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: true, locked: false }),
       'fixed'
     )
 
@@ -1344,17 +1359,17 @@ doc().selectObject(pyramidId)
     // it move: the gizmo says one thing and the object does another.
     check(
       'Rotate does not slide a solid by its body',
-      !bodyCanBeDragged({ mode: 'rotate', hidden: false, brushArmed: false }),
+      !bodyCanBeDragged({ mode: 'rotate', hidden: false, brushArmed: false, locked: false }),
       'fixed'
     )
     check(
       'nor does Scale',
-      !bodyCanBeDragged({ mode: 'scale', hidden: false, brushArmed: false }),
+      !bodyCanBeDragged({ mode: 'scale', hidden: false, brushArmed: false, locked: false }),
       'fixed'
     )
     check(
       'and Move still does',
-      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false }),
+      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: false }),
       'draggable'
     )
 
@@ -1374,8 +1389,9 @@ doc().selectObject(pyramidId)
             rulerSelected: false,
             sketchSelected: false,
             marqueeing: false,
+            locked: false,
           })
-          const draggable = bodyCanBeDragged({ mode, hidden, brushArmed })
+          const draggable = bodyCanBeDragged({ mode, hidden, brushArmed, locked: false })
           check(
             `${mode} hidden=${hidden} brush=${brushArmed}: a draggable body wears handles`,
             !draggable || wearing,
@@ -2100,7 +2116,7 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   const entries = doc().past.length
 
   doc().selectObject(gizmoCube)
-  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0 })
+  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0, from: 'centre' })
   check('grabbing an arrow starts a gizmo drag', doc().drag.kind === 'gizmo', doc().drag.kind)
   check('and pressing alone touches no history', doc().past.length === entries, `${doc().past.length}`)
 
@@ -2123,6 +2139,59 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   doc().endDrag()
   doc().undo()
   near('so one undo puts the whole gesture back', sizeOf(gizmoCube, 0), 2, 1e-9)
+}
+
+{
+  // The LEFT-drag reading of the same arrow, which grows the solid toward the
+  // pointer: the face under the arrow moves and the face opposite stays put. A
+  // primitive is written about a centred origin, so holding one face still
+  // means moving the origin -- and the two edits have to land in one write:
+  // one history entry, and never a frame that shows the solid grown but not
+  // yet moved.
+  const entries = doc().past.length
+  const grabbed = baseOf(gizmoCube)
+  const start = positionOf(gizmoCube)
+  const farFace = start[0] - sizeOf(gizmoCube, 0) / 2
+  const nearFace = start[0] + sizeOf(gizmoCube, 0) / 2
+
+  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0, from: 'far' })
+  for (const travel of [0.1, 0.25, 0.4]) {
+    const { base, shift } = resizeFromFar(grabbed, 0, travel)
+    doc().resizeObjectTo(base, [start[0] + shift, start[1], start[2]])
+  }
+  // travel 0.4 from the far face: the side grows by 0.4, not 0.8, and the
+  // origin slides 0.2 to keep the far face where it was.
+  near('the drag grew the solid by the travel alone', sizeOf(gizmoCube, 0), 2.4, 1e-9)
+  near('and slid it half that way', positionOf(gizmoCube)[0], start[0] + 0.2, 1e-9)
+  near(
+    'so the far face has not moved',
+    positionOf(gizmoCube)[0] - sizeOf(gizmoCube, 0) / 2,
+    farFace,
+    1e-9
+  )
+  near(
+    'and the near one followed the pointer',
+    positionOf(gizmoCube)[0] + sizeOf(gizmoCube, 0) / 2,
+    nearFace + 0.4,
+    1e-9
+  )
+  check(
+    'three frames still cost one undo entry',
+    doc().past.length === entries + 1,
+    `${doc().past.length - entries}`
+  )
+
+  // A frame that resolves to the size AND place the object already has is not
+  // an edit, exactly as it is not for the centred resize.
+  const held = doc().doc
+  const same = resizeFromFar(grabbed, 0, 0.4)
+  doc().resizeObjectTo(same.base, [start[0] + same.shift, start[1], start[2]])
+  check('a frame that changes nothing writes nothing', doc().doc === held)
+
+  doc().endDrag()
+  doc().undo()
+  near('one undo puts the size back', sizeOf(gizmoCube, 0), 2, 1e-9)
+  near('and the position with it', positionOf(gizmoCube)[0], start[0], 1e-9)
 }
 
 {
@@ -2166,7 +2235,7 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   // long as the pointer keeps going. Those frames are not edits, and each one
   // that slipped through would be an undo step that reverts nothing.
   const grabbed = baseOf(gizmoCube)
-  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0 })
+  doc().startGizmo(gizmoCube, { mode: 'size', axis: 0, from: 'centre' })
   doc().resizeObjectTo(resizeAlongAxis(grabbed, 0, 40))
   near('a runaway drag stops at the ceiling', sizeOf(gizmoCube, 0), MAX_SIZE, 1e-9)
 
@@ -2981,6 +3050,28 @@ doc().reset()
   doc().endDrag()
   doc().undo()
   near('one undo puts the whole gesture back', assemblyExtent(merged()), 6, 1e-9)
+
+  // The one-sided arrow on a merge. It cannot grow along one axis, so the
+  // arrow scales the whole assembly -- and a left-drag still promises that the
+  // skin opposite the arrow stays where it was, which is a scale about the
+  // centre followed by the slide that puts that skin back.
+  {
+    const snapshot = merged()
+    const before = objectBounds(snapshot)
+    const half = assemblyHalfExtent(snapshot, 0)
+    const travel = 1
+    doc().startGizmo(a, { mode: 'size', axis: 0, from: 'far' })
+    // The factor the viewport asks for: half the pull as growth.
+    doc().scaleObjectTo(snapshot, (half + travel / 2) / half, 0)
+    const after = objectBounds(merged())
+    near('the far skin has not moved', after.min.x, before.min.x, 1e-9)
+    near('and the near one moved by the whole travel', after.max.x, before.max.x + travel, 1e-9)
+    near('the other axes grew about the centre, as a scale does', after.min.y, before.min.y - travel / 6, 1e-9)
+
+    doc().endDrag()
+    doc().undo()
+    near('and one undo puts that back too', assemblyExtent(merged()), 6, 1e-9)
+  }
 }
 
 
@@ -3635,8 +3726,14 @@ for (const { label, base, expect } of SOLIDS) {
   if (base.kind === 'platonic') {
     hides(`${label} offers no kind switcher`, panel, '>Solid<')
     // Not the label text, which the section hint still carries: the chips
-    // themselves. A platonic panel has no other segmented control.
-    hides('nor the chips that drove it', panel, 'seg-btn')
+    // themselves. The Lock switch at the foot of the panel is a segment too,
+    // so the needle is a chip with a NUMBER in it, which only a side count or
+    // the old kind switcher ever wrote.
+    check(
+      'nor the chips that drove it',
+      !/seg-btn[^>]*>\d+</.test(panel),
+      panel.match(/seg-btn[^>]*>\d+</)?.[0] ?? 'none'
+    )
   }
   shows(`${label} can be deleted`, panel, 'Delete object')
   doc().removeObject(id)
@@ -3872,7 +3969,7 @@ console.log('\nExtrude is one control that crosses zero')
     // capped, and by this point in the suite it has long since filled, so a
     // count would sit at the cap however many entries a drag pushed.
     const priorDoc = doc().doc
-    doc().startSketchGizmo(id, fid, { mode: 'size', axis: 2 })
+    doc().startSketchGizmo(id, fid, { mode: 'size', axis: 2, from: 'far' })
     doc().depthTo(0.2)
     doc().depthTo(0.4)
     doc().depthTo(0.55)
@@ -3886,7 +3983,7 @@ console.log('\nExtrude is one control that crosses zero')
     near('so one undo rewinds the whole drag', depth(), 0, 1e-12)
 
     // Dragged back THROUGH the face in one gesture: the same arrow, past zero.
-    doc().startSketchGizmo(id, fid, { mode: 'size', axis: 2 })
+    doc().startSketchGizmo(id, fid, { mode: 'size', axis: 2, from: 'far' })
     doc().depthTo(-0.4)
     doc().endDrag()
     near('the same arrow cuts inward past zero', depth(), -0.4, 1e-12)
@@ -6469,6 +6566,187 @@ console.log('\nThe Smoother is the brush that arrives somewhere and stops')
   }
 
   doc().removeObject(flipped)
+}
+
+// --- the lock ---------------------------------------------------------------
+//
+// One switch at the foot of Dimensions, and a solid that then refuses every
+// way of moving, turning, resizing, mirroring or cutting it. What is worth
+// pinning is that the refusal lives in the STORE, where every gesture ends up,
+// and not only in the rows that went grey -- and that the lock is a key on the
+// object that is there or not there, never false, so a scene nobody has
+// locked is the document it always was.
+{
+  const others = doc().doc.objects.length
+  const held = doc().addObject({ kind: 'box', size: [1, 1, 1] }, [3, 0.5, 3])
+  doc().selectObject(held)
+  const at = () => doc().doc.objects.find((o) => o.id === held)
+  /** The markup of the lock row alone, from its opening tag to the end of the
+   *  switch inside it. */
+  const rowOf = (panel: string) => {
+    const from = panel.indexOf('class="lock-row"')
+    return from < 0 ? '' : panel.slice(from, panel.indexOf('</div></div>', from))
+  }
+
+  // The row, and the switch on it, at rest.
+  const loose = markupOf('ObjectPanel (unlocked)', ObjectPanel)
+  shows('the Dimensions panel offers a Lock row', loose, '>Lock<')
+  shows(
+    'as an Off | On switch, standing on Off',
+    rowOf(loose),
+    'class="seg-btn seg-active" aria-pressed="true">Off<'
+  )
+  hides('a name and a switch, and no tooltip', rowOf(loose), ' title="')
+  hides('with the size rows live', loose, 'class="tool-group dimension-rows" disabled=""')
+  check(
+    'an unlocked solid carries no key at all',
+    at() !== undefined && !('locked' in at()!),
+    Object.keys(at() ?? {}).join(',')
+  )
+  check(
+    'and it stands below the numbers and above Delete',
+    loose.indexOf('>Lock<') > loose.indexOf('>Width<') &&
+      loose.indexOf('>Lock<') < loose.indexOf('Delete object'),
+    `width ${loose.indexOf('>Width<')}, lock ${loose.indexOf('>Lock<')}, delete ${loose.indexOf('Delete object')}`
+  )
+
+  const entries = doc().past.length
+  doc().setObjectLocked(held, true)
+  check('locking is an edit', doc().past.length === entries + 1, `${doc().past.length - entries}`)
+  check('and the object says so', at()?.locked === true)
+  doc().setObjectLocked(held, true)
+  check(
+    'locking it again costs nothing',
+    doc().past.length === entries + 1,
+    `${doc().past.length - entries}`
+  )
+
+  const shut = markupOf('ObjectPanel (locked)', ObjectPanel)
+  shows(
+    'the switch moves to On',
+    rowOf(shut),
+    'class="seg-btn seg-active" aria-pressed="true">On<'
+  )
+  shows('and the size rows go grey', shut, 'class="tool-group dimension-rows" disabled=""')
+  hides('while the switch itself stays live', rowOf(shut), 'disabled=""')
+  shows('and so does Delete', shut, 'class="danger">Delete object')
+
+  const placed = markupOf('PlacementPanel (locked)', PlacementPanel)
+  shows(
+    'Position & Rotation dims its rows as well',
+    placed,
+    'class="tool-group placement-rows" disabled=""'
+  )
+  shows('and names what it is describing as locked', placed, '>locked object<')
+
+  // THE STORE, which is where every gesture ends up. Each of these is the
+  // action a panel or a drag would have called, and each leaves the solid as
+  // it was without spending an undo step.
+  const pos = [...at()!.transform.position] as Vec3
+  const spent = doc().past.length
+  doc().setObjectTransform(held, {
+    position: [pos[0] + 1, pos[1], pos[2]],
+    rotation: [0, 1, 0],
+  })
+  check(
+    'a typed position is refused',
+    JSON.stringify(at()!.transform.position) === JSON.stringify(pos),
+    JSON.stringify(at()!.transform.position)
+  )
+  check('and so is a turn', at()!.transform.rotation.every((v) => v === 0))
+  doc().scaleObject(held, 2)
+  check(
+    'a scale is refused',
+    JSON.stringify(at()!.base) === JSON.stringify({ kind: 'box', size: [1, 1, 1] }),
+    JSON.stringify(at()!.base)
+  )
+  doc().patchObject(held, { base: { kind: 'box', size: [2, 2, 2] } })
+  check(
+    'and a typed size',
+    JSON.stringify(at()!.base) === JSON.stringify({ kind: 'box', size: [1, 1, 1] }),
+    JSON.stringify(at()!.base)
+  )
+  check('none of which cost an undo step', doc().past.length === spent, `${doc().past.length - spent}`)
+  doc().patchObject(held, { name: 'Keystone' })
+  check('though its name is still open', at()?.name === 'Keystone', at()?.name)
+  doc().setObjectColor([held], '#123456')
+  check('and its colour', at()?.color === '#123456', at()?.color)
+
+  // The two gestures that would move it, at the store: each still SELECTS,
+  // so the panels describe the thing that was pressed, and neither begins.
+  doc().selectObject(null)
+  doc().startMovingObject(held)
+  check('pressing its body picks it', primarySelection(doc()) === held)
+  check('but never picks it up', doc().drag.kind === 'idle', doc().drag.kind)
+  doc().startGizmo(held, { mode: 'move', axis: 0 })
+  check('nor does a handle', doc().drag.kind === 'idle', doc().drag.kind)
+
+  // Mirror skips it, and the tool says so by going dark.
+  const flips = doc().past.length
+  doc().mirrorObjects([held], 0)
+  check('a mirror leaves it alone', doc().past.length === flips, `${doc().past.length - flips}`)
+  shows(
+    'and the Mirror tool is dark over it',
+    markupOf('MirrorTool (locked)', MirrorTool),
+    'class="nav-btn" disabled=""'
+  )
+
+  // The blade leaves it whole, named outright or swept up with everything.
+  const split = doc().applyCut([3, 0.5, 3], [1, 0, 0], [held])
+  check('the plane leaves it whole', split === 0, `${split}`)
+  check('and the scene as it was', doc().doc.objects.length === others + 1, `${doc().doc.objects.length}`)
+  tools().setCutActive(true)
+  tools().setCutPlane({ position: [3, 0.5, 3], rotation: [0, 0, 0] })
+  shows(
+    'Apply cut is dark while it is selected',
+    markupOf('CutActions (locked)', CutActions),
+    'class="nav-action nav-action-primary" disabled=""'
+  )
+  doc().selectObject(null)
+  const wide = markupOf('CutActions (locked, nothing selected)', CutActions)
+  shows('with nothing selected the count leaves it out', wide, `Apply cut · all ${others}<`)
+  shows('and says so', wide, 'unlocked object')
+  tools().setCutActive(false)
+  doc().selectObject(held)
+
+  shows(
+    'the Scene list marks the row',
+    markupOf('SceneTree (locked)', SceneTree),
+    'tree-lock">locked<'
+  )
+
+  // A copy is a new object about to be set down, and one that could not be
+  // set down would be no use: the lock stays behind.
+  const pasted = doc().pasteObject(at()!)
+  check(
+    'a pasted copy comes out unlocked',
+    !('locked' in doc().doc.objects.find((o) => o.id === pasted)!),
+    Object.keys(doc().doc.objects.find((o) => o.id === pasted) ?? {}).join(',')
+  )
+  check('with no key, not a false one', cloneObject(at()!).locked === undefined)
+  doc().removeObject(pasted)
+  doc().selectObject(held)
+
+  // Off again: the key goes, the rows come back, and undo gives the lock back.
+  doc().setObjectLocked(held, false)
+  check(
+    'unlocking removes the key rather than writing false',
+    at() !== undefined && !('locked' in at()!),
+    Object.keys(at() ?? {}).join(',')
+  )
+  hides(
+    'and the size rows come back',
+    markupOf('ObjectPanel (unlocked again)', ObjectPanel),
+    'class="tool-group dimension-rows" disabled=""'
+  )
+  doc().setObjectTransform(held, { position: [pos[0] + 1, pos[1], pos[2]], rotation: [0, 0, 0] })
+  check('and the object moves again', at()!.transform.position[0] === pos[0] + 1)
+  doc().undo()
+  doc().undo()
+  check('undo gives the lock back', at()?.locked === true)
+  check('with the solid where it was', at()!.transform.position[0] === pos[0])
+
+  doc().removeObject(held)
 }
 
 // --- screens ----------------------------------------------------------------

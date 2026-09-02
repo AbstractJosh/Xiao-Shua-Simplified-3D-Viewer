@@ -383,6 +383,32 @@ export type SceneObject = {
    */
   erase?: boolean
   /**
+   * This object is LOCKED: it stays exactly where it is and exactly the size
+   * and shape it is, however it is pressed, dragged or aimed at.
+   *
+   * A lock on its PLACE and its SHAPE, not on the object. The four things a
+   * gizmo does -- move, turn, resize, mirror -- and the one thing the cut plane
+   * does are refused; everything else about it goes on as before. It can still
+   * be selected, painted, sketched on, torched, erased from, copied and deleted,
+   * because none of those is what somebody reaching for a lock is worried
+   * about. What they are worried about is nudging a part they have finished
+   * placing while they work on the one beside it.
+   *
+   * ENFORCED IN THE STORE, not only in the panels. The switch dims the rows
+   * that would move it and the viewport takes its handles away, but the store
+   * is where the edit would land, so the store is where the refusal lives --
+   * see `setObjectTransform`, `scaleObject`, `mirrorObjects`, `applyCut` and
+   * the rest. A guard in the UI alone would be a guard that every new way in
+   * has to remember to add.
+   *
+   * Absent rather than false on an ordinary solid, for the reason `erase` is:
+   * an untouched scene stays exactly the document it was before locks existed.
+   * A copy never inherits it -- see `cloneObject` -- because a copy is a new
+   * object about to be set down somewhere, and one that cannot be set down is
+   * no use to anybody.
+   */
+  locked?: boolean
+  /**
    * Solids that have been erased OUT of this one, each a whole SceneObject in
    * this object's local space -- the negative of `parts`.
    *
@@ -582,17 +608,27 @@ export function defaultFeature(anchor: SurfaceAnchor, shape: Shape2D): Feature {
  * first time anything reached past a spread.
  */
 export function cloneObject(obj: SceneObject): SceneObject {
-  const remint = (o: SceneObject): SceneObject => ({
-    ...o,
-    id: nextObjectId(),
-    features: o.features.map((f) => ({ ...f, id: nextFeatureId() })),
-    cuts: o.cuts.map((c) => ({ ...c, id: nextCutId() })),
-    parts: o.parts.map(remint),
-    // Holes travel with the copy, and their ids are reminted like everything
-    // else: an erased solid is a whole SceneObject, and two of them sharing an
-    // id would collide in every map keyed by one.
-    ...(o.erased ? { erased: o.erased.map(remint) } : {}),
-  })
+  const remint = (o: SceneObject): SceneObject => {
+    // The lock stays behind. Every caller of this is about to set the copy down
+    // somewhere -- a paste beside the original, a shelf tile dragged in, a hole
+    // pressed into a target -- and a copy that arrived locked would land where
+    // the paste put it with no way to move it off the thing it was copied from.
+    // The key is REMOVED rather than written false, so the copy is exactly the
+    // document an unlocked solid is. See `SceneObject.locked`.
+    const rest: SceneObject = { ...o }
+    delete rest.locked
+    return {
+      ...rest,
+      id: nextObjectId(),
+      features: o.features.map((f) => ({ ...f, id: nextFeatureId() })),
+      cuts: o.cuts.map((c) => ({ ...c, id: nextCutId() })),
+      parts: o.parts.map(remint),
+      // Holes travel with the copy, and their ids are reminted like everything
+      // else: an erased solid is a whole SceneObject, and two of them sharing an
+      // id would collide in every map keyed by one.
+      ...(o.erased ? { erased: o.erased.map(remint) } : {}),
+    }
+  }
   return remint(structuredClone(obj))
 }
 

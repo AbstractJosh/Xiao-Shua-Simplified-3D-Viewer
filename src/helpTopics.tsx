@@ -598,7 +598,15 @@ export const HELP_SECTIONS: HelpSection[] = [
         key: 'S',
         steps: [
           { action: 'Drag the ring', result: 'Scales every dimension at once.' },
-          { action: 'Drag an arrow', result: 'Resizes the one dimension it points along.' },
+          {
+            action: 'Drag an arrow',
+            result:
+              'Resizes the one dimension it points along, from that end: the face under the arrow follows the pointer and the face opposite stays put.',
+          },
+          {
+            action: 'Right-drag an arrow',
+            result: 'Resizes it about the centre instead, so both faces move and the solid stays where it is.',
+          },
         ],
         notes: [
           <>
@@ -639,6 +647,27 @@ export const HELP_SECTIONS: HelpSection[] = [
             With them dark the solid cannot be dragged <b>at all</b>, by arrow or by body -- it is
             pinned while you work on its surface. It can still be painted, cut and torched, and its{' '}
             <b>Position</b> and <b>Rotation</b> still typed.
+          </>,
+        ],
+      },
+      {
+        title: 'Lock',
+        summary:
+          'A switch at the foot of the Dimensions panel. On, the object stays exactly where it is and exactly the size it is, whatever is pressed, dragged or aimed at it.',
+        steps: [
+          {
+            action: 'Lock: On',
+            result:
+              'The handles come off, and Position, Rotation and the size rows go grey. Mirror stands down, and Apply cut leaves it whole.',
+          },
+          { action: 'Lock: Off', result: 'Everything comes back.' },
+        ],
+        notes: [
+          <>
+            It locks the object's <b>place and shape</b>, not the object: it can still be selected,
+            painted, sketched on, torched, erased from, copied and deleted, and its row in the Scene
+            list says <b>locked</b>. A copy of it comes out unlocked. The lock is saved with the
+            project and undone like any other edit.
           </>,
         ],
       },
@@ -777,7 +806,8 @@ export const HELP_SECTIONS: HelpSection[] = [
         notes: [
           <>
             The tool's panel opens beside the island when you arm it, and says what the cut is
-            about to take: the selected object, or every solid if nothing is selected.
+            about to take: the selected object, or every solid if nothing is selected. A locked
+            solid is left whole either way.
           </>,
         ],
       },

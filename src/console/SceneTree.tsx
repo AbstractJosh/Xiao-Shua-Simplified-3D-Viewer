@@ -272,6 +272,10 @@ export function SceneTree() {
                     erase
                   </span>
                 )}
+                {/* A locked solid looks exactly like a loose one in the scene
+                    -- the lock only shows itself when something refuses to
+                    move -- so the row is the one place it is said. */}
+                {o.locked && <span className="section-hint tree-lock">locked</span>}
                 {/* Two halves of a cut solid look like two unrelated objects
                     until this chip explains where the second one came from. */}
                 {o.cuts.length > 0 &&

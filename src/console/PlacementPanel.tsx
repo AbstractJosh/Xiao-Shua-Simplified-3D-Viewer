@@ -248,7 +248,9 @@ export function PlacementPanel() {
   } else if (object) {
     const { transform } = object
     target = {
-      label: 'object',
+      // The hint is a VALUE beside the title, and "locked" is the one value
+      // that says why every row below has gone grey. See `SceneObject.locked`.
+      label: object.locked ? 'locked object' : 'object',
       position: transform.position,
       rotation: transform.rotation,
       rotationLabel: 'Rotation',
@@ -290,31 +292,41 @@ export function PlacementPanel() {
       {!cutActive && object && !object.erase && feature && !feature.confirmed && (
         <SketchActions object={object} feature={feature} />
       )}
-      <Vec3Field
-        unit
-        label="Position"
-        value={target.position}
-        min={-target.positionLimit}
-        max={target.positionLimit}
-        step={0.05}
-        onChange={target.setPosition}
-      />
-      <Vec3Field
-        label={target.rotationLabel}
-        resetTo={0}
-        value={target.rotation}
-        min={-180}
-        max={180}
-        // A TENTH of a degree, not a whole one. The scrub starts at one step a
-        // pixel and accelerates from there, so a whole-degree step left it with
-        // no fine end at all -- half a degree was simply not reachable by drag,
-        // however slowly you moved. A full sweep still crosses in the same 600
-        // pixels; it is the first few that got finer.
-        step={0.1}
-        decimals={1}
-        degrees
-        onChange={target.setRotation}
-      />
+      {/* Both rows dim while the object is locked -- the same fieldset the
+          Dimensions panel puts round its rows, for the same reason: a locked
+          solid stays where it is, and a slider that could still be dragged
+          would be a slider that answers with nothing. The cut plane is never
+          locked; it is not an object, and aiming it is not an edit. */}
+      <fieldset
+        className="tool-group placement-rows"
+        disabled={!cutActive && object?.locked === true}
+      >
+        <Vec3Field
+          unit
+          label="Position"
+          value={target.position}
+          min={-target.positionLimit}
+          max={target.positionLimit}
+          step={0.05}
+          onChange={target.setPosition}
+        />
+        <Vec3Field
+          label={target.rotationLabel}
+          resetTo={0}
+          value={target.rotation}
+          min={-180}
+          max={180}
+          // A TENTH of a degree, not a whole one. The scrub starts at one step
+          // a pixel and accelerates from there, so a whole-degree step left it
+          // with no fine end at all -- half a degree was simply not reachable
+          // by drag, however slowly you moved. A full sweep still crosses in
+          // the same 600 pixels; it is the first few that got finer.
+          step={0.1}
+          decimals={1}
+          degrees
+          onChange={target.setRotation}
+        />
+      </fieldset>
     </Section>
   )
 }

@@ -7,6 +7,7 @@ import type { BufferAttribute, Camera, LineSegments, MeshBasicMaterial } from 't
 import {
   MAX_FACE_OFFSET,
   resizeAlongAxis,
+  resizeFromFar,
   resizeShapeAlong,
   scaleShape,
 } from '../geometry/dimensions'
@@ -833,8 +834,24 @@ function dragGizmo(
   if (travel === null) return
 
   if (drag.handle.mode === 'size') {
+    // WHICH END STAYS PUT is the button's to say -- see `SizeFrom`. About the
+    // centre, the skin under the arrow moves `travel` and the one opposite
+    // moves the same the other way. From the far face, the skin under the
+    // arrow still moves `travel` and the one opposite does not move at all,
+    // which every branch below reaches the same way: grow half as much, and
+    // slide the other half.
+    const far = drag.handle.from === 'far'
     if (grab.object.parts.length === 0) {
-      s.resizeObjectTo(resizeAlongAxis(grab.object.base, sizeAxis, travel))
+      if (!far) {
+        s.resizeObjectTo(resizeAlongAxis(grab.object.base, sizeAxis, travel))
+        return
+      }
+      // The origin slides along the arrow by what the far face would otherwise
+      // have moved, from where it stood at the grab -- never from where the
+      // last frame left it, for the reason gizmoDrag.ts gives at length.
+      const { base, shift } = resizeFromFar(grab.object.base, sizeAxis, travel)
+      const [x, y, z] = grab.object.transform.position
+      s.resizeObjectTo(base, [x + dir.x * shift, y + dir.y * shift, z + dir.z * shift])
       return
     }
     // A merged object cannot be resized along one axis: the parts are rotated
@@ -842,7 +859,15 @@ function dragGizmo(
     // way to write the result down. The arrow still says how far, though, so it
     // scales the whole assembly by how far it pulled this axis's skin.
     if (grab.half < 1e-4) return
-    s.scaleObjectTo(grab.object, (grab.half + travel) / grab.half)
+    if (!far) {
+      s.scaleObjectTo(grab.object, (grab.half + travel) / grab.half)
+      return
+    }
+    // Half the pull as a scale about the centre and the other half as the
+    // slide that holds the far skin: between them the near skin moves the
+    // whole `travel`, wherever the assembly's centre sits between its two
+    // skins, because the slide is measured from that centre too.
+    s.scaleObjectTo(grab.object, (grab.half + travel / 2) / grab.half, sizeAxis)
     return
   }
 
@@ -976,6 +1001,14 @@ function dragSketchGizmo(
   }
 
   // Scale mode: stretch the outline along the arrow rather than sliding it.
+  //
+  // About its own centre on EITHER button: `from` is not read here. Holding
+  // one edge of the outline still would mean sliding the anchor by the other
+  // half of the stretch, and the anchor's own clamp at the edge of a face can
+  // refuse a slide the outline's clamp allows -- so the far edge would hold
+  // everywhere but near a border, where it would move after all. An outline
+  // is small against the face it sits on; a solid is not, which is why its
+  // arrows are worth the second reading.
   if (handle.mode === 'size') {
     s.resizeShapeTo(
       resizeShapeAlong(grab.shape, handle.axis, travel, maxShapeSize(object.base, grab.anchor))

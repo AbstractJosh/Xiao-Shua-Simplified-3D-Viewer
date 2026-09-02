@@ -3073,6 +3073,17 @@ body {
   color: var(--accent);
 }
 
+/* A lock is a fact about the row rather than about its shape, so it wears the
+   tally's quiet grey rather than the cut's accent: the chip that tells you why
+   a solid would not move should not read as a second kind of edit. */
+.tree-lock {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  background: var(--panel-2);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+}
+
 /* --- tool readouts --- */
 
 /* A bare fieldset, used only to switch a whole group of controls off at once:
@@ -5363,6 +5374,41 @@ body {
   margin-top: 3px;
   padding: 3px;
   font-size: var(--t-fine);
+}
+
+/* --- the lock row, at the foot of Dimensions ------------------------------
+
+   A name on the left and the `Off | On` track on the right, on one line, the
+   shape every Settings row has -- at this panel's own size. The track takes
+   its two words in two equal cells, like the erase scope's pair, so the lit
+   half is read as a position on a switch and not as one of two buttons that
+   happen to sit together.
+
+   Written AFTER the HUD's own rules on purpose: the panel is only ever drawn
+   inside the HUD now, and `.selection-hud .subhead` and `.selection-hud
+   .seg-btn` above would otherwise win the margin and the padding back. */
+.lock-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0 7px;
+}
+
+.lock-row .subhead {
+  margin: 0;
+}
+
+.lock-row .seg {
+  /* Two cells of equal width, sized so `Off` and `On` each have a hairline of
+     air either side at the HUD's type size. */
+  width: 88px;
+}
+
+.lock-row .seg-btn {
+  flex: 1 1 0;
+  padding: 2px 0;
+  text-align: center;
 }
 
 /* --- export --- */

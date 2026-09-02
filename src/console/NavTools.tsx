@@ -172,9 +172,14 @@ export function MirrorTool() {
   const axis = useTools((s) => s.mirrorAxis)
   const setMirrorAxis = useTools((s) => s.setMirrorAxis)
   // A boolean rather than the list: the only question this button asks of the
-  // selection is whether there is one, and a derived boolean does not re-render
-  // the island every time a different solid is picked.
-  const anySelected = useDoc((s) => s.selectedObjectIds.length > 0)
+  // selection is whether there is something in it to flip, and a derived
+  // boolean does not re-render the island every time a different solid is
+  // picked. A LOCKED solid does not count -- `mirrorObjects` skips it -- so a
+  // selection of nothing but locked parts leaves the button dark rather than
+  // live over a press that would do nothing.
+  const anySelected = useDoc((s) =>
+    s.selectedObjectIds.some((id) => s.doc.objects.some((o) => o.id === id && !o.locked))
+  )
 
   // The selection is read at the press rather than subscribed to, the way the
   // cut tool reads its spawn point: what is selected only matters at the
@@ -758,7 +763,12 @@ export function CutActions() {
   // Only what the wording depends on: the doc itself is read at click time, so
   // building a solid never re-renders the bar.
   const selectedObjectId = useDoc(primarySelection)
-  const objectCount = useDoc((s) => s.doc.objects.length)
+  // Whether the selected object refuses the blade. See `SceneObject.locked`.
+  const selectedLocked = useDoc((s) => selectedObject(s)?.locked === true)
+  // How many the plane could sever: the locked ones are left whole by
+  // `applyCut`, so counting them would promise a cut the button cannot make.
+  const objectCount = useDoc((s) => s.doc.objects.filter((o) => !o.locked).length)
+  const lockedCount = useDoc((s) => s.doc.objects.filter((o) => o.locked).length)
 
   const [status, setStatus] = useState<string | null>(null)
   const [missed, setMissed] = useState(false)
@@ -786,8 +796,10 @@ export function CutActions() {
 
   const target =
     selectedObjectId === null
-      ? `Cuts every object in the scene (${objectCount}).`
-      : 'Cuts the selected object. Deselect to cut the whole scene.'
+      ? `Cuts every ${lockedCount > 0 ? 'unlocked ' : ''}object in the scene (${objectCount}).`
+      : selectedLocked
+        ? 'The selected object is locked. Unlock it under Dimensions, or deselect to cut the whole scene.'
+        : 'Cuts the selected object. Deselect to cut the whole scene.'
 
   const cut = () => {
     const { doc, applyCut } = useDoc.getState()
@@ -811,7 +823,10 @@ export function CutActions() {
       <button
         type="button"
         className="nav-action nav-action-primary"
-        disabled={objectCount === 0}
+        // Dark while the thing it is aimed at is locked: the store would leave
+        // the object whole and the receipt would call it a miss, which is a
+        // worse answer than a button that says it cannot.
+        disabled={objectCount === 0 || selectedLocked}
         // What the button is about to destroy rides the button, rather than
         // standing above it as a line of prose. As prose it was the widest
         // thing in the panel, and a popover sized to a sentence nobody needs

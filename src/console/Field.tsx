@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import type { Vec2, Vec3 } from '../geometry/types'
 import { SCRUB_SLOP, scrubbed } from './scrub'
 import { Tip } from './Tip'
@@ -765,3 +765,82 @@ export function Vec2Field({
     </div>
   )
 }
+
+/**
+ * One yes-or-no, or one of a few named answers: a track with the options
+ * written across it, and one moving part that slides to whichever is chosen.
+ *
+ * WHY A COMPONENT AND NOT A `map` PER ROW. The moving part has to know WHICH
+ * option is lit -- an index, not a boolean -- and the track has to know how
+ * many there are to divide itself into. Written per row that is the same
+ * arithmetic every time, and the day a third option is added to one of them
+ * the slider is the thing that quietly stops lining up with its own labels.
+ * Here the index is derived from the value, once, beside the list it indexes.
+ *
+ * THE MOVING PART IS `::before` ON THE TRACK, not an extra element among the
+ * buttons -- see `.settings-row .seg` in the stylesheet. It is told where to go
+ * by two custom properties written here: `--of` divides the track into cells,
+ * and `--at` says which cell to stand in. So a press changes ONE number and
+ * CSS animates the travel; nothing in React moves anything, and there is no
+ * measuring, no ref and no resize to keep up with. Anywhere the stylesheet
+ * draws no moving part -- the console's own panels -- the two properties are
+ * simply unread, and the lit button is the whole of the answer.
+ *
+ * The buttons keep the classes every segment in the app uses -- `seg`,
+ * `seg-btn`, `seg-active` -- so a switch is still recognisably the same
+ * control as the side-count chips, wearing a physical face where the row has
+ * room for one. It lives here rather than on the Settings screen that first
+ * needed it because the Object panel's Lock row is the same control asking the
+ * same shape of question, and two copies would be two switches to keep alike.
+ */
+export function Switch<T extends string | boolean>({
+  options,
+  value,
+  onPick,
+}: {
+  /** In the order they are shown, which is the order the slider travels. */
+  options: readonly { value: T; label: string }[]
+  value: T
+  onPick: (value: T) => void
+}) {
+  // Clamped rather than left at -1: a value that matches no option would park
+  // the slider a cell to the LEFT of the track and hang it out of the box.
+  const at = Math.max(0, options.findIndex((o) => o.value === value))
+  return (
+    <div
+      className="seg"
+      style={{ '--at': at, '--of': options.length } as CSSProperties}
+    >
+      {options.map((o) => (
+        <button
+          key={String(o.value)}
+          type="button"
+          className={`seg-btn${o.value === value ? ' seg-active' : ''}`}
+          aria-pressed={o.value === value}
+          onClick={() => onPick(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The two states of a yes-or-no switch, in the order the slider travels.
+ *
+ * Off first, and ordered by STATE rather than by default. Rows do not share a
+ * default -- outlines start on, game controls start off -- so ordering each
+ * from its own default outwards aimed two identical-looking tracks opposite
+ * ways, and the slider sitting right would have meant "on" in one row and
+ * "off" in the other. Off then On everywhere: the slider travels from nothing
+ * to something, so how far right it sits is how much is turned on.
+ *
+ * A list rather than two hand-written buttons, so every yes-or-no row is built
+ * by the same `Switch` the units and the themes are and cannot drift into a
+ * different control.
+ */
+export const OFF_ON = [
+  { value: false, label: 'Off' },
+  { value: true, label: 'On' },
+] as const

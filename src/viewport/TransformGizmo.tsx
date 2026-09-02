@@ -73,7 +73,11 @@ import type { TransformMode } from '../store/toolStore'
  *   scale   the ring, which scales every dimension at once, and the arrows
  *           again -- here each one resizes the dimension it points along, which
  *           is what the right button used to do. These arrows stand in the
- *           OBJECT's frame rather than the world's; see `local`.
+ *           OBJECT's frame rather than the world's; see `local`. They are the
+ *           one handle that still answers two buttons, and the button says
+ *           which end of the dimension stays put: the left grows the solid
+ *           toward the pointer, the right grows it about its centre. See
+ *           `Arrow`.
  *
  * A gizmo shows a handle only where its target actually has that gesture: the
  * cut plane has no per-axis extent, so Scale gives it the ring alone, and a
@@ -551,7 +555,8 @@ function Arrow({
   axis: GizmoAxis
   color: string
   /**
-   * This arrow does not slide: it resizes, on either button.
+   * This arrow does not slide: it resizes, on either button -- from the far
+   * face on the left, about the centre on the right. See `SizeFrom`.
    *
    * Two things arrive here. In Scale mode EVERY arrow is one, which is the
    * mode. And in any mode, an arrow whose target has no slide along it is one
@@ -578,9 +583,14 @@ function Arrow({
     // lives now, so a right press here is left to the camera instead, which is
     // what it does everywhere else in the viewport.
     //
-    // A size-only arrow still answers both, because there is no second thing
-    // for the right button to mean on it and a handle that ignored a button
-    // reads as broken.
+    // A size-only arrow answers both, and the button says WHICH END STAYS PUT.
+    // The left resizes from the far face: the face under the arrow follows the
+    // pointer and the face opposite does not move, so the solid gets longer in
+    // the direction it is being pulled and nowhere else. The right resizes
+    // about the centre, both faces moving, which is what the arrow used to do
+    // on either button -- kept, on the button that always meant it, because
+    // growing a solid in place without then sliding it back is a real gesture
+    // and there is no other handle for it. See `SizeFrom`.
     //
     // AND NOT AT ALL WITH GAME CONTROLS ON, where the right button is how you
     // look about: an arrow that resized on it would have you dragging a solid
@@ -589,9 +599,10 @@ function Arrow({
     // right button is simply the camera's on this screen while you are flying,
     // the way it already is everywhere else in the viewport. See
     // `gameControls`.
-    if (e.button === 0) onGrab({ mode: sizeOnly ? 'size' : 'move', axis }, e)
-    else if (e.button === 2 && sizeOnly && !flyingHere(useTools.getState())) {
-      onGrab({ mode: 'size', axis }, e)
+    if (e.button === 0) {
+      onGrab(sizeOnly ? { mode: 'size', axis, from: 'far' } : { mode: 'move', axis }, e)
+    } else if (e.button === 2 && sizeOnly && !flyingHere(useTools.getState())) {
+      onGrab({ mode: 'size', axis, from: 'centre' }, e)
     }
   }
 
@@ -846,7 +857,8 @@ export function TransformGizmo({
    */
   axes?: GizmoAxis[]
   /**
-   * Arrows with no slide of their own, where BOTH buttons resize.
+   * Arrows with no slide of their own, where BOTH buttons resize -- each from
+   * its own end; see `Arrow`.
    *
    * The sketch gizmo's normal arrow is the case: a sketch cannot move off the
    * surface it is anchored to, so there is no slide along that direction -- but
@@ -1051,7 +1063,10 @@ export function TransformGizmo({
             // In Scale every arrow resizes; in Move only the ones with no
             // slide of their own do. Which is also the whole of what a press
             // on this arrow produces, so the same answer says what to draw and
-            // says whether the handle being dragged is this one.
+            // says whether the handle being dragged is this one. Which END a
+            // resize holds is not part of that answer -- `holding` reads the
+            // mode and the axis, so an arrow lights for a drag on either
+            // button -- and the `from` here is only what the type asks for.
             const sizeOnly = !parts.slide || sizeOnlyAxes.includes(axis)
             return (
               <Arrow
@@ -1059,7 +1074,9 @@ export function TransformGizmo({
                 axis={axis}
                 color={colors[axis] ?? AXIS_COLORS[axis]}
                 sizeOnly={sizeOnly}
-                held={holding({ mode: sizeOnly ? 'size' : 'move', axis })}
+                held={holding(
+                  sizeOnly ? { mode: 'size', axis, from: 'far' } : { mode: 'move', axis }
+                )}
                 onGrab={grab}
               />
             )

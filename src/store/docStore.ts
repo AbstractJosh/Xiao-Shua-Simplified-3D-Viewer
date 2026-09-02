@@ -20,7 +20,12 @@ import {
   solidLabel,
 } from '../geometry/types'
 import { clampDepth, conform, hostSurfaceFor, reseat, surfaceFor } from '../geometry/surfaces'
-import { assemblyBounds, assemblyParams, scaleAssembly } from '../geometry/assembly'
+import {
+  assemblyBounds,
+  assemblyParams,
+  scaleAssembly,
+  scaleAssemblyFromFar,
+} from '../geometry/assembly'
 import { mirrorAssembly } from '../geometry/mirror'
 import { baseParams } from '../geometry/dimensions'
 import type { Axis } from '../geometry/dimensions'
@@ -147,11 +152,27 @@ export type Drag =
 export type GizmoAxis = 0 | 1 | 2
 
 /**
+ * What a per-axis resize holds still.
+ *
+ * An arrow stands at one end of the dimension it resizes, and a pull on it can
+ * mean one of two things. `'far'` moves the face under the arrow and leaves
+ * the face opposite where it is, so the solid gets longer toward the pointer
+ * and nowhere else. `'centre'` moves both faces by the same amount, so the
+ * solid grows about its middle and the gizmo stays where it was. The left
+ * button means the first and the right button the second -- see `Arrow` in
+ * TransformGizmo, which is the one place the two are told apart.
+ */
+export type SizeFrom = 'far' | 'centre'
+
+/**
  * One grabbable part of a gizmo.
  *
- * `move` slides along the axis and `size` resizes along it -- the left and
- * right buttons on the same arrow. The ring is a `size` with no axis, because
- * scaling everything at once is the one operation that has no direction.
+ * `move` slides along the axis and `size` resizes along it -- Move's arrows
+ * and Scale's, which are the same three handles in two modes. A `size` says
+ * which end of the dimension stays put, which is the one thing about the
+ * gesture the button decides: see `SizeFrom`. The ring is a `size` with no
+ * axis, because scaling everything at once is the one operation that has no
+ * direction, and so nothing to hold still but the centre.
  *
  * `plane` is the ring's understudy: hold Control and the ring gives way to
  * three quads, and dragging one slides the target within that plane. It is a
@@ -172,7 +193,7 @@ export type GizmoHandle =
    * second vocabulary anywhere downstream.
    */
   | { mode: 'plane'; axis: GizmoAxis }
-  | { mode: 'size'; axis: GizmoAxis }
+  | { mode: 'size'; axis: GizmoAxis; from: SizeFrom }
   | { mode: 'size'; axis: 'all' }
   /**
    * One of the Rotate gizmo's three rings, named by the axis it turns ABOUT --
@@ -298,6 +319,21 @@ type State = {
   setObjectTransform: (id: string, transform: ObjectTransform) => void
   patchObject: (id: string, patch: Partial<SceneObject>) => void
   /**
+   * Lock an object in place, or let it go again. See `SceneObject.locked`.
+   *
+   * Its own action rather than a `patchObject` call because OFF is not a value:
+   * an unlocked solid carries no key at all, so that a scene nobody has locked
+   * is exactly the document it was before locks existed, and `patchObject` can
+   * only ever write a field, never remove one. It is also the one write to an
+   * object that must go through while the object is locked, which is precisely
+   * the write `patchObject` is now built to refuse.
+   *
+   * An EDIT, and undone like one. Flipping the switch and then Ctrl+Z gives
+   * the solid back exactly as it was, lock included, which is what anyone
+   * pressing Ctrl+Z after a wrong press expects.
+   */
+  setObjectLocked: (id: string, locked: boolean) => void
+  /**
    * Paint every named object one colour.
    *
    * Takes the whole list rather than being called once per id because an Apply
@@ -357,8 +393,14 @@ type State = {
    * Writes the object's OWN primitive, which is all a per-axis drag can mean --
    * a merged object has no single width to write, so its arrows scale it
    * through `scaleObjectTo` instead.
+   *
+   * With `position`, the origin moves in the same write. A resize from the far
+   * face -- see `SizeFrom` -- holds that face still by moving the origin, and
+   * the two halves of it have to land together: written separately, a frame
+   * could show the solid grown but not yet moved, and the far face would
+   * flicker out and back on every step of the drag.
    */
-  resizeObjectTo: (base: BaseSolid) => void
+  resizeObjectTo: (base: BaseSolid, position?: Vec3) => void
   /**
    * Scale the whole object -- every solid merged into it -- about its centre.
    *
@@ -376,8 +418,13 @@ type State = {
    * `gizmoDrag.ts` gives at length: a factor applied to the result of the last
    * factor accumulates, and once the scale clamps at a limit an accumulating
    * drag keeps swallowing travel the pointer then has to give back.
+   *
+   * With `far`, the object's skin on the negative side of that one of its own
+   * axes stays where it was: the scale is followed by the slide that puts it
+   * back, which is the one-sided arrow drag on a merged object. See
+   * `scaleAssemblyFromFar`.
    */
-  scaleObjectTo: (snapshot: SceneObject, factor: number) => void
+  scaleObjectTo: (snapshot: SceneObject, factor: number, far?: Axis) => void
   /**
    * Reflect each of these objects in the plane through its own centre,
    * perpendicular to one of its own axes.
@@ -530,6 +577,17 @@ const sameShape = (a: Shape2D, b: Shape2D): boolean =>
 /** Two selections that name the same objects in the same order. */
 const sameIds = (a: string[], b: string[]): boolean =>
   a.length === b.length && a.every((id, i) => id === b[i])
+
+/**
+ * Whether the named object refuses to be moved, turned, resized, mirrored or
+ * cut. See `SceneObject.locked`.
+ *
+ * An id nothing answers to is NOT locked: every action below that asks this
+ * goes on to look the object up and refuses a missing one for its own, better
+ * reason, so the lock has nothing to add there.
+ */
+const lockedIn = (doc: Doc, id: string): boolean =>
+  doc.objects.some((o) => o.id === id && o.locked === true)
 
 /** Selection survives an edit only while the thing it names still exists. */
 const prune = (
@@ -811,6 +869,11 @@ export const useDoc = create<State>((set, get) => {
 
     setObjectTransform: (id, transform) => {
       const { drag, doc } = get()
+      // A locked object stays where it is, whether the new placement was
+      // dragged or typed. The panels dim their rows and the viewport takes the
+      // handles away, but this is where the edit would land, so this is where
+      // it is refused -- see `SceneObject.locked`.
+      if (lockedIn(doc, id)) return
       // Two live gestures write here: the body drag, and the gizmo ring's turn.
       // Both are the continuous part of one gesture, so both take a single
       // snapshot and then write silently.
@@ -836,7 +899,16 @@ export const useDoc = create<State>((set, get) => {
       commitCoalesced(`transform:${id}`, mapObject(id, (o) => ({ ...o, transform })))
     },
 
-    patchObject: (id, patch) =>
+    patchObject: (id, patch) => {
+      // A locked object keeps its shape as well as its place. The base is the
+      // one thing a patch can carry that resizes it and the transform the one
+      // that moves it, so a patch naming either is refused whole rather than
+      // applied minus the field -- a half-applied edit is harder to reason
+      // about than one that did not happen. Everything else about the object
+      // -- its name, its colour, its sketches -- is still open.
+      if ((patch.base !== undefined || patch.transform !== undefined) && lockedIn(get().doc, id)) {
+        return
+      }
       commitCoalesced(
         `object:${id}:${Object.keys(patch).join(',')}`,
         mapObject(id, (o) => {
@@ -861,7 +933,27 @@ export const useDoc = create<State>((set, get) => {
               : {}),
           }
         })
-      ),
+      )
+    },
+
+    setObjectLocked: (id, locked) => {
+      const object = get().doc.objects.find((o) => o.id === id)
+      // Nothing to lock, or already the way it was asked to be: not an edit,
+      // and an undo step for it would bury the edit before it -- the same rule
+      // `setObjectColor` follows for a repaint in the colour already worn.
+      if (!object || (object.locked === true) === locked) return
+      commit(
+        mapObject(id, (o) => {
+          // Written either way round, never merely set to false: an unlocked
+          // solid carries no key, so the document a lock was lifted from is the
+          // document it was before the lock. See `SceneObject.locked`.
+          const next: SceneObject = { ...o }
+          if (locked) next.locked = true
+          else delete next.locked
+          return next
+        })
+      )
+    },
 
     setObjectColor: (ids, color) => {
       const targets = new Set(ids)
@@ -1002,7 +1094,14 @@ export const useDoc = create<State>((set, get) => {
 
     startMovingObject: (objectId) =>
       set((s) => ({
-        drag: { kind: 'moving-object', objectId, snapshot: false },
+        // A locked object is picked but never picked UP: the press still
+        // selects it, so the panels describe it, and the drag that would walk
+        // it across the scene never begins. The viewport already refuses the
+        // body of a locked solid -- see `bodyCanBeDragged` -- and this is the
+        // same refusal at the store, for any other way in.
+        drag: lockedIn(s.doc, objectId)
+          ? s.drag
+          : { kind: 'moving-object', objectId, snapshot: false },
         selectedObjectIds: [objectId],
         selectedFeatureId: s.selectedObjectIds[0] === objectId ? s.selectedFeatureId : null,
       })),
@@ -1017,6 +1116,10 @@ export const useDoc = create<State>((set, get) => {
       if (drag.kind !== 'moving-object' && drag.kind !== 'gizmo') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
       if (!object) return
+      // No drag can start on a locked object -- see `startMovingObject` -- so
+      // this is only ever reached by one that started before the lock went on.
+      // It stays exactly where it is all the same.
+      if (object.locked) return
       // A click that snapped straight back to where the object already was is
       // not an edit, and must not cost an undo step.
       if (sameNumbers(object.transform.position, position)) return
@@ -1029,7 +1132,13 @@ export const useDoc = create<State>((set, get) => {
 
     startGizmo: (objectId, handle) =>
       set((s) => ({
-        drag: { kind: 'gizmo', objectId, handle, snapshot: false },
+        // A locked object wears no gizmo -- see `selectionWearsGizmo` -- so
+        // nothing on screen can reach this. It is refused here all the same,
+        // for the reason `startMovingObject` refuses: the store is where every
+        // way in ends up.
+        drag: lockedIn(s.doc, objectId)
+          ? s.drag
+          : { kind: 'gizmo', objectId, handle, snapshot: false },
         selectedObjectIds: [objectId],
         selectedFeatureId: s.selectedObjectIds[0] === objectId ? s.selectedFeatureId : null,
       })),
@@ -1088,19 +1197,28 @@ export const useDoc = create<State>((set, get) => {
     startRulerGizmo: (rulerId, end, handle) =>
       set({ drag: { kind: 'ruler-gizmo', rulerId, end, handle } }),
 
-    scaleObject: (id, factor) =>
+    scaleObject: (id, factor) => {
+      // Locked is locked in size as well as in place. See `SceneObject.locked`.
+      if (lockedIn(get().doc, id)) return
       commitCoalesced(
         `scale:${id}`,
         mapObject(id, (o) => scaleAssembly(o, factor))
-      ),
+      )
+    },
 
-    scaleObjectTo: (snapshot, factor) => {
+    scaleObjectTo: (snapshot, factor, far) => {
       const { drag, doc } = get()
       if (drag.kind !== 'gizmo') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
       if (!object) return
+      // Only a gesture that began before the lock went on can reach this; it
+      // resizes nothing either way.
+      if (object.locked) return
 
-      const next = scaleAssembly(snapshot, factor)
+      const next =
+        far === undefined
+          ? scaleAssembly(snapshot, factor)
+          : scaleAssemblyFromFar(snapshot, factor, far)
       // A frame that resolved to the size the object already has is not an
       // edit, and must not cost an undo step -- which is exactly what every
       // frame is once a runaway drag has pinned the scale at its limit. The
@@ -1117,7 +1235,11 @@ export const useDoc = create<State>((set, get) => {
     },
 
     mirrorObjects: (ids, axis) => {
-      const targets = new Set(ids)
+      // Locked solids are skipped rather than the press refused: a selection
+      // holding one locked part and two loose ones is a selection where the
+      // two loose ones are what the user meant to flip -- the same reading a
+      // merge gives an eraser in its selection.
+      const targets = new Set(ids.filter((id) => !lockedIn(get().doc, id)))
       if (targets.size === 0) return
       // Nothing in the scene answers to any of these ids: a press that would
       // rewrite nothing must not cost an undo step.
@@ -1128,11 +1250,14 @@ export const useDoc = create<State>((set, get) => {
       }))
     },
 
-    resizeObjectTo: (base) => {
+    resizeObjectTo: (base, position) => {
       const { drag, doc } = get()
       if (drag.kind !== 'gizmo') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
       if (!object) return
+      // Only a gesture that began before the lock went on can reach this; it
+      // resizes nothing either way.
+      if (object.locked) return
 
       // Resizing runs through the same conform pass `patchObject` uses, so a
       // sketch on a shrinking face is pulled back onto it and a pocket deeper
@@ -1143,15 +1268,21 @@ export const useDoc = create<State>((set, get) => {
       // and for the same reason a shrinking face drags its sketches back: a
       // dab is a place in this object's space, so a skin pulled out from under
       // one leaves it melting where the solid no longer is.
+      //
+      // The position, where one is given, rides in the same object: the far
+      // face a one-sided resize holds still is held by the two changing
+      // together, and a frame is not an edit unless one of them did.
       const next = {
         ...object,
         base,
+        ...(position ? { transform: { ...object.transform, position } } : {}),
         features: object.features.map((f) => conform(base, f)),
         ...(object.erosion
           ? { erosion: carryErosion(object.erosion, object.base, base) }
           : {}),
       }
-      if (sameBase(object.base, base)) return
+      const moved = position !== undefined && !sameNumbers(object.transform.position, position)
+      if (sameBase(object.base, base) && !moved) return
 
       snapshotOnce()
       silent(mapObject(drag.objectId, () => next))
@@ -1271,7 +1402,11 @@ export const useDoc = create<State>((set, get) => {
       let split = 0
 
       for (const object of doc.objects) {
-        if (!targets.has(object.id)) {
+        // A locked object is left whole, whether it was named outright or
+        // swept up by "cut everything". It is not counted as severed, so a
+        // plane that crossed nothing but locked solids reports a miss -- which
+        // is what it was. See `SceneObject.locked`.
+        if (!targets.has(object.id) || object.locked) {
           objects.push(object)
           continue
         }

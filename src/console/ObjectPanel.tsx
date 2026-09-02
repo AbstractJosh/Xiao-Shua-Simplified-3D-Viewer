@@ -3,7 +3,7 @@ import { MAX_RADIUS, MAX_SIZE, MIN_DIMENSION } from '../geometry/dimensions'
 import type { BaseSolid, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
 import { selectedObject, useDoc } from '../store/docStore'
-import { NumberField, Section } from './Field'
+import { NumberField, OFF_ON, Section, Switch } from './Field'
 
 /** The gizmo's arrows resize the same fields these do, so both read one set of
  *  bounds -- a limit only one of them honoured would let a drag build a solid
@@ -68,6 +68,7 @@ function MergedSize({ object }: { object: SceneObject }) {
 export function ObjectPanel() {
   const object = useDoc(selectedObject)
   const patchObject = useDoc((s) => s.patchObject)
+  const setObjectLocked = useDoc((s) => s.setObjectLocked)
   const removeObject = useDoc((s) => s.removeObject)
 
   if (!object) {
@@ -242,6 +243,7 @@ export function ObjectPanel() {
   }
 
   const merged = object.parts.length > 0
+  const locked = object.locked === true
 
   return (
     <Section
@@ -260,8 +262,37 @@ export function ObjectPanel() {
           A merged object gets one row instead of that set. Its own primitive's
           width is not a dimension of the object any more -- the object is every
           solid welded into it -- and offering the host's fields here is what
-          made sizing a merge move one of its parts and leave the rest. */}
-      {merged ? <MergedSize object={object} /> : dimensions()}
+          made sizing a merge move one of its parts and leave the rest.
+
+          DIMMED WHILE THE OBJECT IS LOCKED, the way the game-speed field dims
+          with its switch off: a fieldset takes every row inside it out of reach
+          for pointer and keyboard alike, and `.tool-group[disabled]` fades the
+          lot. The store refuses the edit regardless -- see `patchObject` -- so
+          this is the rows saying what the store would do, rather than the only
+          thing standing between a drag and a resize. The side-count chips dim
+          with the rest: a locked solid keeps its shape, and eight sides is a
+          different shape from six. */}
+      <fieldset className="tool-group dimension-rows" disabled={locked}>
+        {merged ? <MergedSize object={object} /> : dimensions()}
+      </fieldset>
+
+      {/* The lock, below the numbers it freezes and above the button that
+          throws the object away: the two acts on the object AS A WHOLE, after
+          its measurements. Outside the fieldset, since it is the one control
+          here that has to work while the object is locked.
+
+          The same `Off | On` track the Settings rows wear, so a switch is one
+          control across the app rather than a tickbox here and a slider
+          there. A name and the control, and nothing else: what the lock does
+          is in Help, under Move, rotate, scale. */}
+      <div className="lock-row">
+        <span className="subhead">Lock</span>
+        <Switch
+          options={OFF_ON}
+          value={locked}
+          onPick={(next) => setObjectLocked(object.id, next)}
+        />
+      </div>
 
       <button
         type="button"

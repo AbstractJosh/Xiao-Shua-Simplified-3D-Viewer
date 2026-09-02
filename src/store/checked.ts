@@ -244,6 +244,9 @@ export function objectFrom(raw: unknown): SceneObject | undefined {
     // the same reason -- a saved custom may have been sculpted.
     ...(color !== undefined && parseHex(color) ? { color } : {}),
     ...(stored.erase === true ? { erase: true } : {}),
+    // Read the way `erase` is: only a literal true locks, and a solid saved
+    // without the key comes back without it.
+    ...(stored.locked === true ? { locked: true } : {}),
     ...(erased ? { erased } : {}),
     ...(Array.isArray(stored.erosion) ? { erosion: stored.erosion as SceneObject['erosion'] } : {}),
   }

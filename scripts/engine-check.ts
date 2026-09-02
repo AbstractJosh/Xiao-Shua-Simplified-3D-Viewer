@@ -42,11 +42,17 @@ import {
   MIN_SHAPE,
   axisDimension,
   resizeAlongAxis,
+  resizeFromFar,
   scaleShape,
   scaleUniform,
 } from '../src/geometry/dimensions'
 import type { Axis } from '../src/geometry/dimensions'
-import { assemblyCentre, scaleAssembly } from '../src/geometry/assembly'
+import {
+  assemblyCentre,
+  objectBounds,
+  scaleAssembly,
+  scaleAssemblyFromFar,
+} from '../src/geometry/assembly'
 import { mirrorAssembly, mirrorNormal } from '../src/geometry/mirror'
 import {
   CLAY_RINGS,
@@ -1036,6 +1042,51 @@ console.log('\n11. Resizing along an axis moves that surface, on every primitive
   near('and shrinking stops at the floor', dimOf(resizeAlongAxis(box, 0, -40), 'x'), MIN_DIMENSION, 1e-9)
   const ball: BaseSolid = { kind: 'sphere', radius: 1 }
   near('a radius has its own, tighter ceiling', radiusOf(resizeAlongAxis(ball, 0, 40)), MAX_RADIUS, 1e-9)
+}
+
+{
+  // The left-drag reading of the same arrow: the face under it moves by the
+  // travel and the face opposite does not move at all. Written about a centred
+  // origin, that is half the growth and a slide of the other half -- `shift`
+  // is that slide, in the solid's own frame, and the two faces are where the
+  // origin plus and minus the half-extent land.
+  const box: BaseSolid = { kind: 'box', size: [2, 2, 2] }
+  const pulled = resizeFromFar(box, 0, 0.5)
+  near('a box side grows by the travel alone', dimOf(pulled.base, 'x'), 2.5, 1e-9)
+  near('and the origin slides half of it', pulled.shift, 0.25, 1e-9)
+  near('so the near face moved the whole travel', pulled.shift + dimOf(pulled.base, 'x') / 2, 1.5, 1e-9)
+  near('and the far face not at all', pulled.shift - dimOf(pulled.base, 'x') / 2, -1, 1e-9)
+  check(
+    'with the other two sides untouched',
+    dimOf(pulled.base, 'y') === 2 && dimOf(pulled.base, 'z') === 2,
+    `${dimOf(pulled.base, 'y')} and ${dimOf(pulled.base, 'z')}`
+  )
+
+  // The same slide on every primitive, whatever the field: a radius is the
+  // half-extent and grows by half the travel, a height is a full extent and
+  // grows by all of it, and either way the origin moves a quarter.
+  const cyl: BaseSolid = { kind: 'cylinder', radius: 0.8, height: 2 }
+  const fatter = resizeFromFar(cyl, 0, 0.5)
+  near('a radius grows by half the travel', radiusOf(fatter.base), 1.05, 1e-9)
+  near('with the same slide', fatter.shift, 0.25, 1e-9)
+  const taller = resizeFromFar(cyl, 1, 0.5)
+  near('a height grows by the travel', heightOf(taller.base), 2.5, 1e-9)
+  near('with the same slide again', taller.shift, 0.25, 1e-9)
+
+  // Pushed back through, it shrinks from the same end.
+  const pushed = resizeFromFar(box, 0, -0.5)
+  near('pushed in, the near face comes back', dimOf(pushed.base, 'x'), 1.5, 1e-9)
+  near('sliding the other way', pushed.shift, -0.25, 1e-9)
+  near('and the far face still has not moved', pushed.shift - dimOf(pushed.base, 'x') / 2, -1, 1e-9)
+
+  // Clamped, the slide follows the growth that actually happened rather than
+  // the travel asked for, so a solid pinned at its ceiling stops moving too --
+  // otherwise a resize would quietly turn into a move once it hit the limit.
+  // Twice the pull the centred check uses, since only half of it is growth.
+  const pinned = resizeFromFar(box, 0, 80)
+  near('at the ceiling the size stops', dimOf(pinned.base, 'x'), MAX_SIZE, 1e-9)
+  near('and so does the slide', pinned.shift, (MAX_SIZE - 2) / 2, 1e-9)
+  near('holding the far face', pinned.shift - dimOf(pinned.base, 'x') / 2, -1, 1e-9)
 }
 
 {
@@ -2235,6 +2286,52 @@ console.log('\n20. Erasing takes material away, and keeps it away')
     // hole included. A hole that stayed put would leave more material than that.
     near('doubling the object doubles the hole', signedVolume(after.geometry), wasVolume * 8, 0.05)
     after.geometry.dispose()
+  }
+
+  {
+    // The one-sided arrow on an assembly: a scale about the centre, and then
+    // the slide that puts the skin opposite the arrow back where it was. The
+    // object is TURNED, so the slide has to run along its own axis and not the
+    // world's: a quarter turn about Y sends local +X down world -Z, so the far
+    // skin on local X is the world +Z face, and that is the one that holds.
+    const turned: SceneObject = {
+      ...object(cube, [], [], 'held'),
+      transform: { position: [1, 2, 3], rotation: [0, Math.PI / 2, 0] },
+    }
+    const before = objectBounds(turned)
+    const held = scaleAssemblyFromFar(turned, 2, 0)
+    const after = objectBounds(held)
+    near('the far skin has not moved', after.max.z, before.max.z, 1e-9)
+    // Doubled, so the near skin moves by the whole extent it had.
+    near('and the near one moved by the whole growth', after.min.z, before.min.z - 2, 1e-9)
+    near('the other axes grew about the centre', after.min.y, before.min.y - 1, 1e-9)
+    near('on both sides', after.max.y, before.max.y + 1, 1e-9)
+
+    // And on a merge whose box is NOT centred on the assembly centre -- the
+    // mean of the origins -- the far skin still holds, because the slide is
+    // measured from that skin's own distance to the centre rather than from
+    // the half-extent. Host 2 wide at the origin, a part 6 wide at x = 4: the
+    // box runs -1 to 7, its middle at 3, the centre at 2.
+    const lopsided: SceneObject = {
+      ...object(cube, [], [], 'lopsided'),
+      parts: [
+        {
+          ...object({ kind: 'box', size: [6, 2, 2] }, [], [], 'wing'),
+          transform: { position: [4, 0, 0], rotation: [0, 0, 0] },
+        },
+      ],
+    }
+    const wasBox = objectBounds(lopsided)
+    near('the lopsided merge starts where it should', wasBox.min.x, -1, 1e-9)
+    near('and reaches where it should', wasBox.max.x, 7, 1e-9)
+    const grown = objectBounds(scaleAssemblyFromFar(lopsided, 2, 0))
+    near('its far skin holds under a one-sided scale', grown.min.x, -1, 1e-9)
+    near('and its near skin moves by its whole reach', grown.max.x, 15, 1e-9)
+
+    // Clamped, the slide stops with the scale: a factor past the ceiling
+    // leaves the far skin exactly where a factor AT the ceiling would.
+    const capped = objectBounds(scaleAssemblyFromFar(turned, 1e6, 0))
+    near('pinned at the ceiling, the far skin still holds', capped.max.z, before.max.z, 1e-9)
   }
 
   {

@@ -244,8 +244,7 @@ function scaleSolids(obj: SceneObject, f: number): SceneObject {
  * arrows already do.
  */
 export function scaleAssembly(obj: SceneObject, factor: number): SceneObject {
-  const { lo, hi } = assemblyScaleLimits(obj)
-  const f = Math.min(hi, Math.max(lo, factor))
+  const f = assemblyFactor(obj, factor)
   const centre = assemblyCentre(obj)
   const scaled = scaleSolids(obj, f)
 
@@ -254,6 +253,54 @@ export function scaleAssembly(obj: SceneObject, factor: number): SceneObject {
     new Vector3(centre[0], centre[1], centre[2]).multiplyScalar(1 - f)
   )
   const [x, y, z] = obj.transform.position
+  return {
+    ...scaled,
+    transform: {
+      ...scaled.transform,
+      position: [x + shift.x, y + shift.y, z + shift.z],
+    },
+  }
+}
+
+/** The factor the object can actually take: `factor`, held inside
+ *  `assemblyScaleLimits`. One place, so the slide below and the scale above
+ *  cannot disagree about where the clamp is. */
+function assemblyFactor(obj: SceneObject, factor: number): number {
+  const { lo, hi } = assemblyScaleLimits(obj)
+  return Math.min(hi, Math.max(lo, factor))
+}
+
+/**
+ * `scaleAssembly`, and then a slide along one of the object's own axes that
+ * puts its far skin on that axis back where it was.
+ *
+ * The one-sided arrow drag on a merged object. A merged object cannot grow
+ * along a single axis -- see `resizeObjectTo` -- so its arrows scale the whole
+ * assembly, and about the centre that moves BOTH skins on the axis. A left-drag
+ * promises that the skin opposite the arrow stays put, so the scale is followed
+ * by a slide of exactly what that skin moved, the other way.
+ *
+ * Measured from the bounds rather than from `assemblyHalfExtent`: the union box
+ * is not in general centred on the assembly centre the scale runs about, so the
+ * far skin moves by `(f - 1)` times ITS distance from that centre, which is the
+ * half-extent only when the two happen to coincide. And from the factor the
+ * clamp let through rather than the one asked for, or an assembly pinned at its
+ * ceiling would go on sliding under a drag that no longer scales it -- the same
+ * rule `resizeFromFar` keeps for a bare solid.
+ */
+export function scaleAssemblyFromFar(
+  obj: SceneObject,
+  factor: number,
+  axis: Axis
+): SceneObject {
+  const scaled = scaleAssembly(obj, factor)
+  const f = assemblyFactor(obj, factor)
+  const centre = assemblyCentre(obj)[axis]
+  const far = assemblyBounds(obj).min.getComponent(axis)
+  const along = new Vector3()
+  along.setComponent(axis, (f - 1) * (centre - far))
+  const shift = toWorldDir(obj.transform, along)
+  const [x, y, z] = scaled.transform.position
   return {
     ...scaled,
     transform: {
