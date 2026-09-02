@@ -1,5 +1,7 @@
 # Xiao Shua's 3D Editor
 
+## Deployed at : xiaoshua3d.vercel.app
+
 A browser-based 3D editor built around one gesture: **drop a 2D shape onto a solid, then push or pull it perpendicular to the surface.**
 
 [Open the editor](https://xiaoshua3d.vercel.app) · [Getting started](#getting-started) · [Features in full](docs/features.md) · [Design notes](docs/design.md)
