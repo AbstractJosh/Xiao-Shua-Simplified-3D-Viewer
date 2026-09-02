@@ -7020,6 +7020,338 @@ body {
   }
 }
 
+/* --- the front door's loop -------------------------------------------------
+
+   The other half of the welcome screen: beside the column, on the ground the
+   column leaves bare, one SVG in which the three benches take a cube apart
+   and put it back. See `WelcomeLoop` for what it is and `welcomeReel.ts` for
+   every number in it. This is only what it wears and where it stands.
+
+   IT IS PINNED, NOT SCROLLED. The screen scrolls as a whole -- see `.welcome`
+   -- and a picture that went up with the twelfth project would leave the
+   window's right half bare again the moment the list was long enough to need
+   scrolling, which is the case it was put there for. `sticky` inside the
+   scroller, and as tall as the scroller, keeps it in view under any list.
+
+   AND IT GOES BEFORE THE COLUMN DOES. Under about eleven hundred pixels there
+   is no room beside the sheet for a picture worth drawing, so it is removed
+   rather than squeezed: the projects are what the screen is for. */
+.welcome {
+  display: flex;
+  align-items: flex-start;
+}
+
+.welcome-sheet {
+  flex: 0 1 760px;
+  min-width: 0;
+}
+
+.welcome-loop {
+  flex: 1 1 0;
+  min-width: 0;
+  position: sticky;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 40px 24px 0;
+  /* Never a target: nothing on it can be pressed, and a pointer that lands on
+     it should feel the page. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.welcome-loop-svg {
+  width: 100%;
+  max-width: 900px;
+  height: auto;
+  max-height: 100%;
+
+  /* THE SOLID IS THE COLOUR A FRESH OBJECT IS -- `--loop-solid` is set on the
+     element from `DEFAULT_OBJECT_COLOR`, so the two cannot drift -- and every
+     other colour on it is derived from that or read from the theme. The edge
+     is the solid sunk most of the way into the ground, the way an idle outline
+     in the scene sits between the solid and the background; the faces are the
+     solid lit from above and to the left, in five steps. */
+  --loop-edge: color-mix(in srgb, var(--loop-solid) 40%, var(--bg));
+  --loop-face-top: color-mix(in srgb, var(--loop-solid) 76%, white);
+  --loop-face-right: color-mix(in srgb, var(--loop-solid) 72%, black);
+  --loop-face-slant-l: color-mix(in srgb, var(--loop-solid) 88%, white);
+  --loop-face-slant-r: color-mix(in srgb, var(--loop-solid) 86%, black);
+}
+
+/* Strokes are measured on the page whatever the face is doing: the stem's
+   faces stretch to three times their height, and a hairline that stretched
+   with them would be a bar. */
+.welcome-loop-svg polygon,
+.welcome-loop-svg rect,
+.welcome-loop-svg line,
+.welcome-loop-svg circle,
+.welcome-loop-svg path {
+  vector-effect: non-scaling-stroke;
+}
+
+/* AT REST, WITH NOTHING RUNNING, THE PICTURE IS THE CUBE ON ITS GRID. That is
+   what a user who asked the system for less motion sees, and it is what the
+   first frame is, so everything that is not the cube or the grid starts out
+   hidden and is shown only by its track. The side view starts folded flat for
+   the same reason. */
+.wl-off {
+  opacity: 0;
+}
+
+.wl-view2d {
+  transform: scaleX(0);
+}
+
+.wl-top,
+.wl-front,
+.wl-right,
+.wl-slant-l,
+.wl-slant-r {
+  stroke: var(--loop-edge);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.wl-top {
+  fill: var(--loop-face-top);
+}
+
+.wl-front {
+  fill: var(--loop-solid);
+}
+
+.wl-right {
+  fill: var(--loop-face-right);
+}
+
+.wl-slant-l {
+  fill: var(--loop-face-slant-l);
+}
+
+.wl-slant-r {
+  fill: var(--loop-face-slant-r);
+}
+
+/* The bed is a surface rather than a solid, so it takes the panel ramp. */
+.wl-bed .wl-top {
+  fill: var(--surface-3);
+}
+
+.wl-bed .wl-front {
+  fill: var(--surface-2);
+}
+
+.wl-bed .wl-right {
+  fill: var(--surface-1);
+}
+
+.wl-bed polygon {
+  stroke: var(--line-2);
+}
+
+.wl-grid-minor {
+  stroke: var(--line-1);
+  stroke-width: 1;
+}
+
+.wl-grid-major {
+  stroke: var(--line-3);
+  stroke-width: 1;
+}
+
+/* The cut plane, as the modelling screen draws it: translucent, so what it is
+   about to sever stays in view, with an edge so the square reads. The fill
+   and the edge are separate elements, because the plane is drawn in two
+   parts and a stroke round each would draw their seams -- see `blade`. */
+.wl-blade-fill {
+  fill: color-mix(in srgb, var(--danger) 22%, transparent);
+  stroke: none;
+}
+
+.wl-blade-edge {
+  fill: none;
+  stroke: var(--danger);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* Its normal, which is what makes a square seen edge-on read as a plane. */
+.wl-blade-normal {
+  stroke: var(--danger);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.wl-blade-head {
+  fill: var(--danger);
+}
+
+/* DASHES ARE MEASURED IN THE DRAWING'S UNITS, which is why the flash and the
+   laser's line opt out of the non-scaling stroke the rest of the picture
+   uses: with it, a dash is measured on the page, and a length worked out in
+   the drawing's units comes up short by exactly the stage's scale -- the
+   laser's line stopped three quarters of the way along its path, and the
+   pattern's next dash showed at the far end before the line had got there.
+   Written with the svg's class in front so it outranks the blanket rule
+   above, which names the element type and would otherwise win; a first
+   attempt at this without it changed nothing. The stroke widths below are
+   set to land at about two pixels once scaled. */
+.welcome-loop-svg .wl-flash,
+.welcome-loop-svg .wl-cut-line {
+  vector-effect: none;
+}
+
+/* The flash at the cut: the edge of the cut, white in every theme, drawn
+   round by its dash. */
+.wl-flash {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.8;
+  stroke-linejoin: miter;
+}
+
+/* The laser's line, in the red of a line that cuts; drawn on by its dash
+   offset, which the track runs from the whole length down to nothing. Butt
+   ends, not round: a round cap on a dash of no length is still a dot, and it
+   sat on the block's corner while the line was meant to be gone. */
+.wl-cut-line {
+  fill: none;
+  stroke: var(--danger);
+  stroke-width: 1.6;
+  stroke-linecap: butt;
+  stroke-linejoin: round;
+}
+
+.wl-beam {
+  offset-rotate: 0deg;
+}
+
+.wl-beam-ray {
+  stroke: var(--danger);
+  stroke-width: 1.5;
+  opacity: 0.6;
+}
+
+.wl-beam-glow {
+  fill: var(--danger);
+  opacity: 0.35;
+}
+
+/* A hot point is white in every theme. */
+.wl-beam-dot {
+  fill: #fff;
+}
+
+.wl-spark line {
+  stroke: color-mix(in srgb, var(--danger) 45%, white);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* The lathe's screen, as it is: a ruled frame, the axis, the faceplate, the
+   piece as one filled shape with the rings a turned surface carries. */
+.wl-lathe-frame {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+
+.wl-lathe-rule {
+  stroke: var(--line-1);
+  stroke-width: 1;
+}
+
+.wl-lathe-axis {
+  stroke: var(--line-4);
+  stroke-width: 1;
+  stroke-dasharray: 5 5;
+}
+
+.wl-faceplate {
+  fill: var(--surface-4);
+  stroke: var(--line-3);
+  stroke-width: 1;
+}
+
+.wl-piece {
+  fill: var(--loop-solid);
+}
+
+.wl-ring {
+  stroke: var(--loop-edge);
+  stroke-width: 1;
+  opacity: 0.8;
+}
+
+.wl-chip {
+  fill: var(--loop-solid);
+}
+
+/* The tools wear the colours of material taken away and material added, as
+   the lathe's own tools do. */
+.wl-tool {
+  fill: color-mix(in srgb, var(--in) 14%, transparent);
+  stroke: var(--in);
+  stroke-width: 2;
+}
+
+.wl-tool-centre {
+  fill: var(--in);
+}
+
+.wl-tool-pull {
+  fill: color-mix(in srgb, var(--out) 14%, transparent);
+  stroke: var(--out);
+  stroke-width: 2;
+}
+
+.wl-tool-pull-centre {
+  fill: var(--out);
+}
+
+/* The pulled mass is round, so it is lit across rather than in flat steps:
+   the front's light at the left edge, the solid's own colour through the
+   middle, the right face's dark at the right edge. The top is a face and
+   takes the top's shade. */
+.wl-bulb {
+  fill: url('#wl-bulb-shade');
+  stroke: var(--loop-edge);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.wl-bulb-top {
+  fill: var(--loop-face-top);
+  stroke: var(--loop-edge);
+  stroke-width: 1.5;
+}
+
+.wl-bulb-stop-0 {
+  stop-color: var(--loop-face-slant-l);
+}
+
+.wl-bulb-stop-1 {
+  stop-color: var(--loop-solid);
+}
+
+.wl-bulb-stop-2 {
+  stop-color: color-mix(in srgb, var(--loop-solid) 90%, black);
+}
+
+.wl-bulb-stop-3 {
+  stop-color: var(--loop-face-right);
+}
+
+@media (max-width: 1100px) {
+  .welcome-loop {
+    display: none;
+  }
+}
+
 .perf-hud {
   position: absolute;
   right: 0;

@@ -261,6 +261,7 @@ import {
 import { evaluateDoc, evaluateObject, resetEvaluator } from '../src/geometry/evaluate'
 import { AXIS_COLORS, AXIS_CSS_VARS } from '../src/viewport/axisColors'
 import { COMPASS_FACE_SHADE, SCENE_CSS_VARS, SCENE_THEMES } from '../src/viewport/sceneColors'
+import { TRACKS, seamOf } from '../src/console/welcomeReel'
 import { DEFAULT_THEME, THEMES, THEME_LABELS } from '../src/theme'
 import type { Theme } from '../src/theme'
 import { HelpScreen } from '../src/console/HelpScreen'
@@ -10823,6 +10824,32 @@ console.log('\nThe welcome screen: no project open, and a bar that says so')
   // anything that needs explaining goes to Help, which is a document.
   check('the screen carries no hover text at all', !/ title="/.test(welcome), welcome.match(/ title="[^"]*"/)?.[0] ?? '')
   hides('and no standing prose under its title', welcome, 'overlay-lede')
+
+  // THE OTHER HALF OF THE SCREEN is the loop -- see `WelcomeLoop` -- and it is
+  // held to the same rule. It is decoration and says so; it carries no words
+  // at all; and every track in its timeline has something on the page to
+  // drive, since a track whose element was renamed fails silently, by moving
+  // nothing, in a place nobody is watching.
+  shows('the bare half of the front door carries the loop', welcome, 'class="welcome-loop"')
+  check(
+    'which is decoration, and says so to a screen reader',
+    /<svg[^>]*class="welcome-loop-svg"[^>]*aria-hidden="true"/.test(welcome)
+  )
+  check('and carries no words', !/<text[\s>]/.test(welcome))
+  check(
+    'and no explanation in any other form',
+    !/<title[\s>]|<desc[\s>]/.test(welcome),
+    welcome.match(/<(title|desc)[\s>]/)?.[0] ?? ''
+  )
+  for (const track of TRACKS) {
+    shows(`the ${track.name} track drives something on the page`, welcome, `data-track="${track.name}"`)
+  }
+  // And the seam: a loop that ends anywhere but where it began shows a jump
+  // every seventeen seconds, forever.
+  for (const track of TRACKS) {
+    const fault = seamOf(track)
+    check(`and ${track.name} ends where it starts`, fault === null, fault ?? '')
+  }
 
   // A list that has not arrived and a list with nothing in it look identical
   // and mean opposite things.
