@@ -6890,6 +6890,50 @@ body {
   cursor: default;
 }
 
+/* THE HOVER, and it moves: a bar of the colour that wipes in from the left
+   and fills the whole button, then drains back the way it came.
+
+   THE WHOLE BUTTON RATHER THAN THE NAME, because the whole button is the
+   target. A word that lights at one end of a wide row says nothing about how
+   far the thing you are about to press extends, while a bar drawn to its
+   edges says exactly that -- and a bar that arrives from the left says which
+   way the row reads. It bleeds ten pixels past the column, the same trick the
+   actions use when they drop under the name: the name stays on the column,
+   and the fill is a thing behind it rather than a box drawn tight around it.
+
+   VERY FAST, and not gated on reduced motion. It is over in about the time a
+   pointer takes to settle, which is quick enough that it never reads as an
+   animation happening to the page -- a fill still arriving when you click is
+   a fill that got in the way -- and a tint sweeping a row is not the kind of
+   movement that setting exists to stop.
+
+   `isolation` so the bar can sit at `z-index: -1` behind the name and still
+   in front of the page: without a stacking context of its own the button's
+   negative child would paint under `.welcome`'s background and never show. */
+.project-choose {
+  position: relative;
+  isolation: isolate;
+  margin-left: -10px;
+  padding-left: 10px;
+}
+
+.project-choose::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.13s cubic-bezier(0.2, 0.8, 0.3, 1);
+  pointer-events: none;
+}
+
+.project-choose:hover:not(:disabled)::before,
+.project-choose:focus-visible::before {
+  transform: scaleX(1);
+}
+
 .project-name {
   max-width: 100%;
   overflow: hidden;
@@ -7010,7 +7054,10 @@ body {
     gap: 0;
   }
 
+  /* Stretched, since a column lays its items out at their own width: the
+     hover bar has to reach the rule at the right whatever the name is. */
   .project-choose {
+    align-self: stretch;
     padding-bottom: 8px;
   }
 
