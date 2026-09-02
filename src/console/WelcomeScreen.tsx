@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { APP_NAME } from '../appInfo'
 import { useProjects } from '../store/projectStore'
 import type { ProjectSummary } from '../store/projectRecord'
+import { WelcomeLoop } from './WelcomeLoop'
 
 /**
  * THE FRONT DOOR: the app's name, and the projects you have.
@@ -77,6 +78,13 @@ export function WelcomeScreen() {
           )}
         </div>
       </div>
+
+      {/* THE REST OF THE WINDOW. The column above is the chooser; beside it,
+          on the ground the column leaves bare, the app's three benches take a
+          cube apart and put it back on a loop. Decoration, and after the
+          sheet so that on a window too narrow to hold both it is the one that
+          goes. See `WelcomeLoop`. */}
+      <WelcomeLoop />
     </div>
   )
 }
