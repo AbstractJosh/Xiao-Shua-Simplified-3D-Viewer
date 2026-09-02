@@ -254,7 +254,7 @@ export function draftLine(
   fit: boolean
 ): Pt[] {
   if (draft.kind === 'freehand') {
-    return draft.stroke.length < 2 ? [] : resample(draft.stroke)
+    return draft.stroke.length < 2 ? [] : closeReturningStroke(resample(draft.stroke))
   }
   if (draft.points.length < 2) return []
   // Two points cannot enclose anything, so a run that is somehow marked closed
@@ -267,6 +267,80 @@ export function draftLine(
     undefined,
     ring
   )
+}
+
+/**
+ * How near a stroke has to come back to where it started before it is read as a
+ * loop -- as a fraction of its OWN LENGTH, not of the block.
+ *
+ * RELATIVE, BECAUSE A LOOP HAS NO SIZE. A ring drawn round a bolt hole and one
+ * drawn round the whole face are the same gesture, and a fixed distance would
+ * be miles too eager for the first and too shy for the second. Against its own
+ * length the two are identical: the fraction of the journey left untravelled.
+ *
+ * A TWELFTH is the gap left by a stroke that went about three hundred and forty
+ * degrees of the way round, and that is the boundary worth drawing. Anything
+ * past it reads as a loop somebody meant to shut and did not quite; anything
+ * short of it -- a C, a horseshoe, a three-quarter arc -- has a mouth wide
+ * enough to be obviously deliberate, and shutting it would burn a shape nobody
+ * drew. A straight line scores 1, the furthest from a loop there is.
+ */
+const LOOP_GAP = 1 / 12
+
+/**
+ * And never further than this in absolute terms, whatever the length says.
+ *
+ * The fraction alone has one blind spot: a long wandering scribble earns a
+ * generous threshold simply by being long, so two ends a third of the block
+ * apart would be sewn together across open face. An eighth of the block is the
+ * same distance `MAX_ROPE` calls a generous hand tremor at any zoom -- past
+ * that the ends are not near each other by any reading, they are just both
+ * somewhere on the same face.
+ */
+const LOOP_REACH = 0.125
+
+/**
+ * A freehand stroke that came back to where it started, read as the loop it is.
+ *
+ * WHY FREEHAND NEEDED THIS AND POINT CUT DID NOT. A loop is closed when the
+ * line's first and last points are the SAME point -- see `isClosedLine`, which
+ * is the only way anything downstream is ever told -- and Point Cut can offer
+ * that exactly: its first point is a knot you can click, so clicking it writes
+ * the point out again and the line is shut to the last bit. A hand has no knot
+ * to hit. It comes back CLOSE, which used to count for nothing at all: the
+ * stroke stayed open, its two ends were carried off to the border as though it
+ * were a line across the face, and the slot missed itself by the gap. At four
+ * thousandths of a block against a three-thousandth kerf, that is a hairline of
+ * material still joining the island to the stock -- so the block came apart in
+ * no new place, and the tool reported that the line did not cross it. A loop
+ * you could see on screen cut nothing.
+ *
+ * SO THE READING IS DONE HERE, in the same function and for the same reason
+ * Point Cut's is: this is where a drawing becomes a line, it is the one road
+ * both the preview and the cut travel, and a loop shut for the burn but not for
+ * the preview would burn something other than what it showed. The bridge is
+ * therefore drawn on screen the moment the stroke qualifies -- which is the
+ * whole of how anybody discovers this, and why it needs no words next to it.
+ *
+ * BY WRITING THE FIRST POINT OUT AGAIN rather than by moving the last one onto
+ * it. Moving it would quietly discard a few thousandths of what the hand
+ * actually did; appending keeps every drawn point and adds the bridge as one
+ * more segment, which is exactly what Point Cut's own close does.
+ */
+function closeReturningStroke(line: Pt[]): Pt[] {
+  // Four is `isClosedLine`'s own floor: three points bridged shut are two
+  // segments doubling back, which enclose nothing for a cut to drop out.
+  if (line.length < 4) return line
+  const first = line[0]
+  const last = line[line.length - 1]
+  const gap = Math.hypot(last[0] - first[0], last[1] - first[1])
+  if (gap > LOOP_REACH) return line
+
+  let travelled = 0
+  for (let i = 1; i < line.length; i += 1) {
+    travelled += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1])
+  }
+  return gap <= travelled * LOOP_GAP ? [...line, first] : line
 }
 
 /**

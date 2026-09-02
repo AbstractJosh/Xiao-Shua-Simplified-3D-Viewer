@@ -465,6 +465,55 @@ export function nextCutId(): string {
 }
 
 /**
+ * Pushes the three counters past every id in a document that came from
+ * somewhere else.
+ *
+ * WHY A RESTORED DOCUMENT NEEDS THIS AND A PASTED SOLID DOES NOT. Everything
+ * that copies an object into the live scene re-ids it on the way in -- see
+ * `cloneObject`, which mints a fresh id for the object and for every feature
+ * under it -- so the counters have always been ahead of anything they could
+ * meet. A project opened off the disk is the first thing in this app that puts
+ * back the very ids it was saved with: a scene of twelve solids comes back as
+ * `o1`..`o12` against counters that a fresh page has at zero, and the next
+ * solid dropped from the palette would be handed `o1` a second time. Two
+ * objects with one id is not a cosmetic problem -- `mapObject` edits BOTH of
+ * them, the scene tree draws one row for two solids, and deleting either takes
+ * the pair.
+ *
+ * WALKED RATHER THAN TOLD. The caller hands in the objects and this finds the
+ * ids, parts and holes and features and cuts included, because the alternative
+ * -- a restore that lists the ids it thinks it has -- is a list that goes stale
+ * the day an id starts living somewhere new.
+ *
+ * A counter only ever moves FORWARD. Opening a small project after a large one
+ * must not wind the numbers back to where the small one ends, or the next solid
+ * collides with something still sitting in the other project's undo history.
+ */
+export function seedIds(objects: SceneObject[]): void {
+  // The numeric tail of an id this module minted, or 0 for anything it did not
+  // -- an id from an older format, or one a user's hand-edited file invented.
+  // Zero moves no counter, which is the right answer for an id whose shape says
+  // nothing about how many have been handed out.
+  const tail = (id: string, prefix: string): number => {
+    if (!id.startsWith(prefix)) return 0
+    const n = Number(id.slice(prefix.length))
+    return Number.isInteger(n) && n > 0 ? n : 0
+  }
+
+  const walk = (object: SceneObject): void => {
+    objectCounter = Math.max(objectCounter, tail(object.id, 'o'))
+    for (const feature of object.features) {
+      featureCounter = Math.max(featureCounter, tail(feature.id, 'f'))
+    }
+    for (const cut of object.cuts) cutCounter = Math.max(cutCounter, tail(cut.id, 'c'))
+    for (const part of object.parts) walk(part)
+    for (const hole of object.erased ?? []) walk(hole)
+  }
+
+  for (const object of objects) walk(object)
+}
+
+/**
  * How wide a fresh primitive lands: ONE SCENE UNIT, which `units.ts` fixes at
  * ten centimetres. A cube off the palette is 10 x 10 x 10 cm.
  *

@@ -1,37 +1,46 @@
 import { useEffect, useState } from 'react'
 import { useLaser } from '../store/laserStore'
+import { useReference, visiblePlacements } from '../store/referenceStore'
 import { mirrorOn, useTools } from '../store/toolStore'
+import { cutAnchor } from './cutAnchor'
 import { draftCut, draftReady, useCutDraft } from './cutDraft'
 
 /**
- * Apply, Reset, and what happened: the panel that burns the line, standing in
- * the bottom-left corner of the laser cutter for as long as a cutter is in
- * hand.
+ * Apply, what to do with the pieces, and what happened: the cut's own actions,
+ * DOCKED AT THE FOOT OF THE TOOL ISLAND for as long as a cutter is in hand.
  *
- * WHY IT IS NOT IN THE TOOL'S OWN PANEL ANY MORE, which is where it lived and
- * where it looks like it belongs. An island panel closes on any pointerdown
- * that is not inside the island -- see the outside-press listener in `NavBar`,
- * which is what makes every flyout in the app dismiss by clicking away. Drawing
- * a cut is a pointerdown on the canvas. So the button that applies the line was
- * shut by the very act of drawing the line: take up Freehand, open the panel,
- * draw, and the panel you were about to press has gone. You had to re-open it
- * every single time, and nothing on screen said why it kept vanishing.
+ * WHY IT IS NOT IN THE TOOL'S OWN PANEL, which is where it lived once and where
+ * it looks like it belongs. An island panel closes on any pointerdown that is
+ * not inside the island -- see the outside-press listener in `NavBar`, which is
+ * what makes every flyout in the app dismiss by clicking away. Drawing a cut is
+ * a pointerdown on the canvas. So the button that applies the line was shut by
+ * the very act of drawing the line: take up Freehand, open the panel, draw, and
+ * the panel you were about to press has gone. You had to re-open it every
+ * single time, and nothing on screen said why it kept vanishing.
  *
  * A TOOL YOU AIM BY DRAWING CANNOT KEEP ITS ACTIONS IN A FLYOUT. That is the
  * whole of the reasoning, and it is about the gesture rather than about these
- * two buttons: the panel has to outlive the stroke, so it has to be chrome that
- * stands on its own rather than something hanging off a button.
+ * buttons: they have to outlive the stroke, so they have to be chrome that
+ * stands on its own rather than something hanging off a button. Docked INSIDE
+ * the island is still that -- the island is a container, not a flyout, and
+ * nothing about pressing the scene closes it.
  *
- * BOTTOM LEFT, above the block. That corner is already this screen's shelf for
- * "facts about the job rather than the scene" -- the stock is there, and the
- * two stack in the order they are used, the block set once at the start and the
- * cut fired over and over. It is also the corner furthest from the compass and
- * the copy button, and it leaves the middle of the window, where the face being
- * drawn on is, completely clear. See `.laser-corner`.
+ * AT THE FOOT OF THE ISLAND, rather than in a corner panel of its own, which is
+ * where it stood before. Two reasons, and the second is the one that settles
+ * it. The first is that this is where the hand already is: the cutter was
+ * picked up two rows above, and a cut is drawn and fired over and over, so
+ * making the eye cross the window between the tool and its trigger taxes every
+ * repetition. The second is that a shelf in the far corner is a shelf nobody
+ * looks at -- the actions sat down there at label size among two other panels
+ * and read as a footnote, when Apply is the most consequential button on the
+ * screen.
  *
- * IT COMES AND GOES WITH THE TOOL, which is what makes it a popup rather than a
- * fourth permanent panel. With empty hands there is no line to apply and
- * nothing here to say, so the corner goes back to being scene.
+ * SO THEY ARE BIGGER THAN ANY OTHER BUTTON IN THE ISLAND, which is the point:
+ * everything above them arms something or sets a number, and these three DO
+ * something to the block. See `.cut-dock`.
+ *
+ * IT COMES AND GOES WITH THE TOOL, which is what keeps the island the height it
+ * was: with empty hands there is no line to apply and nothing here to say.
  *
  * ONE PANEL FOR BOTH CUTTERS, because the act is identical: whatever drew the
  * line, the line is a line and burning it is one call. Two copies would be two
@@ -39,19 +48,27 @@ import { draftCut, draftReady, useCutDraft } from './cutDraft'
  * a cut that missed looks exactly like a broken button unless the tool says so
  * out loud, which is the lesson `CutActions` already learned next door.
  *
+ * THERE IS NO RESET, and its absence is deliberate rather than an omission.
+ * Freehand throws the old line away the moment a new stroke starts -- one
+ * stroke is one line, see `strokeFrom` -- so for that tool the button was a
+ * second way to do what drawing again already does. Escape is the way out of a
+ * drawing that is going nowhere, which is what Escape means everywhere else in
+ * this app; see the key handler in `LaserViewport`.
+ *
  * THE OFFCUT ROW IS PART OF THE SAME STORY and appears only after a cut that
  * left something to decide about. Delete does the discarding from the keyboard
  * -- see `LaserViewport` -- and both are here rather than one being here: the
  * key is what a hand already on the model reaches for, and the button is what
  * somebody who has never pressed Delete in this app can find.
  *
- * IT IS TWO PRESSES, WHICH PIECE AND THEN THROW IT AWAY, because the cut no
- * longer decides which piece was waste. It still GUESSES -- the smallest, which
- * is right for most cuts -- but a cut that frees the part you want from the
- * stock around it makes the keeper the small one, and the screen would then be
- * lighting the piece you came for and offering to bin it. See `choices` in
- * `laserStore` for what may be stepped between, and `PIECES` in `LaserViewport`
- * for the click that says it directly.
+ * IT IS TWO PRESSES, WHICH PIECES AND THEN THROW THEM AWAY, because the cut
+ * does not decide what was waste on its own. It applies a RULE -- the piece
+ * holding the middle of the face is the work, everything else on the bed is
+ * offcut -- which is right for the way this screen is used, since the
+ * reference is dropped in the middle and the line is drawn round it. See
+ * `keeperSet` in `laserStore` for the rule, `cutAnchor` for where the middle
+ * actually is, and `Piece` in `LaserViewport` for the click that overrides it
+ * one piece at a time.
  */
 
 /** How long a refused cut stays on screen before clearing itself. The modelling
@@ -75,7 +92,7 @@ export function CutPanel() {
      burns one line or four, and whether an empty result means the line missed
      the block or was clipped away by the axis. */
   const mirror = useTools(face ? mirrorOn(face) : () => null)
-  const nextOffcut = useLaser((s) => s.nextOffcut)
+  const invertOffcut = useLaser((s) => s.invertOffcut)
   const discardOffcut = useLaser((s) => s.discardOffcut)
 
   /**
@@ -131,7 +148,13 @@ export function CutPanel() {
     // burns is what was on screen.
     const mirror = mirrorOn(drafted.face)(useTools.getState())
     const lines = draftCut(drafted, useTools.getState().fitCurve, mirror)
-    const split = useLaser.getState().cut(lines, drafted.face, mirror)
+    // WHERE THE WORK IS, carried across the same way the mirror is: the laser
+    // store holds the bed and the reference store holds the pictures, and
+    // neither reads the other. The piece holding this point is the one the cut
+    // keeps; everything else on the bed is lit as waste. See `cutAnchor`.
+    const laser = useLaser.getState()
+    const anchor = cutAnchor(drafted.face, laser.dims, visiblePlacements(useReference.getState()))
+    const split = laser.cut(lines, drafted.face, mirror, anchor)
     if (split === 0) {
       // The line missed, so the drawing is KEPT: it is the thing that needs
       // moving, and throwing it away would make the user redraw it to find out
@@ -174,71 +197,57 @@ export function CutPanel() {
   const ready = face !== null && draftReady(draft, fit, mirror)
 
   return (
-    <div className="cut-panel">
-      {/* Named the way its neighbour below is named, because the two are one
-          shelf: the block, and the cut you are taking out of it. */}
-      <div className="stock-head">The cut</div>
-
-      <div className="tool-group cut-actions">
+    // A SECTION AT THE FOOT OF THE ISLAND, not a panel of its own: it is the
+    // last child of `.island-body`, so it moves with the island, collapses with
+    // it, and stacks under Point Cut at the column's own gap. The rule along
+    // its top is what separates doing from arming -- everything above it picks
+    // a tool or sets a number, and everything in it changes the block.
+    <div className="cut-dock">
+      <div className="cut-dock-actions">
         <button
           type="button"
-          className="nav-action nav-action-primary"
+          className="cut-action cut-action-primary"
           disabled={!ready}
-          title="Burns the line all the way through the block."
           onClick={fire}
         >
           Apply cut
         </button>
-        <button
-          type="button"
-          className="nav-action"
-          disabled={!ready}
-          title="Throw the drawing away and start the line again."
-          onClick={clear}
-        >
-          Reset line
-        </button>
 
-        {/* WHICH PIECE, AND THEN THROW IT AWAY -- in that order, because that
-            is the order the decision is made in.
+        {/* WHICH PIECES, AND THEN THROW THEM AWAY -- in that order, because
+            that is the order the decision is made in.
 
             Only after a cut that left something to decide about. The highlight
             over the scene is the thing this pair is about, and somebody looking
             at a lit piece wants to know what to do about it without crossing
-            the window -- which is why the press says which key does the same.
+            the window.
 
-            THE STEP IS HERE BECAUSE THE CLICK CANNOT ALWAYS BE. Clicking the
-            piece you want gone is the direct way to say it and is the one worth
-            reaching for, but a press on the block DRAWS while a cutter is in
-            hand, so it is only open with the tool put down. This button is open
-            for as long as the tool is, which is exactly when the click is not.
-            See `nextOffcut`.
+            THE SWAP IS HERE BECAUSE THE CLICK CANNOT ALWAYS BE. Clicking a
+            piece is the direct way to move it in or out of the waste and is the
+            one worth reaching for, but a press on the block DRAWS while a
+            cutter is in hand, so it is only open with the tool put down. This
+            button is open for as long as the tool is, which is exactly when the
+            click is not.
 
-            It goes when there is nothing to step between, rather than sitting
-            there dimmed: a cut that came apart in one place makes two pieces
-            and two is worth stepping, and a piece that was merely passed by is
-            not part of the offer at all. */}
+            IT SWAPS RATHER THAN STEPPING, and that is what the new rule made of
+            it. The cut lights everything that is not the work, so there is no
+            single mark to walk along any more -- and the one answer worth a
+            button is the whole of the other side: the line drawn round a hole
+            rather than round a part. See `invertOffcut`.
+
+            It goes when there is only one piece, rather than sitting there
+            dimmed: nothing to swap and nothing that could be. */}
         {choices.length > 1 && (
-          <button
-            type="button"
-            className="nav-action"
-            title="Lights the next piece this cut made. Clicking a piece does the same, with no tool in hand."
-            onClick={nextOffcut}
-          >
-            Other piece
+          <button type="button" className="cut-action" onClick={invertOffcut}>
+            Keep the rest
           </button>
         )}
 
         {offcut.length > 0 && (
-          <button
-            type="button"
-            className="nav-action"
-            title="Delete does the same, with the pointer anywhere over the bed."
-            onClick={discardOffcut}
-          >
-            {/* Named for how many it takes, because under a mirror it takes
-                every image of the piece at once and a button reading "Discard
-                piece" would be understating what one press does. */}
+          <button type="button" className="cut-action" onClick={discardOffcut}>
+            {/* Named for how many it takes, because a stroke that wandered off
+                the face leaves three pieces and a mirror leaves four, and a
+                button reading "Discard piece" would be understating what one
+                press does. */}
             {offcut.length > 1 ? 'Discard pieces' : 'Discard piece'}
           </button>
         )}

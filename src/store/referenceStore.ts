@@ -170,6 +170,23 @@ const nextId = (prefix: string): string => {
   return `${prefix}${counter}`
 }
 
+/**
+ * Moves that counter past ids that already exist, for presets and pictures
+ * restored from a previous session.
+ *
+ * ONE COUNTER FOR ALL THREE PREFIXES, which is why this takes ids of any kind
+ * and reads the number off whichever it is handed: `p2` and `i2` never both
+ * exist, because the counter that minted one had already passed the other. A
+ * restored shelf that did not seed it would mint an `i1` for the next upload
+ * over a picture already sitting in a slot. See `persist.ts`.
+ */
+export function seedReferenceIds(ids: string[]): void {
+  for (const id of ids) {
+    const numbered = /^[pid]([0-9]+)$/.exec(id)
+    if (numbered) counter = Math.max(counter, Number(numbered[1]))
+  }
+}
+
 /** An empty preset's three holes. A fresh array each time: they are mutated. */
 const emptySlots = (): (RefImage | null)[] => Array.from({ length: SLOTS_PER_PRESET }, () => null)
 

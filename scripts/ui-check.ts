@@ -93,7 +93,8 @@ import { FreehandTool, MoveRefTool, PointCutTool } from '../src/console/LaserToo
 import { SymmetryTool } from '../src/console/LaserTools'
 import { SymmetryPanel } from '../src/viewport/SymmetryPanel'
 import { mirrorLines } from '../src/geometry/faceMirror'
-import type { FaceAxis as LaserFace } from '../src/geometry/laserCut'
+import { isClosedLine } from '../src/geometry/laserCut'
+import type { FaceAxis as LaserFace, Pt as LaserPt } from '../src/geometry/laserCut'
 import { ReferencePanel, slotsFor } from '../src/console/ReferencePanel'
 import { ReferenceEditor } from '../src/console/ReferenceEditor'
 import {
@@ -132,6 +133,7 @@ import {
   pointUv,
   resizeFromCorner,
 } from '../src/viewport/decalPlacement'
+import { cutAnchor, faceNameOf } from '../src/viewport/cutAnchor'
 import { useCutDraft, draftCut, draftLine, draftReady } from '../src/viewport/cutDraft'
 import { BLOCK_MAX, BLOCK_MIN, DEFAULT_BLOCK, bedIsUncut, useLaser } from '../src/store/laserStore'
 import { bedGeometry } from '../src/geometry/laserCut'
@@ -194,7 +196,10 @@ import {
   silhouette,
   turningRings,
 } from '../src/viewport/latheView'
-import { SCREENS, SCREEN_LABELS } from '../src/screens'
+import { OPEN_TO, OPEN_TO_LABELS, SCREENS, SCREEN_LABELS } from '../src/screens'
+import { APP_NAME } from '../src/appInfo'
+import { WelcomeScreen } from '../src/console/WelcomeScreen'
+import { useProjects } from '../src/store/projectStore'
 import { SelectionHud } from '../src/viewport/SelectionHud'
 import { ToolIsland } from '../src/viewport/ToolIsland'
 import {
@@ -421,6 +426,19 @@ function buttonIsDown(markup: string, name: string): boolean {
 function occurrences(markup: string, needle: string): number {
   return markup.split(needle).length - 1
 }
+
+/**
+ * AT A BENCH, not at the front door, for everything below this line.
+ *
+ * The app now opens on the Welcome screen -- see `atWelcome` in `toolStore` --
+ * which dims almost the whole bar, because with no project open there is no
+ * document to export, nothing to snap to, and no history to walk. Every check
+ * in this file that reads the bar or a console is a check about working on
+ * something, so the store is put where a user is when they are working on
+ * something. The front door has a section of its own at the end, which turns
+ * this back on when it is done.
+ */
+useTools.setState({ atWelcome: false })
 
 const doc = () => useDoc.getState()
 const library = () => useLibrary.getState()
@@ -4648,7 +4666,17 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // the whole of what React contributes, and a switch whose slider stopped
   // agreeing with its own labels would fail here rather than on somebody's
   // screen. Checked on the units row because it is the one with three cells.
-  const slider = (markup: string) => markup.match(/--at:\s*(\d+);\s*--of:\s*(\d+)/)?.slice(1) ?? []
+  // Read from the UNITS row by name rather than from the first switch on the
+  // screen, which is what this did and what broke the moment a row was added
+  // above it: `Open to` has two cells against the units' three, so a check
+  // aimed at "the first `--of` in the markup" started measuring a different
+  // control and failing about the right thing for the wrong reason.
+  const slider = (markup: string, row = 'units-modes') => {
+    const at = markup.indexOf(`settings-row ${row}`)
+    return (
+      (at < 0 ? markup : markup.slice(at)).match(/--at:\s*(\d+);\s*--of:\s*(\d+)/)?.slice(1) ?? []
+    )
+  }
   check(
     'the switch divides its track into one cell per option',
     slider(settings)[1] === String(UNITS.length),
@@ -9126,6 +9154,71 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         `${held.u}, ${held.v}`
       )
 
+      // --- and which piece of a cut block is the work -----------------------
+      //
+      // WHERE THE DRAWING IS is the one point the whole choice at the end of a
+      // cut hangs on: the piece holding it is kept and every other piece on the
+      // bed is lit as waste. Wrong by a face-width and the screen lights the
+      // part and offers to bin it, looking exactly as convincing either way --
+      // which is why it is arithmetic in a file of its own. See `cutAnchor`.
+      {
+        const FRONT_FACE: LaserFace = { axis: 2, sign: 1 }
+        // The two vocabularies for six faces meet here and nowhere else.
+        check('a cut face is named the way references name it', faceNameOf(FRONT_FACE) === '+z', faceNameOf(FRONT_FACE))
+        check('and so is the far one', faceNameOf({ axis: 0, sign: -1 }) === '-x', faceNameOf({ axis: 0, sign: -1 }))
+
+        // NO PICTURE MEANS THE MIDDLE, which is the same answer arrived at
+        // without evidence: a block cut with nothing stuck to it is being cut
+        // round something in the middle of it.
+        const bare = cutAnchor(FRONT_FACE, dims, [])
+        check('a bare face anchors on its own middle', bare[0] === 0 && bare[1] === 0, `${bare.join(', ')}`)
+
+        // IN BLOCK SPACE, not scene units, because the bed is a unit cube and
+        // the sides are a scale on the group holding it. A picture a quarter of
+        // the way across a 1.6-wide face is a quarter of the way across the
+        // unit square, whatever the block is set to.
+        const stuck: Placement = {
+          id: 'p', presetId: 'x', imageId: 'i', face: '+z',
+          u: dims[0] / 4, v: -dims[1] / 4, w: 0.1, h: 0.1,
+        }
+        const at = cutAnchor(FRONT_FACE, dims, [stuck])
+        check(
+          'a picture puts the anchor under itself, in block space',
+          Math.abs(at[0] - 0.25) < 1e-9 && Math.abs(at[1] + 0.25) < 1e-9,
+          `${at.join(', ')}`
+        )
+        const resized = cutAnchor(FRONT_FACE, [dims[0] * 3, dims[1] * 3, dims[2]], [
+          { ...stuck, u: (dims[0] * 3) / 4, v: -(dims[1] * 3) / 4 },
+        ])
+        check(
+          'and the same fraction of a block three times the size',
+          Math.abs(resized[0] - at[0]) < 1e-9 && Math.abs(resized[1] - at[1]) < 1e-9,
+          `${resized.join(', ')}`
+        )
+
+        // A picture on another face is not this face's business.
+        const elsewhere = cutAnchor(FRONT_FACE, dims, [{ ...stuck, face: '-x' }])
+        check('a picture on another face is ignored', elsewhere[0] === 0 && elsewhere[1] === 0, `${elsewhere.join(', ')}`)
+
+        // SEVERAL ON ONE FACE, and the middle-most wins: there is no way to ask
+        // which is the subject, so the tie breaks the way the bare face does.
+        const crowd = cutAnchor(FRONT_FACE, dims, [
+          { ...stuck, id: 'far', u: dims[0] * 0.4 },
+          { ...stuck, id: 'near', u: dims[0] * 0.05, v: 0 },
+        ])
+        check('with several pictures the middle-most is the anchor', Math.abs(crowd[0] - 0.05) < 1e-9, `${crowd.join(', ')}`)
+
+        // And a picture dropped off the edge is anchored where it is DRAWN,
+        // which is where `placementRect` pulls it back to -- not where the
+        // offset says, which is off the face and inside no piece at all.
+        const hanging = cutAnchor(FRONT_FACE, dims, [{ ...stuck, u: 99, v: 99 }])
+        check(
+          'and one dragged off the edge anchors where it is drawn',
+          Math.abs(hanging[0]) <= 0.5 && Math.abs(hanging[1]) <= 0.5,
+          `${hanging.join(', ')}`
+        )
+      }
+
       // Where the pointer lands on a face, and back again.
       const there = faceOffset([0.3, 0.5, dims[2] / 2], '+z', dims)
       check(
@@ -9512,16 +9605,50 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     hides('Freehand carries no hover bubble', free, 'nav-tip')
     hides('nor does Point Cut', point, 'nav-tip')
 
-    // Taking one up opens its panel, the way arming the cut plane does: the
-    // tool's own Apply lives in there, and a cut you could draw but not fire
-    // would be the panel nobody found.
+    // TAKING ONE UP DOES NOT OPEN ITS PANEL, and that is a reversal worth
+    // stating: it used to, because the tool's own Apply lived in there and a
+    // cut you could draw but not fire would be the panel nobody found. Apply is
+    // docked at the foot of the island now and stands whether any panel is open
+    // or not, so the only thing behind the caret is a setting -- and opening a
+    // flyout across the scene every time a cutter is picked up puts a lid over
+    // the very face the tool is about to draw on. The caret opens it.
+    tools().setOpenPanel(null)
     tools().setLaserTool('freehand')
-    check('taking one up opens its panel', tools().openPanel === 'freehand', `${tools().openPanel}`)
+    check('taking a cutter up opens no panel', tools().openPanel === null, `${tools().openPanel}`)
     tools().setLaserTool('points')
-    check('and taking the other up moves the panel with it', tools().openPanel === 'points', `${tools().openPanel}`)
+    check('and nor does the other', tools().openPanel === null, `${tools().openPanel}`)
     check('one tool at a time, because the store holds one', tools().laserTool === 'points', `${tools().laserTool}`)
+
+    // THE CARET IS WHAT OPENS IT, and swapping tools still shuts whatever a
+    // cutter had open: a panel left standing over a block you are now dragging
+    // pictures about is a lid with no button under it.
+    tools().setOpenPanel('points')
+    tools().setLaserTool('freehand')
+    check('swapping cutters shuts the one that was open', tools().openPanel === null, `${tools().openPanel}`)
+    tools().setOpenPanel('freehand')
     tools().setLaserTool(null)
     check('putting it down shuts the panel', tools().openPanel === null, `${tools().openPanel}`)
+    // And a panel that is nothing to do with the cutters is left alone.
+    tools().setOpenPanel('snap')
+    tools().setLaserTool('freehand')
+    check('while another panel is left standing', tools().openPanel === 'snap', `${tools().openPanel}`)
+    tools().setOpenPanel(null)
+    tools().setLaserTool(null)
+
+    // BOTH CUTTERS OPEN THE SAME WAY, out to the side. Point Cut used to hang
+    // its panel UNDER its button, on the reasoning that it is last in the
+    // column so there is nothing below to cover -- true, and beside the point:
+    // the two are a pair, picked between constantly, and a pair whose panels
+    // came out in two different directions read as two unrelated tools.
+    {
+      tools().setOpenPanel('freehand')
+      const free = markupOf('FreehandTool (panel open)', FreehandTool)
+      tools().setOpenPanel('points')
+      const point = markupOf('PointCutTool (panel open)', PointCutTool)
+      hides('Freehand opens its panel to the side', free, 'nav-panel-below')
+      hides('and so does Point Cut', point, 'nav-panel-below')
+      tools().setOpenPanel(null)
+    }
 
     // MOVE, the third tool, and every claim about it is about the field it
     // shares with the other two.
@@ -9587,8 +9714,14 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     shows('the armed tool is lit', armed, 'nav-group nav-group-active')
 
     // ONE DIAL, and it is the one thing Freehand has that Point Cut does not.
-    shows('Freehand carries a smoothing dial', armed, '>Smoothing<')
-    hides('and Point Cut does not', markupOf('PointCutTool (armed)', PointCutTool), '>Smoothing<')
+    // OPENED BY HAND, because arming a cutter no longer opens its panel -- the
+    // caret does, which is what a caret is for. Every claim below about what is
+    // inside a cutter's panel has to open it first.
+    tools().setOpenPanel('freehand')
+    const dial = markupOf('FreehandTool (panel)', FreehandTool)
+    shows('Freehand carries a smoothing dial', dial, '>Smoothing<')
+    tools().setOpenPanel('points')
+    hides('and Point Cut does not', markupOf('PointCutTool (panel)', PointCutTool), '>Smoothing<')
 
     // FIT TO LINE IS A SWITCH, and it was three named modes: Straight, Fit to
     // line, Manual. The third was never a third way of joining points -- it was
@@ -9601,6 +9734,7 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     // Outlines and the hollow ends use. `On | Off` with one lit says what the
     // alternative IS, which an empty tickbox leaves you to infer.
     tools().setLaserTool('points')
+    tools().setOpenPanel('points')
     const modes = markupOf('PointCutTool (fit)', PointCutTool)
     shows('Point Cut asks whether the line is fitted', modes, '>Fit to line<')
     for (const label of ['On', 'Off']) {
@@ -9613,8 +9747,12 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     // THE SAME THREE ACTS FOR BOTH TOOLS, written once and shown once -- in a
     // panel of their own over the scene rather than inside either tool's
     // flyout. See below for why that had to move.
+    // WITH THE PANEL OPENED BY HAND, since arming no longer opens it: every
+    // claim below is about what is INSIDE a cutter's flyout, and against a shut
+    // one they would all pass by rendering nothing.
     const panelOf = (tool: 'freehand' | 'points') => {
       tools().setLaserTool(tool)
+      tools().setOpenPanel(tool)
       return tool === 'freehand'
         ? markupOf('FreehandTool (acts)', FreehandTool)
         : markupOf('PointCutTool (acts)', PointCutTool)
@@ -9645,16 +9783,26 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       tools().setLaserTool(cutter)
       const panel = markupOf(`CutPanel (${cutter})`, CutPanel)
       shows(`with ${cutter} in hand the cut panel can fire a cut`, panel, '>Apply cut<')
-      shows(`and throw the drawing away -- ${cutter}`, panel, '>Reset line<')
+      // DOCKED AT THE FOOT OF THE ISLAND rather than standing in the far
+      // corner: the hand that picked the cutter up is already there, and down
+      // in the corner at label size Apply read as a footnote to the screen
+      // whose whole purpose it is.
+      shows(`and it is the island's own dock -- ${cutter}`, panel, 'cut-dock')
+      shows(`sized above every other button in it -- ${cutter}`, panel, 'cut-action-primary')
+      // AND THERE IS NO RESET. Freehand throws the old line away the moment a
+      // new stroke starts, so for that tool it was a second way to do what
+      // drawing again already does; Escape is the way out of a drawing that is
+      // going nowhere, which is what Escape means everywhere else in this app.
+      hides(`and carries no Reset -- ${cutter}`, panel, '>Reset line<')
     }
 
-    // AND IT GOES WITH THE TOOL, which is what makes it a popup rather than a
-    // fourth permanent panel: with no line to apply the corner is scene again.
+    // AND IT GOES WITH THE TOOL, which is what keeps the island the height it
+    // always was until a cutter is picked up.
     tools().setLaserTool(null)
     check(
       'with empty hands the cut panel renders nothing',
       renderToStaticMarkup(createElement(CutPanel)) === '',
-      'the corner goes back to being scene'
+      'the island goes back to its five rows'
     )
     // MOVE IS IN THE SAME FIELD AS THE CUTTERS but is not one: it takes hold of
     // a reference rather than the block, and there is no line in hand to burn.
@@ -9702,30 +9850,24 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       )
     }
 
-    // AND POINT CUT'S PANEL HANGS UNDER ITS BUTTON, where every other island
-    // panel opens out to the side. The side is right for a tool with buttons
-    // beneath it in the column -- a dropped panel would cover them, which is
-    // why the island opens sideways at all -- and Point Cut is the LAST tool in
-    // that column, so there is nothing under it but scene. Below is where a
-    // dropdown belongs, and it keeps the deeper of the two cut panels out of
-    // the middle of the window, which is the face being drawn on.
-    shows(
-      'Point Cut drops its panel under the button',
-      panelOf('points'),
-      'nav-panel nav-panel-below'
-    )
-    hides('while Freehand keeps to the side', panelOf('freehand'), 'nav-panel-below')
+    // BOTH CUTTERS OPEN THE SAME WAY, out to the side, like every other panel
+    // on the island. Point Cut used to hang its panel UNDER its button, on the
+    // reasoning that it is last in the column so there is nothing below to
+    // cover. True, and beside the point: the two cutters are a pair, picked
+    // between constantly, and a pair whose panels came out in two different
+    // directions read as two unrelated tools.
+    hides('Point Cut opens to the side', panelOf('points'), 'nav-panel-below')
+    hides('and so does Freehand', panelOf('freehand'), 'nav-panel-below')
 
-    // With the rules to place it, and the two flips a corner needs: no room
-    // under the button in a bottom corner, and measured from the near edge
-    // against a right-hand one.
+    // And the rules that placed it went with the flag, rather than being left
+    // in the stylesheet for a class nothing wears.
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
     check(
-      'and the island has somewhere to put it',
-      css.includes('.tool-island .nav-panel-below') &&
-        css.includes('.tool-island-bottom .nav-panel-below') &&
-        css.includes('.tool-island-right .nav-panel-below'),
-      'placed, flipped up in a bottom corner, and anchored to a right-hand edge'
+      'and the island keeps no rules for a below panel',
+      !css.includes('.tool-island .nav-panel-below {') &&
+        !css.includes('.tool-island-bottom .nav-panel-below {') &&
+        !css.includes('.tool-island-right .nav-panel-below {'),
+      'three rules for a class nothing wears'
     )
 
     // APPLY IS DEAD WITH NOTHING DRAWN, which is the honest reading of a button
@@ -9736,8 +9878,10 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     check('because the draft is not ready', !draftReady(draft(), false), '')
 
     // TWO POINTS IS THE WHOLE REQUIREMENT, and the panel says so while it is
-    // waiting -- an empty face does not.
+    // waiting -- an empty face does not. Opened by hand, since arming a cutter
+    // no longer opens its panel.
     draft().begin({ axis: 2, sign: 1 }, 'points')
+    tools().setOpenPanel('points')
     shows(
       'and the panel asks for the first point',
       markupOf('PointCutTool (none)', PointCutTool),
@@ -9820,6 +9964,7 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     {
       draft().clear()
       draft().begin({ axis: 2, sign: 1 }, 'points')
+      tools().setOpenPanel('points')
       check('a fresh draft is open', !draft().closed, '')
 
       // TWO POINTS ENCLOSE NOTHING -- a bridge back would be the same segment
@@ -9905,6 +10050,64 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
       draft().addPoint([0.2, 0.2])
     }
 
+    // AND FREEHAND ENCIRCLES TOO, which it could not do at all: a hand has no
+    // knot to click, so a ring drawn by hand came back CLOSE and that counted
+    // for nothing. The stroke stayed open, its ends were carried off to the
+    // border as though it were a line across the face, and the slot missed
+    // itself by the gap -- at four thousandths of a block against a
+    // three-thousandth kerf, a hairline of material still joining the island to
+    // the stock. The block came apart in no new place and the tool said the
+    // line did not cross it. See `closeReturningStroke`.
+    {
+      /** An arc of `deg` degrees, wobbly the way a hand is. */
+      const arc = (deg: number, r = 0.3, n = 90): LaserPt[] =>
+        Array.from({ length: n + 1 }, (_, i): LaserPt => {
+          const t = ((i / n) * deg * Math.PI) / 180
+          const rr = r * (1 + 0.06 * Math.sin(t * 3))
+          return [Math.cos(t) * rr, Math.sin(t) * rr]
+        })
+      const drawn = (stroke: LaserPt[]) =>
+        draftLine({ kind: 'freehand', stroke, points: [], handles: [], closed: false }, false)
+      const shuts = (stroke: LaserPt[]) => isClosedLine(drawn(stroke))
+
+      check('a ring drawn by hand comes back closed', shuts(arc(355)), '')
+      check('and so does one stopped ten degrees short', shuts(arc(350)), '')
+
+      // MEASURED AGAINST ITS OWN LENGTH, because a loop has no size: a ring
+      // round a bolt hole and one round the whole face are the same gesture,
+      // and a fixed distance would be far too eager for the first.
+      check('a tiny ring closes on the same rule', shuts(arc(355, 0.05)), '')
+      check('and a big one', shuts(arc(355, 0.45)), '')
+
+      // AND AN OPEN ARC STAYS OPEN. A C, a horseshoe, a three-quarter turn --
+      // each has a mouth wide enough to be obviously deliberate, and shutting
+      // one would burn a shape nobody drew.
+      check('a three-quarter arc is not a loop', !shuts(arc(270)), '')
+      check('nor a horseshoe', !shuts(arc(300)), '')
+      check('nor a tiny one, which the fraction judges the same way', !shuts(arc(270, 0.05)), '')
+      const across: LaserPt[] = Array.from({ length: 41 }, (_, i): LaserPt => [-0.6 + i * 0.03, 0])
+      check('and a line straight across scores the furthest from one', !shuts(across), '')
+      // A short nick is the case a fixed tolerance gets wrong: its two ends are
+      // a hair apart in absolute terms and a whole stroke apart in its own.
+      const nick: LaserPt[] = [[0, 0], [0.02, 0.01], [0.04, 0.02]]
+      check('a short nick is not a loop either', !shuts(nick), '')
+
+      // WHAT IT IS FOR: the ring drops its island out, and the island is the
+      // piece the drawing was round -- so Del frees the part rather than
+      // binning it. See `keeperSet`.
+      laser().freshStock()
+      const split = laser().cut([drawn(arc(355))], { axis: 2, sign: 1 })
+      check('and the ring cuts the block in two', split === 1, `${split}`)
+      const kept = laser().pieces.filter((p) => !laser().offcut.includes(p.id))
+      check(
+        'keeping the island it drew round',
+        kept.length === 1 && kept[0].volume < 0.4,
+        `kept ${kept[0]?.volume.toFixed(4)} of ${laser().pieces.length}`
+      )
+      check('and lighting the stock around it', laser().offcut.length === 1, `${laser().offcut.length}`)
+      laser().freshStock()
+    }
+
     // A DRAFT BELONGS TO ONE FACE. Turning the compass elsewhere has to drop it:
     // a line the user can no longer see, with Apply still willing to burn it, is
     // the one failure here that destroys work rather than merely surprising.
@@ -9919,10 +10122,10 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     {
       const clean = markupOf('CutPanel (clean)', CutPanel)
       hides('no offcut, no row', clean, '>Discard piece<')
-      hides('and nothing to step between', clean, '>Other piece<')
+      hides('and nothing to swap over', clean, '>Keep the rest<')
     }
-    // A cut a third of the way across, so the two pieces are plainly different
-    // sizes and "the smaller one" means something.
+    // A cut a third of the way across, so the middle of the face is plainly
+    // inside the bigger piece and plainly outside the sliver.
     laser().cut([[[0.3, -0.3], [0.3, 0.3]]], { axis: 2, sign: 1 })
     check(
       'a cut leaves a piece lit',
@@ -9932,60 +10135,198 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     {
       const after = markupOf('CutPanel (offcut)', CutPanel)
       shows('and the panel offers to throw it away', after, '>Discard piece<')
-      shows('and to light the other one instead', after, '>Other piece<')
+      shows('and to swap the choice over', after, '>Keep the rest<')
     }
 
-    // WHICH PIECE IS THE USER'S TO SAY, and this is the whole of what changed.
-    // The cut still guesses -- the smallest, which is right for most cuts --
-    // but a cut that frees the part you want from the stock around it makes the
-    // KEEPER the small one, and a screen that only ever lit the sliver would be
-    // offering to bin the thing you came for.
+    // THE PIECE UNDER THE MIDDLE IS THE WORK and everything else on the bed is
+    // waste. That is the whole rule, and it replaces a guess -- keep the
+    // biggest, light the smallest -- that could only ever describe a bed with
+    // two pieces on it. See `keeperSet` in `laserStore`.
     {
       check('both pieces are on offer', laser().choices.length === 2, `${laser().choices.length}`)
       // ONE PIECE PER SET without a mirror standing, which is the half of the
-      // change that matters here: the offcut became a list so that a mirrored
-      // cut can light a piece and its images together, and an ordinary cut has
-      // to go on behaving exactly as it did. `lit` is that claim, made once.
+      // change that matters here: the offcut is a list so that a mirrored cut
+      // can light a piece and its images together, and an ordinary cut has to
+      // go on behaving exactly as it did. `lit` is that claim, made once.
       const byId = (id: string | undefined) => laser().pieces.find((p) => p.id === id)
       const lit = () => laser().offcut[0]
       const opened = byId(lit())
       const other = laser().pieces.find((p) => p.id !== lit())
       check('and one piece is lit rather than a set of them', laser().offcut.length === 1, `${laser().offcut.length}`)
+      // Here the rule and the old guess agree, which is the point: an ordinary
+      // trimming cut goes on behaving exactly as it did.
       check(
-        'the choice opens on the smaller of them',
+        'the lit one is the piece the middle is NOT in',
         opened !== undefined && other !== undefined && opened.volume < other.volume,
         `${opened?.volume.toFixed(4)} against ${other?.volume.toFixed(4)}`
       )
-      // Biggest first, so stepping is stepping down in size and wraps back to
-      // the top.
-      laser().nextOffcut()
+
+      // A CLICK IS A TOGGLE NOW, which is what the rule forces: the light is no
+      // longer one mark that has to be somewhere, so a press has two jobs to do
+      // -- rescue a piece the rule called waste, and condemn one it kept.
+      laser().markOffcut(opened!.id)
+      check('a click puts a lit piece out', laser().offcut.length === 0, `${laser().offcut.length}`)
+      laser().markOffcut(other!.id)
+      check('and lights an unlit one', lit() === other?.id, `${laser().offcut.length} lit`)
+      // AND IT WILL NOT LIGHT THE LAST KEPT PIECE. A bed with everything lit is
+      // one press from empty, so the refusal is made here, where the piece is
+      // still on screen, rather than at the Delete that would follow it.
+      laser().markOffcut(opened!.id)
       check(
-        'and steps onto the bigger one',
-        lit() === other?.id,
-        `${byId(lit())?.volume.toFixed(4)}`
+        'but never the last piece being kept',
+        laser().offcut.length === 1 && lit() === other?.id,
+        `${laser().offcut.length} of ${laser().pieces.length} lit`
       )
-      laser().nextOffcut()
-      check('wrapping back round', lit() === opened?.id, '')
 
-      // The direct way to say it, which is what a click on a piece calls.
-      laser().markOffcut(other!.id)
-      check('a piece can be named outright', lit() === other?.id, '')
-      // And a piece this cut did not make is not on offer -- the press that
-      // lands on an older sliver does nothing rather than something surprising.
+      // A press on empty space does nothing rather than something surprising.
       laser().markOffcut('piece-does-not-exist')
-      check('while a piece that is not on offer is refused', lit() === other?.id, '')
+      check('while a piece that is not there is refused', lit() === other?.id, '')
 
-      // NOT AN UNDO STEP, either way of saying it: nothing has been destroyed,
-      // both pieces are still on the bed, and a history that stepped through
-      // every change of mind would bury the cut under them.
+      // SWAPPING IS THE ONE ANSWER A PANEL BUTTON CAN GIVE, since it cannot
+      // point at a piece -- and it is the answer that matters, for a line drawn
+      // round a hole rather than round a part.
+      laser().invertOffcut()
+      check('the swap keeps what was lit', lit() === opened?.id, '')
+      check('and lights what was kept', laser().offcut.length === 1, `${laser().offcut.length}`)
+
+      // NOT AN UNDO STEP, any of it: nothing has been destroyed, every piece is
+      // still on the bed, and a history that stepped through every change of
+      // mind would bury the cut under them.
       const steps = laser().past.length
-      laser().nextOffcut()
-      laser().markOffcut(other!.id)
+      laser().invertOffcut()
+      laser().markOffcut(opened!.id)
       check('and changing your mind is not an act to walk back', laser().past.length === steps, `${laser().past.length - steps}`)
 
-      // Put it back on the smaller one for what follows.
+      // Put it back on the sliver for what follows.
+      laser().markOffcut(other!.id)
       laser().markOffcut(opened!.id)
+      check('leaving the sliver lit', lit() === opened?.id && laser().offcut.length === 1, '')
     }
+
+    // MORE THAN TWO PIECES, which is the case the old rule could not describe
+    // at all and the reason the rule changed. A hand that runs off the face and
+    // back on cuts THREE -- and the screen used to light one of them and leave
+    // the third sitting there: not lit, not clickable, nothing Delete would
+    // take, and no way to say anything about it at all.
+    {
+      laser().freshStock()
+      const wander: LaserPt[] = [
+        [-0.6, 0.2], [-0.1, 0.2], [-0.1, -0.6], [0.1, -0.6], [0.1, 0.2], [0.6, 0.2],
+      ]
+      laser().cut([wander], { axis: 2, sign: 1 })
+      check('a stroke that leaves the face and comes back cuts three', laser().pieces.length === 3, `${laser().pieces.length}`)
+      check('and TWO of them light up, not one', laser().offcut.length === 2, `${laser().offcut.length}`)
+      const kept = laser().pieces.filter((p) => !laser().offcut.includes(p.id))
+      check('leaving exactly one piece kept', kept.length === 1, `${kept.length}`)
+      shows(
+        'and the panel names what one press takes',
+        markupOf('CutPanel (three)', CutPanel),
+        '>Discard pieces<'
+      )
+
+      // EVERY PIECE ON THE BED IS ON OFFER, so the third one can be spoken
+      // about: rescued with a press, or left to go with the rest.
+      check('all three are on offer', laser().choices.length === 3, `${laser().choices.length}`)
+      const rescued = laser().offcut[0]
+      laser().markOffcut(rescued)
+      check('and one of the two can be taken back out', laser().offcut.length === 1, `${laser().offcut.length}`)
+      laser().markOffcut(rescued)
+      check('and put back in', laser().offcut.length === 2, `${laser().offcut.length}`)
+
+      // AND DELETE TAKES THEM BOTH, in one press and one step of history: the
+      // cut was one act and tidying up after it is one act too.
+      const steps = laser().past.length
+      laser().discardOffcut()
+      check('Discard takes both offcuts at once', laser().pieces.length === 1, `${laser().pieces.length}`)
+      check('off one step of history', laser().past.length === steps + 1, `${laser().past.length - steps}`)
+      laser().undo()
+      check('which one undo puts back', laser().pieces.length === 3, `${laser().pieces.length}`)
+    }
+
+    // AND THE RULE JUDGES THE WHOLE BED, not just the pieces the last cut made.
+    // The keeper is the piece under the drawing, and that question has the same
+    // answer for a ring left lying beside the work two cuts ago -- so a second
+    // cut made without tidying up after the first does not leave the first
+    // cut's leavings unlit and unspeakable. See `choices` in `laserStore`.
+    {
+      laser().freshStock()
+      const FACE: LaserFace = { axis: 2, sign: 1 }
+      laser().cut([[[0.3, -0.6], [0.3, 0.6]]], FACE)
+      const first = laser().pieces.length
+      check('one cut, two pieces', first === 2, `${first}`)
+      // Left standing: no discard, so the sliver is still on the bed.
+      laser().cut([[[-0.3, -0.6], [-0.3, 0.6]]], FACE)
+      check('a second cut leaves three on the bed', laser().pieces.length === 3, `${laser().pieces.length}`)
+      check('all three judged, not just the two just made', laser().choices.length === 3, `${laser().choices.length}`)
+      check(
+        'and both slivers are lit, whichever cut made them',
+        laser().offcut.length === 2,
+        `${laser().offcut.length}`
+      )
+      const kept = laser().pieces.filter((p) => !laser().offcut.includes(p.id))
+      check(
+        'leaving the middle -- the piece the drawing was round',
+        kept.length === 1 && kept[0].volume > 0.5,
+        `${kept.map((p) => p.volume.toFixed(4)).join(', ')}`
+      )
+    }
+
+    // AND THE PICTURE IS WHAT STEERS IT, which is the claim the two halves only
+    // make together: `cutAnchor` says where the drawing is and `keeperSet` says
+    // which piece that is, and either one could be right on its own while the
+    // pair pointed at the wrong piece.
+    //
+    // The proof is one cut run twice. A loop drawn round a picture slid over to
+    // the left of the face, and the same loop with nothing stuck to the face at
+    // all: the pieces are identical and the keeper is the OTHER ONE each time.
+    // Nothing about sizes can produce that -- the island is the small piece
+    // both times, which is exactly the case the old keep-the-biggest guess got
+    // backwards.
+    {
+      const FACE: LaserFace = { axis: 2, sign: 1 }
+      const dims = laser().dims
+      const picture: Placement = {
+        id: 'p', presetId: 'x', imageId: 'i', face: '+z',
+        u: -dims[0] * 0.25, v: 0, w: dims[0] * 0.2, h: dims[1] * 0.2,
+      }
+      const box = (cu: number, r: number): LaserPt[] => [
+        [cu - r, -r], [cu + r, -r], [cu + r, r], [cu - r, r], [cu - r, -r],
+      ]
+      const round = box(-0.25, 0.15)
+
+      laser().freshStock()
+      laser().cut([round], FACE, null, cutAnchor(FACE, dims, [picture]))
+      const under = laser().pieces.filter((p) => !laser().offcut.includes(p.id))
+      check(
+        'a line drawn round a picture keeps the island under it',
+        under.length === 1 && under[0].volume < 0.2,
+        `kept ${under[0]?.volume.toFixed(4)}`
+      )
+
+      laser().freshStock()
+      laser().cut([round], FACE, null, cutAnchor(FACE, dims, []))
+      const bare = laser().pieces.filter((p) => !laser().offcut.includes(p.id))
+      check(
+        'and the very same line with no picture keeps the stock instead',
+        bare.length === 1 && bare[0].volume > 0.8,
+        `kept ${bare[0]?.volume.toFixed(4)}`
+      )
+
+      // Which is the whole point of the exercise: Del frees the part rather
+      // than binning the thing you came for.
+      laser().freshStock()
+      laser().cut([round], FACE, null, cutAnchor(FACE, dims, [picture]))
+      laser().discardOffcut()
+      check(
+        'so Discard frees the part rather than throwing it away',
+        laser().pieces.length === 1 && laser().pieces[0].volume < 0.2,
+        `${laser().pieces.length} piece of ${laser().pieces[0]?.volume.toFixed(4)}`
+      )
+    }
+
+    // Back to a plain two-piece bed for what follows.
+    laser().freshStock()
+    laser().cut([[[0.3, -0.3], [0.3, 0.3]]], { axis: 2, sign: 1 })
 
     const before = laser().pieces.length
     laser().discardOffcut()
@@ -10070,6 +10411,23 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     check('and a single line rather than a cross', mirrorNow()?.mode === 'line', `${mirrorNow()?.mode}`)
     shows('the panel comes up with it', panel(), '>Symmetry<')
     shows('offering the two kinds of mirror', panel(), '>Cross<')
+    // HALF THE PANEL EACH, rather than two buttons and a stretch of empty
+    // border to their right. Line and Cross are a two-way switch over one
+    // question, so neither has a claim on more room -- and left to size itself
+    // a bare `.seg` hugs the left of its row, gives the longer word the wider
+    // button, and stops short of the Angle field under it, which is the only
+    // other thing in the panel. The third control in the app to want this: see
+    // `.base-modes` and `.curve-modes`.
+    shows('with the pair filling the row rather than hugging its left', panel(), 'seg mirror-kinds')
+    {
+      const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+      check(
+        'and the rule that makes it so',
+        /\.mirror-kinds\s*\{[^}]*width:\s*100%/.test(css) &&
+          /\.mirror-kinds \.seg-btn\s*\{[^}]*flex:\s*1/.test(css),
+        'full width, and equal shares of it'
+      )
+    }
 
     // THE AXIS OUTLIVES THE HAND. This is the whole shape of the tool: take up
     // a cutter and the mirror goes on standing, because a mirror you could not
@@ -10381,6 +10739,167 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
   }
 
   tools().setScreen('modelling')
+}
+
+/*
+ * THE FRONT DOOR: what the bar does when there is no project open, and what the
+ * screen that replaces the benches says.
+ *
+ * LAST IN THE FILE, and deliberately: it is the one section that turns
+ * `atWelcome` back on, and every check above it is about working on something.
+ *
+ * The claim being tested is almost entirely a NEGATIVE one -- that six controls
+ * go quiet and one does not -- which is exactly the kind of thing that is
+ * impossible to see by reading the components, because not one of them mentions
+ * the front door. They ask `onDocument` and `snapsHere`, and those two answer
+ * for it. So the check is worth having precisely because the wiring is
+ * invisible: a future edit that gives Export its own reason to be live would
+ * break nothing that anybody would notice until they pressed it.
+ */
+console.log('\nThe welcome screen: no project open, and a bar that says so')
+{
+  useTools.setState({ atWelcome: true, openPanel: null })
+  useProjects.setState({
+    loaded: true,
+    openId: 'pj-open',
+    projects: [
+      {
+        id: 'pj-open',
+        name: 'Vase',
+        created: 1000,
+        edited: Date.now(),
+        screen: 'lathe',
+        objects: 3,
+        turned: true,
+        cut: false,
+        meshIds: [],
+      },
+      {
+        id: 'pj-other',
+        name: 'Bracket',
+        created: 500,
+        edited: 600,
+        screen: 'modelling',
+        objects: 0,
+        turned: false,
+        cut: true,
+        meshIds: [],
+      },
+    ],
+  })
+
+  const welcome = markupOf('WelcomeScreen', WelcomeScreen)
+  // Escaped on the way in, because the app's name has an apostrophe in it and
+  // `renderToStaticMarkup` writes that as `&#x27;`. Looking for the raw string
+  // finds nothing and reports a missing wordmark that is right there.
+  shows(
+    'the front door carries the app name',
+    welcome,
+    `<h1 class="welcome-title">${APP_NAME.replace(/'/g, '&#x27;')}</h1>`
+  )
+  shows('and a way to start something', welcome, '>New Project<')
+  shows('every project is listed', welcome, '>Vase<')
+  shows('including the ones not open', welcome, '>Bracket<')
+  shows('a card says what is in the project', welcome, '3 objects')
+  shows('and that the lathe holds work', welcome, 'turned')
+  shows('and that the block has been cut', welcome, 'cut')
+  shows('the open one is marked as where you are', welcome, 'aria-current="true"')
+  check(
+    'and exactly one of them is',
+    occurrences(welcome, 'aria-current="true"') === 1,
+    `${occurrences(welcome, 'aria-current="true"')}`
+  )
+  shows('each row can be renamed', welcome, '>Rename<')
+  shows('copied', welcome, '>Copy<')
+  shows('and deleted', welcome, '>Delete<')
+  hides(
+    'though not without a second press -- the armed word is not the resting one',
+    welcome,
+    '>Delete?<'
+  )
+
+  // THE RULE THE WHOLE APP IS HELD TO, and this screen is the newest thing that
+  // could break it. See `CLAUDE.md`: a control is a name and the control, and
+  // anything that needs explaining goes to Help, which is a document.
+  check('the screen carries no hover text at all', !/ title="/.test(welcome), welcome.match(/ title="[^"]*"/)?.[0] ?? '')
+  hides('and no standing prose under its title', welcome, 'overlay-lede')
+
+  // A list that has not arrived and a list with nothing in it look identical
+  // and mean opposite things.
+  useProjects.setState({ loaded: false })
+  hides(
+    'nothing is listed until the disk has answered',
+    markupOf('WelcomeScreen (still reading)', WelcomeScreen),
+    '>Vase<'
+  )
+  useProjects.setState({ loaded: true })
+
+  const door = markupOf('NavBar (welcome)', NavBar)
+  shows('the app name is the way here, and says so to a reader', door, 'aria-label="Projects"')
+  shows('and is lit while you are', door, 'brand-mark" aria-label="Projects" aria-current="page"')
+
+  // The six that go quiet. Counted rather than eyeballed: the bar renders four
+  // `nav-btn`s and three tabs, and a check that merely found ONE disabled
+  // button would pass while five others were still live.
+  check(
+    'all three screen tabs are dead with no bench to send anybody to',
+    occurrences(door, 'class="screen-tab" disabled=""') === SCREENS.length,
+    `${occurrences(door, 'class="screen-tab" disabled=""')} of ${SCREENS.length}`
+  )
+  check(
+    'nothing is the current screen, because the front door is not one',
+    !door.includes('aria-current="page">Modelling<'),
+    'a tab is lit for a bench nobody is at'
+  )
+  check(
+    'undo and redo are dead whatever the stacks hold',
+    occurrences(door, 'class="seg-btn" disabled=""') === 2,
+    `${occurrences(door, 'class="seg-btn" disabled=""')} of 2`
+  )
+  shows('the counts are dimmed with them', door, 'stats stats-idle')
+
+  // Export and Snap by name, because they are the two that go quiet through a
+  // SELECTOR rather than through anything either component says -- `onDocument`
+  // and `snapsHere` -- and a change to either selector would leave a live
+  // button over a scene that is not there with nothing else failing.
+  const navButton = (label: string) =>
+    door.match(
+      new RegExp(`<button type="button" class="nav-btn"([^>]*)>(?:(?!</button>)[\\s\\S])*?${label}`)
+    )?.[1] ?? ''
+  check('Export is dead with no document to write out', navButton('Export').includes('disabled'))
+  check('and Snap with nothing on a bench to catch', navButton('Snap').includes('disabled'))
+  // Snap is the one that is disabled while still ENGAGED -- it is a preference
+  // that survives every screen, so it stays switched on while it cannot be
+  // pressed. Its group keeps the accent and the group is what fades, which is
+  // the bargain `.nav-group:has(> .nav-btn:disabled)` was written for.
+  shows('though it is still switched on, being a preference and not a mode', door, 'nav-group-active')
+
+  // And the one that is not. A file arriving is how a project can begin, so the
+  // one door that opens inwards stays open. See `canImport`.
+  check(
+    'Import is live at the front door, alone among the document controls',
+    /<button type="button" class="nav-btn"(?! disabled)[^>]*>(?:(?!<\/button>)[\s\S])*?Import/.test(
+      door
+    ),
+    'the one door that opens inwards is shut'
+  )
+
+  useTools.setState({ openPanel: 'settings' })
+  const cog = markupOf('SettingsScreen (welcome)', SettingsScreen)
+  shows('Settings still opens, and offers where to start', cog, '>Open to<')
+  for (const where of OPEN_TO) {
+    shows(`with ${OPEN_TO_LABELS[where]} named as a place`, cog, `>${OPEN_TO_LABELS[where]}<`)
+  }
+  check(
+    'and the walk-about switch is dead here too, there being no room to walk in',
+    occurrences(cog, 'class="tool-group settings-row game-modes" disabled=""') === 1,
+    `${occurrences(cog, 'class="tool-group settings-row game-modes" disabled=""')}`
+  )
+
+  useTools.setState({ atWelcome: false, openPanel: null })
+  const back = markupOf('NavBar (back at a bench)', NavBar)
+  hides('and every one of them comes back on at a bench', back, 'class="screen-tab" disabled=""')
+  shows('with the bench you left still current', back, 'aria-current="page">Modelling<')
 }
 
 console.log(

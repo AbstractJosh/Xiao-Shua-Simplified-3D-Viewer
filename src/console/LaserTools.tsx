@@ -172,13 +172,17 @@ function pointHint(points: number, closed: boolean): string | null {
  * being fitted, which is a thing none of the three modes could say. See
  * `fitCurve` and `handles` in `cutDraft`.
  *
- * IT IS ALSO THE ONE TOOL THAT CAN ENCIRCLE, and that is not a third mode
- * either. Clicking the first point bridges the last one back to it, and the
- * loop that makes cuts out what it surrounds instead of crossing the face --
- * the whole difference downstream being a wall bent round into a ring rather
- * than carried off to the border. Freehand cannot do it and is not missing
- * anything: it has no knots to click and a rope would never bring the hand back
- * to the exact point it set off from. See `closed` in `cutDraft`.
+ * IT ENCIRCLES BY A CLICK, which is not a third mode either. Clicking the first
+ * point bridges the last one back to it, and the loop that makes cuts out what
+ * it surrounds instead of crossing the face -- the whole difference downstream
+ * being a wall bent round into a ring rather than carried off to the border.
+ *
+ * FREEHAND ENCIRCLES TOO, and the difference is only in how each tool can be
+ * ASKED. This one has knots, so it can offer an exact answer: click the first
+ * and the line is shut to the last bit. A hand has nothing to hit and comes
+ * back merely close, so there the question is read off the stroke instead --
+ * near enough to where it started, against its own length, and it is a loop.
+ * See `closed` in `cutDraft` for this one and `closeReturningStroke` for that.
  */
 export function PointCutTool() {
   const armed = useTools((s) => s.laserTool === 'points')
@@ -197,13 +201,13 @@ export function PointCutTool() {
       active={armed}
       onToggle={(on) => setLaserTool(on ? 'points' : null)}
       panelTitle="Point Cut"
-      // UNDER THE BUTTON rather than out beside it, which is what every other
-      // panel on an island does. Point Cut is the last tool in the column, so
-      // there is nothing below to cover -- the one reason island panels open
-      // sideways at all -- and this is the deeper of the two cut panels: opened
-      // across the scene it stands over the middle of the window, which is the
-      // face the tool is about to be used on. See `below` in `NavTool`.
-      below
+      // OUT TO THE SIDE, exactly like Freehand above it and like every other
+      // panel on an island. It used to hang UNDER the button, on the reasoning
+      // that Point Cut is last in the column so there is nothing below to cover
+      // -- true, and beside the point: the two cutters are a pair, picked
+      // between constantly, and a pair whose panels come out in two different
+      // directions reads as two unrelated tools. Whichever one you have open,
+      // the other's controls should be where the last one's were.
     >
       <div className="field">
         <div className="field-head">

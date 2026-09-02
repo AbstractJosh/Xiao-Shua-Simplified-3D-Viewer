@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.scripts.json --noEmit",
-    "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/ui-check.ts && tsx scripts/export-check.ts && tsx scripts/import-check.ts"
+    "check": "tsx scripts/engine-check.ts && tsx scripts/interaction-check.ts && tsx scripts/ui-check.ts && tsx scripts/export-check.ts && tsx scripts/import-check.ts && tsx scripts/persist-check.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

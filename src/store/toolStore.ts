@@ -31,12 +31,13 @@ import { fromDisplay } from '../units'
 import { DEFAULT_HELP_SECTION } from '../helpTopics'
 import type { HelpSectionId } from '../helpTopics'
 import {
+  DEFAULT_OPEN_TO,
   DEFAULT_SCREEN,
   SCREEN_HAS_DOCUMENT,
   SCREEN_HAS_GAME_CONTROLS,
   SCREEN_SNAPS,
 } from '../screens'
-import type { ScreenId } from '../screens'
+import type { OpenTo, ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
 import { NO_PAN, clampPan, clampZoom } from '../viewport/latheView'
@@ -766,6 +767,30 @@ export type ToolState = {
    * cannot sensibly say which screen its author last had open.
    */
   screen: ScreenId
+  /**
+   * Whether the app is at its FRONT DOOR rather than at a bench.
+   *
+   * NOT A FOURTH SCREEN, and the distinction is the whole of why this is a
+   * boolean beside `screen` instead of a fourth `ScreenId`. Every screen in
+   * that table is a PAIR -- a viewport and the console that drives it, see
+   * `SCREEN_PARTS` -- because every one of them is somewhere you make
+   * something. Welcome makes nothing. It has no viewport, no console, no
+   * document and no tool, and forcing it into the table would mean four
+   * entries in every `Record<ScreenId, ...>` in the app answering a question
+   * that does not apply to it.
+   *
+   * WHAT IT REMEMBERS BY BEING SEPARATE is which bench you were at. Going home
+   * and coming back is not a screen change: the tabs stay where they were, and
+   * pressing the open project's card puts you back at the very bench you left,
+   * because `screen` was never touched.
+   *
+   * The bar reads it through `onDocument` and `snapsHere`, so everything that
+   * acts on a bench dims at the front door without being told about the front
+   * door individually.
+   */
+  atWelcome: boolean
+  /** Where the app starts: the front door, or the last project. See `OPEN_TO`. */
+  openTo: OpenTo
   /** Which gizmo the viewport is showing. See `TransformMode`. */
   transformMode: TransformMode
   /**
@@ -1345,6 +1370,15 @@ export type ToolState = {
   /** Show a different screen. Closes any open tool panel with it: every one of
    *  them hangs off a bar or an island that is about to be replaced. */
   setScreen: (screen: ScreenId) => void
+  /**
+   * Go to the front door, or come back from it to the bench you left.
+   *
+   * ONE SETTER FOR BOTH DIRECTIONS, and it closes any open tool panel exactly
+   * as `setScreen` does: a flyout hanging off the bar is pointing at a bench
+   * that is about to stop being on screen.
+   */
+  setAtWelcome: (atWelcome: boolean) => void
+  setOpenTo: (openTo: OpenTo) => void
   setTransformMode: (mode: TransformMode) => void
   /**
    * PRESS one of the picker's three buttons -- the whole of what a press means,
@@ -1534,6 +1568,13 @@ function pinAll(unit: Unit): PinnedUnits {
 }
 
 export const useTools = create<ToolState>((set) => ({
+  // AT THE FRONT DOOR. The app's very first decision is whether to stay there:
+  // `resume` reads `openTo` and walks straight through to the last project if
+  // that is what the user asked for. Starting here rather than at a bench means
+  // there is no frame in which a viewport is drawing a document that belongs to
+  // no project.
+  atWelcome: true,
+  openTo: DEFAULT_OPEN_TO,
   // The general editor, which is the only screen there was.
   screen: DEFAULT_SCREEN,
   // Move: the arrows and the plane quads, which is the gizmo this app had
@@ -1676,6 +1717,14 @@ export const useTools = create<ToolState>((set) => ({
   selectedLatheRuler: null,
 
   setScreen: (screen) => set({ screen, openPanel: null }),
+
+  // Leaving a bench, or returning to it. The panel goes for the same reason it
+  // goes on a screen change -- see `setScreen` -- and `screen` is deliberately
+  // untouched, so coming back lands at the bench that was left rather than at
+  // whichever one the app happens to open on.
+  setAtWelcome: (atWelcome) => set({ atWelcome, openPanel: null }),
+
+  setOpenTo: (openTo) => set({ openTo }),
 
   setTransformMode: (transformMode) => set({ transformMode }),
 
@@ -1849,11 +1898,21 @@ export const useTools = create<ToolState>((set) => ({
   setLaserTool: (laserTool) =>
     set((s) => ({
       laserTool,
-      openPanel: isCutTool(laserTool)
-        ? laserTool
-        : s.openPanel === 'freehand' || s.openPanel === 'points'
-          ? null
-          : s.openPanel,
+      // TAKING A CUTTER UP NO LONGER OPENS ITS PANEL, and that is a deliberate
+      // reversal. It used to, because the tool's own Apply lived in there and a
+      // cut you could draw but not fire would be the panel nobody found. Apply
+      // does not live there any more -- it is docked at the foot of the island,
+      // standing whether any panel is open or not, see `CutPanel` -- so the
+      // only thing behind the caret is a setting or two. Opening a flyout over
+      // the scene every time a cutter is picked up puts a lid across the very
+      // face the tool is about to draw on, to show a dial most cuts never
+      // touch. The caret is what opens it, which is what a caret is for.
+      //
+      // PUTTING ONE DOWN STILL SHUTS IT, and so does swapping cutters: a panel
+      // left standing over a block you are now dragging pictures about, or
+      // swinging a mirror across, is a lid with no button under it.
+      openPanel:
+        s.openPanel === 'freehand' || s.openPanel === 'points' ? null : s.openPanel,
     })),
   setFreehandSmoothing: (freehandSmoothing) =>
     set({ freehandSmoothing: clamp(freehandSmoothing, 0, 1) }),
@@ -2096,7 +2155,8 @@ export const useTools = create<ToolState>((set) => ({
  * screen arrives it is answered for that one by the table in `screens.ts`
  * rather than by six more clauses.
  */
-export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.screen]
+export const onDocument = (s: ToolState): boolean =>
+  !s.atWelcome && SCREEN_HAS_DOCUMENT[s.screen]
 
 /**
  * Is there anything HERE for a snap to catch?
@@ -2107,7 +2167,24 @@ export const onDocument = (s: ToolState): boolean => SCREEN_HAS_DOCUMENT[s.scree
  * `SCREEN_SNAPS`, which is where the answer lives so that the day a fourth
  * screen arrives it is answered there rather than here.
  */
-export const snapsHere = (s: ToolState): boolean => SCREEN_SNAPS[s.screen]
+export const snapsHere = (s: ToolState): boolean => !s.atWelcome && SCREEN_SNAPS[s.screen]
+
+/**
+ * Is there anywhere for a file to land?
+ *
+ * THE ONE CONTROL THAT IS LIVE AT THE FRONT DOOR, and the exception is worth
+ * stating because everything else in the bar goes quiet there. Import used to
+ * ask `onDocument` along with Export, on the reasonable ground that the two are
+ * one act in opposite directions. They stopped being symmetrical the moment
+ * there was a Welcome screen: Export needs a document to write OUT, and there
+ * is none at the front door -- but a file arriving is how a project can BEGIN,
+ * so the front door is exactly where a door inwards belongs.
+ *
+ * What it does there is different in one respect only: the model lands in a new
+ * project rather than in the open one. See `ImportTools`.
+ */
+export const canImport = (s: ToolState): boolean =>
+  s.atWelcome || SCREEN_HAS_DOCUMENT[s.screen]
 
 /**
  * The mirror standing on one face, or null.

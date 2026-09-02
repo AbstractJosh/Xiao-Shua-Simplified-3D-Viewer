@@ -66,6 +66,7 @@ export type HelpEntry = {
 }
 
 export type HelpSectionId =
+  | 'projects'
   | 'view'
   | 'build'
   | 'select'
@@ -90,12 +91,78 @@ export type HelpSection = {
 /**
  * The sections, in the order the rail shows them.
  *
- * Ordered by when a person meets them. You look before you build, you build
- * before you have anything to select, you select before you can reach a gizmo,
- * and the gizmo is what every tool in Tools then borrows. Colour and files come
- * last, being the only things here that outlive the document.
+ * Ordered by when a person meets them. Projects first, because the app opens on
+ * the front door and nothing else can be reached until one is chosen. Then: you
+ * look before you build, you build before you have anything to select, you
+ * select before you can reach a gizmo, and the gizmo is what every tool in Tools
+ * then borrows. Colour and files come last, being the only things here that
+ * outlive the document.
  */
 export const HELP_SECTIONS: HelpSection[] = [
+  {
+    id: 'projects',
+    title: 'Projects',
+    blurb: 'What the app keeps for you between visits, and how to have more than one of it.',
+    entries: [
+      {
+        title: 'What a project is',
+        summary:
+          'All three benches under one name: the scene you are modelling, the piece on the lathe, and the block on the laser cutter. Opening one puts the whole workshop back as you left it, at the bench you left it at.',
+        notes: [
+          <>
+            <b>What does not go in one.</b> Solids saved to the shelf, the clipboard and uploaded
+            reference pictures follow YOU rather than a project -- they are yours in every project,
+            which is the whole reason for saving one. Neither do the undo stacks: a project opened
+            cold is a fresh start on old work, not a session you can rewind into.
+          </>,
+        ],
+      },
+      {
+        title: 'The Welcome screen',
+        summary: (
+          <>
+            Press the app&rsquo;s name at the top left. It lists every project you have; press one
+            to open it.
+          </>
+        ),
+        steps: [
+          { action: 'New Project', result: 'An empty workshop, opened at the modelling bench.' },
+          { action: 'Rename', result: 'Types over the name in place. Enter keeps it, Escape does not.' },
+          { action: 'Copy', result: 'A fork under a new name, taken as the workshop stands right now.' },
+          { action: 'Delete', result: 'Asks once -- the button becomes Delete? -- then goes. It cannot be undone.' },
+        ],
+        notes: [
+          <>
+            <b>Most of the bar goes quiet here.</b> The screen tabs, Export, Snap, Undo, Redo and
+            the counts all act on a bench, and with no project open there is no bench to act on.
+            Import stays live: a model file opened here becomes a new project named after the file.
+          </>,
+        ],
+      },
+      {
+        title: 'Saving',
+        summary:
+          'There is no Save button. Whichever project is open is written as you work, so a refresh, a closed tab or a flat battery costs nothing.',
+        notes: [
+          <>
+            <b>Copy is the one you press on purpose.</b> Saving keeps the project up to date;
+            copying keeps a MOMENT -- the workshop as it stands, forked under a new name, before you
+            do something you might not want. It is on the Welcome screen, on the project&rsquo;s own
+            row.
+          </>,
+        ],
+      },
+      {
+        title: 'Open to',
+        summary: (
+          <>
+            <b>Settings</b>, the cog at the end of the bar. <b>Welcome screen</b> opens the app on
+            the front door; <b>Recent project</b> goes straight back into the one you had open.
+          </>
+        ),
+      },
+    ],
+  },
   {
     id: 'view',
     title: 'Viewports',
@@ -200,7 +267,12 @@ export const HELP_SECTIONS: HelpSection[] = [
           {
             action: 'Close the loop',
             result:
-              'Click the first point -- from three points on it wears a ring -- and the line bridges back round to it. Clicking it again opens the line. Dragging it still moves it.',
+              'Point Cut: click the first point -- from three points on it wears a ring -- and the line bridges back round to it. Clicking it again opens the line. Dragging it still moves it.',
+          },
+          {
+            action: 'Encircle by hand',
+            result:
+              'Freehand: draw a ring and finish near where you started. The line bridges shut on screen, and the cut drops what it surrounds out as its own piece. Stop well short and it stays an open line, carried on to the border at both ends.',
           },
           {
             action: 'With Snap on',
@@ -210,27 +282,43 @@ export const HELP_SECTIONS: HelpSection[] = [
           { action: 'Apply cut', result: 'Burns the line and separates what it crossed.' },
           { action: 'Reset line', result: 'Throws the drawing away. Escape does the same.' },
           {
-            action: 'Other piece',
+            action: 'Keep the rest',
             result:
-              'Lights the next piece the cut made. With no tool in hand, clicking a piece does the same.',
+              'Swaps the choice over: what was lit is kept, what was kept is lit. With no tool in hand, clicking a piece lights it or puts it out one at a time.',
           },
-          { action: 'Discard piece', result: 'Throws the lit one away. Del does the same.' },
+          { action: 'Discard pieces', result: 'Throws the lit ones away. Del does the same.' },
         ],
         notes: [
           <>
-            The pieces stay exactly where the block was, a kerf apart. One of them is <b>lit</b>,
-            and that is the one <b>Del</b> throws away. It opens on the smaller piece, which is
-            usually the waste -- but not when the cut is what frees the part you are after, so the
-            choice is yours: <b>Other piece</b> steps it with the tool still in hand, and with no
-            tool in hand you can click the piece you mean.
+            The pieces stay exactly where the block was, a kerf apart, and the ones that are{' '}
+            <b>lit</b> are the ones <b>Del</b> throws away. What decides it is the MIDDLE: the
+            piece under the middle of your reference picture is the part you are making, and
+            everything else on the bed is offcut. With no picture on the face, the middle of the
+            face itself is used.
+          </>,
+          <>
+            That is why a stroke that runs off the face and back on is no different from any other.
+            It cuts three pieces rather than two, the one under the drawing is kept, and the other
+            two light up together and go with one <b>Del</b>. The same holds for four, or five.
+          </>,
+          <>
+            The rule is a rule, not a verdict. <b>Keep the rest</b> turns it inside out in one
+            press, which is what you want when the line was drawn round a HOLE rather than round a
+            part. And with no tool in hand, clicking a piece lights it or puts it out on its own --
+            so a piece the rule kept can be sent to the waste, and one it lit can be rescued. The
+            last unlit piece cannot be lit: something always survives the cut.
           </>,
           <>
             A closed line does not reach for the border, because it does not need to: it already
             has an inside and an outside. What it cuts out is the piece it drew round, which comes
-            away as its own piece and is the one the cut lights -- so encircling a shape and
-            pressing <b>Del</b> punches a hole, and encircling it and keeping it frees the part
-            from the stock around it. A loop drawn half off the edge takes the bite that was on
-            the block. Only <b>Point Cut</b> closes: <b>Freehand</b> has no points to click.
+            away as its own piece -- and if you drew round your reference, that island is the one
+            the cut KEEPS, with the stock around it lit. So encircling a shape and pressing{' '}
+            <b>Del</b> frees the part from the stock; to punch a hole instead, press{' '}
+            <b>Keep the rest</b> first. A loop drawn half off the edge takes the bite that was on
+            the block. Both tools close a loop, and each in the way its own gesture allows:{' '}
+            <b>Point Cut</b> when you click its first point, <b>Freehand</b> when the stroke comes
+            back to where it began -- the line bridges shut on screen as soon as it is near
+            enough, so you can see it happen before you press Apply.
           </>,
           <>
             A cut is BAKED. There is no list to reopen -- <b>Ctrl+Z</b> is the way back, and one cut
@@ -1236,7 +1324,14 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Import',
         summary:
-          "Beside the app's name. Reads GLB, OBJ, STL and STEP; the model lands as one solid you can size, move, cut and merge like anything built here.",
+          'Beside Export, which is the same act in the opposite direction. Reads GLB, OBJ, STL and STEP; the model lands as one solid you can size, move, cut and merge like anything built here.',
+        notes: [
+          <>
+            <b>It is the one control that works with no project open.</b> Pressed on the Welcome
+            screen it makes a project named after the file and drops the model into it, which is the
+            shortest way from a file on your disk to something you can work on.
+          </>,
+        ],
       },
       {
         title: 'Export',

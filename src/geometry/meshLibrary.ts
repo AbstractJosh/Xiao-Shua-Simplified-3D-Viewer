@@ -261,3 +261,100 @@ export function forgetMeshes(): void {
   entries.clear()
   reflections.clear()
 }
+
+// --- Keeping the shelf across a reload ---------------------------------------
+
+/**
+ * One entry, flattened into things a browser can store.
+ *
+ * A `BufferGeometry` cannot go on a shelf: it is a live GPU-bound object with
+ * methods, and IndexedDB stores structured clones. What it CAN store, and store
+ * well, is the typed arrays inside it -- a Float32Array survives a round trip as
+ * itself rather than as a JSON list of numbers three times the size.
+ *
+ * EVERY ATTRIBUTE, not just position and normal, and read off the geometry by
+ * name rather than from a list written here. The importers are free to attach a
+ * uv or a colour and this keeps working; a hardcoded pair would quietly drop
+ * whatever the next format brings and leave a model that draws wrong rather
+ * than a model that fails.
+ */
+export type MeshRecord = {
+  id: string
+  label: string
+  natural: Vec3
+  triangles: number
+  attributes: { name: string; array: Float32Array; itemSize: number }[]
+  /** Widened to 32 bits on the way out, so the reader has one case to handle
+   *  rather than three. A model small enough for 16 costs an extra byte a
+   *  vertex on a shelf that is not short of room. */
+  index: Uint32Array | null
+}
+
+/** What is on the shelf under an id, ready to be stored. Undefined for an id
+ *  nobody registered, which is what a caller walking a document's tickets gets
+ *  for a ticket that has already gone stale. */
+export function meshRecord(id: string): MeshRecord | undefined {
+  const entry = entries.get(id)
+  if (!entry) return undefined
+  const attributes: MeshRecord['attributes'] = []
+  for (const name of Object.keys(entry.geometry.attributes)) {
+    const attr = entry.geometry.getAttribute(name) as BufferAttribute
+    // Copied rather than referenced. The stored record outlives this call and
+    // may be handed to IndexedDB on another tick; a view onto the live geometry
+    // would be a view onto something the evaluator is free to have disposed.
+    attributes.push({
+      name,
+      array: new Float32Array(attr.array as ArrayLike<number>),
+      itemSize: attr.itemSize,
+    })
+  }
+  const index = entry.geometry.getIndex()
+  return {
+    id: entry.id,
+    label: entry.label,
+    natural: [...entry.natural] as Vec3,
+    triangles: entry.triangles,
+    attributes,
+    index: index ? new Uint32Array(index.array as ArrayLike<number>) : null,
+  }
+}
+
+/**
+ * Puts a stored model back on the shelf UNDER THE ID IT HAD.
+ *
+ * The id is the whole point. A document -- or a saved custom, which is the
+ * thing that actually needs this -- holds a ticket and nothing else, so a
+ * restored model registered under a fresh id would be a shelf that has the
+ * triangles and a ticket that cannot find them. `registerMesh` cannot do this
+ * job: it mints, and it normalises what it is given, and what is stored here is
+ * already normalised.
+ *
+ * THE COUNTER IS SEEDED PAST WHATEVER COMES BACK. Ids are `m1`, `m2`, `m3` off
+ * a counter that starts at zero every time the page loads -- so restoring `m3`
+ * into a fresh session and then importing a file would mint `m1`, then `m2`,
+ * then `m3` again, and the second `m3` would silently replace the first under
+ * every object pointing at it. This is the one line that stops that, and it is
+ * the same seeding every other restored id in the app needs.
+ *
+ * An id already on the shelf is LEFT ALONE. Nothing restored is worth replacing
+ * a model this session has imported and is drawing.
+ */
+export function restoreMesh(record: MeshRecord): void {
+  const numbered = /^m([0-9]+)$/.exec(record.id)
+  if (numbered) counter = Math.max(counter, Number(numbered[1]))
+  if (entries.has(record.id)) return
+
+  const geometry = new BufferGeometry()
+  for (const attr of record.attributes) {
+    geometry.setAttribute(attr.name, new BufferAttribute(attr.array, attr.itemSize))
+  }
+  if (record.index) geometry.setIndex(new BufferAttribute(record.index, 1))
+
+  entries.set(record.id, {
+    id: record.id,
+    label: record.label,
+    geometry,
+    natural: record.natural,
+    triangles: record.triangles,
+  })
+}
