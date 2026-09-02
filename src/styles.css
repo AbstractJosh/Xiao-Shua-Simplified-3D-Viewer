@@ -7138,10 +7138,12 @@ body {
 }
 
 /* AT REST, WITH NOTHING RUNNING, THE PICTURE IS THE CUBE ON ITS GRID. That is
-   what a user who asked the system for less motion sees, and it is what the
-   first frame is, so everything that is not the cube or the grid starts out
-   hidden and is shown only by its track. The side view starts folded flat for
-   the same reason. */
+   what a user who asked the system for less motion sees. It is not the loop's
+   first frame any more -- that is the bare grid, with the cube on its way in
+   under the pointer, and the cube's own track hides it until the drop -- but
+   it is the frame with the most of the story in it, so everything that is not
+   the cube or the grid starts out hidden and is shown only by its track. The
+   side view starts folded flat for the same reason. */
 .wl-off {
   opacity: 0;
 }
@@ -7195,6 +7197,59 @@ body {
 
 .wl-bed polygon {
   stroke: var(--line-2);
+}
+
+/* THE GHOST OF A SOLID ON ITS WAY IN wears what the app's own drag preview
+   wears: a translucent fill in the colour of material arriving, and a
+   wireframe over it in the same colour -- see `PlacingSolidPreview`. The
+   edges behind are drawn under the faces and show through them, the way a
+   wireframe's do. Written with the element type so they outrank the face
+   classes, which name a solid's shading and are the wrong colour here. */
+.wl-ghost polygon {
+  fill: color-mix(in srgb, var(--out) 24%, transparent);
+  stroke: var(--out);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.wl-ghost line {
+  stroke: var(--out);
+  stroke-width: 1.5;
+  opacity: 0.5;
+}
+
+/* The pointer: the page's ink with the page's ground round it, so it is dark
+   on light and light on dark, the way a cursor keeps its edge on anything. */
+.wl-pointer {
+  fill: var(--text-1);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+/* The Delete key, as Help draws one: a cap on a heavier base, which is the
+   whole of what makes a square read as something you press. The base is the
+   cap's border colour, so the cap going down onto it reads as the cap's own
+   edge closing up. See `.help-key`. */
+.wl-key-base {
+  fill: var(--line-3);
+}
+
+.wl-key-cap {
+  fill: var(--surface-3);
+  stroke: var(--line-3);
+  stroke-width: 1;
+}
+
+/* Its name, set the way Help sets a key's: the app's face, semibold, in the
+   secondary ink. Sized in the drawing's units, so it scales with the cap. */
+.wl-key-label {
+  fill: var(--text-2);
+  stroke: none;
+  font-family: var(--font);
+  font-size: 18px;
+  font-weight: 600;
+  text-anchor: middle;
 }
 
 .wl-grid-minor {

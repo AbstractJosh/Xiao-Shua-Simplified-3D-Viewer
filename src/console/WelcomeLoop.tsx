@@ -8,12 +8,22 @@ import {
   BED_Z1,
   CHIPS,
   CORE_2D,
+  CUBE,
+  CUBE_CENTRE,
+  CUBE_HIDDEN_EDGES,
   CUBE_L,
   CUBE_R,
   CUT_PATH,
   CUT_PATH_LENGTH,
   GRID_REACH,
   GRID_STEP,
+  GRIP,
+  KEY_AT,
+  KEY_LABEL,
+  KEY_PERIMETER,
+  KEY_RADIUS,
+  KEY_RISE,
+  KEY_SIZE,
   LOOP,
   OFFCUT_L,
   OFFCUT_R,
@@ -21,6 +31,7 @@ import {
   PIVOT_OFFCUT_L,
   PIVOT_OFFCUT_LASER,
   PIVOT_OFFCUT_R,
+  POINTER,
   PROFILE_LIP,
   PROFILE_RECT,
   ROOF_2D,
@@ -52,8 +63,8 @@ import {
 import type { Face, Pt, V3 } from './welcomeReel'
 
 /**
- * THE OTHER HALF OF THE FRONT DOOR: a cube being made into an arrow and back,
- * by every bench in the app, on a loop.
+ * THE OTHER HALF OF THE FRONT DOOR: a cube dragged in, made into an arrow and
+ * back by every bench in the app, and deleted, on a loop.
  *
  * The welcome screen is one column at the left of a window that is usually
  * much wider, and the rest of it was bare ground. This is what stands there:
@@ -80,7 +91,9 @@ import type { Face, Pt, V3 } from './welcomeReel'
  * grid, and nothing moves: the same answer the console's idle animations give.
  * Flipping the setting starts or stops it in place. See `motion.ts`.
  *
- * WHAT IS NOT HERE: words. No caption, no bench name, no `title`. It is
+ * WHAT IS NOT HERE: words, bar one. No caption, no bench name, no `title`;
+ * the one word in it is the "Del" on the key, which is the key's own name and
+ * not a caption on anything -- a control is a name and the control. It is
  * decoration and says so to a screen reader; anything it might explain is in
  * Help, which is where explaining goes. See `CLAUDE.md`.
  */
@@ -170,21 +183,43 @@ export function WelcomeLoop() {
             <g data-track="cube-l" className="wl-off">
               <Prism faces={prism(CUBE_L, Z0, Z1)} />
             </g>
-            <g data-track="stem" className="wl-stem">
-              <g transform={faceMatrix('front', Z1)}>
-                <g data-track="stem-h">
-                  <rect x={-0.5} y={0} width={1} height={1} className="wl-front" />
-                </g>
-              </g>
-              <g transform={faceMatrix('right', 0.5)}>
-                <g data-track="stem-h">
-                  <rect x={-0.5} y={0} width={1} height={1} className="wl-right" />
-                </g>
-              </g>
-              <g data-track="stem-top">
-                <polygon points={pointsOf(STEM_TOP)} className="wl-top" />
-              </g>
+            {/* THE GHOST A SOLID IS ON ITS WAY IN. The app draws one being
+                dragged from the console as a translucent fill in the colour
+                of material arriving with its wireframe over it, and so does
+                this: a cube's three faces seen through, and the three edges
+                behind them drawn under, so they show through the faces rather
+                than lie on them. It rides the pointer's run and is gone the
+                instant the cube stands in its place. */}
+            <g data-track="ghost" className="wl-ghost wl-off">
+              {CUBE_HIDDEN_EDGES.map(([a, b], i) => (
+                <line key={i} x1={round(a[0])} y1={round(a[1])} x2={round(b[0])} y2={round(b[1])} />
+              ))}
+              <Prism faces={prism(CUBE, Z0, Z1)} />
             </g>
+            {/* The stem is drawn about its own middle rather than its base,
+                so that the pop when Delete takes it scales it away rather than
+                down into the ground -- the same trick the offcuts use, with
+                their pivots. Its faces still stretch from the base: that is
+                the face matrices' doing, inside. */}
+            <Pivot at={iso(CUBE_CENTRE)}>
+              <g data-track="stem" className="wl-stem">
+                <Pivot at={negate(iso(CUBE_CENTRE))}>
+                  <g transform={faceMatrix('front', Z1)}>
+                    <g data-track="stem-h">
+                      <rect x={-0.5} y={0} width={1} height={1} className="wl-front" />
+                    </g>
+                  </g>
+                  <g transform={faceMatrix('right', 0.5)}>
+                    <g data-track="stem-h">
+                      <rect x={-0.5} y={0} width={1} height={1} className="wl-right" />
+                    </g>
+                  </g>
+                  <g data-track="stem-top">
+                    <polygon points={pointsOf(STEM_TOP)} className="wl-top" />
+                  </g>
+                </Pivot>
+              </g>
+            </Pivot>
             <g data-track="cube-r" className="wl-off">
               <Prism faces={prism(CUBE_R, Z0, Z1)} />
             </g>
@@ -313,6 +348,64 @@ export function WelcomeLoop() {
               <circle r={2} className="wl-tool-pull-centre" />
             </g>
           </g>
+
+          {/* THE KEY: Delete, as a cap over a base, off the cube's right. It
+              comes up once the laser has left a cube, goes down, and the cube
+              is gone. The flash round its edge on the stroke is the cut's own
+              -- the same track and the same white line, run round a cap
+              instead of a section -- so the keystroke that takes the shape
+              away goes off the way the cuts that shaped it did. The base
+              stays put while the cap goes down onto it, which is what makes
+              the press a press. */}
+          <Pivot at={KEY_AT}>
+            <g data-track="key" className="wl-off">
+              <rect
+                x={-KEY_SIZE / 2}
+                y={-KEY_SIZE / 2 + KEY_RISE}
+                width={KEY_SIZE}
+                height={KEY_SIZE}
+                rx={KEY_RADIUS}
+                className="wl-key-base"
+              />
+              <g data-track="key-cap">
+                <rect
+                  x={-KEY_SIZE / 2}
+                  y={-KEY_SIZE / 2}
+                  width={KEY_SIZE}
+                  height={KEY_SIZE}
+                  rx={KEY_RADIUS}
+                  className="wl-key-cap"
+                />
+                {/* Sat on its baseline a little below the cap's centre, which
+                    is where capitals sit when they are centred by eye. */}
+                <text x={0} y={6.5} className="wl-key-label">
+                  {KEY_LABEL}
+                </text>
+                <rect
+                  data-track="key-flash"
+                  className="wl-flash wl-off"
+                  x={-KEY_SIZE / 2}
+                  y={-KEY_SIZE / 2}
+                  width={KEY_SIZE}
+                  height={KEY_SIZE}
+                  rx={KEY_RADIUS}
+                  strokeDasharray={`${KEY_PERIMETER} ${KEY_PERIMETER * 2}`}
+                  strokeDashoffset={KEY_PERIMETER}
+                />
+              </g>
+            </g>
+          </Pivot>
+
+          {/* THE POINTER, over everything, with its tip where it has hold of
+              the cube: the middle of the top. It rides the same run as the
+              ghost, and stays where the hand stopped while the ghost snaps
+              the last of the way onto the grid, which is what the app's own
+              drop does. */}
+          <Pivot at={iso(GRIP)}>
+            <g data-track="cursor" className="wl-off">
+              <polygon points={pointsOf(POINTER)} className="wl-pointer" />
+            </g>
+          </Pivot>
         </g>
       </svg>
     </div>
@@ -432,4 +525,9 @@ function Grid() {
 
 function round(n: number): number {
   return Math.round(n * 100) / 100
+}
+
+/** The way back from a pivot: what puts the drawing inside one where it was. */
+function negate([x, y]: Pt): Pt {
+  return [-x, -y]
 }

@@ -4,19 +4,24 @@
  * of the component so every one of those can be checked without React -- the
  * same split as `ngon.ts` and `solidMorph.ts`, for the same reason.
  *
- * WHAT IT TELLS. A cube sits on the modelling grid. It stretches to three
- * high; two more cubes fly in and land either side of the top, making a T; a
- * cut plane slides in twice and takes the crossbar's corners off, leaving an
- * arrow pointing up. The camera swings round to the lathe's side view, a tool
- * grinds the arrow's wings and then its point away, and what is left is a
- * plain prism; then the Pull tool draws a rounded mass out of its top, with a
- * lip. The view fades back to the laser cutter's bed, a line is drawn round
- * the block a unit up -- below the mass, where the block is still square --
- * the beam burns along the line and everything above it drops away, and it is
- * a cube again. Thirteen seconds, then round once more. Every bench in the
- * app, in the order the screen tabs list them, and every tool does to the
- * shape what it does in the app: nothing here is a gesture the software
- * cannot make.
+ * WHAT IT TELLS. A pointer comes in from the console's side with a cube in
+ * hand -- the green ghost a solid is while it is being dragged in -- and lets
+ * it go on the modelling grid, where it lands as a cube. It stretches to
+ * three high; two more cubes fly in and land either side of the top, making a
+ * T; a cut plane slides in twice and takes the crossbar's corners off,
+ * leaving an arrow pointing up. The camera swings round to the lathe's side
+ * view, a tool grinds the arrow's wings and then its point away, and what is
+ * left is a plain prism; then the Pull tool draws a rounded mass out of its
+ * top, with a lip. The view fades back to the laser cutter's bed, a line is
+ * drawn round the block a unit up -- below the mass, where the block is still
+ * square -- the beam burns along the line and everything above it drops away,
+ * and it is a cube again. Then a Delete key comes up, is struck -- with the
+ * same flash round its edge that a cut goes off with -- and the cube is gone,
+ * leaving the bare grid the next pass begins on. Fifteen and a half seconds,
+ * then round once more. Every bench in the app, in the order the screen tabs
+ * list them, and every tool does to the shape what it does in the app:
+ * nothing here is a gesture the software cannot make. A solid does arrive by
+ * a drag from the console, and Delete is what takes one away.
  *
  * PLAYFUL, AND NOT A CHARACTER. The cube overshoots when it stretches and the
  * T gives when the side cubes land; the blade slides a touch too far and comes
@@ -40,17 +45,26 @@
  * fifth is left as the box it was, so that the laser -- which cuts a unit up,
  * below where the mass begins -- leaves exactly the cube the loop starts on.
  *
- * ONE CLOCK. Every track below is written in seconds on the same thirteen-
- * second loop, and the component starts them all with one start time, so a
- * blade cannot drift away from the wedge it cuts. That is what a timeline in
- * seconds buys over percentages in a stylesheet: a beat can be moved by
- * editing one number, and the seam where the loop joins can be checked --
- * `seamOf` proves every track ends exactly where it began, which is the one
- * fault that would show every thirteen seconds forever.
+ * ONE CLOCK. Every track below is written in seconds on the same loop, and
+ * the component starts them all with one start time, so a blade cannot drift
+ * away from the wedge it cuts. That is what a timeline in seconds buys over
+ * percentages in a stylesheet: a beat can be moved by editing one number, and
+ * the seam where the loop joins can be checked -- `seamOf` proves every track
+ * ends exactly where it began, which is the one fault that would show every
+ * pass forever.
+ *
+ * THE SEAM IS AN EMPTY GRID. The cube is deleted at the end and dragged in at
+ * the start, so what the loop joins on is the ground with nothing on it, and
+ * the one solid that lasts from the drop to the keystroke -- the stem, which
+ * is the cube -- is hidden across it by its own track. At rest, with nothing
+ * running, the picture is still the cube on its grid: that is the stylesheet's
+ * frame, not the loop's, and it is what a user who asked for less motion sees.
  */
 
-/** How long one pass takes, in seconds. */
-export const LOOP = 13
+/** How long one pass takes, in seconds: the drop, the making, and the delete.
+ *  Every beat of the timeline is named against this, and the last of them --
+ *  the key going -- leaves a moment of bare grid before the pointer is back. */
+export const LOOP = 15.5
 
 /** Pixels per scene unit, in the drawing's own coordinates. */
 export const UNIT = 64
@@ -159,6 +173,32 @@ export const STEM_TOP: readonly Pt[] = [
   iso([0.5, 1, -0.5]),
   iso([0.5, 1, 0.5]),
   iso([-0.5, 1, 0.5]),
+]
+
+/** The cube as one polygon, which is what its ghost is drawn from. The stem
+ *  is this same box, but built face by face so that it can stretch. */
+export const CUBE: readonly Pt[] = [
+  [-0.5, 0],
+  [0.5, 0],
+  [0.5, 1],
+  [-0.5, 1],
+]
+
+/** The cube's middle, which the stem turns about when Delete takes it: a pop
+ *  is a scale, and a scale about the base would sink the cube into the ground
+ *  rather than take it away. */
+export const CUBE_CENTRE: V3 = [0, 0.5, 0]
+
+/**
+ * The three edges of the cube the camera cannot see. A solid being dragged
+ * in is drawn as a wireframe over a translucent fill -- see
+ * `PlacingSolidPreview` -- and a wireframe has a back, which shows through.
+ * All three meet at the corner furthest from the eye.
+ */
+export const CUBE_HIDDEN_EDGES: readonly (readonly [Pt, Pt])[] = [
+  [iso([-0.5, 0, -0.5]), iso([0.5, 0, -0.5])],
+  [iso([-0.5, 0, -0.5]), iso([-0.5, 0, 0.5])],
+  [iso([-0.5, 0, -0.5]), iso([-0.5, 1, -0.5])],
 ]
 
 /** The two cubes that fly in, each a box drawn at the seat it lands on. */
@@ -400,6 +440,70 @@ export const BED: readonly Pt[] = [
 ]
 export const BED_Z0 = -1.7
 export const BED_Z1 = 1.7
+
+/* --- the hand, and the key -------------------------------------------------
+
+   The two things in the loop that are not on a bench: the pointer that brings
+   the cube in, and the key that takes it away. Both are drawn on the page
+   rather than in the scene -- a cursor is over the picture, and a keystroke
+   is not in it anywhere -- and both are in the drawing's own units, so they
+   scale with the stage like everything else. */
+
+/** The pointer: an arrow with its tip at the origin, drawn a little larger
+ *  than a cursor is so it reads beside a cube two hundred pixels tall. */
+export const POINTER: readonly Pt[] = [
+  [0, 0],
+  [0, 17.5],
+  [4.2, 13.5],
+  [7.2, 20.5],
+  [10.2, 19.2],
+  [7.3, 12.3],
+  [12.8, 12.3],
+].map(([x, y]): Pt => [x * 1.4, y * 1.4])
+
+/** Where the hand has hold of the cube: the middle of its top. The pointer's
+ *  tip sits here, so its run and the ghost's are the same run. */
+export const GRIP: V3 = [0, 1, 0]
+
+/** Where the cube is when the pointer sets off with it: off the stage to the
+ *  right, which is the console's side of the window, a little below the
+ *  cube's own level. In page pixels, relative to where it will land. */
+export const CARRY_FROM: Pt = [340, 70]
+
+/** Where the hand stops: a touch off the grid's origin, so that the snap
+ *  which takes the ghost the last of the way is seen to happen. The pointer
+ *  stays here through the drop, because the hand does not move when the app
+ *  snaps what it is holding. */
+export const CARRY_HOLD: Pt = [9, 5]
+
+/** Where the pointer goes once it has let go: back towards the console, out
+ *  of the picture, fading as it goes. */
+export const CARRY_AWAY: Pt = [150, 60]
+
+/**
+ * Delete, as a keycap: a rounded square standing on a heavier base, which is
+ * the whole of what makes a square read as something you press -- see
+ * `.help-key`, which draws a key the same way. It says what the key says.
+ * That is the one word in the loop, and it is the key's own name rather
+ * than a caption on anything: a control is a name and the control.
+ */
+export const KEY_SIZE = 46
+export const KEY_RADIUS = 7
+export const KEY_LABEL = 'Del'
+
+/** How far the cap stands proud of its base at rest, and how far it goes down
+ *  when struck: nearly, and not quite, onto the base. */
+export const KEY_RISE = 4
+export const KEY_TRAVEL = 3
+
+/** Where the key sits on the stage: off the cube's right-hand side, on the
+ *  ground in front of it, where nothing else in the loop goes. */
+export const KEY_AT: Pt = [150, 34]
+
+/** The cap's edge, which the flash runs round when the key is struck: four
+ *  straights and, between them, one whole circle. Worked out here the way the
+ *  cut's section's edge is, for the same dash. */
+export const KEY_PERIMETER = round(4 * (KEY_SIZE - 2 * KEY_RADIUS) + 2 * Math.PI * KEY_RADIUS)
 
 /* --- the pulled mass -------------------------------------------------------
 
@@ -650,13 +754,18 @@ const pullX = (radius: number) => radius * UNIT + TOOL_R - 1
    marked with the track's name and gives it these keys, so one track can
    drive several elements -- both of the stem's faces stretch on one.
 
-   THE BEATS, so a number below can be placed:
-     0.0  rest             2.3  cubes land, one T   3.5  first cut
-     0.7  stretch          2.7  blade slides in     4.7  second cut
-     1.7  cubes fly in     5.4  swing to the lathe  6.3  side pass
-     7.2  facing pass      8.3  the pull            9.05 the lip
-     9.5  fade back       10.0  line drawn         10.6  the beam burns
-    11.4  top comes off   12.1  grid returns */
+   THE BEATS, so a number below can be placed. The making is counted from
+   SETTLED, the moment the dropped cube is at rest, so the opening can be
+   lengthened or cut by editing that one number; the ending is counted on
+   from the last of the making the same way. In the loop's own seconds:
+     0.2  pointer sets off  0.85 the drop             1.3  settled
+     2.0  stretch           3.0  cubes fly in         3.6  cubes land, one T
+     4.0  blade slides in   4.8  first cut            6.0  second cut
+     6.7  swing to lathe    7.6  side pass            8.5  facing pass
+     9.6  the pull         10.35 the lip             10.8  fade back
+    11.3  line drawn       11.9  the beam burns      12.7  top comes off
+    13.4  grid returns     14.0  Delete comes up     14.4  struck, cube gone
+    15.2  key goes */
 
 export type Props = {
   opacity?: number
@@ -673,31 +782,78 @@ const IN = 'cubic-bezier(0.6, 0, 0.9, 0.5)'
 const INOUT = 'ease-in-out'
 const LINEAR = 'linear'
 
-/** The moments the two cuts go off, which several tracks are hung on. */
-const CUT_L = 3.5
-const CUT_R = 4.7
+/* THE OPENING, in the loop's own seconds. */
+
+/** When the pointer sets off from the console's side with the cube in hand. */
+const GRAB = 0.2
+
+/** When it lets go, and the ghost is a cube on the grid. */
+const DROP = 0.85
+
+/**
+ * When the dropped cube is at rest and the making begins.
+ *
+ * Every beat of the making is counted from here rather than from the loop's
+ * zero, so that the opening can be lengthened or cut by editing this one
+ * number and nothing after it moves relative to anything else.
+ */
+const SETTLED = 1.3
+
+/* THE MAKING. */
+
+/** When the cube starts to stretch. */
+const STRETCH = SETTLED + 0.7
+
+/** When the side cubes set off. */
+const FLY = SETTLED + 1.7
 
 /** When the side cubes land and the stem gives way to the one-piece T. */
-const LAND = 2.3
+const LAND = SETTLED + 2.3
+
+/** The moments the two cuts go off, which several tracks are hung on. */
+const CUT_L = SETTLED + 3.5
+const CUT_R = SETTLED + 4.7
+
+/** When the camera starts its swing to the lathe's side view. */
+const SWING = SETTLED + 5.4
+
+/** When the lathe's side pass starts down the wings, and when the facing
+ *  pass starts across the point. */
+const SIDE = SETTLED + 6.3
+const FACE = SETTLED + 7.2
 
 /** When the facing pass is done and the prism is a prism. */
-const FACED = 7.8
+const FACED = SETTLED + 7.8
 
 /** When the Pull tool takes hold of the wall. */
-const PULL = 8.3
+const PULL = SETTLED + 8.3
 
 /** When the view starts fading back to the laser cutter. */
-const RETURN = 9.5
+const RETURN = SETTLED + 9.5
 
 /** How long that fade takes. */
 const FADE = 0.4
 
 /** When the laser's line starts to draw, and when the beam sets off. */
-const LINE = 10.0
-const BURN = 10.6
+const LINE = SETTLED + 10.0
+const BURN = SETTLED + 10.6
 
 /** When the laser's top comes away. */
-const SEVER = 11.4
+const SEVER = SETTLED + 11.4
+
+/** When the bed goes and the modelling grid comes back under the cube. */
+const CLEAR = SETTLED + 12.1
+
+/* THE ENDING. */
+
+/** When the Delete key comes up beside the cube. */
+const KEY = CLEAR + 0.6
+
+/** When it is struck: the flash, and the cube gone a beat after. */
+const PRESS = KEY + 0.4
+
+/** When the key goes, leaving the bare grid until the loop comes round. */
+const GONE = PRESS + 0.8
 
 /**
  * The stem's height through the loop, in units. Both of its faces scale to
@@ -711,11 +867,17 @@ const SEVER = 11.4
  */
 const HEIGHT: readonly (readonly [number, number, string?])[] = [
   [0, 1],
-  [0.7, 1, OUT],
-  [1.25, 3.35, INOUT],
-  [1.6, 3],
-  [6.0, 3],
-  [6.0, BULB_BASE],
+  // The drop: the cube gives under its own arrival, the way the T gives
+  // under the side cubes, and comes back a touch tall before it settles.
+  [DROP, 1, OUT],
+  [DROP + 0.1, 0.88, OUT],
+  [DROP + 0.25, 1.05, OUT],
+  [DROP + 0.4, 1],
+  [STRETCH, 1, OUT],
+  [STRETCH + 0.55, 3.35, INOUT],
+  [STRETCH + 0.9, 3],
+  [SIDE, 3],
+  [SIDE, BULB_BASE],
   // The laser: the top comes away and the cube under it settles, with a
   // squash for the weight coming off.
   [SEVER, BULB_BASE],
@@ -742,9 +904,9 @@ function cubeTrack(name: string, side: -1 | 1): Track {
     name,
     keys: [
       [0, { opacity: 0, transform: far }],
-      [1.7, { opacity: 0, transform: far }],
-      [1.7, { opacity: 1, transform: far }, OUT],
-      [2.0, { transform: `translate(${side * 150}px, -110px)` }, IN],
+      [FLY, { opacity: 0, transform: far }],
+      [FLY, { opacity: 1, transform: far }, OUT],
+      [FLY + 0.3, { transform: `translate(${side * 150}px, -110px)` }, IN],
       [LAND, { opacity: 1, transform: 'translate(0px, 0px)' }],
       [LAND, { opacity: 0, transform: far }],
       [LOOP, { opacity: 0, transform: far }],
@@ -850,20 +1012,20 @@ function hiddenTrack(name: string, from: number, until: number): Track {
 
 /** The tool's place on the page while it grinds, for the chips to fly from. */
 function toolAt(t: number): Pt {
-  if (t < 7.0) return [TOOL_SIDE_X, TOOL_SIDE_Y0 + ((t - 6.3) / 0.7) * (TOOL_SIDE_Y1 - TOOL_SIDE_Y0)]
-  return [0.8 * UNIT - ((t - 7.2) / 0.6) * 1.6 * UNIT, TOOL_TOP_Y]
+  if (t < SIDE + 0.7) return [TOOL_SIDE_X, TOOL_SIDE_Y0 + ((t - SIDE) / 0.7) * (TOOL_SIDE_Y1 - TOOL_SIDE_Y0)]
+  return [0.8 * UNIT - ((t - FACE) / (FACED - FACE)) * 1.6 * UNIT, TOOL_TOP_Y]
 }
 
 /** A chip: it leaves the tool, rises, and falls out of the picture. */
 export type Chip = { name: string; x: number; y: number }
 
 export const CHIPS: readonly (Chip & { at: number; dx: number; spin: number })[] = [
-  { at: 6.42, dx: 52, spin: 160 },
-  { at: 6.55, dx: 44, spin: -220 },
-  { at: 6.72, dx: 60, spin: 190 },
-  { at: 6.88, dx: 48, spin: -150 },
-  { at: 7.35, dx: -42, spin: -200 },
-  { at: 7.6, dx: -50, spin: 170 },
+  { at: SIDE + 0.12, dx: 52, spin: 160 },
+  { at: SIDE + 0.25, dx: 44, spin: -220 },
+  { at: SIDE + 0.42, dx: 60, spin: 190 },
+  { at: SIDE + 0.58, dx: 48, spin: -150 },
+  { at: FACE + 0.15, dx: -42, spin: -200 },
+  { at: FACE + 0.4, dx: -50, spin: 170 },
 ].map((chip, i) => {
   const [x, y] = toolAt(chip.at)
   return { ...chip, name: `chip-${i}`, x: round(x), y: round(y) }
@@ -915,6 +1077,13 @@ function sparkTrack({ name, at }: (typeof SPARKS)[number]): Track {
 const TOOL_AWAY = `translate(${2.7 * UNIT}px, ${-3.5 * UNIT}px)`
 const PULL_AWAY = `translate(${2.7 * UNIT}px, ${-1.4 * UNIT}px)`
 
+/** The hand's run, as the ghost and the pointer both take it. */
+const at = ([x, y]: Pt) => `translate(${x}px, ${y}px)`
+const HAND_FROM = at(CARRY_FROM)
+const HAND_HOLD = at(CARRY_HOLD)
+const HAND_AWAY = at(CARRY_AWAY)
+const HAND_HOME = at([0, 0])
+
 /** The side view's outline in each of the wall's states. */
 const D_RECT = `path("${sidePath(PROFILE_RECT)}")`
 const D_OVER = `path("${sidePath(PROFILE_OVER)}")`
@@ -922,6 +1091,42 @@ const D_BULB = `path("${sidePath(PROFILE_BULB)}")`
 const D_LIP = `path("${sidePath(PROFILE_LIP)}")`
 
 export const TRACKS: readonly Track[] = [
+  /* --- the drop ------------------------------------------------------------
+     The pointer comes in from the console's side with the ghost of a cube
+     under it, on one run for both: fast off the mark and slowing to place,
+     the way a hand drags. It stops a touch off the origin and holds; the
+     ghost then snaps the last of the way onto the grid on its own, as the
+     app's drop does, and at the drop it is a cube -- the ghost goes and the
+     stem stands in its place, giving under the landing. The pointer lingers
+     a moment, then goes back the way it came. */
+  {
+    name: 'ghost',
+    keys: [
+      [0, { opacity: 0, transform: HAND_FROM }],
+      [GRAB, { opacity: 0, transform: HAND_FROM }],
+      [GRAB, { opacity: 1, transform: HAND_FROM }, OUT],
+      [DROP - 0.12, { transform: HAND_HOLD }],
+      [DROP - 0.04, { transform: HAND_HOLD }],
+      [DROP - 0.04, { transform: HAND_HOME }],
+      [DROP, { opacity: 1, transform: HAND_HOME }],
+      [DROP, { opacity: 0, transform: HAND_FROM }],
+      [LOOP, { opacity: 0, transform: HAND_FROM }],
+    ],
+  },
+  {
+    name: 'cursor',
+    keys: [
+      [0, { opacity: 0, transform: HAND_FROM }],
+      [GRAB, { opacity: 0, transform: HAND_FROM }],
+      [GRAB, { opacity: 1, transform: HAND_FROM }, OUT],
+      [DROP - 0.12, { transform: HAND_HOLD }],
+      [DROP + 0.12, { opacity: 1, transform: HAND_HOLD }, IN],
+      [DROP + 0.5, { opacity: 0, transform: HAND_AWAY }],
+      [DROP + 0.5, { transform: HAND_FROM }],
+      [LOOP, { opacity: 0, transform: HAND_FROM }],
+    ],
+  },
+
   /* --- the camera ----------------------------------------------------------
      Out to the lathe, the view folds flat about the piece's own centre line
      while the side view opens: a swing, so it reads as the camera moving and
@@ -932,9 +1137,9 @@ export const TRACKS: readonly Track[] = [
     name: 'view3d',
     keys: [
       [0, { opacity: 1, transform: 'scaleX(1) skewY(0deg)' }],
-      [5.4, { opacity: 1, transform: 'scaleX(1) skewY(0deg)' }, IN],
-      [5.6, { opacity: 1, transform: 'scaleX(0) skewY(-8deg)' }],
-      [5.6, { opacity: 0, transform: 'scale(0.96)' }],
+      [SWING, { opacity: 1, transform: 'scaleX(1) skewY(0deg)' }, IN],
+      [SWING + 0.2, { opacity: 1, transform: 'scaleX(0) skewY(-8deg)' }],
+      [SWING + 0.2, { opacity: 0, transform: 'scale(0.96)' }],
       [RETURN, { opacity: 0, transform: 'scale(0.96)' }, OUT],
       [RETURN + FADE, { opacity: 1, transform: 'scaleX(1) skewY(0deg)' }],
       [LOOP, { opacity: 1, transform: 'scaleX(1) skewY(0deg)' }],
@@ -944,9 +1149,9 @@ export const TRACKS: readonly Track[] = [
     name: 'view2d',
     keys: [
       [0, { opacity: 1, transform: 'scaleX(0)' }],
-      [5.6, { opacity: 1, transform: 'scaleX(0)' }, OUT],
-      [5.8, { transform: 'scaleX(1.07)' }, INOUT],
-      [5.95, { transform: 'scaleX(1)' }],
+      [SWING + 0.2, { opacity: 1, transform: 'scaleX(0)' }, OUT],
+      [SWING + 0.4, { transform: 'scaleX(1.07)' }, INOUT],
+      [SWING + 0.55, { transform: 'scaleX(1)' }],
       [RETURN, { opacity: 1, transform: 'scaleX(1)' }, INOUT],
       [RETURN + FADE, { opacity: 0, transform: 'scale(1.03)' }],
       [RETURN + FADE, { opacity: 1, transform: 'scaleX(0)' }],
@@ -961,10 +1166,10 @@ export const TRACKS: readonly Track[] = [
     name: 'grid',
     keys: [
       [0, { opacity: 1 }],
-      [5.4, { opacity: 1 }],
-      [5.6, { opacity: 0 }],
-      [12.1, { opacity: 0 }],
-      [12.6, { opacity: 1 }],
+      [SWING, { opacity: 1 }],
+      [SWING + 0.2, { opacity: 0 }],
+      [CLEAR, { opacity: 0 }],
+      [CLEAR + 0.5, { opacity: 1 }],
       [LOOP, { opacity: 1 }],
     ],
   },
@@ -974,8 +1179,8 @@ export const TRACKS: readonly Track[] = [
       [0, { opacity: 0 }],
       [RETURN, { opacity: 0 }],
       [RETURN + FADE, { opacity: 1 }],
-      [12.1, { opacity: 1 }],
-      [12.4, { opacity: 0 }],
+      [CLEAR, { opacity: 1 }],
+      [CLEAR + 0.3, { opacity: 0 }],
       [LOOP, { opacity: 0 }],
     ],
   },
@@ -983,10 +1188,29 @@ export const TRACKS: readonly Track[] = [
   /* --- modelling -----------------------------------------------------------*/
   heightTrack('stem-h', (h) => `scaleY(${h})`),
   heightTrack('stem-top', (h) => `translateY(${-(h - 1) * UNIT}px)`),
-  // The stem stands in for the box while it stretches and again once the
-  // lathe has left a box under the mass; between, the one-piece solids are
-  // the shape.
-  hiddenTrack('stem', LAND, RETURN),
+  // The stem is the cube: it is what the ghost turns into at the drop, it
+  // stands in for the box while it stretches and again once the lathe has
+  // left a box under the mass -- between, the one-piece solids are the shape
+  // -- and it is what Delete takes at the end. The pop is the loop's manner
+  // turned on a vanishing: a touch bigger first, then gone, about its own
+  // middle so it goes away rather than into the ground.
+  {
+    name: 'stem',
+    keys: [
+      [0, { opacity: 0, transform: 'scale(1)' }],
+      [DROP, { opacity: 0, transform: 'scale(1)' }],
+      [DROP, { opacity: 1 }],
+      [LAND, { opacity: 1 }],
+      [LAND, { opacity: 0 }],
+      [RETURN, { opacity: 0 }],
+      [RETURN, { opacity: 1 }],
+      [PRESS + 0.05, { opacity: 1, transform: 'scale(1)' }, OUT],
+      [PRESS + 0.13, { opacity: 1, transform: 'scale(1.08)' }, IN],
+      [PRESS + 0.3, { opacity: 0, transform: 'scale(0)' }],
+      [PRESS + 0.3, { transform: 'scale(1)' }],
+      [LOOP, { opacity: 0, transform: 'scale(1)' }],
+    ],
+  },
   cubeTrack('cube-l', -1),
   cubeTrack('cube-r', 1),
   // The T gives a little as the cubes land on it: a squash about its base.
@@ -1006,7 +1230,7 @@ export const TRACKS: readonly Track[] = [
   },
   shownTrack('solid-pent', CUT_L, CUT_R),
   // Held a moment past the swing, which has folded it flat by then.
-  shownTrack('solid-arrow', CUT_R, 5.7),
+  shownTrack('solid-arrow', CUT_R, SWING + 0.3),
   bladeTrack('blade-l', blade(-1).slide, CUT_L),
   bladeTrack('blade-r', blade(1).slide, CUT_R),
   flashTrack('flash-l', CUT_L, blade(-1).perimeter),
@@ -1022,12 +1246,12 @@ export const TRACKS: readonly Track[] = [
     name: 'tool',
     keys: [
       [0, { opacity: 0, transform: TOOL_AWAY }],
-      [6.0, { opacity: 0, transform: TOOL_AWAY }, OUT],
-      [6.25, { opacity: 1, transform: `translate(${TOOL_SIDE_X}px, ${TOOL_SIDE_Y0}px)` }],
-      [6.3, { transform: `translate(${TOOL_SIDE_X}px, ${TOOL_SIDE_Y0}px)` }, LINEAR],
-      [7.0, { transform: `translate(${TOOL_SIDE_X}px, ${TOOL_SIDE_Y1}px)` }, OUT],
-      [7.1, { transform: `translate(${0.9 * UNIT}px, ${TOOL_TOP_Y - 30}px)` }, IN],
-      [7.2, { transform: `translate(${0.8 * UNIT}px, ${TOOL_TOP_Y}px)` }, LINEAR],
+      [SIDE - 0.3, { opacity: 0, transform: TOOL_AWAY }, OUT],
+      [SIDE - 0.05, { opacity: 1, transform: `translate(${TOOL_SIDE_X}px, ${TOOL_SIDE_Y0}px)` }],
+      [SIDE, { transform: `translate(${TOOL_SIDE_X}px, ${TOOL_SIDE_Y0}px)` }, LINEAR],
+      [SIDE + 0.7, { transform: `translate(${TOOL_SIDE_X}px, ${TOOL_SIDE_Y1}px)` }, OUT],
+      [FACE - 0.1, { transform: `translate(${0.9 * UNIT}px, ${TOOL_TOP_Y - 30}px)` }, IN],
+      [FACE, { transform: `translate(${0.8 * UNIT}px, ${TOOL_TOP_Y}px)` }, LINEAR],
       [FACED, { transform: `translate(${-0.8 * UNIT}px, ${TOOL_TOP_Y}px)` }, IN],
       [FACED + 0.25, { opacity: 0, transform: `translate(${-2.7 * UNIT}px, ${-3.7 * UNIT}px)` }],
       [FACED + 0.4, { transform: TOOL_AWAY }],
@@ -1039,8 +1263,8 @@ export const TRACKS: readonly Track[] = [
     name: 'wing-clip',
     keys: [
       [0, { transform: 'translateY(0px)' }],
-      [6.3, { transform: 'translateY(0px)' }, LINEAR],
-      [7.0, { transform: `translateY(${TOOL_SIDE_Y1 - TOOL_SIDE_Y0}px)` }],
+      [SIDE, { transform: 'translateY(0px)' }, LINEAR],
+      [SIDE + 0.7, { transform: `translateY(${TOOL_SIDE_Y1 - TOOL_SIDE_Y0}px)` }],
       [RETURN + 0.5, { transform: `translateY(${TOOL_SIDE_Y1 - TOOL_SIDE_Y0}px)` }],
       [RETURN + 0.5, { transform: 'translateY(0px)' }],
       [LOOP, { transform: 'translateY(0px)' }],
@@ -1051,7 +1275,7 @@ export const TRACKS: readonly Track[] = [
     name: 'roof-clip',
     keys: [
       [0, { transform: 'translateX(0px)' }],
-      [7.2, { transform: 'translateX(0px)' }, LINEAR],
+      [FACE, { transform: 'translateX(0px)' }, LINEAR],
       [FACED, { transform: `translateX(${-1.6 * UNIT}px)` }],
       [RETURN + 0.5, { transform: `translateX(${-1.6 * UNIT}px)` }],
       [RETURN + 0.5, { transform: 'translateX(0px)' }],
@@ -1161,6 +1385,40 @@ export const TRACKS: readonly Track[] = [
       [LOOP, { opacity: 0, transform: 'translate(0px, 0px) rotate(0deg)' }],
     ],
   },
+
+  /* --- the delete ----------------------------------------------------------
+     Once the grid is back under the cube, the key comes up beside it -- a
+     pop, like the beam's -- and is struck: the cap goes down onto its base,
+     and the flash that goes round the edge of a cut goes round the edge of
+     the cap, the same track on a different shape. The cube pops away a beat
+     after; the key stays a moment, so the stroke and what it did are seen
+     together, then goes the way it came. */
+  {
+    name: 'key',
+    keys: [
+      [0, { opacity: 0, transform: 'scale(0.6)' }],
+      [KEY, { opacity: 0, transform: 'scale(0.6)' }],
+      [KEY, { opacity: 1, transform: 'scale(0.6)' }, OUT],
+      [KEY + 0.15, { transform: 'scale(1.08)' }, OUT],
+      [KEY + 0.28, { transform: 'scale(1)' }],
+      [GONE, { opacity: 1, transform: 'scale(1)' }, IN],
+      [GONE + 0.2, { opacity: 0, transform: 'scale(0.7)' }],
+      [GONE + 0.2, { transform: 'scale(0.6)' }],
+      [LOOP, { opacity: 0, transform: 'scale(0.6)' }],
+    ],
+  },
+  {
+    name: 'key-cap',
+    keys: [
+      [0, { transform: 'translateY(0px)' }],
+      [PRESS - 0.06, { transform: 'translateY(0px)' }, IN],
+      [PRESS, { transform: `translateY(${KEY_TRAVEL}px)` }],
+      [PRESS + 0.16, { transform: `translateY(${KEY_TRAVEL}px)` }, OUT],
+      [PRESS + 0.28, { transform: 'translateY(0px)' }],
+      [LOOP, { transform: 'translateY(0px)' }],
+    ],
+  },
+  flashTrack('key-flash', PRESS, KEY_PERIMETER),
 ]
 
 /** A track's keys as the Web Animations API takes them. */

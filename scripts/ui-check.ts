@@ -10874,7 +10874,13 @@ console.log('\nThe welcome screen: no project open, and a bar that says so')
     'which is decoration, and says so to a screen reader',
     /<svg[^>]*class="welcome-loop-svg"[^>]*aria-hidden="true"/.test(welcome)
   )
-  check('and carries no words', !/<text[\s>]/.test(welcome))
+  // Bar one: the "Del" on the key, which is the key's own name and not a
+  // caption. Exactly one run of text, then, and that is what it says.
+  check(
+    'and carries no words but the one on the key',
+    occurrences(welcome, '<text') === 1 && /<text[^>]*>Del<\/text>/.test(welcome),
+    `${occurrences(welcome, '<text')} text runs`
+  )
   check(
     'and no explanation in any other form',
     !/<title[\s>]|<desc[\s>]/.test(welcome),
@@ -10884,7 +10890,7 @@ console.log('\nThe welcome screen: no project open, and a bar that says so')
     shows(`the ${track.name} track drives something on the page`, welcome, `data-track="${track.name}"`)
   }
   // And the seam: a loop that ends anywhere but where it began shows a jump
-  // every seventeen seconds, forever.
+  // every pass, forever.
   for (const track of TRACKS) {
     const fault = seamOf(track)
     check(`and ${track.name} ends where it starts`, fault === null, fault ?? '')
