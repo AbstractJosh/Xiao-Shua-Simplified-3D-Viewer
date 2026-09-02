@@ -30,7 +30,6 @@ export function NavTool({
   bare = false,
   panelRight,
   align = 'left',
-  below = false,
   children,
 }: {
   /**
@@ -131,23 +130,13 @@ export function NavTool({
   panelRight?: ReactNode
   /** Which way the panel opens. Tools near the right edge open leftwards. */
   align?: 'left' | 'right'
-  /**
-   * Hang the panel UNDER the button rather than out to the side of it.
-   *
-   * Only means anything on the tool island, where panels open across the scene
-   * by default: the island is a COLUMN, and a panel dropped below its button
-   * would cover the tools under it in that column -- which is the whole reason
-   * the island puts them out to the side.
-   *
-   * The exception is a tool at the FOOT of the column, where there is nothing
-   * underneath to cover and below is the better place: it is where a dropdown
-   * belongs, it opens along the column rather than across the scene, and a
-   * panel standing out sideways sits on top of the very face the tool is about
-   * to draw on. See the rules in `styles.css`.
-   *
-   * In the bar it changes nothing -- panels there already hang below.
-   */
-  below?: boolean
+  /* A `below` FLAG WENT HERE, hanging a panel under its button instead of out
+     to the side. Point Cut was its only user, on the reasoning that a tool at
+     the foot of the island column has nothing underneath to cover -- and the
+     two cutters are a pair picked between constantly, so a pair whose panels
+     came out in two different directions read as two unrelated tools. It opens
+     sideways with Freehand now, and the flag went with it rather than being
+     left in a shared component for nobody. */
   children?: ReactNode
 }) {
   const openPanel = useTools((s) => s.openPanel)
@@ -216,9 +205,7 @@ export function NavTool({
 
       {hasPanel && open && (
         <div
-          className={`nav-panel${align === 'right' ? ' nav-panel-right' : ''}${
-            below ? ' nav-panel-below' : ''
-          }`}
+          className={`nav-panel${align === 'right' ? ' nav-panel-right' : ''}`}
           role="group"
           aria-label={panelTitle ?? label}
         >

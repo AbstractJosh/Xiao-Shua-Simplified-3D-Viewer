@@ -29,6 +29,24 @@ import { useTools } from '../store/toolStore'
 export function ScreenTabs() {
   const screen = useTools((s) => s.screen)
   const setScreen = useTools((s) => s.setScreen)
+  /**
+   * DEAD AT THE FRONT DOOR, because there is nowhere for them to send anybody.
+   *
+   * A tab is a place, and the three places these name are benches inside a
+   * project. With none open they lead nowhere: pressing Lathe would put the
+   * user in front of a lump belonging to no project, which is either work that
+   * autosaves into nothing or work that vanishes on a refresh. Both are worse
+   * than a control that plainly cannot be pressed.
+   *
+   * DIMMED RATHER THAN TAKEN AWAY -- the bargain the whole bar strikes, stated
+   * at `SCREEN_HAS_DOCUMENT`. The bar keeps its shape between the front door
+   * and a bench, so nothing appears to have gone missing and nothing shifts
+   * sideways under the pointer when a project opens.
+   *
+   * The way OUT of the front door is therefore not up here: it is the project
+   * you press in the list below. See `WelcomeScreen`.
+   */
+  const atWelcome = useTools((s) => s.atWelcome)
 
   return (
     <nav className="screen-tabs" aria-label="Screen">
@@ -41,11 +59,13 @@ export function ScreenTabs() {
           <button
             type="button"
             className="screen-tab"
+            disabled={atWelcome}
             // `aria-current`, not `aria-pressed`: these are not switches that
             // are on or off, they are places, and exactly one of them is where
             // you are. It is the attribute a set of navigation links uses, and
-            // the stylesheet lights the tab off it.
-            aria-current={screen === id ? 'page' : undefined}
+            // the stylesheet lights the tab off it. Nothing is current at the
+            // front door, which is not one of these places.
+            aria-current={!atWelcome && screen === id ? 'page' : undefined}
             onClick={() => setScreen(id)}
           >
             {SCREEN_LABELS[id]}

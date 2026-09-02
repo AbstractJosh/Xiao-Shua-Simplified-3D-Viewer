@@ -127,3 +127,39 @@ export const SCREEN_HAS_GAME_CONTROLS: Record<ScreenId, boolean> = {
   lathe: false,
   laser: false,
 }
+
+/**
+ * WHERE THE APP STARTS: the front door, or straight back into the project you
+ * had open.
+ *
+ * The one preference the Welcome screen adds, and it exists because the honest
+ * default and the convenient one are not the same. Opening on Welcome is
+ * honest: the app has projects now, so the first question it can answer is
+ * WHICH ONE, and answering it by guessing is how somebody ends up editing
+ * yesterday's vase for ten minutes before noticing. Opening on the last project
+ * is convenient: a refresh in the middle of an afternoon's work should put you
+ * back where you were and not at a menu.
+ *
+ * Neither is wrong, so it is a switch. Welcome is the default because it is the
+ * one that cannot surprise anybody -- and because the app name at the top left
+ * is a one-press way back to it, while there is no equally obvious way to say
+ * "no, the other project" once the wrong one is already loaded and being drawn
+ * over.
+ *
+ * A LIST HERE, beside the screens, rather than two strings in the store. It is
+ * the same kind of fact as `SCREENS` -- what the app can be showing when it
+ * comes up -- and the check suite and the preferences table both read it
+ * without either of them wanting a React component along for the ride.
+ */
+export const OPEN_TO = ['welcome', 'recent'] as const
+
+export type OpenTo = (typeof OPEN_TO)[number]
+
+/** What the switch in Settings says, in the order the slider travels: the front
+ *  door first, because it is where the app starts by default. */
+export const OPEN_TO_LABELS: Record<OpenTo, string> = {
+  welcome: 'Welcome screen',
+  recent: 'Recent project',
+}
+
+export const DEFAULT_OPEN_TO: OpenTo = 'welcome'

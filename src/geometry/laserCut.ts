@@ -99,6 +99,63 @@ const THROUGH = BLOCK_HALF + 0.25
  *  Well below the kerf, and well above the noise a boolean leaves behind. */
 const WELD = 1e-5
 
+/**
+ * How thin a triangle has to be before `outlineOf` stops believing in it.
+ *
+ * THINNESS RATHER THAN SIZE, measured as the triangle's narrowest way across --
+ * twice its area over its longest side. A facet can be legitimately tiny, and a
+ * long one can be legitimately narrow; what nothing legitimate is, is thinner
+ * than the grid this file rounds vertices onto. Under that its three corners
+ * are a straight line, and everything downstream that asks it a question gets
+ * an answer made of noise.
+ *
+ * WHICH IS WHY THE WELD GRID IS THE THRESHOLD rather than a number of its own.
+ * Two points closer than `WELD` are already the same point here; a triangle
+ * whose third corner is that close to the line of the other two is already a
+ * line, by the tolerance this file has already committed to.
+ *
+ * WHERE THEY COME FROM. A boolean does not only cut triangles, it leaves the
+ * offcuts: a corner clipped to a hair, a face split along a line that passes
+ * through one of its own vertices, the same triangle written twice with the
+ * last bits disagreeing. None of them covers a pixel, and each lies to this
+ * file twice over. Its NORMAL is the normalised cross product of two nearly
+ * parallel edges, so it points wherever the noise says -- which reads as a
+ * crease to the two-face test, and as a face turned away to the covering test.
+ * And its EDGES sit between the two real faces it was cut from, so neither of
+ * them can partner the other, and both come back as boundaries. That is the fan
+ * of lines radiating out of a merge's seam.
+ *
+ * So a sliver is left out of the adjacency entirely rather than being trusted
+ * to partner anything, and the edge it lay against is settled the way every
+ * other unpartnered edge is: by asking what is really lying against its middle.
+ * See `REACH`, which is the slack that question needs to survive the other
+ * thing a boolean leaves behind.
+ */
+const SLIVER = WELD
+
+/**
+ * How far outside a triangle a point may sit and still count as lying against
+ * it, when `outlineOf` is asking whether an unpartnered edge has surface on its
+ * other side.
+ *
+ * A SLACK THE BOOLEAN MAKES NECESSARY. It does not only leave slivers, it
+ * leaves the same corner twice: a face fanned into triangles from a point that
+ * two of them place at (0.2085, 1.0000) and the next at (0.2084, 0.9998). Two
+ * ten-thousandths is a hundred times the weld grid, so no rounding brings them
+ * together, and it is enough to put the middle of one fan triangle's long edge
+ * just outside its neighbour. Asked for strict containment the neighbour
+ * answers no, the edge is called a boundary, and a line a fifth of a millimetre
+ * out of true is drawn the length of the face.
+ *
+ * A SIXTH OF A KERF is the room that buys, and the kerf is what makes it safe:
+ * the narrowest gap this app can cut in anything is one, so the two sides of a
+ * real slot stand six of these apart and neither can reach across to cover the
+ * other. The perpendicular tolerance is untouched at a tenth of this -- a
+ * surface a hair OFF the plane is a different surface however near it lies, and
+ * only the sideways question is being given slack.
+ */
+const REACH = KERF / 6
+
 /** A piece thinner than this fraction of the block is dust the boolean left,
  *  not a piece. Cubic, because it is a volume against the unit cube's own. */
 const MIN_PIECE = 1e-7
@@ -683,23 +740,20 @@ const BLOCK_PAINT = 'laser-block'
  * cut from a line that missed -- which looks exactly like a broken button
  * unless the tool says so out loud.
  *
- * `made` indexes every piece THIS CUT PRODUCED, in the order they come off --
- * biggest first within each piece that came apart. Which of them is thrown away
- * is the user's to say, so what this hands back is the whole list rather than a
- * pick from it: see `choices` in `laserStore`, and `pieceVolume` for the size
- * the store sorts them by.
- *
- * IT HAS TO BE THIS CUT'S OWN, and that is the reason the list exists at all
- * rather than the caller reading the bed. The bed after a cut is every piece
- * there has ever been, and a sliver left over from an earlier cut and
- * deliberately kept is not something this cut is offering to throw away.
+ * WHAT COMES BACK IS THE BED, and nothing marks out the pieces this cut made
+ * from the ones that were already there. It used to: the store lit one of the
+ * cut's own and could only offer those. The rule it lights by now is the
+ * keeper's -- the piece under the drawing is the work and everything else is
+ * offcut -- and that question has the same answer for every piece on the bed
+ * whenever it was cut, so there is nothing left to tell apart. See `keeperSet`
+ * in `laserStore`, and `touchesFacePoint` for the test.
  */
 export function cutPieces(
   pieces: BufferGeometry[],
   lines: Pt[][],
   face: FaceAxis,
   kerf = KERF
-): { pieces: BufferGeometry[]; split: number; made: number[] } {
+): { pieces: BufferGeometry[]; split: number } {
   // Even the spacing WITHOUT stepping over a corner, then drop the stations the
   // shape does not need, then carry the ends out past the block. In that order:
   // the simplify is what keeps a straight cut from costing three hundred
@@ -724,17 +778,10 @@ export function cutPieces(
     const wall = buildKerfWall(carryToBorder(simplify(stations(line))), face, kerf)
     if (wall) walls.push(wall)
   }
-  if (walls.length === 0) return { pieces, split: 0, made: [] }
+  if (walls.length === 0) return { pieces, split: 0 }
 
   /**
-   * The bed as the last wall left it, and which of its pieces this cut made.
-   *
-   * A FLAG PER PIECE rather than a list of indices, because indices do not
-   * survive a second wall: the array is rebuilt by every line, so a piece that
-   * was the fifth after one pass is somewhere else entirely after the next. The
-   * flag rides on the piece instead, which is also what keeps a piece made by
-   * the first line and then split again by the second counted once, as one of
-   * this cut's own.
+   * The bed as the last wall left it.
    *
    * `own` is whether the geometry is ours to free. The caller's pieces are on
    * screen -- freeing one would pull a buffer out from under the viewport --
@@ -742,7 +789,7 @@ export function cutPieces(
    * one was never seen by anybody, and is dropped here rather than left lying
    * about.
    */
-  let bed = pieces.map((geometry) => ({ geometry, made: false, own: false }))
+  let bed = pieces.map((geometry) => ({ geometry, own: false }))
   let split = 0
 
   try {
@@ -778,9 +825,7 @@ export function cutPieces(
         // and a function that made it here would be one that could not be
         // asked for the other answer. `splitComponents` hands them back
         // biggest first, so the list is already in an order worth showing.
-        for (const part of parts) {
-          next.push({ geometry: part, made: item.made || parts.length > 1, own: true })
-        }
+        for (const part of parts) next.push({ geometry: part, own: true })
         if (item.own) item.geometry.dispose()
       }
       bed = next
@@ -789,11 +834,7 @@ export function cutPieces(
     for (const wall of walls) wall.dispose()
   }
 
-  return {
-    pieces: bed.map((item) => item.geometry),
-    split,
-    made: bed.flatMap((item, at) => (item.made ? [at] : [])),
-  }
+  return { pieces: bed.map((item) => item.geometry), split }
 }
 
 /**
@@ -818,6 +859,20 @@ export function cutPieces(
  * asking what is actually lying against its middle -- a face pointing the same
  * way means the edge is interior to a flat stretch and is not drawn; one
  * pointing elsewhere, or nothing at all, means a real edge of the solid.
+ *
+ * AND THE OFFCUTS GET NO VOTE. Both tests above -- the crease and the covering
+ * -- ask a triangle which way it faces, and a triangle a boolean has clipped
+ * thinner than the weld grid cannot answer: see `SLIVER`. Left in, they hatch
+ * the seam of a merge with a fan of lines that follow nothing on the object,
+ * which is what a sphere welded into a box came back wearing.
+ *
+ * They are not simply dropped, though, and the difference matters. A sliver
+ * sits BETWEEN two real faces, so deleting it leaves each of them holding an
+ * edge that partners nothing -- and an unpartnered edge is drawn. Cut the fan
+ * out of a flat face that way and a long line goes straight back across it.
+ * What happens instead is that the edges a sliver stands between are joined
+ * into one, so the two real faces meet each other there and the crease test can
+ * see that the face is flat.
  *
  * The threshold is generous on purpose. A cut wall is a fan of facets a few
  * degrees apart -- `STEP` sets how many -- and a tight threshold would draw
@@ -849,16 +904,31 @@ export function outlineOf(geometry: BufferGeometry, thresholdDeg = 25): BufferGe
   const b = new Vector3()
   const c = new Vector3()
   const normals: Vector3[] = []
+  // Whether each triangle is a surface at all, or a sliver -- see `SLIVER`. A
+  // sliver's normal is the normalised cross product of two nearly parallel
+  // edges, which points wherever the last bits say, so `normals` may not be
+  // consulted for one.
+  const alive: boolean[] = []
   for (let t = 0; t < triangles; t += 1) {
     a.fromArray(array as number[], t * 9)
     b.fromArray(array as number[], t * 9 + 3)
     c.fromArray(array as number[], t * 9 + 6)
-    normals.push(b.clone().sub(a).cross(c.clone().sub(a)).normalize())
+    const cross = b.clone().sub(a).cross(c.clone().sub(a))
+    // Its narrowest way across: twice the area over the longest side. Thinner
+    // than the weld grid and its three corners are a straight line as far as
+    // anything else in this file is concerned.
+    const longest = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a))
+    alive.push(longest > 0 && cross.length() / longest > SLIVER)
+    normals.push(cross.normalize())
   }
 
-  // Every undirected edge, and the triangles that claim it.
+  // Every undirected edge, and the LIVE triangles that claim it. A sliver
+  // claims nothing: the edge it lay against is settled by what is actually
+  // there instead, which is `coveredFlat`'s job and the reason it is given
+  // `REACH` to work with.
   const edges = new Map<string, { i: number; j: number; faces: number[] }>()
   for (let t = 0; t < triangles; t += 1) {
+    if (!alive[t]) continue
     for (let e = 0; e < 3; e += 1) {
       const i = vertex[t * 3 + e]
       const j = vertex[t * 3 + ((e + 1) % 3)]
@@ -880,6 +950,8 @@ export function outlineOf(geometry: BufferGeometry, thresholdDeg = 25): BufferGe
 
   const flat = Math.cos((thresholdDeg * Math.PI) / 180)
   const mid = new Vector3()
+  const side = new Vector3()
+  const outward = new Vector3()
   const corner = [new Vector3(), new Vector3(), new Vector3()]
 
   /**
@@ -893,21 +965,23 @@ export function outlineOf(geometry: BufferGeometry, thresholdDeg = 25): BufferGe
    */
   const coveredFlat = (skip: number): boolean => {
     for (let t = 0; t < triangles; t += 1) {
-      if (t === skip) continue
+      if (t === skip || !alive[t]) continue
       if (normals[t].dot(normals[skip]) < flat) continue
       for (let c = 0; c < 3; c += 1) corner[c].fromArray(array as number[], t * 9 + c * 3)
-      // On the plane, and inside the triangle: the three sub-triangles the
-      // point makes with each edge have to add up to the whole one.
+      // On the plane, still measured to a hair: a surface lying a hair away is
+      // a second surface, and only one lying IN this one continues it.
       if (Math.abs(mid.clone().sub(corner[0]).dot(normals[t])) > WELD * 10) continue
-      const whole = corner[1].clone().sub(corner[0]).cross(corner[2].clone().sub(corner[0])).length()
-      if (!(whole > 0)) continue
-      let parts = 0
-      for (let c = 0; c < 3; c += 1) {
-        const a2 = corner[c]
-        const b2 = corner[(c + 1) % 3]
-        parts += a2.clone().sub(mid).cross(b2.clone().sub(mid)).length()
+      // And inside the triangle, give or take `REACH` -- see there. Each edge
+      // in turn: the point may not be further out past any of them than that.
+      let outside = false
+      for (let c = 0; c < 3 && !outside; c += 1) {
+        side.copy(corner[(c + 1) % 3]).sub(corner[c])
+        if (!(side.lengthSq() > 0)) continue
+        // The in-plane normal pointing out of the triangle across this edge.
+        outward.copy(side).cross(normals[t]).normalize()
+        if (mid.clone().sub(corner[c]).dot(outward) > REACH) outside = true
       }
-      if (parts <= whole * 1.0001) return true
+      if (!outside) return true
     }
     return false
   }
@@ -925,9 +999,22 @@ export function outlineOf(geometry: BufferGeometry, thresholdDeg = 25): BufferGe
       mid.set((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2)
       draw = !coveredFlat(edge.faces[0])
     } else {
-      // More than two faces on one edge is geometry nobody meant; drawing it is
-      // the honest answer and it is the shape you want to see if it happens.
-      draw = true
+      // More than two faces on one edge is either a place the surface genuinely
+      // branches -- two solids welded along a line, which is a real edge and
+      // wants drawing -- or several faces of one flat stretch that a boolean
+      // split along the same line and left lying against each other, which does
+      // not. The two are told apart by the question the two-face case already
+      // asks: does the surface TURN here. If no pair of the faces meeting on
+      // this edge is past the threshold, nothing turns and there is no edge.
+      draw = false
+      for (let x = 0; x < edge.faces.length && !draw; x += 1) {
+        for (let y = x + 1; y < edge.faces.length; y += 1) {
+          if (normals[edge.faces[x]].dot(normals[edge.faces[y]]) < flat) {
+            draw = true
+            break
+          }
+        }
+      }
     }
     if (!draw) continue
     out.push(p[0], p[1], p[2], q[0], q[1], q[2])
@@ -1066,6 +1153,102 @@ export function pieceCentre(geometry: BufferGeometry): Vector3 {
   geometry.computeBoundingBox()
   const box = geometry.boundingBox
   return box ? box.getCenter(new Vector3()) : new Vector3()
+}
+
+/**
+ * How far off the face's own plane a triangle may sit and still count as part
+ * of that face, and how far outside a triangle a point may fall and still count
+ * as covered by it.
+ *
+ * Both are well under the kerf, which is the distance that has to be told
+ * apart: two pieces either side of a cut are `KERF` apart, so a slack anywhere
+ * near it would have one piece answering for the other's ground. The face
+ * triangles themselves come straight off the block's own face -- the wall runs
+ * past it, so nothing is ever built lying ON the plane -- and arrive within a
+ * float's worth of exact.
+ */
+const FACE_PLANE_SLACK = 1e-4
+const FACE_EDGE_SLACK = 1e-6
+
+/**
+ * Whether a piece has material at one point of one face: whether its own share
+ * of that face covers it.
+ *
+ * WHICH PIECE IS THE KEEPER, and the whole reason the answer is asked of the
+ * FACE rather than of the solid. The reference is stuck to the face and the
+ * line is drawn round it, so "the piece under the drawing" is a question about
+ * a flat square, and asking it there needs no ray, no parity count and no
+ * assumption that a boolean left a watertight shell behind. See `cut` in
+ * `laserStore` for what does the asking.
+ *
+ * The test is exactly that: the triangles this piece has LYING IN the face's
+ * plane, projected into the face's own (u, v), and whether any of them covers
+ * the point. Every piece that reaches the face has them -- a cut runs
+ * perpendicular through the block, so what it leaves at the face is the
+ * original flat square carved up -- and a piece that does not reach the face
+ * has none and is correctly no keeper.
+ *
+ * A POINT IN THE KERF BELONGS TO NOBODY, deliberately. Draw the line straight
+ * through the middle and the middle lands in the slot the beam took out, where
+ * neither piece has material; the slack here is a thousandth of the kerf, so it
+ * cannot fudge that into both pieces being the keeper. It is the caller that
+ * decides what to do when nothing holds the point.
+ *
+ * The point is in BLOCK SPACE like everything else here -- the unit cube's own
+ * (u, v), not scene units -- so a resized block does not move it.
+ */
+export function touchesFacePoint(geometry: BufferGeometry, face: FaceAxis, at: Pt): boolean {
+  const source = geometry.index ? geometry.toNonIndexed() : geometry
+  const array = source.getAttribute('position')?.array as ArrayLike<number> | undefined
+  if (!array) return false
+  const basis = faceBasis(face)
+  const triangles = Math.floor(array.length / 9)
+
+  // The face's plane is half a unit along its OWN outward normal, whichever way
+  // that points: the far face's normal points the other way and its points are
+  // negative, so the two come out the same number and there is no sign to carry.
+  for (let t = 0; t < triangles; t += 1) {
+    const corner: Pt[] = []
+    for (let c = 0; c < 3; c += 1) {
+      const x = array[t * 9 + c * 3]
+      const y = array[t * 9 + c * 3 + 1]
+      const z = array[t * 9 + c * 3 + 2]
+      const depth = x * basis.n.x + y * basis.n.y + z * basis.n.z
+      if (Math.abs(depth - BLOCK_HALF) > FACE_PLANE_SLACK) break
+      corner.push([x * basis.u.x + y * basis.u.y + z * basis.u.z, x * basis.v.x + y * basis.v.y + z * basis.v.z])
+    }
+    if (corner.length === 3 && covers(corner, at)) return true
+  }
+  return false
+}
+
+/**
+ * Whether a triangle covers a point, either winding.
+ *
+ * EITHER WINDING, because these triangles are read off both the near face and
+ * the far one and the two wind opposite ways round -- and because a boolean
+ * makes no promise about the order it writes a fan out in. So the test is that
+ * the point is on the same side of all three edges, rather than on a
+ * particular side of them.
+ *
+ * The slack is scaled by the triangle's own size, since an edge function is an
+ * area: it turns a fixed distance into the area that distance sweeps along the
+ * edges. Without it a point landing exactly on the seam between two triangles
+ * of one flat face could fall through the crack between them.
+ */
+function covers(corner: Pt[], at: Pt): boolean {
+  const edge = (a: Pt, b: Pt): number =>
+    (b[0] - a[0]) * (at[1] - a[1]) - (b[1] - a[1]) * (at[0] - a[0])
+  const e0 = edge(corner[0], corner[1])
+  const e1 = edge(corner[1], corner[2])
+  const e2 = edge(corner[2], corner[0])
+  const scale =
+    len(sub(corner[1], corner[0])) + len(sub(corner[2], corner[1])) + len(sub(corner[0], corner[2]))
+  const slack = FACE_EDGE_SLACK * scale
+  return (
+    (e0 >= -slack && e1 >= -slack && e2 >= -slack) ||
+    (e0 <= slack && e1 <= slack && e2 <= slack)
+  )
 }
 
 /**

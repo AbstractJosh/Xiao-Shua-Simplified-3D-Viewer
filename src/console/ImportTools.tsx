@@ -5,7 +5,8 @@ import { registerMesh } from '../geometry/meshLibrary'
 import type { BaseSolid, Doc, Vec3 } from '../geometry/types'
 import { useDoc } from '../store/docStore'
 import { formatLength } from '../units'
-import { onDocument, useTools } from '../store/toolStore'
+import { canImport, useTools } from '../store/toolStore'
+import { useProjects } from '../store/projectStore'
 import { ImportIcon } from './navIcons'
 import { ReceiptFlyout, useReceipt } from './Receipt'
 
@@ -33,6 +34,26 @@ export function dropPosition(doc: Doc, size: Vec3): Vec3 {
 }
 
 /**
+ * What to call the project a front-door import creates.
+ *
+ * THE FILE'S OWN NAME, minus its extension, because that is what the person who
+ * chose it calls the thing. `bracket.stl` becomes "Bracket" -- capitalised,
+ * since a project name is a title and a filename is not -- and several files
+ * chosen together become the first one's name, on the reasoning that a
+ * multi-file drop is usually one assembly and its first part is as good a name
+ * for it as any.
+ *
+ * An empty answer is possible -- a file called `.stl` -- and is handled by the
+ * caller rather than guarded here: `create` falls back to its own numbering for
+ * a blank name, which is exactly the right answer and is already written.
+ */
+export function projectNameFor(files: File[]): string {
+  const first = files[0]?.name ?? ''
+  const stem = first.replace(/\.[^.]+$/, '').trim()
+  return stem === '' ? '' : stem.charAt(0).toUpperCase() + stem.slice(1)
+}
+
+/**
  * Import, sitting immediately left of Export.
  *
  * It spent a while beside the app's name, on the argument that a document
@@ -55,9 +76,16 @@ export function ImportTools() {
   // The receipt reads its size in whatever unit the rest of the app is reading
   // in, so "20.0 cm across" is the same 20.0 the Width field will show.
   const displayUnit = useTools((s) => s.displayUnit)
-  // Dimmed on a screen that draws no document: a model imported into a scene
-  // nobody can see would land, cost an undo entry and show nothing.
-  const live = useTools(onDocument)
+  // Dimmed on a BENCH that draws no document -- a model imported into a scene
+  // nobody can see would land, cost an undo entry and show nothing -- and live
+  // at the front door, which is the one place with no document where a file
+  // arriving still means something. See `canImport`.
+  const live = useTools(canImport)
+  // Where the model will land, which is the only thing that changes between the
+  // two: at the front door there is no project to import INTO, so one is made
+  // and the file becomes the first thing in it.
+  const atWelcome = useTools((s) => s.atWelcome)
+  const createProject = useProjects((s) => s.create)
   const [busy, setBusy] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const receipt = useReceipt()
@@ -67,6 +95,14 @@ export function ImportTools() {
     try {
       const landed: string[] = []
       let note: string | undefined
+
+      // A FILE OPENED AT THE FRONT DOOR MAKES A PROJECT, and it is named after
+      // what was opened rather than "Project 3": somebody who has just dropped
+      // `bracket.stl` on an empty app is looking for a project called Bracket a
+      // week later, not for a number. Done BEFORE the first model is read, so
+      // there is somewhere for it to land -- and only once, however many files
+      // were chosen, since one drop of six parts is one assembly.
+      if (atWelcome) createProject(projectNameFor(files))
 
       // One at a time, and in the order they were chosen: each one's position
       // is worked out from the scene the one before it landed in, so a

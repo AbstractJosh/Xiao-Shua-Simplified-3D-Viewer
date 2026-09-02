@@ -311,20 +311,23 @@ const OFFCUT_GLOW = 0.4
  * everywhere else in this app: it names the piece that goes, and it is what
  * Delete acts on.
  *
- * AND WHICH PIECE THAT IS, IS YOURS TO SAY. It opens on the smallest, which is
- * right for most cuts and wrong for exactly the ones that matter most -- free a
- * part from the stock around it and the keeper is the small one. A press on a
- * piece moves the light onto it. Only with a cutter PUT DOWN, because with one
- * in hand a press on the block is the start of a line and there is no way to be
- * both; the panel's Other piece steps the same choice with the tool still in
+ * AND WHICH PIECES THOSE ARE, IS YOURS TO SAY. The cut lights everything that
+ * is not the work -- the work being the piece under the middle of the drawing,
+ * which is where the reference sits -- so a stroke that wandered off the face
+ * and left three pieces lights the two that are not the part, rather than
+ * lighting one of them and leaving the other with nothing that can be said
+ * about it. A press on a piece TOGGLES it: rescue one the rule called waste,
+ * or condemn one it kept. Only with a cutter PUT DOWN, because with one in hand
+ * a press on the block is the start of a line and there is no way to be both;
+ * the panel's Keep the rest swaps the whole choice over with the tool still in
  * hand, which is where a hand fresh from pressing Apply actually is. See
- * `choices` in `laserStore`.
+ * `keeperSet` and `markOffcut` in `laserStore`.
  *
- * NOTHING ELSE IS CLICKABLE, and a press on a piece the last cut did not make
- * does nothing at all. The offer is about the cut just performed: a sliver from
- * three cuts ago may have been kept on purpose, and a bed where everything can
- * be lit and binned is a selection, which this screen deliberately does not
- * have.
+ * EVERY PIECE ON THE BED IS CLICKABLE, which is a change: the offer used to be
+ * about the last cut alone, so a sliver from three cuts ago could not be lit
+ * even to say it was rubbish. It can now, and what protects a piece kept on
+ * purpose is that the rule LIGHTS rather than bins -- one press takes it back
+ * out, and nothing is destroyed until Delete.
  *
  * Each piece keeps its own outline, so the seam between two of them reads as
  * two edges a hair apart rather than as one line drawn on a solid. The outline
@@ -407,11 +410,12 @@ function Pieces({ dims }: { dims: [number, number, number] }) {
           key={piece.id}
           piece={piece}
           waste={offcut.includes(piece.id)}
-          choosable={
-            !cutting &&
-            !offcut.includes(piece.id) &&
-            choices.some((set) => set.includes(piece.id))
-          }
+          // A LIT PIECE IS CLICKABLE TOO, now that the press is a toggle: it is
+          // how a piece the rule called waste is rescued, which is half of what
+          // the gesture is for. It used to be barred, because a press could
+          // only mean "light this one instead" and lighting the lit one was a
+          // press that did nothing.
+          choosable={!cutting && choices.some((set) => set.includes(piece.id))}
         />
       ))}
     </group>
@@ -918,20 +922,20 @@ export function LaserViewport() {
 
       {/* THE BOTTOM-LEFT SHELF: the facts about the job rather than about the
           scene. The block is set once at the start and sits at the foot of it,
-          where the lathe keeps its lump; the cut panel appears above it for as
-          long as a cutter is in hand and goes when the hands are empty.
+          where the lathe keeps its lump; the mirror stands above it for as long
+          as the axis does.
+
+          THE CUT'S ACTIONS USED TO BE HERE TOO, between the two. They are at
+          the foot of the tool island now -- the hand that picked the cutter up
+          is already there, and down in this corner at label size they read as a
+          footnote to the screen whose whole purpose they are. See `CutPanel`.
 
           A COLUMN RATHER THAN TWO CORNERS, because the block panel collapses --
           so anything placed above it by a fixed offset would leave a gap when
           it shut and sit on top of it when it opened. The flex gap is the one
           number, and neither panel has to know the other's height. */}
       <div className="laser-corner">
-        {/* Above the cut, because it governs it: the mirror is set up once and
-            then every line drawn under it is reflected. It stands as long as
-            the AXIS does rather than as long as a tool is held -- see
-            `SymmetryPanel`. */}
         <SymmetryPanel face={face} />
-        <CutPanel />
         <BlockPanel />
       </div>
 
@@ -954,17 +958,17 @@ export function LaserViewport() {
           {/* What to do about it, and the half of that which is reachable
               depends on what is in your hand: the click is the direct way and
               is shut off while a cutter is armed, because a press on the block
-              is the start of a line. The panel's step is open either way, and
+              is the start of a line. The panel's swap is open either way, and
               is what a hand fresh from Apply is already resting on. */}
-          {offcut.length > 1 ? 'The lit pieces are one piece of work' : 'The lit piece is the one'}{' '}
-          <b>Del</b> throws {offcut.length > 1 ? 'them all away' : 'away'}.{' '}
+          {offcut.length > 1 ? 'The lit pieces are the offcuts' : 'The lit piece is the offcut'}.{' '}
+          <b>Del</b> throws {offcut.length > 1 ? 'them all away' : 'it away'}.{' '}
           {armed ? (
             <>
-              <b>Other piece</b> lights the next.
+              <b>Keep the rest</b> swaps them over.
             </>
           ) : (
             <>
-              <b>Click</b> another to change it.
+              <b>Click</b> a piece to light it or put it out.
             </>
           )}
         </p>
@@ -1020,6 +1024,14 @@ export function LaserViewport() {
         <div className="island-rule" aria-hidden />
         <FreehandTool />
         <PointCutTool />
+        {/* AND WHAT TO DO WITH THE LINE, docked under the two tools that draw
+            it. Nothing at all with empty hands, so the island is the height it
+            always was until a cutter is picked up. It is a child of the island
+            rather than a flyout hanging off one of these buttons, which is the
+            distinction the whole panel exists to record: a flyout shuts on the
+            first press against the face, and pressing the face is how a cut is
+            drawn. See `CutPanel`. */}
+        <CutPanel />
       </IslandShell>
     </div>
   )

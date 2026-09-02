@@ -141,8 +141,21 @@ export function NavBar() {
   const step = history[screen]
   const undo = step?.undo ?? NOTHING
   const redo = step?.redo ?? NOTHING
-  const canUndo = step?.past ?? false
-  const canRedo = step?.future ?? false
+  /**
+   * AND DEAD AT THE FRONT DOOR, whatever the stacks hold.
+   *
+   * These two are the one pair in the bar that does not go quiet through
+   * `onDocument`, because what they walk is a SCREEN's history rather than a
+   * document -- see the table above, which is the whole point of it. That makes
+   * the front door a case the table cannot answer: it is not a screen, so it
+   * has no history, and the stacks it would otherwise be reading belong to a
+   * bench nobody is looking at. Undoing something you cannot see is the exact
+   * thing the rest of this bar dims to prevent.
+   */
+  const atWelcome = useTools((s) => s.atWelcome)
+  const setAtWelcome = useTools((s) => s.setAtWelcome)
+  const canUndo = !atWelcome && (step?.past ?? false)
+  const canRedo = !atWelcome && (step?.future ?? false)
 
   // Escape and click-outside for EVERY tool panel, mounted once here because
   // `openPanel` is one field for all of them. The bar is not the only thing
@@ -189,7 +202,34 @@ export function NavBar() {
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <span className="brand-mark">{APP_NAME}</span>
+        {/* THE NAME IS THE WAY HOME, which is the one place in this bar where
+            identity is also a control. It reads as one because that is what a
+            wordmark at the top left of an application has meant for thirty
+            years, and because the alternative -- a fifth button in a bar that
+            is already full -- would be a second thing competing with the screen
+            tabs for the same corner.
+
+            It goes one way only. Pressing it at the front door does nothing,
+            rather than toggling back to the bench: a control that means two
+            opposite things depending on where you already are is a control you
+            have to think about, and there is a visible way back a few
+            centimetres below -- the open project's own card. See
+            `WelcomeScreen`.
+
+            A button rather than a span with a handler, so it is reachable by
+            keyboard and announced as something that can be pressed. `aria-label`
+            because the word on it is the app's name and what it DOES is go to
+            the projects -- and a label is not a tooltip: it is never drawn, and
+            it is the only way a screen reader can be told the difference. */}
+        <button
+          type="button"
+          className="brand-mark"
+          aria-label="Projects"
+          aria-current={atWelcome ? 'page' : undefined}
+          onClick={() => setAtWelcome(true)}
+        >
+          {APP_NAME}
+        </button>
         {/* The full-height one, which is the biggest break in the bar:
             everything to the right of it belongs to whichever screen is chosen
             to the left of it. See `.topbar-rule`. */}

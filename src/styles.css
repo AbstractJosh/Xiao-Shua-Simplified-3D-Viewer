@@ -610,9 +610,20 @@ body {
   transition: color 0.12s, background 0.12s, box-shadow 0.12s;
 }
 
-.screen-tab:hover {
+.screen-tab:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
+}
+
+/* At the front door, where there is no bench to send anybody to. The same 0.4
+   every other inapplicable control in this bar fades to -- see the disabled
+   tool group and `.stats-idle` -- so the three tabs go quiet together with
+   Export, Snap and the counts rather than in a way of their own. `cursor:
+   default` because a pointer over something that cannot be pressed is the
+   interface promising what it will not do. */
+.screen-tab:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* Where you ARE, which is a different claim from a switch being on -- so it is
@@ -637,7 +648,20 @@ body {
   opacity: 0.4;
 }
 
+/* The wordmark, which is also the way to the projects. It is a `<button>` now,
+   so the first half of this rule is undoing what a browser does to one: a
+   button brings its own font, its own background, its own border and its own
+   padding, and every one of them would be visible beside the tabs. What is left
+   is the name, set exactly as it was set when it was a `<span>`. */
 .brand-mark {
+  appearance: none;
+  padding: 2px 6px;
+  margin-left: -6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
   /* 650 was a variable-font weight and Rajdhani ships static instances, so the
      browser was already rounding it. Said as the weight that actually draws. */
   font-weight: 700;
@@ -648,6 +672,23 @@ body {
   letter-spacing: 0.005em;
   font-size: var(--t-title);
   white-space: nowrap;
+  transition: color 0.12s, background 0.12s;
+}
+
+/* A hint that it does something, and no more than a hint. It is the app's name
+   before it is a control, so it does not gain a border or a fill on hover the
+   way the tools do -- the ground behind it lifts, which is the same 4% white
+   every other pressable thing in this bar uses. */
+.brand-mark:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Already at the front door. Lit rather than dimmed, and deliberately NOT with
+   the tab's underline: the tabs sit in a row and mark which of three you are
+   at, where this marks that you are not at any of them. Colour alone, because
+   the name is not a fourth tab. */
+.brand-mark[aria-current] {
+  color: var(--accent);
 }
 
 /* What goes as the window narrows, in the order it goes. The stats are a
@@ -4238,36 +4279,110 @@ body {
   bottom: 0;
 }
 
-/* Except where a tool asks to hang UNDER its button instead -- Point Cut, which
-   sits at the foot of the laser island. The rule above is about not covering
-   the tools further down the column, and at the foot there are none: what is
-   under the last button is scene. Below is where a dropdown belongs, and it
-   keeps the panel out of the middle of the window, which is where a panel
-   standing out sideways lands -- on top of the face the tool is about to draw
-   on. See `below` in `NavTool`.
+/* Line or Cross, half the panel each.
 
-   After the rules it overrides, and at the same specificity, so source order is
-   what decides it. */
-.tool-island .nav-panel-below {
-  top: calc(100% + 8px);
-  left: 0;
-  right: auto;
+   The third control in this app to reach this conclusion for its own pair --
+   see `.base-modes`, which writes the argument out, and `.curve-modes`. Left to
+   size itself a `.seg` hugs the left of its row and gives the longer word the
+   wider button, so a two-way switch over one question came out lopsided AND
+   stopped short of the Angle field under it, which is the only other thing in
+   this panel. */
+.mirror-kinds {
+  width: 100%;
 }
 
-/* Dropped in a bottom corner there is no room under the button either, so it
-   goes back over the top of it -- the same flip the side-opening panels make
-   against the near edge, and for the same reason. */
-.tool-island-bottom .nav-panel-below {
-  top: auto;
-  bottom: calc(100% + 8px);
+.mirror-kinds .seg-btn {
+  flex: 1;
+  text-align: center;
 }
 
-/* And against the right-hand edge it is measured from that edge, so a panel
-   wider than the island opens back across the scene rather than off the window. */
-.tool-island-right .nav-panel-below {
-  left: auto;
-  right: 0;
+/* THE CUT'S OWN ACTIONS, docked at the foot of the laser island.
+
+   A SECTION OF THE COLUMN rather than a panel of its own, which is what it was:
+   it is the last child of `.island-body`, so it takes the island's padding, its
+   6px gap and its drag, and it collapses with it. The stretch is what makes it
+   read as one shelf with the tools rather than a box parked under them.
+
+   The rule along the top is `.island-rule`'s argument, one step quieter: that
+   line separates two groups of switches, and this one separates switches from
+   ACTIONS -- everything above arms a tool or sets a number, everything below
+   changes the block. --border rather than --muted for exactly that reason: the
+   break is real but it is the foot of a list, not a division through the
+   middle of one. A margin above it and none below, so the gap reads as
+   belonging to the rule rather than to the button under it. */
+.cut-dock {
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
+
+.cut-dock-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* BIGGER THAN ANY OTHER BUTTON IN THE ISLAND, and that is the whole point of
+   them. `.nav-action` is a 12px label in 4px of padding -- right for a row in a
+   flyout, and what these used to wear in a corner panel, where Apply read as a
+   footnote to a screen whose entire purpose it is. So: the body size rather
+   than the label size, weight on it, and more than twice the vertical padding.
+
+   Full width of the island, because a column of buttons that do not agree on
+   their left and right edges reads as a heap rather than a group -- and because
+   at 176px there is no width to save.
+
+   Everything else is `.nav-action`'s, deliberately: the same surface, the same
+   border, the same hover, the same dimming when there is nothing to fire at. It
+   is the same kind of thing said louder, not a different kind of thing. */
+.cut-action {
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--panel-2);
+  border: var(--edge) solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-body);
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.cut-action:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--line-3);
+}
+
+.cut-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Apply wears the accent the way every primary action in this app does, and it
+   is the only one in the island that does: the tools above use the accent to
+   mean ARMED, and nothing in this dock is ever armed. */
+.cut-action-primary {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+.cut-action-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A `.nav-panel-below` SET WENT HERE, hanging one tool's panel under its button
+   instead of out to the side: Point Cut, at the foot of the laser island, where
+   there are no tools underneath to cover. It opens sideways with Freehand now
+   -- the two cutters are a pair, and a pair whose panels came out in two
+   different directions read as two unrelated tools -- so the three rules that
+   placed it, and the flag in `NavTool` that asked for them, have gone with it.
+*/
 
 
 /* --- the lathe ---------------------------------------------------------------
@@ -6645,6 +6760,266 @@ body {
 
    Never shipped: the component returns null unless the app was opened at
    `?perf` in a dev build, so this rule matches nothing in production. */
+/* --- the welcome screen ----------------------------------------------------
+
+   The front door: the app's name, and the projects. It sits in the same slot a
+   viewport and a console would, under a bar that is unchanged, so the whole of
+   this section is about ONE COLUMN OF CONTENT and where it sits in a window
+   that may be any size.
+
+   NOT A CARD ON A BACKDROP, unlike Help and Settings. Those two are screens
+   over your work and need an edge saying where the work stops and the dialog
+   starts. There is nothing behind this one, so a card would be a box drawn
+   around the only thing on screen -- the page itself is the surface. */
+.welcome {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Scrolls as a whole rather than scrolling the list inside it. A list with
+     its own scrollbar under a title that stays put is a panel; this is a page,
+     and the title going up with the projects is what makes it read as one.
+     `scroll` rather than `auto`, and always: a bar arriving when the eleventh
+     project is made would shift the entire column sideways. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-3) var(--surface-1);
+  background: var(--bg);
+}
+
+/* THE MEASURE, and the reason the column is not centred in the window. It is
+   left-aligned on the same 40px the bar starts its own name on, so the title
+   here lands under the wordmark up there rather than floating in the middle of
+   a wide monitor with no relationship to anything. The cap is what stops a
+   project row becoming a metre-wide strip with a name at one end and three
+   buttons at the other. */
+.welcome-sheet {
+  max-width: 760px;
+  padding: 56px 40px 64px;
+}
+
+/* AS BIG AS THE APP EVER SETS ITS OWN NAME. This is the one screen that is
+   about the app rather than about a document, so the name is the largest thing
+   on it -- and `clamp` rather than a number, so on a narrow window it shrinks
+   with the column instead of wrapping the name across two lines. */
+.welcome-title {
+  margin: 0 0 44px;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 5.2vw, 44px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.welcome-nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 10px;
+  /* The heaviest rule in the app's ladder, because it divides the two halves of
+     this screen: whose workshop this is, from what is in it. */
+  border-bottom: var(--edge) solid var(--line-3);
+}
+
+.welcome-nav-head .subhead {
+  margin: 0;
+}
+
+/* The one button on this screen that makes something rather than choosing
+   something, so it is the one that is filled. Everything else here is a name to
+   press or a small word beside one. */
+.welcome-new {
+  padding: 7px 14px;
+  border: var(--edge) solid var(--line-3);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.welcome-new:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.project-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ONE PROJECT: the whole row is the button that opens it, with three small
+   words at the right that are not.
+
+   A rule between rows rather than a box around each. Twelve boxed cards in a
+   column read as twelve things competing; twelve rows divided by hairlines read
+   as one list, which is what a chooser should be. */
+.project-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.project-card:last-child {
+  border-bottom: 0;
+}
+
+/* The target, and it is deliberately the whole width the actions do not claim:
+   opening is what this list is for, so it should be hard to miss rather than a
+   small word at one end of a wide row. */
+.project-choose {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 16px 12px 16px 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.project-choose:disabled {
+  cursor: default;
+}
+
+.project-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: var(--t-base);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  transition: color 0.12s;
+}
+
+.project-choose:hover:not(:disabled) .project-name {
+  color: var(--accent);
+}
+
+/* What is in it and when it was touched. Quieter than the name by a whole step
+   of the type scale, because it is the line you read second and only about the
+   row you are already looking at. */
+.project-meta {
+  font-size: var(--t-label);
+  color: var(--muted);
+}
+
+/* The project the benches are holding. Marked on the NAME rather than by
+   filling the row, because the row is a button and a filled button in a list of
+   plain ones reads as "press this" rather than as "you are here" -- which is
+   the same distinction the screen tabs draw against `.nav-group-active`. */
+.project-card-open .project-name {
+  color: var(--accent);
+}
+
+/* Rename, in place. It stands exactly where the name it is replacing stood, so
+   the row does not change height or shuffle when the field appears -- the whole
+   point of renaming inline rather than in a dialog is that you can see the list
+   you are naming something within. */
+.project-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 15px 12px 15px 0;
+  padding: 5px 8px;
+  background: var(--surface-2);
+  border: var(--edge) solid var(--accent);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--t-base);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.project-rename:focus {
+  outline: none;
+}
+
+.project-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* The three things you can do to a row you are not choosing. Small, quiet, and
+   set in words rather than icons: there are three of them, one is destructive,
+   and a row of unlabelled glyphs is exactly the case where a tooltip would be
+   reached for -- which this app does not have. See `CLAUDE.md`. */
+.project-action {
+  padding: 6px 9px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-4);
+  font: inherit;
+  font-size: var(--t-label);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.project-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.project-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.project-delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* ARMED: pressed once, and the next press is the one that does it. Lit in the
+   colour, and lit whether or not the pointer is on it, because the state has to
+   be visible to somebody who has just moved the mouse a centimetre away to
+   think about it. It disarms on blur -- see `ProjectCard`. */
+.project-delete-armed,
+.project-delete-armed:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  font-weight: 600;
+}
+
+/* A narrow window. The actions drop under the name rather than squeezing it to
+   nothing: a project's name is the one thing on this screen that must stay
+   readable, and three words that wrap are cheaper than a name that ellipses
+   after four characters. */
+@media (max-width: 620px) {
+  .welcome-sheet {
+    padding: 32px 20px 48px;
+  }
+
+  .project-card {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .project-choose {
+    padding-bottom: 8px;
+  }
+
+  .project-actions {
+    padding-bottom: 10px;
+    margin-left: -9px;
+  }
+}
+
 .perf-hud {
   position: absolute;
   right: 0;

@@ -9,6 +9,7 @@ import { LatheConsole } from './console/LatheConsole'
 import type { ScreenId } from './screens'
 import { useTools } from './store/toolStore'
 import { THEME_ATTRIBUTE } from './theme'
+import { WelcomeScreen } from './console/WelcomeScreen'
 import { LaserViewport } from './viewport/LaserViewport'
 import { LatheViewport } from './viewport/LatheViewport'
 import { Viewport } from './viewport/Viewport'
@@ -72,20 +73,32 @@ const SCREEN_PARTS: Record<ScreenId, { Viewport: ComponentType; Console: Compone
 export default function App() {
   useTheme()
   const screen = useTools((s) => s.screen)
+  const atWelcome = useTools((s) => s.atWelcome)
   const { Viewport: ScreenViewport, Console: ScreenConsole } = SCREEN_PARTS[screen]
 
   return (
     <div className="app">
       <NavBar />
 
-      {/* Keyed by the screen, so switching is a fresh mount of both halves
-          rather than React reconciling one viewport into another -- two
-          `<Canvas>` elements in the same slot would otherwise try to share a
-          renderer built for a different scene. */}
-      <main className="main" key={screen}>
-        <ScreenViewport />
-        <ScreenConsole />
-      </main>
+      {/* THE FRONT DOOR TAKES THE WHOLE WORKING AREA, in the same slot a bench
+          would fill, and the bar above it is untouched. A project has not been
+          chosen, so there is no document to draw and no console that could say
+          anything about one -- and mounting Welcome as an overlay ON TOP of a
+          viewport would mean a canvas spending a WebGL context to render a
+          scene nobody has asked for behind a screen that covers it. See
+          `WelcomeScreen`. */}
+      {atWelcome ? (
+        <WelcomeScreen />
+      ) : (
+        /* Keyed by the screen, so switching is a fresh mount of both halves
+           rather than React reconciling one viewport into another -- two
+           `<Canvas>` elements in the same slot would otherwise try to share a
+           renderer built for a different scene. */
+        <main className="main" key={screen}>
+          <ScreenViewport />
+          <ScreenConsole />
+        </main>
+      )}
 
       {/* Outside the bar, though the buttons that open them are in the bar. Two
           reasons, and the second is load-bearing. They cover the whole app, so

@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { SCREEN_HAS_GAME_CONTROLS } from '../screens'
+import { OPEN_TO, OPEN_TO_LABELS, SCREEN_HAS_GAME_CONTROLS } from '../screens'
 import { useTools } from '../store/toolStore'
 import { THEMES, THEME_LABELS } from '../theme'
 import { UNITS } from '../units'
@@ -69,8 +69,12 @@ function Switch<T extends string | boolean>({
 /**
  * The two states of the outline switch, in the order the slider travels.
  *
- * On first, matching every other row on the screen: the switches in here read
- * left to right from the default outwards, and the default is lines on.
+ * Off first, and ordered by STATE rather than by default. These two rows do
+ * not share a default -- outlines start on, game controls start off -- so
+ * ordering each from its own default outwards aimed two identical-looking
+ * tracks opposite ways, and the slider sitting right would have meant "on" in
+ * one row and "off" in the other. Off then On in both: the slider travels from
+ * nothing to something, so how far right it sits is how much is turned on.
  *
  * A list rather than two hand-written buttons, so the row is built by the same
  * `Switch` the units and the themes are and cannot drift into a different
@@ -79,18 +83,21 @@ function Switch<T extends string | boolean>({
  * labels for one boolean and nothing outside this screen needs them.
  */
 const OUTLINE_CHOICES = [
-  { value: true, label: 'On' },
   { value: false, label: 'Off' },
+  { value: true, label: 'On' },
 ] as const
 
 /** The same two labels for the camera scheme. See `OUTLINE_CHOICES`. */
 const GAME_CHOICES = [
-  { value: true, label: 'On' },
   { value: false, label: 'Off' },
+  { value: true, label: 'On' },
 ] as const
 
 /** The units, as the switch wants them: the suffix is its own label. */
 const UNIT_CHOICES = UNITS.map((unit) => ({ value: unit, label: unit }))
+
+/** Where the app starts, under the names the screens table gives them. */
+const OPEN_TO_CHOICES = OPEN_TO.map((where) => ({ value: where, label: OPEN_TO_LABELS[where] }))
 
 /** And the palettes, each under the name the theme table gives it. */
 const THEME_CHOICES = THEMES.map((name) => ({ value: name, label: THEME_LABELS[name] }))
@@ -120,6 +127,8 @@ const THEME_CHOICES = THEMES.map((name) => ({ value: name, label: THEME_LABELS[n
  * would hide all but one of them behind a click to save no space at all.
  */
 export function SettingsScreen() {
+  const openTo = useTools((s) => s.openTo)
+  const setOpenTo = useTools((s) => s.setOpenTo)
   const displayUnit = useTools((s) => s.displayUnit)
   const setDisplayUnit = useTools((s) => s.setDisplayUnit)
   const theme = useTools((s) => s.theme)
@@ -134,13 +143,41 @@ export function SettingsScreen() {
   // The same bargain the bar strikes with the document controls: a screen that
   // changed shape between screens would hide the feature from the two screens
   // it is most likely to be looked for from. See `SCREEN_HAS_GAME_CONTROLS`.
-  const flies = SCREEN_HAS_GAME_CONTROLS[useTools((s) => s.screen)]
+  // And dead at the front door too, which is not a screen with a room to walk
+  // about in either -- it is a list of projects. The check is `atWelcome` rather
+  // than another column in that table for the reason the table has no row for
+  // it: Welcome is not a screen. See `atWelcome` in `toolStore`.
+  //
+  // BOTH READ BEFORE EITHER IS TESTED, and that is not a style preference. The
+  // screen used to be read inside the expression -- `!atWelcome &&
+  // SCREEN_HAS_GAME_CONTROLS[useTools((s) => s.screen)]` -- which puts a HOOK
+  // behind a short circuit: at the front door the second operand never ran, so
+  // this component called one hook fewer than it had the render before, and the
+  // first press of New Project tore the app down with React error #310. A hook
+  // is not an expression and cannot be skipped.
+  const atWelcome = useTools((s) => s.atWelcome)
+  const screen = useTools((s) => s.screen)
+  const flies = !atWelcome && SCREEN_HAS_GAME_CONTROLS[screen]
 
   return (
     <ScreenOverlay id="settings" card="settings-screen" title="Settings" closeLabel="Close settings">
       {/* One row per setting: its name on the left, the control that answers it
           on the right, a rule between each pair. */}
       <div className="settings-rows">
+        {/* FIRST, because it is the only row that decides something before the
+            app is on screen at all. The four below change what you are looking
+            at or what your hands do, and both of those are answers about a
+            session already under way; this one answers where a session begins.
+
+            The names are the two places it can begin, not "On" and "Off": both
+            options are somewhere real, and a switch reading `Off | On` beside
+            the word "Welcome" would leave the alternative unnamed. See
+            `OPEN_TO`. */}
+        <div className="tool-group settings-row open-modes">
+          <p className="subhead">Open to</p>
+          <Switch options={OPEN_TO_CHOICES} value={openTo} onPick={setOpenTo} />
+        </div>
+
         <div className="tool-group settings-row units-modes">
           <p className="subhead">Units</p>
           <Switch options={UNIT_CHOICES} value={displayUnit} onPick={setDisplayUnit} />
@@ -159,7 +196,7 @@ export function SettingsScreen() {
         {/* A yes-or-no, and the same two-cell track the other rows wear rather
             than a tickbox. It keeps the screen one kind of control, so four
             rows read as four answers to the same shape of question -- and it
-            NAMES both states: `On | Off` with the slider on one says what the
+            NAMES both states: `Off | On` with the slider on one says what the
             alternative is, which an empty square leaves you to infer. */}
         <div className="tool-group settings-row outline-modes">
           <p className="subhead">Outlines</p>

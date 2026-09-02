@@ -10,6 +10,7 @@ import {
   freshBlock,
   pieceCentre,
   pieceVolume,
+  touchesFacePoint,
 } from '../geometry/laserCut'
 import type { FaceAxis, Pt } from '../geometry/laserCut'
 import { DEFAULT_SPAN } from '../geometry/types'
@@ -96,6 +97,24 @@ let pieceCount = 0
 const nextPieceId = () => `piece-${(pieceCount += 1)}`
 
 /**
+ * Pushes the counter past a bed that came back off the disk.
+ *
+ * The same hazard `seedIds` answers for a document, and here it is worse rather
+ * than milder: a piece's id is what `offcut` holds and what a click adds to it,
+ * so two pieces sharing one id are two pieces that are lit together, binned
+ * together, and impossible to tell apart from the bed. Forward only, so opening
+ * a lightly cut project after a heavily cut one cannot wind the numbers back
+ * onto ids still sitting in the other one's history.
+ */
+export function seedPieceIds(ids: string[]): void {
+  for (const id of ids) {
+    if (!id.startsWith('piece-')) continue
+    const n = Number(id.slice('piece-'.length))
+    if (Number.isInteger(n) && n > pieceCount) pieceCount = n
+  }
+}
+
+/**
  * Whether the bed still holds nothing but the block it started as.
  *
  * READ OFF THE VOLUME rather than kept as a flag, because the volume cannot go
@@ -110,8 +129,13 @@ const nextPieceId = () => `piece-${(pieceCount += 1)}`
  * triangles that merely looks like one. A box can be resized on its own axes,
  * sketched on face by face and written out as a solid; a mesh of the same shape
  * gets derived anchors and a triangle soup. See `CopyBlockButton`.
+ *
+ * IT ASKS FOR VOLUMES AND NOT FOR PIECES, which is the least it needs and the
+ * reason a project can ask the same question of a bed that is on a disk rather
+ * than on the bench: a stored piece has no geometry hanging off it until
+ * somebody opens it, and "has this block been cut" should not require one.
  */
-export function bedIsUncut(pieces: Piece[]): boolean {
+export function bedIsUncut(pieces: readonly { volume: number }[]): boolean {
   // Generous, because the block's own volume is exact and a kerf is thousands
   // of times wider than this: there is no middle ground to get wrong.
   return pieces.length === 1 && pieces[0].volume > BLOCK_VOLUME - 1e-6
@@ -155,7 +179,54 @@ const TWIN_NEAR = 0.01
 const TWIN_VOLUME = 0.02
 
 /**
- * The pieces a cut made, gathered into the sets that are one piece of work.
+ * The middle of the face, which is where the drawing is unless something says
+ * otherwise.
+ *
+ * THE DEFAULT ANCHOR, and it is a default rather than the rule because a
+ * reference can be slid off centre and the piece under it moves with it. What
+ * makes the middle the right guess is the way this screen is used: a picture is
+ * dropped on a face, it lands centred, and the line is drawn round it -- so
+ * the middle of the face is the middle of the work. See `cutAnchor`, which is
+ * what looks for a picture before falling back to this.
+ */
+export const FACE_MIDDLE: Pt = [0, 0]
+
+/**
+ * Which set holds the work, and so which pieces are waste.
+ *
+ * THE PIECE UNDER THE MIDDLE OF THE DRAWING IS THE KEEPER, and everything else
+ * this bed holds is offcut. That is the whole rule, and it replaces a guess
+ * that could only ever be right about a bed with two pieces on it: the cut used
+ * to keep the biggest and light the smallest, which says nothing at all when a
+ * stroke wanders off the face and back and leaves THREE, and which is exactly
+ * backwards when the line is drawn round the part you came for.
+ *
+ * The reference sits in the middle by design -- it is dropped centred and the
+ * line is drawn round it -- so "the piece the drawing is on" and "the piece
+ * holding the middle of the face" are the same piece, and the second is a
+ * question a flat square can answer. See `touchesFacePoint`.
+ *
+ * NOBODY HOLDING IT IS AN ANSWER TOO, and a common one: draw the line straight
+ * through the middle and the middle lands in the kerf, where neither piece has
+ * material; cut from one face and then turn to another and the material at
+ * that face's middle may have gone with the first cut. So the fallback is the
+ * BIGGEST piece, which is the old guess kept for exactly the case the new rule
+ * cannot see -- and it is never nothing, so the bed always has a keeper and
+ * Discard can never empty it.
+ *
+ * A SET rather than a piece, because under a mirror a piece and its images are
+ * one thing: keeping one and binning its reflection is not a decision anybody
+ * makes on purpose. See `twinSets`.
+ */
+function keeperSet(pieces: Piece[], sets: string[][], face: FaceAxis, anchor: Pt): string[] {
+  const holder =
+    pieces.find((piece) => touchesFacePoint(piece.geometry, face, anchor)) ??
+    pieces.reduce((big, piece) => (piece.volume > big.volume ? piece : big))
+  return sets.find((set) => set.includes(holder.id)) ?? [holder.id]
+}
+
+/**
+ * The pieces on the bed, gathered into the sets that are one piece of work.
  *
  * A SET RATHER THAN A PIECE is the whole of what symmetry changes about the
  * choice at the end of a cut. Four quarters of a bracket cut with a cross are
@@ -257,44 +328,55 @@ type LaserState = {
    * cut ran, and this is the side that goes.
    *
    * IT USED TO BE THE SMALLEST AND ONLY THE SMALLEST, decided by the cut and
-   * not offered for discussion. That is the right GUESS -- most cuts trim
-   * something off something -- and it is a wrong answer often enough to matter:
-   * a cut that frees the part you actually want from the stock around it makes
-   * the KEEPER the small one, and the screen would then be lighting the piece
-   * you came for and offering to bin it. So it opens on the smallest and is
-   * yours to change. See `choices` and `markOffcut`.
+   * not offered for discussion. That is the right GUESS about a bed with two
+   * pieces on it -- most cuts trim something off something -- and a bed does
+   * not always have two pieces on it. A stroke that wanders off the face and
+   * back cuts THREE, and a rule that lights one of them leaves the third
+   * sitting there with nothing that can be said about it: not lit, not
+   * clickable, not something Delete would take.
    *
-   * It is still not a selection. It is one thing with one verb -- what Delete
+   * SO IT IS EVERYTHING THAT IS NOT THE WORK. The piece holding the middle of
+   * the face is the keeper -- the reference sits there by design and the line
+   * is drawn round it -- and every other piece on the bed is waste, lit
+   * together and binned together. Three pieces, or five, are as ordinary as
+   * two. See `keeperSet`.
+   *
+   * It is still not a selection. It is one set with one verb -- what Delete
    * throws away -- and nothing else on this screen can be picked up or acted
-   * on. What changed is who decides which piece wears it.
+   * on. What changed is that the set can be any size, and that a click adds to
+   * it and takes from it rather than moving it. See `markOffcut`.
    *
-   * A LIST, BECAUSE A MIRRORED CUT LEAVES ONE PIECE OF WORK IN TWO PLACES. Cut
-   * with the Symmetry axis standing and the offcut is the piece AND its images
-   * -- two under a mirror, up to four under a cross -- lit together and thrown
-   * away together, because they are one decision made twice over rather than
-   * two decisions. See `twinSets`. Empty is what `null` used to be, and an
-   * ordinary cut fills it with exactly one id, which is the whole of what this
-   * screen did before there was a mirror.
+   * AND A MIRRORED CUT MOVES A PIECE AND ITS IMAGES AS ONE. Cut with the
+   * Symmetry axis standing and a piece's reflections go wherever it goes --
+   * two under a mirror, up to four under a cross -- because they are one
+   * decision made twice over rather than two decisions. See `twinSets`.
    */
   offcut: string[]
   /**
-   * The pieces the last cut made: the ones `offcut` may be moved between.
+   * Every piece on the bed, in the sets a click moves as one: what `offcut` is
+   * made of and what may be added to it or taken out of it.
    *
-   * BOUNDED TO THE LAST CUT, deliberately, and this is the reason the list is
-   * kept rather than reading the bed. The bed is every piece there has ever
-   * been, and one of those slivers may have been cut three cuts ago and kept on
-   * purpose; a chooser that ranged over all of them would offer to bin work
-   * that has nothing to do with the act just performed. What a cut hands you is
-   * a decision about the pieces IT made, and this is that set.
+   * THE WHOLE BED, and that is a change from being bounded to the pieces the
+   * last cut made. The old bound was there to protect a sliver cut three cuts
+   * ago and kept on purpose -- a chooser ranging over everything would offer to
+   * bin work that had nothing to do with the act just performed. What broke it
+   * is the rule above: the keeper is the piece under the drawing, and that
+   * question has an answer for every piece on the bed, not just the ones the
+   * last boolean touched. A ring left lying beside the work two cuts ago is
+   * waste by the same test that says so about the one made a second ago, and a
+   * bed that could only ever be half-judged is how offcuts pile up.
+   *
+   * What protects a sliver kept on purpose now is the click: it is lit rather
+   * than binned, and one press takes it back out of the offcut.
    *
    * Empty when there is nothing to choose: before the first cut, after the
    * discard that spends the choice, and after a fresh block. Biggest first, so
-   * stepping through them is stepping down in size.
+   * the list reads down in size.
    *
    * A LIST OF SETS rather than of pieces, for the reason `offcut` is a list:
-   * under a mirror the thing being chosen between is a piece and its images
-   * taken together. Without one every set holds one piece and this reads
-   * exactly as it always did.
+   * under a mirror the thing being chosen is a piece and its images taken
+   * together. Without one every set holds one piece and this reads exactly as
+   * it always did.
    */
   choices: string[][]
   past: Step[]
@@ -320,34 +402,62 @@ type LaserState = {
    * be paired with their own images so that the set can be lit and thrown away
    * as one. See `twinSets`.
    *
+   * `anchor` is where the work is on that face, in the face's own (u, v) in
+   * block space -- the middle of the reference picture, or the middle of the
+   * face when there is none. The piece holding it is the one this cut KEEPS,
+   * and everything else on the bed is lit as waste. It is handed in rather
+   * than read here for the reason `mirror` is: where the pictures are is the
+   * reference store's business, and this store does not read other stores. See
+   * `cutAnchor`, and `keeperSet` for what is done with it.
+   *
    * Answers how many pieces came apart, so the tool can tell a cut from a line
    * that missed. Nothing changes on a miss -- not the pieces, not the history
    * -- because an undo entry for an act that did nothing is an undo press that
    * appears to do nothing too.
    */
-  cut: (lines: Pt[][], face: FaceAxis, mirror?: MirrorAxis | null) => number
+  cut: (lines: Pt[][], face: FaceAxis, mirror?: MirrorAxis | null, anchor?: Pt) => number
   /**
-   * Mark the set one of the pieces the last cut made belongs to as the one to
-   * throw away.
+   * Turn one piece's light on or off: add its set to the offcut, or take it
+   * back out.
    *
-   * Ignores an id that is not among `choices`, which is what makes a press on
-   * some piece from an older cut do nothing rather than something surprising.
-   * A press on any piece of a mirrored set lights the whole set: they are one
-   * thing, so which of them was under the pointer cannot matter.
+   * A TOGGLE RATHER THAN A MOVE, and that is what the rule above forces. When
+   * the lit thing was one piece, a click could only mean "this one instead" --
+   * there was one light and it had to be somewhere. Now the cut lights every
+   * piece that is not the work, so a click has two jobs to do: rescue a piece
+   * the rule called waste, and condemn one it kept. The same press does both,
+   * because the piece under the pointer says which is meant.
+   *
+   * Ignores an id that is not among `choices` -- nothing there but pieces, so
+   * this is only ever a press on empty space -- and a press on any piece of a
+   * mirrored set moves the whole set, since they are one thing.
+   *
+   * IT WILL NOT LIGHT THE LAST KEPT PIECE. A bed with everything lit is a bed
+   * one press from empty, and Delete refuses that anyway -- so the refusal is
+   * made here, where the piece is still on screen to be looked at, rather than
+   * two presses later where it looks like a broken key.
    */
   markOffcut: (id: string) => void
   /**
-   * Move the mark to the next piece the cut made, wrapping at the end.
+   * Swap the lit pieces for the unlit ones: keep what was waste, bin what was
+   * kept.
    *
-   * THE SAME CHOICE WITHOUT LETTING GO OF THE TOOL. Clicking a piece is the
-   * direct way to say which one goes, and it is only available with empty hands
-   * -- with a cutter in hand a press on the block draws. This is the way that
-   * is always open, and it is a step rather than a pick because a panel button
-   * cannot point at a piece.
+   * THE OTHER ANSWER, IN ONE PRESS. The rule keeps the piece under the drawing,
+   * which is what you want when the line is cut round the part -- and exactly
+   * wrong when it is cut round the HOLE. Encircle a window in a plate and the
+   * plug in the middle is the piece holding the anchor, so the plate lights up
+   * as waste; this is the press that says no, the plug goes.
    *
-   * Inert with fewer than two to step between.
+   * IT IS HERE BECAUSE THE CLICK CANNOT ALWAYS BE. Clicking a piece is the
+   * direct way to say which ones go, and it is only open with empty hands --
+   * with a cutter in hand a press on the block draws a line. This is the way
+   * that stays open, and it is a swap rather than a step because a panel button
+   * cannot point at a piece and the interesting other answer is always the
+   * whole of the other side.
+   *
+   * Inert with nothing lit and with nothing to swap to, which is the same
+   * guarantee `markOffcut` makes: the bed is never left without a keeper.
    */
-  nextOffcut: () => void
+  invertOffcut: () => void
   /** Throw the marked piece -- and its images, under a mirror -- away. Inert
    *  when there is none. */
   discardOffcut: () => void
@@ -377,7 +487,10 @@ type LaserState = {
 const clamp = (v: number) => Math.min(BLOCK_MAX, Math.max(BLOCK_MIN, v))
 
 /** A bed holding one uncut block. */
-function freshPieces(): Piece[] {
+/** An uncut block, as the bed holds it. Exported so that opening a project can
+ *  put an untouched bench back without reaching for the store's own actions,
+ *  which all carry history entries this is deliberately clearing. */
+export function freshPieces(): Piece[] {
   const geometry = freshBlock()
   return [{ id: nextPieceId(), geometry, volume: pieceVolume(geometry) }]
 }
@@ -419,7 +532,7 @@ export const useLaser = create<LaserState>((set, get) => ({
       return { dims }
     }),
 
-  cut: (lines, face, mirror = null) => {
+  cut: (lines, face, mirror = null, anchor = FACE_MIDDLE) => {
     const s = get()
     const result = cutPieces(
       s.pieces.map((p) => p.geometry),
@@ -433,29 +546,29 @@ export const useLaser = create<LaserState>((set, get) => ({
       geometry,
       volume: pieceVolume(geometry),
     }))
+    // EVERY PIECE ON THE BED, not the ones this cut happened to make. The
+    // keeper is the piece under the drawing and everything else is waste, and
+    // that test has an answer for a ring left lying beside the work two cuts
+    // ago just as much as for the one made a moment ago -- see `choices`. It
+    // is why `result.made` is not read here any more.
+    //
     // Gathered into sets before anything is sorted, because a set is what is
     // being sorted: under a mirror the four quarters of one shape are one entry
     // in the list rather than four, and the size they are ranked by is the size
     // of the whole set.
-    const sets = twinSets(
-      result.made.map((i) => pieces[i]),
-      face,
-      mirror
-    )
+    const sets = twinSets(pieces, face, mirror)
     const sizeOf = (set: string[]) =>
       set.reduce((sum, id) => sum + (pieces.find((p) => p.id === id)?.volume ?? 0), 0)
-    // Biggest first, which is the order the cut already hands them back in
-    // within each piece it split -- sorted here as well because a cut that came
-    // apart in two places contributes two runs, and stepping through them
-    // should still be stepping down in size.
+    // Biggest first, so the list reads down in size wherever it is shown.
     const choices = [...sets].sort((a, b) => sizeOf(b) - sizeOf(a))
+    const keeper = keeperSet(pieces, choices, face, anchor)
     set({
       pieces,
       choices,
-      // OPENS ON THE SMALLEST, which is the guess the cut used to make on its
-      // own and is right far more often than not: most cuts trim something off
-      // something. It is now a starting point rather than a verdict.
-      offcut: choices.length === 0 ? [] : choices[choices.length - 1],
+      // THE WHOLE BED BUT THE WORK. `keeperSet` never comes back empty, so
+      // this never lights everything and the bed always has something left
+      // after a Discard.
+      offcut: pieces.filter((p) => !keeper.includes(p.id)).map((p) => p.id),
       ...remember(s),
     })
     return result.split
@@ -465,20 +578,30 @@ export const useLaser = create<LaserState>((set, get) => ({
     set((s) => {
       // Any piece of a set names the set: they are one thing, so which of the
       // images was under the pointer cannot matter.
-      const set = s.choices.find((choice) => choice.includes(id))
-      if (!set || set.includes(s.offcut[0])) return s
-      return { offcut: set }
+      const chosen = s.choices.find((choice) => choice.includes(id))
+      if (!chosen) return s
+      // Lit if ANY of the set is, which is the only reading that cannot get
+      // stuck: a set half lit -- which nothing here makes, but a future cut's
+      // sets are found by geometry and could -- goes out on one press rather
+      // than needing one press per image.
+      if (chosen.some((pid) => s.offcut.includes(pid))) {
+        return { offcut: s.offcut.filter((pid) => !chosen.includes(pid)) }
+      }
+      // The last kept piece stays kept. See `markOffcut` above for why the
+      // refusal is here rather than at the Delete that would follow it.
+      if (s.pieces.every((p) => s.offcut.includes(p.id) || chosen.includes(p.id))) return s
+      return { offcut: [...s.offcut, ...chosen] }
     }),
 
-  nextOffcut: () =>
+  invertOffcut: () =>
     set((s) => {
-      if (s.choices.length < 2) return s
-      // FOUND BY WHAT IS IN IT rather than by which array it is. The two are
-      // the same object today and would go on being the same object right up
-      // until a step of history handed back a copy, which is the kind of
-      // sameness that breaks silently and in one place only.
-      const at = s.choices.findIndex((choice) => choice.includes(s.offcut[0]))
-      return { offcut: s.choices[(at + 1) % s.choices.length] }
+      // Nothing lit and there is nothing to swap FROM; everything lit cannot
+      // happen, since neither the cut nor a click will leave the bed without a
+      // keeper -- but the guard is cheap and says so.
+      if (s.offcut.length === 0) return s
+      const flipped = s.pieces.filter((p) => !s.offcut.includes(p.id)).map((p) => p.id)
+      if (flipped.length === 0) return s
+      return { offcut: flipped }
     }),
 
   // NOT REMEMBERED, either of them, and that is the one thing about the choice
@@ -491,11 +614,14 @@ export const useLaser = create<LaserState>((set, get) => ({
     set((s) => {
       if (s.offcut.length === 0) return s
       const kept = s.pieces.filter((p) => !s.offcut.includes(p.id))
-      // The last piece on the bed is not an offcut, whatever its size: throwing
-      // it away would leave the screen empty with a Reset the only way back,
-      // which is a bigger act than the key that did it. It is the whole SET
-      // that is weighed against that now -- four quarters of a mirrored cut
-      // that are the only things on the bed go nowhere.
+      // The bed is never emptied, whatever is lit: a screen wiped clean with a
+      // Reset the only way back is a bigger act than the key that did it.
+      //
+      // BELT AND BRACES NOW RATHER THAN THE RULE IT WAS. Neither the cut nor a
+      // click will leave the bed without a keeper -- `keeperSet` always names
+      // one and `markOffcut` refuses to light the last -- so this cannot fire.
+      // It stays because it is the claim itself, and the one place it would be
+      // caught if some later way of lighting a piece forgot to make it.
       if (kept.length === 0) return s
       // And the choice is spent with it: the pair it was a choice between is
       // broken, and what is left is one piece rather than an offer.

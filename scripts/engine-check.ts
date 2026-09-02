@@ -121,6 +121,7 @@ import {
   buildKerfWall,
   carryToBorder,
   cutPieces,
+  touchesFacePoint,
   faceBasis,
   freshBlock,
   isClosedLine,
@@ -5817,30 +5818,80 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
   )
 
   // WHAT THE CUT MADE, all of it, because which piece is waste is not this
-  // function's to decide -- it hands back the set and the screen offers the
-  // choice. See `choices` in `laserStore`.
+  // function's to decide -- it hands back the bed and the screen applies the
+  // rule. See `keeperSet` in `laserStore`.
   //
-  // NOT THE WHOLE BED, which is the reason a list is kept at all: a sliver from
-  // an earlier cut may have been kept on purpose, and a chooser ranging over
-  // every piece there has ever been would offer to bin work this cut never
-  // touched.
+  // IT USED TO ALSO HAND BACK WHICH OF THEM THIS CUT MADE, so that the screen
+  // could offer a choice bounded to the last act. Nothing needs it now: the
+  // keeper is the piece under the drawing and everything else is offcut, and
+  // that question is answered the same way for a sliver cut three cuts ago.
   const off = cutPieces([freshBlock()], [[[0.3, -0.2], [0.3, 0.2]]], FRONT)
-  check('a cut names both pieces it made', off.made.length === 2, `${off.made.join(', ')}`)
-  check('and they are the pieces on the bed', off.made.join() === '0,1', `${off.made.join()}`)
-  // Biggest first, so a screen stepping through them steps down in size and the
-  // smallest -- the one the choice opens on -- is the last of them.
+  check('a cut hands back both pieces', off.pieces.length === 2, `${off.pieces.length}`)
+  // Biggest first, so a screen reading down the list reads down in size.
   check(
     'biggest first',
-    pieceVolume(off.pieces[off.made[0]]) > pieceVolume(off.pieces[off.made[1]]),
-    off.made.map((i) => pieceVolume(off.pieces[i]).toFixed(4)).join(' / ')
+    pieceVolume(off.pieces[0]) > pieceVolume(off.pieces[1]),
+    off.pieces.map((g) => pieceVolume(g).toFixed(4)).join(' / ')
   )
   near('and the last of them is the sliver it looks like', pieceVolume(off.pieces[1]), 0.2 - LASER_KERF / 2, 5e-3)
+
+  // WHICH PIECE IS THE WORK, asked of the FACE rather than of the solid: the
+  // reference sits in the middle and the line is drawn round it, so the piece
+  // whose own share of the face covers the middle is the one to keep. This is
+  // the test the whole choice now rests on -- see `touchesFacePoint`.
+  check(
+    'the piece holding the middle of the face is the big one',
+    touchesFacePoint(off.pieces[0], FRONT, [0, 0]),
+    'the offcut side does not hold it: ' + `${touchesFacePoint(off.pieces[1], FRONT, [0, 0])}`
+  )
+  check(
+    'and the sliver holds a point over its own ground',
+    touchesFacePoint(off.pieces[1], FRONT, [0.4, 0]) && !touchesFacePoint(off.pieces[0], FRONT, [0.4, 0]),
+    ''
+  )
+  // NOBODY HOLDS A POINT IN THE KERF, which is what makes the fallback in
+  // `keeperSet` a case that really happens: a line drawn straight through the
+  // middle leaves the middle in the slot the beam took out.
+  {
+    const halved = cutPieces([freshBlock()], [[[0, -0.6], [0, 0.6]]], FRONT)
+    check(
+      'and a point in the slot itself is held by neither piece',
+      halved.pieces.every((g) => !touchesFacePoint(g, FRONT, [0, 0])),
+      `${halved.pieces.filter((g) => touchesFacePoint(g, FRONT, [0, 0])).length} of them hold it`
+    )
+    // A face the cut never reached still answers, and answers about ITSELF: the
+    // two halves each hold their own half of the top.
+    const TOP: LaserFace = { axis: 1, sign: 1 }
+    check(
+      'a piece is asked about the face being cut, not about the block',
+      halved.pieces.filter((g) => touchesFacePoint(g, TOP, [0.25, 0])).length === 1,
+      `${halved.pieces.filter((g) => touchesFacePoint(g, TOP, [0.25, 0])).length}`
+    )
+  }
+  // AND A STROKE THAT WANDERED OFF THE FACE AND BACK is the case the old rule
+  // could not describe at all: three pieces, one of them the work, and the
+  // other two waste TOGETHER rather than one of them being lit and the third
+  // left with nothing that could be said about it.
+  {
+    const wander: LaserPt[] = [
+      [-0.6, 0.2], [-0.1, 0.2], [-0.1, -0.6], [0.1, -0.6], [0.1, 0.2], [0.6, 0.2],
+    ]
+    const three = cutPieces([freshBlock()], [wander], FRONT)
+    check('a stroke that leaves the face and comes back cuts three', three.pieces.length === 3, `${three.pieces.length}`)
+    const holds = three.pieces.filter((g) => touchesFacePoint(g, FRONT, [0, 0]))
+    check('and exactly one of the three holds the middle', holds.length === 1, `${holds.length}`)
+    check(
+      'leaving two to light as waste',
+      three.pieces.length - holds.length === 2,
+      `${three.pieces.length - holds.length}`
+    )
+  }
 
   // A miss has to be reported rather than silently doing nothing, or the button
   // reads as broken -- the same lesson the plane cut's receipt already carries.
   const missed = cutPieces([freshBlock()], [[[2, 2], [2, 2.4]]], FRONT)
   check('a line clear of the block cuts nothing', missed.split === 0 && missed.pieces.length === 1, `${missed.pieces.length}`)
-  check('and names no pieces of its own', missed.made.length === 0, `${missed.made.length}`)
+  check('and leaves the block whole', pieceVolume(missed.pieces[0]) > 0.99, pieceVolume(missed.pieces[0]).toFixed(4))
 
   // Every drawn end is carried on to the border, so a stroke that stops in the
   // middle of a face still separates the block. Without it the wall has a dead
@@ -5920,7 +5971,15 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
     const island = cutPieces([freshBlock()], [loop], FRONT)
     check('and it drops an island out of the block', island.pieces.length === 2, `${island.pieces.length}`)
     check('reported as one piece coming apart', island.split === 1, `${island.split}`)
-    check('with both pieces named as its own', island.made.length === 2, `${island.made.join(',')}`)
+    // AND THE ISLAND IS THE KEEPER, which is the case the old rule got exactly
+    // backwards: it lit the smallest, and the smallest is the part you drew
+    // round. See `keeperSet`.
+    check(
+      'and the island it dropped out is the piece holding the middle',
+      touchesFacePoint(island.pieces[1], FRONT, [0, 0]) &&
+        !touchesFacePoint(island.pieces[0], FRONT, [0, 0]),
+      `${island.pieces.map((g) => touchesFacePoint(g, FRONT, [0, 0])).join(' / ')}`
+    )
     // The island is the square less half a kerf all the way round, and the
     // block is the rest less the other half: what the loop took is its
     // perimeter times the slot, and nothing else.
@@ -6205,6 +6264,68 @@ console.log('\nThe laser cutter cuts with a line, and the line burns a kerf')
       curved.pieces.every((g) => edgeSpan(g) < 16),
       curved.pieces.map((g) => `${edgeSpan(g).toFixed(1)} over ${triangleCount(g)} facets`).join(' / ')
     )
+
+    // AND A MERGE DOES NOT HATCH ITS SEAM. A union leaves offcuts -- triangles
+    // clipped to a hair -- and a sliver's normal is the cross product of two
+    // nearly parallel edges, so it points wherever the noise says and both
+    // tests above believe it. Left in the adjacency they spray lines across the
+    // faces around a weld. See `SLIVER`.
+    //
+    // A sphere sunk WHOLLY inside a box is the sharpest way to ask, because the
+    // right answer is known without measuring anything: none of it can be seen,
+    // so the outline is the box's own twelve edges and nothing else. It drew
+    // thirty-three.
+    const swallowed: SceneObject = {
+      ...object(CUBE, [], [], 'swallowed'),
+      parts: [
+        {
+          ...object({ kind: 'sphere', radius: 0.8 }, [], [], 'inside'),
+          transform: { ...IDENTITY_TRANSFORM, position: [0, 0.2, 0] },
+        },
+      ],
+    }
+    const hidden = evaluateObject(swallowed)
+    check(
+      'a sphere sunk inside a box leaves the box twelve edges',
+      edgeCount(hidden.geometry) === 12,
+      `${edgeCount(hidden.geometry)}`
+    )
+    hidden.geometry.dispose()
+
+    // And one pushed OUT through a face has an answer just as strict, because
+    // the shape is still known: every line on it is either an edge of the box
+    // or the seam the sphere cuts through it, and NOTHING ELSE IS A LINE. So
+    // each segment's middle has to sit either on two of the box's planes, which
+    // is what being one of its edges means, or on one of them and on the
+    // sphere, which is what being on the seam means. Anything else is a line
+    // adrift in the middle of a face. Seventeen were.
+    const at: Vec3 = [0.75, -0.45, 1.15]
+    const through: SceneObject = {
+      ...object(CUBE, [], [], 'through'),
+      parts: [{ ...object(SPHERE, [], [], 'poking'), transform: { ...IDENTITY_TRANSFORM, position: at } }],
+    }
+    const pushed = evaluateObject(through)
+    const seam = outlineOf(pushed.geometry).getAttribute('position').array as ArrayLike<number>
+    const centre = new Vector3(...at)
+    let adrift = 0
+    for (let i = 0; i < seam.length; i += 6) {
+      const mid = new Vector3(
+        (seam[i] + seam[i + 3]) / 2,
+        (seam[i + 1] + seam[i + 4]) / 2,
+        (seam[i + 2] + seam[i + 5]) / 2
+      )
+      const planes = [mid.x, mid.y, mid.z].filter((n) => Math.abs(Math.abs(n) - 1) < 1e-6).length
+      // A chord of the seam sags inside the sphere by its length squared over
+      // eight radii, a couple of thousandths at the facet size a sphere has.
+      const onSeam = planes >= 1 && Math.abs(mid.distanceTo(centre) - 1) < 5e-3
+      if (planes < 2 && !onSeam) adrift += 1
+    }
+    check(
+      'and one pushed through draws the seam and nothing adrift on a face',
+      adrift === 0,
+      `${adrift} of ${seam.length / 6}`
+    )
+    pushed.geometry.dispose()
   }
 }
 
@@ -6415,7 +6536,7 @@ console.log('\nThe symmetry axis divides the face, and reflects what is drawn in
   const twin = cutPieces([freshBlock()], mirrorLines([[-0.3, -0.6], [-0.3, 0.6]], upright), FRONT)
   check('a mirrored cut leaves three pieces', twin.pieces.length === 3, `${twin.pieces.length}`)
   check('off one act, reported as two pieces coming apart', twin.split === 2, `${twin.split}`)
-  check('all of them named as this act own', twin.made.length === 3, `${twin.made.join(',')}`)
+  check('leaving one in the middle and one either side', twin.pieces.length === 3, `${twin.pieces.length}`)
   near(
     'and the block is conserved but for the two slots',
     twin.pieces.reduce((t, g) => t + pieceVolume(g), 0),

@@ -31,6 +31,22 @@ const nextCustomId = (): string => {
 }
 
 /**
+ * Moves the counter past a set of ids that already exist.
+ *
+ * FOR A SHELF COMING BACK FROM A PREVIOUS SESSION, and it is not optional. The
+ * counter starts at zero every time the page loads, so a shelf restored with
+ * `k1` and `k2` on it would hand `k1` to the very next thing saved -- two rows
+ * under one id, where renaming one renames both and deleting one deletes both.
+ * See `persist.ts`.
+ */
+export function seedCustomIds(ids: string[]): void {
+  for (const id of ids) {
+    const numbered = /^k([0-9]+)$/.exec(id)
+    if (numbered) customCounter = Math.max(customCounter, Number(numbered[1]))
+  }
+}
+
+/**
  * The lowest `Custom N` nobody is using.
  *
  * Lowest-unused rather than an ever-climbing counter so a shelf holding two

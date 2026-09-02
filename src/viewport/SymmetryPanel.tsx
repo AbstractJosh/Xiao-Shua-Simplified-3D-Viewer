@@ -64,7 +64,19 @@ export function SymmetryPanel({ face }: { face: FaceAxis }) {
             <span className="field-label">Mirror</span>
             <Tip>{KIND_TIP}</Tip>
           </div>
-          <div className="seg" role="group" aria-label="Mirror kind">
+          {/* FULL WIDTH, HALF EACH, rather than two buttons and a stretch of
+              empty border to their right. Line and Cross are a two-way switch
+              over one question, so neither has a claim on more room than the
+              other -- and left to size themselves the longer word simply got a
+              wider button, which reads as one of them mattering more.
+
+              It is also what lines the row up with the Angle field under it.
+              Those two are the whole panel, and a control that stopped short of
+              the one below it looked like it had come loose.
+
+              See `.base-modes` and `.curve-modes`, which are the same two
+              sentences about their own pairs. */}
+          <div className="seg mirror-kinds" role="group" aria-label="Mirror kind">
             {KINDS.map((kind) => (
               <button
                 key={kind.mode}
