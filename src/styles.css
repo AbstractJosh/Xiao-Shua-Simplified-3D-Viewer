@@ -2093,11 +2093,16 @@ body {
 }
 
 /* A ring that pulses under a user who asked for less motion is worse than a
-   still one that simply says "not yet". */
-@media (prefers-reduced-motion: reduce) {
-  .thumb-ring {
-    animation: none;
-  }
+   still one that simply says "not yet".
+
+   KEYED OFF `data-motion` ON THE ROOT, NOT THE MEDIA QUERY, and so is every
+   reduced-motion rule in this file. The Motion setting is allowed to overrule
+   the system in either direction, so the app resolves the setting and the
+   system's report into one answer and writes it to the root -- see
+   `motion.ts` and `useMotion` in `App`. A rule written against the media
+   query would be one the setting could not reach. */
+:root[data-motion='reduce'] .thumb-ring {
+  animation: none;
 }
 
 /* Editable at rest rather than behind a click: a shelf of "Custom 1, Custom 2"
@@ -3543,15 +3548,12 @@ body {
    flying about, not that they start teleporting. A card that appears and
    disappears between two frames is exactly the jump-cut a fade exists to
    prevent, and it is no gentler for being still. */
-@media (prefers-reduced-motion: reduce) {
-  .overlay-card {
-    animation-name: overlay-fade-in;
-  }
+:root[data-motion='reduce'] .overlay-card {
+  animation-name: overlay-fade-in;
+}
 
-  .overlay-leaving .overlay-card {
-    animation-name: overlay-fade-out;
-  }
-
+:root[data-motion='reduce'] .overlay-leaving .overlay-card {
+  animation-name: overlay-fade-out;
 }
 
 /* Under about 720px the rail cannot hold a name and a count and still leave the
@@ -3928,18 +3930,16 @@ body {
    than writing the bare ones: each of these has to match at least as tightly as
    the rule it is cancelling, or the pressed states above would take the setting
    straight back. */
-@media (prefers-reduced-motion: reduce) {
-  .settings-row .seg::before,
-  .settings-row .seg:has(.seg-btn:active:not(:disabled))::before {
-    transition: none;
-    scale: none;
-  }
+:root[data-motion='reduce'] .settings-row .seg::before,
+:root[data-motion='reduce'] .settings-row .seg:has(.seg-btn:active:not(:disabled))::before {
+  transition: none;
+  scale: none;
+}
 
-  .settings-row .seg-btn,
-  .settings-row .seg-btn:active:not(:disabled) {
-    transition: color 0.16s;
-    translate: none;
-  }
+:root[data-motion='reduce'] .settings-row .seg-btn,
+:root[data-motion='reduce'] .settings-row .seg-btn:active:not(:disabled) {
+  transition: color 0.16s;
+  translate: none;
 }
 
 /* The native range input carries 2px of UA margin on each side, so at the full
@@ -5211,11 +5211,9 @@ body {
 
 /* A panel that arrives under the pointer with no warning is worse than one
    that is simply there. */
-@media (prefers-reduced-motion: reduce) {
-  .selection-hud {
-    transition: opacity 0.16s ease;
-    transform: none;
-  }
+:root[data-motion='reduce'] .selection-hud {
+  transition: opacity 0.16s ease;
+  transform: none;
 }
 
 /* --- and the compact form of the console's own panels ---------------------

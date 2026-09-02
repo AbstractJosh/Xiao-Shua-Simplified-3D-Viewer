@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { MOTION_LABELS, MOTION_MODES } from '../motion'
 import { OPEN_TO, OPEN_TO_LABELS, SCREEN_HAS_GAME_CONTROLS } from '../screens'
 import { useTools } from '../store/toolStore'
 import { THEMES, THEME_LABELS } from '../theme'
@@ -102,6 +103,10 @@ const OPEN_TO_CHOICES = OPEN_TO.map((where) => ({ value: where, label: OPEN_TO_L
 /** And the palettes, each under the name the theme table gives it. */
 const THEME_CHOICES = THEMES.map((name) => ({ value: name, label: THEME_LABELS[name] }))
 
+/** And the three answers about movement, under the names the motion table
+ *  gives them. */
+const MOTION_CHOICES = MOTION_MODES.map((mode) => ({ value: mode, label: MOTION_LABELS[mode] }))
+
 /**
  * Everything about how the app is READ and DRIVEN, as a screen over the whole
  * app rather than a menu hanging off the cog.
@@ -135,6 +140,8 @@ export function SettingsScreen() {
   const setTheme = useTools((s) => s.setTheme)
   const showOutlines = useTools((s) => s.showOutlines)
   const setShowOutlines = useTools((s) => s.setShowOutlines)
+  const motion = useTools((s) => s.motion)
+  const setMotion = useTools((s) => s.setMotion)
   const gameControls = useTools((s) => s.gameControls)
   const setGameControls = useTools((s) => s.setGameControls)
   const flightSpeed = useTools((s) => s.flightSpeed)
@@ -201,6 +208,16 @@ export function SettingsScreen() {
         <div className="tool-group settings-row outline-modes">
           <p className="subhead">Outlines</p>
           <Switch options={OUTLINE_CHOICES} value={showOutlines} onPick={setShowOutlines} />
+        </div>
+
+        {/* Three cells rather than two, because the middle one is a real answer
+            of its own: follow the system, which is what the app did before
+            there was a row. Off and On either side of it overrule the system in
+            that direction -- On is where a fresh app starts -- and the slider
+            still travels from nothing moving to everything moving. */}
+        <div className="tool-group settings-row motion-modes">
+          <p className="subhead">Motion</p>
+          <Switch options={MOTION_CHOICES} value={motion} onPick={setMotion} />
         </div>
 
         {/* LAST, because it is the largest claim of the four. The three above

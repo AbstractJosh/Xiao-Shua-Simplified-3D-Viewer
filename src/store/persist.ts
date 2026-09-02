@@ -53,6 +53,7 @@ import { MIRROR_SNAP_MAX, MIRROR_SNAP_MIN } from '../geometry/faceMirror'
 import { BRUSH_SMOOTH_MIN, ROUND_MIN } from '../geometry/erode'
 import { meshEntry } from '../geometry/meshLibrary'
 import type { SceneObject } from '../geometry/types'
+import { MOTION_MODES } from '../motion'
 import { OPEN_TO } from '../screens'
 import { THEMES, THEME_ATTRIBUTE } from '../theme'
 import { UNITS } from '../units'
@@ -175,11 +176,12 @@ const colors: Check<string[]> = (raw) => {
  *   rule at the top of this file.
  */
 const PREFS = {
-  // The Settings screen's own five, which are what most people mean by "it
+  // The Settings screen's own six, which are what most people mean by "it
   // forgot my settings".
   displayUnit: oneOf(UNITS),
   theme: oneOf(THEMES),
   showOutlines: bool,
+  motion: oneOf(MOTION_MODES),
   gameControls: bool,
   flightSpeed: num(FLIGHT_SPEED_MIN, FLIGHT_SPEED_MAX),
   // Where the app starts: the front door, or straight back into the project you

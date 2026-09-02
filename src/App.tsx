@@ -6,8 +6,10 @@ import { NavBar } from './console/NavBar'
 import { SettingsScreen } from './console/SettingsScreen'
 import { LaserConsole } from './console/LaserConsole'
 import { LatheConsole } from './console/LatheConsole'
+import { useReducedMotion } from './console/motion'
 import type { ScreenId } from './screens'
 import { useTools } from './store/toolStore'
+import { MOTION_ATTRIBUTE } from './motion'
 import { THEME_ATTRIBUTE } from './theme'
 import { WelcomeScreen } from './console/WelcomeScreen'
 import { LaserViewport } from './viewport/LaserViewport'
@@ -31,6 +33,23 @@ function useTheme() {
   useEffect(() => {
     document.documentElement.setAttribute(THEME_ATTRIBUTE, theme)
   }, [theme])
+}
+
+/**
+ * And the motion, by the same route: `data-motion` on the document element,
+ * `full` or `reduce`, which is what every reduced-motion rule in the
+ * stylesheet keys off. Written from the RESOLVED answer rather than from the
+ * setting, so the stylesheet never has to know the system's report exists --
+ * `useReducedMotion` has already folded it in, and follows both the switch
+ * and the system as they change. Unlike the theme there is no default in
+ * `index.html`, since the right first value depends on the OS; the instant
+ * before this runs is one with nothing on screen to move. See `motion.ts`.
+ */
+function useMotion() {
+  const reduced = useReducedMotion()
+  useEffect(() => {
+    document.documentElement.setAttribute(MOTION_ATTRIBUTE, reduced ? 'reduce' : 'full')
+  }, [reduced])
 }
 
 /**
@@ -72,6 +91,7 @@ const SCREEN_PARTS: Record<ScreenId, { Viewport: ComponentType; Console: Compone
  */
 export default function App() {
   useTheme()
+  useMotion()
   const screen = useTools((s) => s.screen)
   const atWelcome = useTools((s) => s.atWelcome)
   const { Viewport: ScreenViewport, Console: ScreenConsole } = SCREEN_PARTS[screen]

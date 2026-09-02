@@ -1389,6 +1389,26 @@ export const HELP_SECTIONS: HelpSection[] = [
           'The edge lines drawn around every solid, under Theme. Switch them off to see the surfaces bare -- a selected object still glows, so nothing is lost by it.',
       },
       {
+        title: 'Motion',
+        summary: (
+          <>
+            Whether the app's decorative movement plays: the loop on the welcome screen, the idle
+            turns in the Solids list and the polygon chip, the clipboard's turntables, and the
+            small travels of the switches on this screen. <b>On</b>, where the app starts, plays it
+            all whatever your computer says; <b>System</b> follows what your computer says about
+            animation; <b>Off</b> stills it all.
+          </>
+        ),
+        notes: [
+          <>
+            <b>Why System can mean still.</b> On Windows the switch the browser reads is Settings,
+            Accessibility, Visual effects, Animation effects -- the same one that stills window
+            animations -- and it is off on a good many machines. That is why the app starts on
+            <b>On</b> rather than following it; choose <b>System</b> here if you would rather it did.
+          </>,
+        ],
+      },
+      {
         title: 'Game Controls',
         summary: (
           <>

@@ -6,6 +6,7 @@ import { activates } from '../store/toolStore'
 import type { CustomObject } from '../store/libraryStore'
 import { templateOf, useLibrary } from '../store/libraryStore'
 import { Section } from './Field'
+import { prefersReducedMotion } from './motion'
 import { EraseIcon } from './navIcons'
 import { ObjectThumbnail } from './ObjectThumbnail'
 import { releaseThumbnail } from './thumbnailGeometry'
@@ -113,16 +114,6 @@ export function marqueeOffset(travel: number, elapsed: number): number {
   return travel - (travel * (t - 2 * MARQUEE_PAUSE - walk)) / walk
 }
 
-/** Whether the reader has asked for less movement. Guarded, because this runs
- *  in a check suite that renders components without a window around them. */
-function wantsStillness(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-}
-
 function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
   const startPlacingSolidTemplate = useDoc((s) => s.startPlacingSolidTemplate)
   const updatePlacingSolid = useDoc((s) => s.updatePlacingSolid)
@@ -155,7 +146,7 @@ function CustomTile({ custom, live }: { custom: CustomObject; live: boolean }) {
    */
   useEffect(() => {
     const el = nameField.current
-    if (!reading || !el || wantsStillness()) return
+    if (!reading || !el || prefersReducedMotion()) return
 
     el.dataset.walking = 'true'
     const travel = el.scrollWidth - el.clientWidth

@@ -263,6 +263,7 @@ import { AXIS_COLORS, AXIS_CSS_VARS } from '../src/viewport/axisColors'
 import { COMPASS_FACE_SHADE, SCENE_CSS_VARS, SCENE_THEMES } from '../src/viewport/sceneColors'
 import { TRACKS, seamOf } from '../src/console/welcomeReel'
 import { DEFAULT_THEME, THEMES, THEME_LABELS } from '../src/theme'
+import { DEFAULT_MOTION, MOTION_LABELS, MOTION_MODES, reducedMotion } from '../src/motion'
 import type { Theme } from '../src/theme'
 import { HelpScreen } from '../src/console/HelpScreen'
 import { SettingsScreen } from '../src/console/SettingsScreen'
@@ -960,7 +961,9 @@ doc().selectObject(pyramidId)
     // the 6px rise goes, which is the trade `.selection-hud` already makes.
     check(
       'a reduced-motion reader still gets the fade, without the movement',
-      sheet.includes('.overlay-leaving .overlay-card {\n    animation-name: overlay-fade-out;'),
+      sheet.includes(
+        ":root[data-motion='reduce'] .overlay-leaving .overlay-card {\n  animation-name: overlay-fade-out;"
+      ),
       'the screen would appear and vanish between two frames'
     )
   }
@@ -4747,18 +4750,22 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     // that rots: a reduced-motion block stops cancelling what it was written to
     // cancel the moment a new moving part is added above it, and nothing on
     // screen complains -- the setting simply stops being kept.
+    // Keyed off `data-motion` on the root rather than the media query, since
+    // the Motion setting is allowed to overrule the system -- see `motion.ts`.
     {
-      const from = sheet.indexOf(
-        '@media (prefers-reduced-motion: reduce) {',
-        sheet.indexOf('.settings-row .seg-btn:active')
-      )
-      const reduced = from < 0 ? '' : sheet.slice(from, sheet.indexOf('\n}\n', from))
+      const from = sheet.indexOf(":root[data-motion='reduce'] .settings-row .seg::before")
+      const reduced = from < 0 ? '' : sheet.slice(from, sheet.indexOf('/*', from))
       check(
         'and reduced motion stops the travel, the gather and the dip together',
         reduced.includes('transition: none') &&
           reduced.includes('scale: none') &&
           reduced.includes('translate: none'),
         'a switch that still springs under a finger is still a switch that moves'
+      )
+      check(
+        'and nothing is left keyed off the media query the setting overrules',
+        !sheet.includes('prefers-reduced-motion'),
+        'a rule under @media (prefers-reduced-motion) is one Settings cannot turn On'
       )
     }
   }
@@ -4887,6 +4894,38 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   )
 
   // THE FOURTH ROW: the camera you drive instead of orbiting.
+  // The motion row, which exists because the OS's own switch is too blunt:
+  // three cells, the system's answer in the middle and an overrule either side
+  // of it. Every mode must be offered and must hold, the app must open with
+  // everything moving -- On, not the system's answer; see `motion.ts` for the
+  // why -- and the resolver must actually overrule in both directions.
+  shows('the settings screen carries a Motion row', settings, 'settings-row motion-modes')
+  shows('captioned', settings, '<p class="subhead">Motion</p>')
+  for (const mode of MOTION_MODES) {
+    shows(`the motion row offers ${MOTION_LABELS[mode]}`, settings, `>${MOTION_LABELS[mode]}<`)
+  }
+  check(
+    'the switch divides the motion track into three',
+    slider(settings, 'motion-modes')[1] === String(MOTION_MODES.length),
+    `--of ${slider(settings, 'motion-modes')[1]}`
+  )
+  check(
+    'and the app opens with everything moving',
+    useTools.getState().motion === DEFAULT_MOTION && DEFAULT_MOTION === 'on',
+    useTools.getState().motion
+  )
+  for (const mode of MOTION_MODES) {
+    useTools.getState().setMotion(mode)
+    check(`choosing ${mode} holds`, useTools.getState().motion === mode, useTools.getState().motion)
+  }
+  useTools.getState().setMotion(DEFAULT_MOTION)
+  check('On overrules a system that asked for less', reducedMotion('on', true) === false)
+  check('Off overrules a system that asked for more', reducedMotion('off', false) === true)
+  check(
+    'and System is the system, either way',
+    reducedMotion('system', true) === true && reducedMotion('system', false) === false
+  )
+
   shows('the settings screen carries a Game Controls row', settings, 'settings-row game-modes')
   shows('captioned like the other three', settings, '<p class="subhead">Game Controls</p>')
   shows('and drawn as the same chooser', settings, 'aria-pressed="true"')

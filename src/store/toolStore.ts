@@ -40,6 +40,8 @@ import {
 import type { OpenTo, ScreenId } from '../screens'
 import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
+import { DEFAULT_MOTION } from '../motion'
+import type { Motion } from '../motion'
 import { NO_PAN, clampPan, clampZoom } from '../viewport/latheView'
 import type { LathePan } from '../viewport/latheView'
 import type { Unit } from '../units'
@@ -918,6 +920,19 @@ export type ToolState = {
    */
   showOutlines: boolean
   /**
+   * Whether the app's decorative movement plays: the welcome loop, the idle
+   * turns in the console, and the stylesheet's own small travels.
+   *
+   * The fourth display-only preference. `system` follows what the OS tells
+   * the browser, which is what the app always did; the other two overrule it
+   * in either direction, and `on` is where a fresh app starts. It exists
+   * because that OS setting is a blunt one -- on Windows it is the same
+   * switch that stills window animations, and it is off on machines whose
+   * owners never asked this app for a still front door. See `motion.ts` for
+   * the three answers and why the default is the one it is.
+   */
+  motion: Motion
+  /**
    * Whether the modelling viewport is driven like a game rather than orbited.
    *
    * IT IS HERE TO LOWER THE DOOR. The orbit rig this app has always used is
@@ -1399,6 +1414,7 @@ export type ToolState = {
   setDisplayUnit: (unit: Unit) => void
   setTheme: (theme: Theme) => void
   setShowOutlines: (on: boolean) => void
+  setMotion: (motion: Motion) => void
   setGameControls: (on: boolean) => void
   /** Clamped to the range the camera will actually fly at, because this one can
    *  be typed into as well as wheeled. See `FLIGHT_SPEED_MIN`. */
@@ -1602,6 +1618,9 @@ export const useTools = create<ToolState>((set) => ({
   // one solid stops and the next starts. Off is the deliberate act, for the
   // moment the drawing gets in the way of the shape.
   showOutlines: true,
+  // On. Everything moves until somebody says otherwise -- see `motion.ts` for
+  // why that is the default rather than the system's answer.
+  motion: DEFAULT_MOTION,
   // Off. The orbit rig is what this app has always been driven with and what
   // its own documentation describes, so it stays the camera you get; this is an
   // alternative offered to somebody who has gone looking for one, not a change
@@ -1769,6 +1788,8 @@ export const useTools = create<ToolState>((set) => ({
   setTheme: (theme) => set({ theme }),
 
   setShowOutlines: (showOutlines) => set({ showOutlines }),
+
+  setMotion: (motion) => set({ motion }),
 
   // Every held key forgotten on the way through, in BOTH directions. Off with
   // a hand still on W, the key-up lands on a mode that is no longer listening

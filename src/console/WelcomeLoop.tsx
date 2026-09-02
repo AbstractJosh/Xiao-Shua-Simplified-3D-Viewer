@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
-import { prefersReducedMotion } from './motion'
+import { useReducedMotion } from './motion'
 import {
   BED,
   BED_Z0,
@@ -75,9 +75,10 @@ import type { Face, Pt, V3 } from './welcomeReel'
  * time; from then on the compositor runs them and this component does nothing
  * at all. There is no frame loop and nothing to schedule, which is the right
  * cost for something that plays in the corner of the eye while a project is
- * being chosen. A user who has asked the system for less motion gets the
- * resting frame -- the cube on its grid -- and nothing moves, the same answer
- * the console's idle animations give. See `motion.ts`.
+ * being chosen. Under reduced motion -- the Motion setting off, or following a
+ * system that asked for less -- it shows the resting frame, the cube on its
+ * grid, and nothing moves: the same answer the console's idle animations give.
+ * Flipping the setting starts or stops it in place. See `motion.ts`.
  *
  * WHAT IS NOT HERE: words. No caption, no bench name, no `title`. It is
  * decoration and says so to a screen reader; anything it might explain is in
@@ -85,10 +86,11 @@ import type { Face, Pt, V3 } from './welcomeReel'
  */
 export function WelcomeLoop() {
   const svg = useRef<SVGSVGElement>(null)
+  const reduced = useReducedMotion()
 
   useEffect(() => {
     const root = svg.current
-    if (!root || prefersReducedMotion() || typeof root.animate !== 'function') return
+    if (!root || reduced || typeof root.animate !== 'function') return
 
     const running: Animation[] = []
     for (const track of TRACKS) {
@@ -106,7 +108,7 @@ export function WelcomeLoop() {
     return () => {
       for (const animation of running) animation.cancel()
     }
-  }, [])
+  }, [reduced])
 
   return (
     <div className="welcome-loop">
