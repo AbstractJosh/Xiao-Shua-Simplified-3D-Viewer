@@ -6,7 +6,7 @@ How the engine and the console are checked without a browser.
 
 ## Verification
 
-The engine *and* the console are verified headlessly, without a browser: **4,818 assertions** across six suites - 794 geometry, 691 interaction, 3,071 console, 85 export, 90 import, 87 persistence - none of which settle for "something is truthy". A geometry assertion quotes the number it got beside the number it wanted; a console assertion quotes the markup it found.
+The engine *and* the console are verified headlessly, without a browser: **4,957 assertions** across six suites - 853 geometry, 691 interaction, 3,150 console, 85 export, 90 import, 88 persistence - none of which settle for "something is truthy". A geometry assertion quotes the number it got beside the number it wanted; a console assertion quotes the markup it found.
 
 The main instrument is **signed volume via the divergence theorem**: for a closed, consistently wound mesh it returns the true enclosed volume, so one number proves both that the boolean produced the right amount of material *and* that the result is watertight. A leaking or inside-out mesh cannot accidentally land on the analytic answer.
 
@@ -37,7 +37,7 @@ bean            r0.6 h1.2   2.2533  inscribed, 0.38% under the ideal
 
 The newer surface area gets the same treatment. A 20 degree tilt lifts a boss's far edge to 1.6092 where an untilted one stops at 1.5000 - a rise of 0.1092, which is `r*tan(20 deg)` for the radius-0.3 outline that was tilted. A face slid 0.5 lands its centre exactly 0.5 off the axis and holds the same volume as the upright pillar, which is Cavalieri's principle and the proof that the walls followed the face rather than the cap detaching from them. A plane through a cube gives halves of 4.0000 and 4.0000; moved to x = 0.5 it gives 2.0000 and 6.0000; both pairs sum back to 8.0000.
 
-`scripts/ui-check.ts` renders the bar and the console panels headlessly too, and at 3,071 assertions it is the
+`scripts/ui-check.ts` renders the bar and the console panels headlessly too, and at 3,150 assertions it is the
 largest of the five suites. It starts where the app starts - an empty grid, 0 objects - and drives
 the real stores the way a user drives them: drag four solids off the palette, drop a sketch, extrude,
 tilt, slide, cut, undo the cut, redo it, rewind to the bare scene and replay forward. Every step

@@ -4307,7 +4307,10 @@ body {
   text-align: center;
 }
 
-/* THE CUT'S OWN ACTIONS, docked at the foot of the laser island.
+/* THE CUT'S OWN ACTIONS, docked at the foot of the island -- the laser's, and
+   the modelling screen's too, which wears exactly these rules for its plane's
+   Apply and Reset so that the two screens' cuts fire from one kind of button in
+   one place. See `CutPanel` and `CutActions`.
 
    A SECTION OF THE COLUMN rather than a panel of its own, which is what it was:
    it is the last child of `.island-body`, so it takes the island's padding, its
@@ -5759,11 +5762,15 @@ body {
 
 /* --- cut actions --- */
 
-/* The body of the Cut tool's panel: the two buttons stacked, each across the
-   full width of the panel. They were a ROW under the island, where they had to
-   share 176px with each other; at the panel's width a stack reads as two
-   things you do rather than as one control split in half, and the destructive
-   one is not the same size as the one that undoes your aiming. */
+/* Two `.nav-action`s stacked, each across the full width of the panel: a stack
+   reads as two things you do rather than as one control split in half, and
+   the destructive one is not the same size as the one that undoes your aiming.
+
+   It was written for the modelling cut's flyout, which has gone -- it shut on
+   the very drag that aimed the plane, and Apply and Reset stand in `.cut-dock`
+   at the foot of the island now, wearing `.cut-action` above. What still wears
+   this is the lathe's profile panel, `SculptPanel`, whose Apply profile and
+   Reset line are the same pair in the same corner box. */
 .cut-actions {
   display: flex;
   flex-direction: column;
@@ -5819,8 +5826,10 @@ body {
   text-align: center;
 }
 
-/* The one destructive button in the bar, so it carries the accent rather than
-   sitting at the same weight as Reset. */
+/* The primary action among a row of `.nav-action`s carries the accent rather
+   than sitting at the same weight as the rest. It was Apply cut's, which wears
+   the island-sized `.cut-action-primary` now; the colour picker's Apply is
+   what still takes it. */
 .nav-action-primary {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);

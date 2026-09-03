@@ -421,30 +421,27 @@ export function cutPlaneSpawn(object: SceneObject | null): CutPlaneState {
 }
 
 /**
- * A switch, and -- once it is armed -- a caret with the two actions behind it.
+ * A switch, and nothing else: the button arms the plane, and what you then do
+ * with it stands at the foot of the island for as long as it is armed. See
+ * `CutActions`.
  *
- * The shape every other tool on the island already has: the button arms the
- * plane, which is the frequent act and stays one click, and the panel beside it
- * holds what you then do with it. The actions used to hang UNDER the island as
- * two more rows, which made Cut the one tool whose controls were not where
- * every other tool's are -- and made the island change height the moment it was
- * armed, shoving the brushes below it down the screen.
+ * IT HAD A CARET AND A PANEL, and the panel held Apply and Reset. That was the
+ * shape every other tool on the island has, and it was wrong for this one, for
+ * the reason the laser's `CutPanel` sets out: a flyout shuts on any press that
+ * is not inside the island -- the outside-press listener in `NavBar`, which is
+ * what makes every flyout in the app dismiss by clicking away -- and AIMING the
+ * plane is a press on the canvas. So the button that fired the cut was shut by
+ * the very act of aiming the cut, every time, and it came back only through a
+ * caret that then had to be explained. The panel also carried a lid, a close
+ * cross and a sentence of prose around two buttons, which on an island whose
+ * whole width is 176px was a box mostly made of air.
  *
- * WHAT IS STILL NOT IN IT is where the plane is. Its position and tilt are in
- * the console, because a popover hanging off this button covers the one thing a
- * plane is aimed against: the solids it is about to sever. What is in the panel
- * is the pair that describe no part of the scene -- fire the cut, or put the
- * blade back -- so there is nothing behind them worth seeing while they are up.
+ * WHAT IS STILL NOT HERE is where the plane is. Its position and tilt are in
+ * the console, because a box over the scene covers the one thing a plane is
+ * aimed against: the solids it is about to sever.
  *
- * THE CARET EXISTS ONLY WHILE IT IS ARMED, because the panel does: disarmed
- * there is nothing to put in it, and a caret onto an empty box is a control
- * that lies. `NavTool` works that out from having no children.
- *
- * AND ARMING OPENS IT, which no other tool on this island asks for and this one
- * has to: a cut is fired from a BUTTON rather than by dragging the gizmo, so a
- * user shown nothing but a plane would have nothing to press. It is what the
- * rows under the island did by existing. The rule lives in `setCutActive`
- * rather than in the handler below, so it holds however the tool is put down.
+ * No `id`, so no panel can ever be invented for it: `NavTool` treats a tool
+ * with no id and no children as the bare switch it is.
  */
 export function CutTool() {
   const cutActive = useTools((s) => s.cutActive)
@@ -452,22 +449,15 @@ export function CutTool() {
 
   return (
     <NavTool
-      id="cut"
       label="Cut"
       icon={<CutIcon />}
       active={cutActive}
       // Read at the press rather than subscribed to, exactly as the ruler reads
       // its frame: where the blade lands is only a question at the moment it is
       // armed, and a hook on the selection would re-render the island on every
-      // click in the scene. Arming also OPENS this tool's panel, and the store
-      // does that rather than this handler -- see `setCutActive`.
+      // click in the scene.
       onToggle={(on) => setCutActive(on, cutPlaneSpawn(selectedObject(useDoc.getState())))}
-    >
-      {/* Undefined rather than a component that renders null: `NavTool` decides
-          whether there is a panel from whether it was handed one, and an
-          element that happens to return nothing still counts as a child. */}
-      {cutActive ? <CutActions /> : undefined}
-    </NavTool>
+    />
   )
 }
 
@@ -736,20 +726,36 @@ function planeNormal(rotation: Vec3): Vec3 {
 const RECEIPT_MS = 8000
 
 /**
- * The two things you do to an armed plane: the body of the Cut tool's panel.
+ * The two things you do to an armed plane, DOCKED AT THE FOOT OF THE TOOL
+ * ISLAND for as long as the plane is armed.
  *
  * On the island rather than in the console because they are ACTIONS, not
  * settings: the plane is aimed by dragging its gizmo in the viewport, and the
  * button that fires the cut wants to be a short travel from the hand that just
  * aimed it -- not at the end of a scroll through the panels that describe the
- * document. Over the scene it is shorter still than it was in the bar.
+ * document.
  *
- * IN THE TOOL'S OWN PANEL, where it used to be two rows hanging under the whole
- * island. The rows worked, and they were the only controls on this island that
- * were not behind the caret of the tool they belong to -- so Cut was the one
- * tool you learned twice, and arming it pushed everything below it down the
- * column. See `CutTool`, which opens the panel on arming so that nothing is
- * lost by the move.
+ * AT THE FOOT OF THE ISLAND, AND NOT IN THE TOOL'S OWN FLYOUT, which is where
+ * they lived last and where they look like they belong. A flyout shuts on any
+ * pointerdown that is not inside the island -- see the outside-press listener
+ * in `NavBar` -- and aiming the plane is a pointerdown on the canvas. So
+ * Apply vanished under the first drag of the gizmo it was waiting on, every
+ * time, and the caret that brought it back was one more thing to learn. A tool
+ * you aim by dragging cannot keep its actions in a flyout: they have to outlive
+ * the drag, so they have to be chrome that stands on its own. Docked INSIDE the
+ * island is still that -- the island is a container, not a flyout, and nothing
+ * about pressing the scene closes it. It is the same arrangement, the same
+ * classes and the same reasoning as the laser's `CutPanel`, which learned this
+ * first; the two screens' Apply buttons are one kind of thing in one place.
+ *
+ * IT COMES AND GOES WITH THE TOOL, so the island is the height it always was
+ * until the plane is armed. It stands at the foot rather than under Cut's own
+ * row so that arming shoves none of the tools about: what grows is the end of
+ * the column, which on an island docked at the top costs nothing above it.
+ *
+ * NO TITLES ON THE BUTTONS. The sentence about what the cut was about to take
+ * rode Apply as a hover bubble; the count in the label is the half that must
+ * not be missed, and the rest is in Help, which is where explaining goes.
  *
  * Still its own component, and still `null` when the plane is not armed. It is
  * the honest statement of what these buttons are: two acts on a plane that
@@ -761,14 +767,13 @@ export function CutActions() {
   const resetCutPlane = useTools((s) => s.resetCutPlane)
 
   // Only what the wording depends on: the doc itself is read at click time, so
-  // building a solid never re-renders the bar.
+  // building a solid never re-renders the island.
   const selectedObjectId = useDoc(primarySelection)
   // Whether the selected object refuses the blade. See `SceneObject.locked`.
   const selectedLocked = useDoc((s) => selectedObject(s)?.locked === true)
   // How many the plane could sever: the locked ones are left whole by
   // `applyCut`, so counting them would promise a cut the button cannot make.
   const objectCount = useDoc((s) => s.doc.objects.filter((o) => !o.locked).length)
-  const lockedCount = useDoc((s) => s.doc.objects.filter((o) => o.locked).length)
 
   const [status, setStatus] = useState<string | null>(null)
   const [missed, setMissed] = useState(false)
@@ -780,8 +785,8 @@ export function CutActions() {
     setStatus(null)
   }, [planeKey])
 
-  // And it goes on its own even if nothing moves: it hangs off the island, over
-  // the scene the plane was aimed at.
+  // And it goes on its own even if nothing moves: it stands in the island,
+  // over the scene the plane was aimed at.
   useEffect(() => {
     if (status === null) return
     const timer = setTimeout(() => setStatus(null), RECEIPT_MS)
@@ -793,13 +798,6 @@ export function CutActions() {
   }, [cutActive])
 
   if (!cutActive) return null
-
-  const target =
-    selectedObjectId === null
-      ? `Cuts every ${lockedCount > 0 ? 'unlocked ' : ''}object in the scene (${objectCount}).`
-      : selectedLocked
-        ? 'The selected object is locked. Unlock it under Dimensions, or deselect to cut the whole scene.'
-        : 'Cuts the selected object. Deselect to cut the whole scene.'
 
   const cut = () => {
     const { doc, applyCut } = useDoc.getState()
@@ -819,52 +817,51 @@ export function CutActions() {
   }
 
   return (
-    <div className="tool-group cut-actions">
-      <button
-        type="button"
-        className="nav-action nav-action-primary"
-        // Dark while the thing it is aimed at is locked: the store would leave
-        // the object whole and the receipt would call it a miss, which is a
-        // worse answer than a button that says it cannot.
-        disabled={objectCount === 0 || selectedLocked}
-        // What the button is about to destroy rides the button, rather than
-        // standing above it as a line of prose. As prose it was the widest
-        // thing in the panel, and a popover sized to a sentence nobody needs
-        // twice is mostly air: the COUNT in the label already carries the half
-        // that must not be missed -- whether this is about to cut everything --
-        // so the sentence is the elaboration, and elaboration goes in a title.
-        title={target}
-        onClick={cut}
-      >
-        {selectedObjectId === null ? `Apply cut · all ${objectCount}` : 'Apply cut'}
-      </button>
-      <button
-        type="button"
-        className="nav-action"
-        // Reset means "put it back where arming would drop it", which is the
-        // selected object -- not the world origin. Anything else and the button
-        // that undoes your aiming would carry the blade off the part you were
-        // aiming it at, which is the one place you were sure to want it.
-        title={
-          selectedObjectId === null
-            ? 'Return the plane to the middle of the scene, level'
-            : 'Return the plane to the selected object, level'
-        }
-        onClick={() => resetCutPlane(cutPlaneSpawn(selectedObject(useDoc.getState())))}
-      >
-        Reset plane
-      </button>
+    // A SECTION AT THE FOOT OF THE ISLAND, not a panel of its own: the last
+    // child of `.island-body`, so it moves with the island, collapses with it,
+    // and stacks under the brushes at the column's own gap. The rule along its
+    // top is what separates doing from arming -- everything above it picks a
+    // tool or sets a number, and everything in it changes the scene. The same
+    // classes the laser's `CutPanel` wears, so the two docks cannot drift
+    // apart in size or placement.
+    <div className="cut-dock">
+      <div className="cut-dock-actions">
+        <button
+          type="button"
+          className="cut-action cut-action-primary"
+          // Dark while the thing it is aimed at is locked: the store would
+          // leave the object whole and the receipt would call it a miss, which
+          // is a worse answer than a button that says it cannot.
+          disabled={objectCount === 0 || selectedLocked}
+          onClick={cut}
+        >
+          {/* The COUNT rides the label, because "this is about to cut all of
+              them" is the half that must not be missed, and the label is the
+              one place on the button that is always read. */}
+          {selectedObjectId === null ? `Apply cut · all ${objectCount}` : 'Apply cut'}
+        </button>
+        <button
+          type="button"
+          className="cut-action"
+          // Reset means "put it back where arming would drop it", which is the
+          // selected object -- not the world origin. Anything else and the
+          // button that undoes your aiming would carry the blade off the part
+          // you were aiming it at, which is the one place you were sure to
+          // want it.
+          onClick={() => resetCutPlane(cutPlaneSpawn(selectedObject(useDoc.getState())))}
+        >
+          Reset plane
+        </button>
 
-      {/* The outcome, under the button that produced it. It was a flyout
-          hanging off the island -- it had to be, with nowhere else to put a
-          sentence -- and inside a panel that is a popover over a popover. The
-          rules it obeys are unchanged: it clears itself after `RECEIPT_MS`, and
-          it goes the moment the plane it describes moves. */}
-      {status !== null && (
-        <p className={`cut-status${missed ? ' cut-status-bad' : ''}`} role="status">
-          {status}
-        </p>
-      )}
+        {/* The outcome, under the button that produced it. The rules it obeys
+            are unchanged from every home it has had: it clears itself after
+            `RECEIPT_MS`, and it goes the moment the plane it describes moves. */}
+        {status !== null && (
+          <p className={`cut-status${missed ? ' cut-status-bad' : ''}`} role="status">
+            {status}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

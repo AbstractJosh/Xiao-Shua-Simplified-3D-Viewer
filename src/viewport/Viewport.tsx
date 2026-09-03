@@ -154,7 +154,6 @@ const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x
  * one that measured it: a stale offset would teleport the NEXT drag of the same
  * object, which is the very bug this exists to remove.
  */
-type ObjectGrab = { objectId: string; vertical: boolean; offset: Vec3 }
 type FaceGrab = { objectId: string; featureId: string; u: number; v: number }
 
 /**
@@ -234,13 +233,11 @@ type GizmoGrab = {
   size: number
 }
 
-let objectGrab: ObjectGrab | null = null
 let faceGrab: FaceGrab | null = null
 let gizmoGrab: GizmoGrab | null = null
 
 /** Drop them all, except the one belonging to the gesture currently running. */
 function clearGrabs(kind: Drag['kind'] = 'idle'): void {
-  if (kind !== 'moving-object') objectGrab = null
   if (kind !== 'moving-face') faceGrab = null
   if (kind !== 'gizmo' && kind !== 'cut-gizmo' && kind !== 'ruler-gizmo') gizmoGrab = null
   if (kind !== 'sketch-gizmo') {
@@ -252,24 +249,6 @@ function clearGrabs(kind: Drag['kind'] = 'idle'): void {
     turnKey = ''
     clearRotationIndicator()
   }
-}
-
-/**
- * The offset between an object and the pointer, measured once per gesture.
- *
- * Shift can be pressed and released mid-drag, and the two branches measure
- * against different planes, so switching between them re-measures rather than
- * carrying a number that means nothing in the other frame.
- */
-function objectGrabOffset(objectId: string, vertical: boolean, measured: Vec3): Vec3 {
-  if (
-    objectGrab === null ||
-    objectGrab.objectId !== objectId ||
-    objectGrab.vertical !== vertical
-  ) {
-    objectGrab = { objectId, vertical, offset: measured }
-  }
-  return objectGrab.offset
 }
 
 /**
@@ -400,46 +379,13 @@ function dragSketch(
   if (anchor) s.moveTo(anchor)
 }
 
-/** Slide a whole object: across the ground, or up and down while Shift is held. */
-function dragObject(
-  s: Store,
-  drag: DragOf<'moving-object'>,
-  raycaster: Raycaster,
-  camera: Camera
-): void {
-  const object = s.doc.objects.find((o) => o.id === drag.objectId)
-  if (!object) return
-  const [px, py, pz] = object.transform.position
-
-  const vertical = modifiers.shift
-
-  let desired: Vec3
-  if (vertical) {
-    // Vertical move: a plane through the object that faces the camera but stays
-    // upright, so world Y runs across it at full scale. Flattening the camera
-    // direction is what keeps a near-top-down view from mapping one pixel of
-    // pointer travel onto metres of height.
-    const normal = camera.getWorldDirection(new Vector3()).setY(0)
-    if (normal.lengthSq() < 1e-6) return
-    const p = pickPlanePoint(raycaster, new Vector3(px, py, pz), normal.normalize())
-    if (!p) return
-    // Only the Y component means anything on this plane; the object does not
-    // move laterally here, so the other two would only be noise.
-    const grab = objectGrabOffset(drag.objectId, true, [0, py - p.y, 0])
-    desired = [px, p.y + grab[1], pz]
-  } else {
-    const ground = pickGroundPoint(raycaster)
-    if (!ground) return
-    // Offset by where the object sat under the pointer when the drag began, so
-    // grabbing a corner does not first teleport the centre under the cursor.
-    // Height is preserved, or an object lifted with Shift would drop back to
-    // the grid the moment it was nudged sideways.
-    const grab = objectGrabOffset(drag.objectId, false, [px - ground.x, 0, pz - ground.z])
-    desired = [ground.x + grab[0], py, ground.z + grab[2]]
-  }
-
-  s.moveObjectTo(resolveObjectMove(object.id, desired))
-}
+/* A `dragObject` WENT HERE, sliding a whole solid across the ground from a
+   press on its body -- and up and down instead while Shift was held. The body
+   is no handle any more: an object moves by its gizmo, whose arrows and plane
+   quads say on screen which way they will go, where the body said nothing and
+   walked the solid off under exactly the press meant to pick it. See the note
+   above `selectionWearsGizmo` in `SceneObjects`. The ground pick it used is
+   still what drops a solid dragged in from the console. */
 
 /** Slide a feature's created end face within its own plane. */
 function dragFace(s: Store, drag: DragOf<'moving-face'>, raycaster: Raycaster): void {
@@ -1771,9 +1717,6 @@ function Interaction({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
       case 'moving':
         dragSketch(s, drag, raycaster, meshes.current)
         return
-      case 'moving-object':
-        dragObject(s, drag, raycaster, camera)
-        return
       case 'moving-face':
         dragFace(s, drag, raycaster)
         return
@@ -2017,8 +1960,6 @@ function hintFor(
       return valid ? 'Release to place the sketch' : 'Move over an object to place'
     case 'moving':
       return 'Sliding the sketch across its surface'
-    case 'moving-object':
-      return 'Moving the object -- hold Shift to move it vertically'
     case 'moving-face':
       return 'Sliding the created face'
     case 'erode':

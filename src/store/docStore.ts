@@ -83,8 +83,10 @@ export type Drag =
    * drag -- and a click that never moved anything costs no undo step at all.
    */
   | { kind: 'moving'; objectId: string; id: string; snapshot: boolean }
-  /** Sliding a whole object through the scene. Same snapshot rule. */
-  | { kind: 'moving-object'; objectId: string; snapshot: boolean }
+  /* A `moving-object` KIND WENT HERE: a whole solid sliding across the ground
+     from a press on its body. The body is no handle any more -- see the note
+     above `selectionWearsGizmo` in `SceneObjects` -- and an object moves by
+     its gizmo alone, which is the `gizmo` kind below. */
   /** Dragging the created end face of a feature sideways. Same snapshot rule. */
   | { kind: 'moving-face'; objectId: string; id: string; snapshot: boolean }
   /**
@@ -373,7 +375,8 @@ type State = {
   moveTo: (anchor: SurfaceAnchor) => void
   endDrag: () => void
 
-  startMovingObject: (objectId: string) => void
+  /** The continuous part of a gizmo arrow or plane drag. Nothing else moves an
+   *  object: the body drag that used to share this went with `moving-object`. */
   moveObjectTo: (position: Vec3) => void
 
   startMovingFace: (objectId: string, featureId: string) => void
@@ -874,11 +877,10 @@ export const useDoc = create<State>((set, get) => {
       // handles away, but this is where the edit would land, so this is where
       // it is refused -- see `SceneObject.locked`.
       if (lockedIn(doc, id)) return
-      // Two live gestures write here: the body drag, and the gizmo ring's turn.
-      // Both are the continuous part of one gesture, so both take a single
-      // snapshot and then write silently.
-      const live =
-        (drag.kind === 'moving-object' || drag.kind === 'gizmo') && drag.objectId === id
+      // One live gesture writes here: the gizmo ring's turn. It is the
+      // continuous part of one gesture, so it takes a single snapshot and then
+      // writes silently.
+      const live = drag.kind === 'gizmo' && drag.objectId === id
       if (live) {
         const object = doc.objects.find((o) => o.id === id)
         // A frame that resolved to the transform the object already has is not
@@ -1092,33 +1094,18 @@ export const useDoc = create<State>((set, get) => {
       )
     },
 
-    startMovingObject: (objectId) =>
-      set((s) => ({
-        // A locked object is picked but never picked UP: the press still
-        // selects it, so the panels describe it, and the drag that would walk
-        // it across the scene never begins. The viewport already refuses the
-        // body of a locked solid -- see `bodyCanBeDragged` -- and this is the
-        // same refusal at the store, for any other way in.
-        drag: lockedIn(s.doc, objectId)
-          ? s.drag
-          : { kind: 'moving-object', objectId, snapshot: false },
-        selectedObjectIds: [objectId],
-        selectedFeatureId: s.selectedObjectIds[0] === objectId ? s.selectedFeatureId : null,
-      })),
-
     moveObjectTo: (position) => {
       const { drag, doc } = get()
-      // TWO gestures move an object: dragging its body across the ground, and
-      // dragging one arrow of its gizmo along an axis. They differ only in how
-      // the position was arrived at -- the edit, and its history semantics, are
-      // the same -- so both land here rather than the second one growing a
-      // parallel action that would have to be kept in step with this one.
-      if (drag.kind !== 'moving-object' && drag.kind !== 'gizmo') return
+      // ONE gesture moves an object: a handle of its gizmo -- an arrow along an
+      // axis, or a quad within a plane. A drag on the body used to land here
+      // as well, and was the second way in; it is gone, and the reasoning is
+      // above `selectionWearsGizmo` in `SceneObjects`.
+      if (drag.kind !== 'gizmo') return
       const object = doc.objects.find((o) => o.id === drag.objectId)
       if (!object) return
-      // No drag can start on a locked object -- see `startMovingObject` -- so
-      // this is only ever reached by one that started before the lock went on.
-      // It stays exactly where it is all the same.
+      // No drag can start on a locked object -- see `startGizmo` -- so this is
+      // only ever reached by one that started before the lock went on. It
+      // stays exactly where it is all the same.
       if (object.locked) return
       // A click that snapped straight back to where the object already was is
       // not an edit, and must not cost an undo step.
@@ -1133,9 +1120,9 @@ export const useDoc = create<State>((set, get) => {
     startGizmo: (objectId, handle) =>
       set((s) => ({
         // A locked object wears no gizmo -- see `selectionWearsGizmo` -- so
-        // nothing on screen can reach this. It is refused here all the same,
-        // for the reason `startMovingObject` refuses: the store is where every
-        // way in ends up.
+        // nothing on screen can reach this. It is refused here all the same:
+        // the store is where every way in ends up, and the check suite drives
+        // it with no screen in front of it.
         drag: lockedIn(s.doc, objectId)
           ? s.drag
           : { kind: 'gizmo', objectId, handle, snapshot: false },

@@ -15,7 +15,19 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
-import { Box3, Matrix4, PlaneGeometry, Quaternion, ShaderChunk, ShaderLib, Vector3 } from 'three'
+import {
+  Box3,
+  Group,
+  Matrix4,
+  Mesh,
+  MeshBasicMaterial,
+  PlaneGeometry,
+  Quaternion,
+  Raycaster,
+  ShaderChunk,
+  ShaderLib,
+  Vector3,
+} from 'three'
 import type { BufferAttribute, BufferGeometry, WebGLProgramParametersWithUniforms } from 'three'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -107,7 +119,7 @@ import {
   useReference,
   visiblePlacements,
 } from '../src/store/referenceStore'
-import type { Placement } from '../src/store/referenceStore'
+import type { Face, Placement } from '../src/store/referenceStore'
 import {
   CROP_RATIOS,
   aspectOf,
@@ -120,15 +132,16 @@ import {
   turnedSize,
 } from '../src/console/referenceImage'
 import {
+  BOARD_LIFT,
   CORNERS,
   FACES,
   MIN_DECAL,
   clampCentre,
   coversPoint,
   dropSize,
+  faceBoard,
   faceFrame,
   faceOffset,
-  faceOfNormal,
   placementRect,
   pointUv,
   resizeFromCorner,
@@ -328,7 +341,7 @@ import {
 } from '../src/store/toolStore'
 import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
 import { BrushScopePanel } from '../src/viewport/BrushScopePanel'
-import { bodyCanBeDragged, selectionWearsGizmo } from '../src/viewport/SceneObjects'
+import { selectionWearsGizmo } from '../src/viewport/SceneObjects'
 import { brushAllows } from '../src/viewport/brushTarget'
 import { viewQuaternion } from '../src/viewport/compassViews'
 import {
@@ -817,10 +830,12 @@ doc().selectObject(pyramidId)
   // is noise rather than help.
   hides('and no hover bubble', cut, 'nav-tip')
   hides('nor does snap', markupOf('SnapTool (no tip)', SnapTool), 'nav-tip')
-  // DISARMED IT IS A BARE SWITCH. The caret comes with the panel, and the
-  // panel is the two things you do to a plane that exists -- so there is
-  // nothing behind it until one does.
-  hides('and carries no caret while it is disarmed', cut, 'nav-caret')
+  // A BARE SWITCH, armed or not. For a while it grew a caret and a flyout once
+  // the plane was armed, holding Apply and Reset -- and a flyout shuts on any
+  // press outside the island, which is what aiming the plane is. The two
+  // actions dock at the foot of the island instead (see below, once it is
+  // armed), and Cut itself never has a panel to put a caret on.
+  hides('and carries no caret', cut, 'nav-caret')
   // Not `markupOf`, which counts an empty render as a failure: rendering
   // nothing at all is exactly the claim here, and it is a stronger one than
   // "the markup happens not to contain a button".
@@ -833,6 +848,7 @@ doc().selectObject(pyramidId)
   // The island over the scene: the two tools, and the strip that shuts it.
   const island = markupOf('ToolIsland', ToolIsland)
   shows('the island carries the cut tool', island, '>Cut<')
+  hides('with no cut dock at its foot while the plane is down', island, 'cut-dock')
   shows('the move tool', island, '>Move<')
   shows('the rotate tool', island, '>Rotate<')
   shows('and the scale tool', island, '>Scale<')
@@ -1316,11 +1332,6 @@ doc().selectObject(pyramidId)
       !selectionWearsGizmo({ ...wearing, locked: true }),
       'hidden'
     )
-    check(
-      'which takes the body with it, in Move and all',
-      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: true }),
-      'fixed'
-    )
     // A brush in particular, since that is the tool the rule was extended
     // for: arming one must clear the handles without the user asking twice.
     check(
@@ -1331,75 +1342,21 @@ doc().selectObject(pyramidId)
     )
   }
 
-  // AND THE BODY GOES WITH THE HANDLES. Taking the arrows away is only half of
-  // turning the tool off: the solid itself is draggable, invisibly, and an
-  // object that still walks across the scene on the first press is the opposite
-  // of what a dark picker says.
+  // AND THE BODY IS NO HANDLE AT ALL. A press on the solid itself used to
+  // slide it across the ground -- in Move, with the handles up, on an unlocked
+  // object -- and every clause that narrowed it was a patch on the same fault:
+  // an invisible handle the size of the whole object, under exactly the press
+  // meant to pick it. The rule went with the gesture, and so did the store's
+  // way in: nothing starts a drag on an object except one of its gizmo's
+  // handles, each of which says on screen which way it will go.
   {
     check(
-      'an object wearing handles can be dragged by its body',
-      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: false }),
-      'draggable'
+      'the store offers no way to pick an object up by its body',
+      !('startMovingObject' in doc()),
+      Object.keys(doc())
+        .filter((k) => /moving/i.test(k))
+        .join(', ')
     )
-    check(
-      'putting the handles down stops that too',
-      !bodyCanBeDragged({ mode: 'move', hidden: true, brushArmed: false, locked: false }),
-      'fixed'
-    )
-    check(
-      'and so does arming a brush',
-      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: true, locked: false }),
-      'fixed'
-    )
-
-    // AND THE MODE. The body offers exactly one gesture -- a slide across the
-    // ground -- so in the two modes that are not about sliding it is a handle
-    // for something the tool does not do. Pressing a solid in Rotate and having
-    // it slide is the same lie as pressing one under a dark picker and having
-    // it move: the gizmo says one thing and the object does another.
-    check(
-      'Rotate does not slide a solid by its body',
-      !bodyCanBeDragged({ mode: 'rotate', hidden: false, brushArmed: false, locked: false }),
-      'fixed'
-    )
-    check(
-      'nor does Scale',
-      !bodyCanBeDragged({ mode: 'scale', hidden: false, brushArmed: false, locked: false }),
-      'fixed'
-    )
-    check(
-      'and Move still does',
-      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: false }),
-      'draggable'
-    )
-
-    // The two rules have to agree in the direction that matters: a body that
-    // can be dragged must be wearing handles, or the solid would move on a
-    // press with nothing on screen to say it could. The converse is NOT
-    // claimed, and stopped being true when the mode joined the rule -- Rotate
-    // wears three rings and refuses the body, which is the whole point of it.
-    for (const mode of ['move', 'rotate', 'scale'] as const) {
-      for (const hidden of [false, true]) {
-        for (const brushArmed of [false, true]) {
-          const wearing = selectionWearsGizmo({
-            selected: true,
-            hidden,
-            brushArmed,
-            cutActive: false,
-            rulerSelected: false,
-            sketchSelected: false,
-            marqueeing: false,
-            locked: false,
-          })
-          const draggable = bodyCanBeDragged({ mode, hidden, brushArmed, locked: false })
-          check(
-            `${mode} hidden=${hidden} brush=${brushArmed}: a draggable body wears handles`,
-            !draggable || wearing,
-            `${wearing ? 'arrows' : 'none'} / ${draggable ? 'draggable' : 'fixed'}`
-          )
-        }
-      }
-    }
   }
 
 
@@ -1895,8 +1852,8 @@ tools().setCutActive(true)
 // The prism is 0.9 tall and rests on the grid, so this plane is halfway up it.
 tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 {
-  // Arming puts the two ACTIONS behind the tool's own caret, a short travel
-  // from the gizmo that just aimed the plane. The plane's numbers stay in the
+  // Arming puts the two ACTIONS at the foot of the island, a short travel from
+  // the gizmo that just aimed the plane. The plane's numbers stay in the
   // console.
   const panel = markupOf('CutActions (armed)', CutActions)
   hides('the actions carry no placement of their own', panel, '>Position<')
@@ -1918,52 +1875,68 @@ tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
     placed,
     trackOf(-3, CUT_POSITION_LIMIT)
   )
-  shows('it says what it will cut', panel, 'Cuts the selected object')
-  shows('and offers the button', panel, '>Apply cut</button>')
+  shows('it offers the button', panel, '>Apply cut</button>')
   shows('and the one that re-aims the plane', panel, '>Reset plane</button>')
+  // NO HOVER TEXT. The sentence about what the cut was about to take rode
+  // Apply as a title; the count in the label carries the half that must not be
+  // missed, and the rest is in Help, which is where explaining goes.
+  hides('and neither carries a title', panel, ' title="')
 
-  // AND THEY ARE A DROPDOWN OFF THE CUT BUTTON, like every other tool's
-  // controls on this island -- not two rows hanging under the whole of it,
-  // which is what made arming the tool shove the column about.
+  // AND THEY ARE THE ISLAND'S OWN DOCK, not a flyout off the Cut button. A
+  // flyout shuts on any pointerdown outside the island -- `NavBar`'s
+  // outside-press listener, which is what makes every flyout dismiss by
+  // clicking away -- and aiming the plane IS a pointerdown on the canvas, so
+  // the button that fired the cut was shut by the drag that aimed it, every
+  // time. The dock is a child of the island, and nothing about pressing the
+  // scene closes it. The same classes as the laser's `CutPanel`, so the two
+  // screens' Apply buttons cannot drift apart in size or placement.
+  shows('the actions are the island dock', panel, 'class="cut-dock"')
+  shows('sized above every other button in it', panel, 'cut-action cut-action-primary')
   const armedTool = markupOf('CutTool (armed)', CutTool)
-  shows('an armed cut grows a caret of its own', armedTool, 'nav-caret')
+  hides('and the Cut button grows no caret', armedTool, 'nav-caret')
+  hides('nor a panel', armedTool, 'class="nav-panel"')
+  hides('so Apply is not behind it', armedTool, '>Apply cut<')
+  check('and arming opened no panel', tools().openPanel === null, `${tools().openPanel}`)
+  const armedIsland = markupOf('ToolIsland (cut armed)', ToolIsland)
+  shows('the dock hangs at the foot of the island', armedIsland, 'class="cut-dock"')
+  shows('which is where Apply cut lives', armedIsland, '>Apply cut</button>')
+  // After the LAST tool rather than under Cut's own row, so arming shoves none
+  // of the tools about: what grows is the end of the column.
   check(
-    'and arming opened its panel, so the button that fires it is up',
-    tools().openPanel === 'cut',
-    `${tools().openPanel}`
-  )
-  shows('which is where Apply cut lives', armedTool, '>Apply cut</button>')
-  shows('in a panel of its own', armedTool, 'class="nav-panel"')
-  // Nothing hangs under the island any more, so it is the same height armed or
-  // not and the brushes below Cut stay where the hand left them.
-  hides(
-    'and nothing hangs under the island',
-    markupOf('ToolIsland (cut armed)', ToolIsland),
-    'class="nav-cut"'
+    'after every tool rather than under Cut',
+    armedIsland.lastIndexOf('class="nav-tool') < armedIsland.indexOf('class="cut-dock"'),
+    `${armedIsland.lastIndexOf('class="nav-tool')} vs ${armedIsland.indexOf('class="cut-dock"')}`
   )
 
-  // PUTTING THE TOOL DOWN TAKES THE PANEL WITH IT, and it is the STORE that
-  // says so rather than the button -- the same rule `setIslandCollapsed`
-  // states in the same place, and for the same reason: the invariant is about
-  // the state, and the button is only one of the ways in.
+  // AND IT GOES WITH THE TOOL, which is what keeps the island the height it
+  // always was until the plane is armed.
   tools().setCutActive(false)
-  check('disarming shuts the panel', tools().openPanel === null, `${tools().openPanel}`)
-  // But only its OWN. A tool that closed whatever happened to be open would be
-  // reaching outside itself.
+  check(
+    'disarming takes the dock with it',
+    renderToStaticMarkup(createElement(CutActions)) === '',
+    'the island goes back to its rows'
+  )
+  hides(
+    'and the island foot is empty again',
+    markupOf('ToolIsland (cut disarmed)', ToolIsland),
+    'cut-dock'
+  )
+  // Disarming touches no panel either: there is none of its own to shut, and a
+  // tool that closed whatever happened to be open would be reaching outside
+  // itself.
   tools().setOpenPanel('snap')
   tools().setCutActive(false)
-  check('and leaves another panel alone', tools().openPanel === 'snap', `${tools().openPanel}`)
+  check('and leaves an open panel alone', tools().openPanel === 'snap', `${tools().openPanel}`)
   tools().setOpenPanel(null)
   tools().setCutActive(true)
   tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 
   // Deselect and the button says out loud that it is about to cut everything.
-  // On a 176px island the target sentence lives in a title; the COUNT does not,
-  // because "this will cut all of them" is the half that must not be missed.
+  // The COUNT rides the label, because "this will cut all of them" is the half
+  // that must not be missed, and the label is the one part always read.
   doc().selectObject(null)
   const wide = markupOf('CutActions (nothing selected)', CutActions)
   shows('with nothing selected it warns it will cut the lot', wide, 'Apply cut · all ')
-  shows('and says how many that is', wide, 'Cuts every object in the scene')
   doc().selectObject(prismId)
 }
 
@@ -2197,10 +2170,12 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
 {
   // The left-drag half of an arrow, which is a genuinely different code path
   // from the right-drag half: sizing goes through `resizeObjectTo`, moving goes
-  // through `moveObjectTo` -- the same action the body drag uses. That action
-  // guarded on the body-drag kind alone, so every arrow silently did nothing
-  // while the ring and the right-drag worked, which is exactly the shape of bug
-  // a suite that only exercised sizing could not see.
+  // through `moveObjectTo`. That action once guarded on the body drag's kind
+  // alone -- back when a press on the solid could slide it -- so every arrow
+  // silently did nothing while the ring and the right-drag worked, which is
+  // exactly the shape of bug a suite that only exercised sizing could not see.
+  // The body drag is gone and the gizmo is the only way in now, so this is the
+  // path that has to work.
   const entries = doc().past.length
   const start = positionOf(gizmoCube)
 
@@ -2223,8 +2198,8 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   doc().undo()
   near('and undo returns it', positionOf(gizmoCube)[0], start[0], 1e-9)
 
-  // Outside a gizmo or body drag the action must still refuse: it is the live
-  // half of a gesture, and the panel's typed values go through setObjectTransform.
+  // Outside a gizmo drag the action must still refuse: it is the live half of
+  // a gesture, and the panel's typed values go through setObjectTransform.
   const idle = doc().doc
   doc().moveObjectTo([99, 99, 99])
   check('but it does nothing with no drag running', doc().doc === idle)
@@ -6672,14 +6647,14 @@ console.log('\nThe Smoother is the brush that arrives somewhere and stops')
   doc().setObjectColor([held], '#123456')
   check('and its colour', at()?.color === '#123456', at()?.color)
 
-  // The two gestures that would move it, at the store: each still SELECTS,
-  // so the panels describe the thing that was pressed, and neither begins.
+  // The one gesture that would move it, at the store: it still SELECTS, so
+  // the panels describe the thing that was pressed, and it never begins. There
+  // is no second gesture to refuse -- the body of a solid is no handle on any
+  // object, locked or not.
   doc().selectObject(null)
-  doc().startMovingObject(held)
-  check('pressing its body picks it', primarySelection(doc()) === held)
-  check('but never picks it up', doc().drag.kind === 'idle', doc().drag.kind)
   doc().startGizmo(held, { mode: 'move', axis: 0 })
-  check('nor does a handle', doc().drag.kind === 'idle', doc().drag.kind)
+  check('pressing a handle picks it', primarySelection(doc()) === held)
+  check('but never picks it up', doc().drag.kind === 'idle', doc().drag.kind)
 
   // Mirror skips it, and the tool says so by going dark.
   const flips = doc().past.length
@@ -6700,12 +6675,11 @@ console.log('\nThe Smoother is the brush that arrives somewhere and stops')
   shows(
     'Apply cut is dark while it is selected',
     markupOf('CutActions (locked)', CutActions),
-    'class="nav-action nav-action-primary" disabled=""'
+    'class="cut-action cut-action-primary" disabled=""'
   )
   doc().selectObject(null)
   const wide = markupOf('CutActions (locked, nothing selected)', CutActions)
   shows('with nothing selected the count leaves it out', wide, `Apply cut · all ${others}<`)
-  shows('and says so', wide, 'unlocked object')
   tools().setCutActive(false)
   doc().selectObject(held)
 
@@ -9448,13 +9422,29 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
           frame.centre[1] * frame.normal[1] +
           frame.centre[2] * frame.normal[2]
         check(`${face}: its plane is where its middle is`, Math.abs(depth - frame.depth) < 1e-9, `${depth} vs ${frame.depth}`)
+        // AND THE SHEET THE POINTER READS IT THROUGH stands on that plane, a
+        // hair proud of it, the same way round and exactly as big. The
+        // arithmetic is `faceBoard`'s; what it is FOR is checked further down,
+        // against a block the laser has been through.
+        const board = faceBoard(face, dims)
+        const lift =
+          board.centre[0] * board.normal[0] +
+          board.centre[1] * board.normal[1] +
+          board.centre[2] * board.normal[2] -
+          frame.depth
+        near(`${face}: its sheet stands a hair proud of it`, lift, BOARD_LIFT, 1e-12)
+        const same = (a: readonly number[], b: readonly number[]) =>
+          a.length === b.length && a.every((n, i) => n === b[i])
         check(
-          `${face}: a normal off the block finds it again`,
-          faceOfNormal(frame.normal) === face,
-          `${faceOfNormal(frame.normal)}`
+          `${face}: facing the same way, and exactly as big`,
+          same(board.normal, frame.normal) &&
+            same(board.u, frame.u) &&
+            same(board.v, frame.v) &&
+            board.w === frame.uSpan &&
+            board.h === frame.vSpan,
+          `${board.w} x ${board.h} on ${frame.uSpan} x ${frame.vSpan}`
         )
       }
-      check('and a slanted surface is no face at all', faceOfNormal([0.7, 0.7, 0]) === null, '')
 
       // A DROP FITS THE FACE AND KEEPS ITS SHAPE. A reference stretched out of
       // aspect is a drawing that would be cut wrong.
@@ -9765,6 +9755,200 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         'and it is turned by the face own axes, which is what makes that true',
         decals.includes('makeBasis(') && decals.includes('geometry={GHOST_QUAD}'),
         'no ordering of Euler angles is right for all six faces'
+      )
+    }
+
+    // --- THE SHEET THE POINTER READS THE FACE THROUGH -----------------------
+    //
+    // A picture is dropped, slid and sized by pointing at the block, and the
+    // block used to be what caught the pointer. That held until the laser had
+    // been through it: over a hole there was no material left to hit, a face
+    // cut clean away from another axis had nothing under the pointer anywhere,
+    // and the curved wall a freehand loop leaves has no face a picture can lie
+    // flat on. The drawing hung on where the material had been -- the ghost
+    // above -- and could no longer be reached: not dropped on, not slid, not
+    // sized.
+    //
+    // So the pointer is read against six invisible sheets instead, one on each
+    // face of the STOCK, and nothing the laser does moves them. See `faceBoard`
+    // for the numbers and `ReferenceBoards` for the objects. What is pinned
+    // here is the geometry, against a block that really has been cut: a ray
+    // aimed at a face where the material has gone still lands, on that face,
+    // at the place it was aimed; a ray over surviving material reads the same
+    // place off the sheet as off the material; and from square on exactly one
+    // sheet answers, since the far one faces away and the four sides are
+    // edge-on.
+    {
+      const pt = (p: Vector3): [number, number, number] => [p.x, p.y, p.z]
+      // A sheet as the component builds one: a plane turned by the face's own
+      // axes, facing outward only -- the material's default side, and what
+      // keeps the far sheet from answering a ray that has gone through the
+      // near one.
+      const sheet = (face: Face, dims: [number, number, number]): Mesh => {
+        const board = faceBoard(face, dims)
+        const mesh = new Mesh(new PlaneGeometry(board.w, board.h), new MeshBasicMaterial())
+        mesh.position.set(...board.centre)
+        mesh.quaternion.setFromRotationMatrix(
+          new Matrix4().makeBasis(
+            new Vector3(...board.u),
+            new Vector3(...board.v),
+            new Vector3(...board.normal)
+          )
+        )
+        mesh.updateMatrixWorld()
+        return mesh
+      }
+      // A ray square on to a face from outside the block, aimed at (u, v) on
+      // it -- which is where a pointer over that spot is, under the projection
+      // this screen looks through.
+      const rayAt = (face: Face, dims: [number, number, number], u: number, v: number) => {
+        const frame = faceFrame(face, dims)
+        const normal = new Vector3(...frame.normal)
+        const origin = new Vector3(...frame.centre)
+          .addScaledVector(new Vector3(...frame.u), u)
+          .addScaledVector(new Vector3(...frame.v), v)
+          .addScaledVector(normal, Math.max(...dims) * 2)
+        return new Raycaster(origin, normal.clone().negate())
+      }
+
+      // A strip cut off the right-hand side of the block from the front and
+      // thrown away: the front face now stops short of its own edge, and the
+      // right-hand face is gone altogether.
+      laser().freshStock()
+      const dims = laser().dims
+      laser().cut([[[0.2, -0.6], [0.2, 0.6]]], { axis: 2, sign: 1 })
+      laser().discardOffcut()
+      check(
+        'a strip cut off the block and thrown away',
+        laser().pieces.length === 1 && laser().pieces[0].volume < 0.75,
+        `${laser().pieces.length} piece of ${laser().pieces[0]?.volume.toFixed(3)}`
+      )
+      // The bed as the screen stands it: block space scaled by the sides and
+      // lifted so the block stands on the ground. See `Pieces`.
+      const bed = new Group()
+      bed.position.set(0, dims[1] / 2, 0)
+      bed.scale.set(dims[0], dims[1], dims[2])
+      for (const piece of laser().pieces) bed.add(new Mesh(piece.geometry, new MeshBasicMaterial()))
+      bed.updateMatrixWorld(true)
+      const sheets = FACES.map((face) => sheet(face, dims))
+      const sheetOf = (face: Face) => sheets[FACES.indexOf(face)]
+      // One answer per sheet. A ray down the seam between a plane's two
+      // triangles is reported by both of them, and fiber folds those into one
+      // event by the object's id -- see its `makeId` -- so the check counts
+      // the same way it does.
+      const sheetsHit = (ray: Raycaster) => {
+        const seen = new Set<Mesh>()
+        return ray.intersectObjects(sheets).filter((hit) => {
+          if (seen.has(hit.object as Mesh)) return false
+          seen.add(hit.object as Mesh)
+          return true
+        })
+      }
+
+      // OVER THE GAP. The block has nothing there any more, which is exactly
+      // the pointer the old hand let fall through.
+      const gone = rayAt('+z', dims, 0.35 * dims[0], 0.1 * dims[1])
+      check(
+        'over material the laser took away, the block catches nothing',
+        gone.intersectObject(bed, true).length === 0,
+        `${gone.intersectObject(bed, true).length} hits`
+      )
+      const landed = sheetsHit(gone)
+      check(
+        'and the sheet on that face catches the pointer anyway',
+        landed.length === 1 && landed[0].object === sheetOf('+z'),
+        `${landed.length} sheets`
+      )
+      if (landed.length > 0) {
+        const at = faceOffset(pt(landed[0].point), '+z', dims)
+        near('at the place it was aimed, across', at.u, 0.35 * dims[0], 1e-9)
+        near('and up', at.v, 0.1 * dims[1], 1e-9)
+      }
+
+      // ON THE MISSING FACE. The whole of the right-hand face went with the
+      // strip; its sheet did not.
+      const side = sheetsHit(rayAt('+x', dims, 0, 0))
+      check(
+        'a face the cut took clean away still has its sheet',
+        side.length === 1 && side[0].object === sheetOf('+x'),
+        `${side.length} sheets`
+      )
+
+      // OVER WHAT IS LEFT. Both answer, the sheet a hair first, and they read
+      // the same place -- so nothing about a drop or a slide changed on the
+      // part of the block that is still there.
+      const kept = rayAt('+z', dims, -0.2 * dims[0], -0.1 * dims[1])
+      const onBlock = kept.intersectObject(bed, true)
+      const onSheet = sheetsHit(kept)
+      check(
+        'over surviving material the block and the sheet both answer',
+        onBlock.length > 0 && onSheet.length === 1,
+        `${onBlock.length} on the block, ${onSheet.length} sheets`
+      )
+      if (onBlock.length > 0 && onSheet.length > 0) {
+        near(
+          'the sheet a hair before the face',
+          onBlock[0].distance - onSheet[0].distance,
+          BOARD_LIFT,
+          1e-6
+        )
+        const offBlock = faceOffset(pt(onBlock[0].point), '+z', dims)
+        const offSheet = faceOffset(pt(onSheet[0].point), '+z', dims)
+        check(
+          'and reading the same place on the face',
+          Math.abs(offBlock.u - offSheet.u) < 1e-6 && Math.abs(offBlock.v - offSheet.v) < 1e-6,
+          `${offSheet.u - offBlock.u}, ${offSheet.v - offBlock.v}`
+        )
+      }
+
+      // FROM SQUARE ON, ONE SHEET, on every face: the near one. The far one
+      // faces away and the four sides are edge-on, so nothing else can be
+      // what a pointer means.
+      for (const face of FACES) {
+        const hits = sheetsHit(rayAt(face, dims, 0, 0))
+        check(
+          `${face}: one sheet answers a ray square on to it, and it is its own`,
+          hits.length === 1 && hits[0].object === sheetOf(face),
+          `${hits.length}`
+        )
+      }
+      // And exactly the face: the corner is on it, just past the edge is not
+      // -- which is what keeps a release beside the block a release beside it.
+      const front = faceFrame('+z', dims)
+      const corner = sheetsHit(
+        rayAt('+z', dims, front.uSpan / 2 - 1e-6, front.vSpan / 2 - 1e-6)
+      )
+      check('the sheet reaches the corner of its face', corner.length === 1, `${corner.length}`)
+      const past = sheetsHit(rayAt('+z', dims, front.uSpan / 2 + 1e-3, 0))
+      check('and stops at its edge', past.length === 0, `${past.length}`)
+
+      // Left as it was found: the bed whole and the history empty, since a
+      // step left here would light Undo in the bar and be read downstream as
+      // this screen having work to walk back.
+      laser().resetBlock()
+      laser().past.length = 0
+      laser().future.length = 0
+
+      // WHERE THE SHEETS ARE MOUNTED AND WHAT THEY ARE MADE OF, which the
+      // raycast above cannot see: the screen has to put them up, the pieces
+      // have to have given the hand up, and the sheet the check just built has
+      // to be the sheet the component builds.
+      const decals = readFileSync(new URL('../src/viewport/ReferenceDecals.tsx', import.meta.url), 'utf8')
+      const viewport = readFileSync(new URL('../src/viewport/LaserViewport.tsx', import.meta.url), 'utf8')
+      shows('the laser screen mounts the sheets', viewport, '<ReferenceBoards />')
+      hides('and the pieces no longer carry the hand', viewport, 'useReferencePointer')
+      shows('one sheet on every face of the stock', decals, 'FACES.map((face) =>')
+      shows('built from the numbers just raycast', decals, 'faceBoard(face, dims)')
+      hides(
+        'reading the face off the sheet rather than off a normal it might refuse',
+        decals,
+        'faceOfNormal'
+      )
+      hides('and facing outward only, so the far sheet never answers', decals, 'DoubleSide')
+      shows(
+        'a drag that leaves the sheet is put down rather than dropped where it last was',
+        decals,
+        'onPointerOut'
       )
     }
   }

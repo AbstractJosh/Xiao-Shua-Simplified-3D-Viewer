@@ -22,7 +22,7 @@ import { nearestView } from './compassViews'
 import { CutLayer } from './CutLayer'
 import { MirrorLayer } from './MirrorLayer'
 import { SymmetryPanel } from './SymmetryPanel'
-import { ReferenceHandles, ReferenceMaterial, useReferencePointer } from './ReferenceDecals'
+import { ReferenceBoards, ReferenceHandles, ReferenceMaterial } from './ReferenceDecals'
 import { useCutDraft } from './cutDraft'
 import { NO_PAN, panCorrection, panLimits } from './facePan'
 import { frameOf, perspectiveFrame, zoomFor } from './orthoFrame'
@@ -345,7 +345,6 @@ function Piece({
   choosable: boolean
 }) {
   const scene = useSceneColors()
-  const reference = useReferencePointer()
   const markOffcut = useLaser((s) => s.markOffcut)
   // Cut once and kept: a piece's geometry never changes after the boolean that
   // made it, so its outline never has to be found twice.
@@ -361,12 +360,15 @@ function Piece({
           so what survives the boolean carries its part of the picture and what
           was removed took its part with it. See `decalMaterial.ts`.
 
-          The pointer handler is the block's as well: a drag out of the panel,
-          and a decal being slid or sized, both need a surface wide enough to
-          catch a gesture that has run past the picture it started on. */}
+          THE POINTER HANDLER IS NOT THE BLOCK'S ANY MORE. It was: a drag out
+          of the panel and a decal being slid or sized both need a surface wide
+          enough to catch a gesture that has run past the picture it started
+          on, and the block was that surface -- until it was cut, at which
+          point the pointer over a hole found nothing and the reference under
+          it could not be reached. The sheets over each face are that surface
+          now, and they do not change shape. See `ReferenceBoards`. */}
       <mesh
         geometry={piece.geometry}
-        {...reference}
         // A CLICK, not a press: fiber only calls this when the press and the
         // release both land on this mesh, so an orbit or a pan that happened to
         // start over a piece does not also relight it. It is a left-button
@@ -897,6 +899,14 @@ export function LaserViewport() {
             the tool: an axis stands until it is taken away. See `MirrorLayer`,
             and `LaserTool` for why aiming it puts the cutter down. */}
         <MirrorLayer face={face} dims={dims} />
+
+        {/* The six sheets a reference is dropped on, slid across and sized
+            against: one a hair off each face of the block AS IT ARRIVED, so a
+            face the laser has cut through, or cut clean away, still takes a
+            picture and still lets one be moved. Invisible, and wearing only the
+            move handler, so a press goes through them to whatever is behind.
+            See `ReferenceBoards`. */}
+        <ReferenceBoards />
 
         {/* What is drawn ON the block for each reference: an outline always,
             and with Move in hand four corners to pull. Inside the canvas

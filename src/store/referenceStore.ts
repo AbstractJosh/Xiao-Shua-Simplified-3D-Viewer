@@ -134,7 +134,7 @@ export type Placement = {
 /** A drag from the panel that has not landed yet. */
 export type RefDrag = {
   imageId: string
-  /** Where it would land, or null while the pointer is off the block. */
+  /** Where it would land, or null while the pointer is off every face. */
   at: { face: Face; u: number; v: number } | null
 }
 
@@ -154,8 +154,10 @@ export type Corner = { su: -1 | 1; sv: -1 | 1 }
  *
  * IN THE STORE rather than in the component that started it, because the hand
  * and the eye are two different components: the press lands on a handle, and
- * every move after it lands on the BLOCK, which is the only surface wide enough
- * to catch a drag that has run past the picture it started on.
+ * every move after it lands on the face's own SHEET, which is the only surface
+ * wide enough to catch a drag that has run past the picture it started on --
+ * and, unlike the block that used to catch it, one the laser cannot cut a hole
+ * in. See `ReferenceBoards`.
  *
  * A union rather than a mode with an optional corner, because a move has no
  * corner and never will: the shape says which of the two gestures is running.

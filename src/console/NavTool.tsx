@@ -34,8 +34,9 @@ export function NavTool({
 }: {
   /**
    * Which panel this tool owns, if it has one. Omitted for a tool that is
-   * nothing but a switch -- Cut, whose controls live in the console -- so a
-   * panel id is never invented for something that can never open one.
+   * nothing but a switch -- Cut, whose actions dock at the foot of the island
+   * and whose numbers live in the console -- so a panel id is never invented
+   * for something that can never open one.
    */
   id?: NonNullable<NavPanel>
   label: string

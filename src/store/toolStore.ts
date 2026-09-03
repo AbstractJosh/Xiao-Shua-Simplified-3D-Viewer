@@ -65,15 +65,18 @@ import type { Vec3 } from '../geometry/types'
  * the rule has not changed: they overlap the same viewport, so one at a time.
  * The cut plane's NUMBERS are still not one of these, and for the reason they
  * never were: they are in the console, because a popover hanging off the
- * toolbar covered the only thing a plane can be aimed against. What `cut` holds
- * is the two ACTIONS -- fire it, or put the blade back -- which describe no
- * part of the scene and so cover nothing worth seeing. See `CutActions`.
+ * toolbar covered the only thing a plane can be aimed against. Nor are its two
+ * ACTIONS any more -- fire it, or put the blade back -- which had a `cut`
+ * panel of their own for a while and stand in the island's own dock now, out
+ * of reach of the click-away that shuts a flyout. See `CutActions`.
  */
 export type NavPanel =
   | 'snap'
   | 'settings'
   | 'ruler'
-  | 'cut'
+  // A `cut` PANEL WENT HERE. Apply and Reset stand at the foot of the island
+  // now, in a dock rather than a flyout -- see `CutActions` -- so there is no
+  // panel for Cut to open, and no id that could name one.
   | 'export'
   | 'erode'
   | 'sculpt'
@@ -130,7 +133,6 @@ export type NavPanel =
  */
 export const ISLAND_PANELS: NavPanel[] = [
   'ruler',
-  'cut',
   'erode',
   'sculpt',
   'smoother',
@@ -1823,17 +1825,16 @@ export const useTools = create<ToolState>((set) => ({
   // user shown nothing but a plane would have nothing to press. It is what the
   // actions did for themselves while they hung under the island.
   //
-  // Disarming shuts it, but only if it is still the cut's own panel that is
-  // up: closing somebody else's would be this tool reaching outside itself.
+  // Nothing about `openPanel` here any more. Arming used to open the cut's own
+  // flyout, because the cut is fired from a button and a user shown nothing but
+  // a plane had nothing to press; the button stands in the island itself now
+  // -- see `CutActions` -- so it is up whenever the plane is, with no panel to
+  // open or to shut on the way out.
   setCutActive: (on, spawn) =>
-    set((s) =>
+    set(
       on
-        ? { cutActive: true, cutPlane: spawn ?? DEFAULT_CUT_PLANE, openPanel: 'cut' }
-        : {
-            cutActive: false,
-            cutPlane: DEFAULT_CUT_PLANE,
-            openPanel: s.openPanel === 'cut' ? null : s.openPanel,
-          }
+        ? { cutActive: true, cutPlane: spawn ?? DEFAULT_CUT_PLANE }
+        : { cutActive: false, cutPlane: DEFAULT_CUT_PLANE }
     ),
 
   setCutPlane: (patch) => set((s) => ({ cutPlane: { ...s.cutPlane, ...patch } })),

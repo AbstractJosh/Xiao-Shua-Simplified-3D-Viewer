@@ -3958,6 +3958,317 @@ console.log('\nThe erode brush burns through a thin wall rather than pinching it
     )
     raised.geometry.dispose()
   }
+
+  // THIN OBJECTS, where the brush is wider than the thing it is held against.
+  //
+  // Every case above burns a hole through the MIDDLE of a wall, and that is
+  // the one case a thin object hardly ever presents: a centimetre brush on a
+  // three-centimetre panel reaches the panel's edge almost as soon as it is
+  // put down, a chip smaller than the brush is all edge, and a rod is a wall
+  // with no middle at all. What used to happen there, measured: a press at the
+  // edge put seven percent of the panel's volume BACK in one dab, a drag along
+  // it folded the surface through itself, a chip one and a half brushes wide
+  // came out inside out with its volume reading negative, and a rod was cut in
+  // two and then zipped back into a rod at fourteen times the triangle count.
+  // See `breakThrough` for what went wrong in each.
+  //
+  // What is asserted is the same for all of them: the object stays closed, the
+  // surface is nowhere folded through itself, nothing strays out of the solid
+  // it started as, and THE TORCH NEVER PUTS MATERIAL BACK -- the volume after
+  // every dab is no more than the volume before it. Each run is replayed
+  // prefix by prefix for that last one, which is also how the live stroke
+  // arrives at the mesh.
+  {
+    const BRUSH = 0.1
+    const THIN: BaseSolid = { kind: 'box', size: [0.3, 0.3, 0.02] }
+    const stroke = (n: number, p: Vec3): ErodeDab[] =>
+      Array.from({ length: n }, () => ({ at: p, radius: BRUSH, heat: 1, smooth: 0.7 }))
+
+    /** Where the line along axis `k` through (p, q) in the other two meets the
+     *  surface, and whether each meeting is an entry or an exit -- `throughZ`
+     *  for any axis. */
+    const along = (geom: BufferGeometry, k: 0 | 1 | 2, p: number, q: number): [number, number][] => {
+      const pos = geom.getAttribute('position')
+      const i = (k + 1) % 3
+      const j = (k + 2) % 3
+      const met: [number, number][] = []
+      const A = [0, 0, 0]
+      const B = [0, 0, 0]
+      const C = [0, 0, 0]
+      for (let t = 0; t < pos.count / 3; t++) {
+        for (let s = 0; s < 3; s++) {
+          const arr = s === 0 ? A : s === 1 ? B : C
+          arr[0] = pos.getX(t * 3 + s)
+          arr[1] = pos.getY(t * 3 + s)
+          arr[2] = pos.getZ(t * 3 + s)
+        }
+        const d = (B[j] - C[j]) * (A[i] - C[i]) + (C[i] - B[i]) * (A[j] - C[j])
+        if (Math.abs(d) < 1e-14) continue
+        const u = ((B[j] - C[j]) * (p - C[i]) + (C[i] - B[i]) * (q - C[j])) / d
+        const w = ((C[j] - A[j]) * (p - C[i]) + (A[i] - C[i]) * (q - C[j])) / d
+        const r = 1 - u - w
+        if (u < 0 || w < 0 || r < 0) continue
+        const ab = [B[0] - A[0], B[1] - A[1], B[2] - A[2]]
+        const ac = [C[0] - A[0], C[1] - A[1], C[2] - A[2]]
+        const n = [
+          ab[1] * ac[2] - ab[2] * ac[1],
+          ab[2] * ac[0] - ab[0] * ac[2],
+          ab[0] * ac[1] - ab[1] * ac[0],
+        ]
+        met.push([u * A[k] + w * B[k] + r * C[k], Math.sign(n[k])])
+      }
+      return met.sort((x, y) => x[0] - y[0])
+    }
+
+    /** Lines along axis `k`, on a skewed grid `half` across, that cross the
+     *  surface out of order -- `pinches` for any axis and any size. */
+    const foldedLines = (geom: BufferGeometry, k: 0 | 1 | 2, half: number): number => {
+      let count = 0
+      for (let i = -7; i <= 7; i++) {
+        for (let j = -7; j <= 7; j++) {
+          const met: [number, number][] = []
+          for (const cross of along(geom, k, (i / 7) * half * 0.9 + 0.00713, (j / 7) * half * 0.9 + 0.00311)) {
+            const last = met[met.length - 1]
+            if (last && Math.abs(last[0] - cross[0]) < 1e-7 && last[1] !== cross[1]) met.pop()
+            else met.push(cross)
+          }
+          let ok = met.length % 2 === 0
+          for (let m = 0; ok && m < met.length; m++) ok = met[m][1] === (m % 2 === 0 ? -1 : 1)
+          if (!ok) count++
+        }
+      }
+      return count
+    }
+
+    /** The furthest any vertex lies outside the box the solid started in. */
+    const strays = (geom: BufferGeometry, lo: Vec3, hi: Vec3): number => {
+      const pos = geom.getAttribute('position')
+      let worst = 0
+      for (let i = 0; i < pos.count; i++) {
+        const p = [pos.getX(i), pos.getY(i), pos.getZ(i)]
+        for (let k = 0; k < 3; k++) worst = Math.max(worst, lo[k] - p[k], p[k] - hi[k])
+      }
+      return worst
+    }
+
+    const melt = (base: BaseSolid, run: ErodeDab[], id: string) =>
+      evaluateObject({ ...object(base, [], [], id), erosion: run })
+
+    /** The volume after every dab of the run. */
+    const volumes = (base: BaseSolid, run: ErodeDab[], id: string): number[] =>
+      run.map((_, i) => {
+        const g = melt(base, run.slice(0, i + 1), `${id}-${i + 1}`).geometry
+        const v = signedVolume(g)
+        g.dispose()
+        return v
+      })
+
+    /** The claims every thin case makes, stated once. */
+    const holds = (
+      label: string,
+      base: BaseSolid,
+      run: ErodeDab[],
+      id: string,
+      axis: 0 | 1 | 2,
+      half: number,
+      lo: Vec3,
+      hi: Vec3
+    ): { volumes: number[]; geometry: BufferGeometry } => {
+      const vs = volumes(base, run, id)
+      let rose = ''
+      for (let i = 1; i < vs.length; i++) {
+        if (vs[i] > vs[i - 1] + 1e-9) rose += ` ${i}->${i + 1}: ${vs[i - 1].toExponential(3)} -> ${vs[i].toExponential(3)}`
+      }
+      check(`${label}: the torch never puts material back`, rose === '', rose || 'monotone')
+      const geometry = melt(base, run, `${id}-end`).geometry
+      check(`${label}: and no dab produces a NaN`, !hasNaN(geometry), '')
+      check(`${label}: and the object comes out closed`, unsewn(geometry) === 0, `${unsewn(geometry)} unsewn edges`)
+      check(
+        `${label}: and nowhere folded through itself`,
+        foldedLines(geometry, axis, half) === 0,
+        `${foldedLines(geometry, axis, half)} lines cross it out of order`
+      )
+      check(
+        `${label}: and nothing strays out of the solid it was`,
+        strays(geometry, lo, hi) < 1e-6,
+        `${strays(geometry, lo, hi).toExponential(1)} beyond the face`
+      )
+      return { volumes: vs, geometry }
+    }
+
+    const panelBox: [Vec3, Vec3] = [
+      [-0.15, -0.15, -0.01],
+      [0.15, 0.15, 0.01],
+    ]
+
+    // A PRESS AT THE EDGE OF A PANEL. The wound runs off the side, so the two
+    // rims of a tunnel arrive joined into one band, and the surgery has to sew
+    // a strip across the thickness rather than a tunnel -- or, as it used to,
+    // lay a lid over the notch on each face and hand the material back.
+    for (const [where, x] of [
+      ['on the edge', 0.15],
+      ['half a brush in from the edge', 0.1],
+    ] as const) {
+      const run = stroke(10, [x, 0, 0.01])
+      const { volumes: vs, geometry } = holds(
+        `a press ${where} of a thin panel`,
+        THIN,
+        run,
+        `thin-edge-${x}`,
+        2,
+        0.15,
+        ...panelBox
+      )
+      check(
+        `a press ${where} burns a notch out of it`,
+        vs[vs.length - 1] < 0.85 * 1.8e-3,
+        `${(vs[vs.length - 1] / 1.8e-3).toFixed(3)} of the panel left`
+      )
+      geometry.dispose()
+    }
+
+    // A DRAG ACROSS A PANEL, reaching its edge at both ends. Every dab widens
+    // the last one's wound, so the tunnel is swallowed and sewn again each
+    // time, and the band it becomes at the edges is sewn as a strip.
+    {
+      const run: ErodeDab[] = []
+      for (let x = -0.1; x <= 0.1 + 1e-9; x += BRUSH * DAB_SPACING) {
+        run.push({ at: [x, 0, 0.01], radius: BRUSH, heat: 1, smooth: 0.7 })
+      }
+      const { geometry } = holds('a drag across a thin panel', THIN, run, 'thin-drag', 2, 0.15, ...panelBox)
+      let open = 0
+      for (const x of [-0.05, 0, 0.05]) if (holed(geometry, x + 0.00713, 0.00311)) open++
+      check('a drag across a thin panel cuts a slot right through', open === 3, `open at ${open} of 3 points`)
+      geometry.dispose()
+    }
+
+    // A ROD TEN TIMES THINNER THAN THE BRUSH. The flame cuts it in two, and
+    // the two rims it leaves are the ends of two stumps, not the two faces of
+    // one wall: each has to be capped, and zipping them to each other -- which
+    // they used to be, winding opposite ways and being nearest -- puts the rod
+    // back together.
+    {
+      const rod: BaseSolid = { kind: 'cylinder', radius: 0.01, height: 0.3 }
+      const run = stroke(8, [0.01, 0, 0])
+      const { volumes: vs, geometry } = holds(
+        'a rod under a brush ten times its width',
+        rod,
+        run,
+        'thin-rod',
+        0,
+        0.15,
+        [-0.01, -0.15, -0.01],
+        [0.01, 0.15, 0.01]
+      )
+      check(
+        'a rod under a brush ten times its width is cut in two',
+        along(geometry, 0, 0.0031, 0.00713).length === 0 && vs[vs.length - 1] < 0.5 * vs[0],
+        `${along(geometry, 0, 0.0031, 0.00713).length} crossings at the middle, ${(vs[vs.length - 1] / vs[0]).toFixed(3)} of the rod left`
+      )
+      const first = melt(rod, run.slice(0, 1), 'thin-rod-first').geometry
+      check(
+        'and the triangle count does not run away',
+        triangleCount(geometry) < 1.5 * triangleCount(first),
+        `${triangleCount(geometry)} after the cut, ${triangleCount(first)} after one dab`
+      )
+      first.dispose()
+      geometry.dispose()
+    }
+
+    // A CHIP ONE AND A HALF BRUSHES WIDE, a tenth of a brush thick. The first
+    // dab burns everything under the brush and leaves the four corners; the
+    // next takes those. What must never happen is what did: the surgery
+    // declined on every dab because the whole chip was the wound, and the two
+    // faces went on sinking through each other.
+    {
+      const chip: BaseSolid = { kind: 'box', size: [0.15, 0.15, 0.01] }
+      const run = stroke(6, [0, 0, 0.005])
+      const { volumes: vs, geometry } = holds(
+        'a chip smaller than two brushes',
+        chip,
+        run,
+        'thin-chip',
+        2,
+        0.075,
+        [-0.075, -0.075, -0.005],
+        [0.075, 0.075, 0.005]
+      )
+      check(
+        'a chip smaller than two brushes is never turned inside out',
+        vs.every((v) => v >= -1e-12),
+        `least volume ${Math.min(...vs).toExponential(2)}`
+      )
+      // What the flame reaches is gone; what it does not reach is not touched.
+      // The corners of the chip stand just outside the brush, and they are
+      // the honest remainder -- eating them would be the tool reaching past
+      // its own ghost, which is the complaint this block was written for.
+      const pos = geometry.getAttribute('position')
+      let nearest = Infinity
+      for (let i = 0; i < pos.count; i++) {
+        nearest = Math.min(nearest, Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i) - 0.005))
+      }
+      check(
+        'and everything under the flame is gone',
+        vs[vs.length - 1] < 0.05 * 0.15 * 0.15 * 0.01,
+        `${(vs[vs.length - 1] / (0.15 * 0.15 * 0.01)).toFixed(3)} of the chip left`
+      )
+      check(
+        'while what stands outside the brush is left alone',
+        nearest >= 0.85 * BRUSH,
+        `nearest remaining vertex ${(nearest / BRUSH).toFixed(2)} brush radii from the dab`
+      )
+      geometry.dispose()
+    }
+
+    // THE WOUND IS ROUND AND STOPS AT THE FLAME, which is the second half of
+    // what the user sees. The rim of a hole is cut along a sphere about the
+    // middle of the brush -- see the disc in `breakThrough` -- so every vertex
+    // left on the panel stands at or beyond that sphere, and the ones nearest
+    // it lie on it to within a hair; and outside the brush the panel is still
+    // the panel, every vertex on one of its six faces, because nothing there
+    // was ever moved. What this replaced left an octagon wider than the brush
+    // with the surface around it dragged and creased to the panel's corners.
+    {
+      const run = stroke(6, [0, 0, 0.01])
+      const geometry = melt(THIN, run, 'thin-round').geometry
+      const pos = geometry.getAttribute('position')
+      let nearest = Infinity
+      let rimFar = 0
+      let rimCount = 0
+      let strayed = 0
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i)
+        const y = pos.getY(i)
+        const z = pos.getZ(i)
+        const d = Math.hypot(x, y, z - 0.01)
+        nearest = Math.min(nearest, d)
+        if (d < 0.95 * BRUSH) {
+          rimCount++
+          rimFar = Math.max(rimFar, d)
+        }
+        if (d <= BRUSH) continue
+        const onFace =
+          Math.abs(Math.abs(z) - 0.01) < 1e-6 ||
+          Math.abs(Math.abs(x) - 0.15) < 1e-6 ||
+          Math.abs(Math.abs(y) - 0.15) < 1e-6
+        if (!onFace) strayed++
+      }
+      // To within the little a lip melts back after it is cut: the dabs that
+      // follow the cut sink the lip down and outward, a few hundredths of a
+      // radius over six, and not all of it evenly.
+      check(
+        'a hole in a thin panel is cut round, on the sphere of the flame',
+        rimCount > 20 && nearest >= 0.9 * BRUSH && rimFar - nearest < 0.06 * BRUSH,
+        `${rimCount} rim vertices between ${(nearest / BRUSH).toFixed(4)} and ${(rimFar / BRUSH).toFixed(4)} brush radii`
+      )
+      check(
+        'and outside the brush the panel is still the panel',
+        strayed === 0,
+        `${strayed} vertices off the panel's faces`
+      )
+      geometry.dispose()
+    }
+  }
 }
 
 
