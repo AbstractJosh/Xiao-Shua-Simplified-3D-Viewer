@@ -138,16 +138,16 @@ npm run dev      # http://localhost:5173
 
 ## Verification
 
-The engine *and* the console are verified headlessly, without a browser: **4,818 assertions** across six suites, none of which settle for "something is truthy". A geometry assertion quotes the number it got beside the number it wanted; a console assertion quotes the markup it found.
+The engine *and* the console are verified headlessly, without a browser: **4,957 assertions** across six suites, none of which settle for "something is truthy". A geometry assertion quotes the number it got beside the number it wanted; a console assertion quotes the markup it found.
 
 | Suite | Assertions | Covers |
 | --- | ---: | --- |
-| Geometry | 794 | Booleans, primitives, cuts, mirrors, the brush and the lathe, each against an analytic answer |
+| Geometry | 853 | Booleans, primitives, cuts, mirrors, the brush and the lathe, each against an analytic answer |
 | Interaction | 691 | Picking, snapping, the gizmo's drag resolvers and the compass views |
-| Console | 3,071 | The bar and every panel, rendered against real store state through a full editing session |
+| Console | 3,150 | The bar and every panel, rendered against real store state through a full editing session |
 | Export | 85 | GLB, OBJ, STL and STEP written and read back, topology walked entity by entity |
 | Import | 90 | Meshes and STEP files landing as sized, placed solids |
-| Persistence | 87 | Projects written to the browser and read back, with every corrupt record refused rather than opened |
+| Persistence | 88 | Projects written to the browser and read back, with every corrupt record refused rather than opened |
 
 The main instrument is **signed volume via the divergence theorem**: for a closed, consistently wound mesh it returns the true enclosed volume, so one number proves both that a boolean produced the right amount of material *and* that the result is watertight. A leaking or inside-out mesh cannot accidentally land on the analytic answer.
 

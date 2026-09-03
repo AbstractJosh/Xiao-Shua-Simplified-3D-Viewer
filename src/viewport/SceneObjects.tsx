@@ -12,7 +12,6 @@ import { DEFAULT_OBJECT_COLOR } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
 import { useEvalStatus } from '../store/evalStore'
 import { useTools } from '../store/toolStore'
-import type { TransformMode } from '../store/toolStore'
 // Imported for the side effect as much as the function: the module registers
 // `<biasedStandardMaterial>` with the reconciler, which is the element both
 // bodies below are built from.
@@ -385,53 +384,19 @@ export type GizmoClaims = {
  * Five of the six are OTHER CLAIMS on the handles -- another tool's gizmo, a
  * finer selection, a gesture still in flight. The sixth, `hidden`, is the user
  * saying so outright, which is why it is not a guess and cannot be overridden.
+ *
+ * A `bodyCanBeDragged` RULE STOOD BESIDE THIS, and the gesture it governed has
+ * gone with it. A press on the solid itself used to slide it across the ground
+ * -- in Move, with the handles up, on an unlocked object -- and every clause of
+ * that rule was a patch on the same fault: the body is an INVISIBLE handle the
+ * size of the whole solid. The arrows announce themselves; the body just sits
+ * there being the object, so a press meant to pick it, or to put a sketch on
+ * it down, or merely to hold it while the pointer wandered, walked it across
+ * the scene instead. An object moves by its gizmo alone now -- an arrow along
+ * an axis, a quad within a plane -- and each of those says on screen which way
+ * it will go. What a press on the body does instead is in
+ * `onObjectPointerDown`.
  */
-/**
- * Whether a press on an object's BODY may drag it across the scene.
- *
- * The body is the second way to move a solid, and it is invisible: the arrows
- * announce themselves, the body just sits there being the object. So taking the
- * handles away and leaving it draggable produced exactly the wrong result --
- * the picker said the object was not being transformed, and it moved anyway the
- * first time anybody pressed it.
- *
- * THE MODE IS THE SAME ARGUMENT, and it was the bigger hole. The body has only
- * ever offered ONE gesture -- a slide across the ground -- so in Rotate and in
- * Scale it was a handle for something the tool does not do. Pick Rotate,
- * intending to turn a solid, press anywhere on it that is not a ring, and it
- * slid. The gizmo said the tool was Rotate and the object moved instead, which
- * is the same lie as a dark picker and a solid that still walks. So the body
- * drags in MOVE and nowhere else; the rings and the scale arrows are what those
- * two modes offer, and they are enough.
- *
- * What a press in the other two modes still does is select -- pick the object,
- * step back from a sketch on it -- and then stop, spending the press and
- * leaving the camera alone. Nothing else on the object is being taken away.
- *
- * TWO of the six claims in `selectionWearsGizmo` reach this far, and only two,
- * because the other four are answered inside the press itself:
- *
- *  - a selected SKETCH or RULER stands the object's gizmo down, but pressing
- *    the body is precisely how you hand the gizmo BACK -- the handler clears
- *    the finer selection and the arrows return, so the press ends with the
- *    object wearing handles and a drag is honest;
- *  - a MARQUEE in flight cannot be the thing you just pressed an object with;
- *  - an armed CUT PLANE owns the gizmo but has never owned the object. Moving
- *    a solid into the blade is a normal way to aim a cut, and taking that away
- *    would be answering a question nobody asked.
- *
- * What is left is the two that mean the object genuinely is not being
- * transformed right now: the user put the handles down, or a brush is up.
- */
-export function bodyCanBeDragged(
-  claims: Pick<GizmoClaims, 'hidden' | 'brushArmed' | 'locked'> & { mode: TransformMode }
-): boolean {
-  // THREE of the claims reach this far now. The lock is the third, and it is
-  // the plainest of them: a locked solid is not being transformed by anything,
-  // so its body offers no slide however the tool is set.
-  return claims.mode === 'move' && !claims.hidden && !claims.brushArmed && !claims.locked
-}
-
 export function selectionWearsGizmo(claims: GizmoClaims): boolean {
   return (
     claims.selected &&
@@ -625,10 +590,9 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     }
 
     if (primarySelection(s) !== id) {
-      // The first press only selects, so an object cannot be shoved across the
-      // scene by a click that was only meant to pick it. The press is spent
-      // either way: the left button no longer orbits from the body of a solid
-      // any more than it does from empty space, where it draws a box instead.
+      // The press only selects. It is spent either way: the left button no
+      // longer orbits from the body of a solid any more than it does from
+      // empty space, where it draws a box instead.
       s.selectObject(id)
       return
     }
@@ -637,36 +601,16 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     // it. Without this the sketch gizmo, which outranks the object's, could
     // never be dismissed: sketches are deselected by selecting something else,
     // and the obvious something else is the solid they sit on. Done here rather
-    // than costing a click, and it happens whether or not the press goes on to
-    // become a drag -- putting the sketch down is the half of it that is about
-    // the selection.
+    // than costing a click.
     if (s.selectedFeatureId !== null) s.selectFeature(id, null)
 
-    // MOVE ONLY, AND ONLY WITH HANDLES UP. The body is the invisible second
-    // way to move a solid: the arrows announce themselves, the body just sits
-    // there being the object. So it must not go on offering a slide when the
-    // tool on screen says Rotate or Scale, or when the picker has been put
-    // down. The press is spent on the selection above and the camera is left
-    // alone, since nothing is about to be dragged.
-    //
-    // Read from `tools` rather than from the subscribed copies, so the answer
-    // is the mode as it stands at the PRESS rather than as of the last render.
-    if (
-      !bodyCanBeDragged({
-        mode: tools.transformMode,
-        hidden: tools.gizmoHidden,
-        brushArmed: tools.brushTool !== null,
-        locked: s.doc.objects.some((o) => o.id === id && o.locked === true),
-      })
-    ) {
-      return
-    }
-
-    // OrbitControls listens on the canvas directly, so a React-level
-    // stopPropagation never reaches it. Disable it synchronously or the camera
-    // orbits while the object is being dragged.
-    if (controlsRef.current) controlsRef.current.enabled = false
-    s.startMovingObject(id)
+    // AND THAT IS ALL A PRESS ON THE BODY DOES. It used to go on to start a
+    // slide across the ground -- in Move, with the handles up -- so the object
+    // could be walked across the scene from anywhere on it, by exactly the
+    // press that was meant to pick it. Moving is the gizmo's job: an arrow or
+    // a plane quad, each of which says which way it will go. See the note
+    // above `selectionWearsGizmo`. The camera is left alone as well, since
+    // nothing is about to be dragged.
   }
 
   const selected = doc.objects.find((o) => o.id === selectedObjectId) ?? null

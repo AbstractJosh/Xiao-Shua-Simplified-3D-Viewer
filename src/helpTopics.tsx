@@ -521,8 +521,8 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
         notes: [
           <>
-            Only <b>Move</b> lets you drag an object by its body. Under <b>Rotate</b> and{' '}
-            <b>Scale</b> a press on the body selects and nothing more.
+            A press on an object's body selects it and nothing more, whatever tool is up. Moving
+            it is the gizmo's job: its <b>arrows</b> and <b>plane quads</b>.
           </>,
         ],
       },
@@ -577,8 +577,13 @@ export const HELP_SECTIONS: HelpSection[] = [
             action: 'Drag a plane quad',
             result: 'Slides within XY, XZ or YZ. One seen edge-on stands down.',
           },
-          { action: 'Drag the object itself', result: 'Slides it along the ground.' },
-          { action: 'Shift while dragging', result: 'Lifts it instead of sliding it.' },
+        ],
+        notes: [
+          <>
+            The arrows and quads are the only handles. Dragging the object itself does not move
+            it, so a press meant to pick a solid, or to put a sketch on it down, never walks it
+            across the scene.
+          </>,
         ],
       },
       {
@@ -644,8 +649,8 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
         notes: [
           <>
-            With them dark the solid cannot be dragged <b>at all</b>, by arrow or by body -- it is
-            pinned while you work on its surface. It can still be painted, cut and torched, and its{' '}
+            With them dark the solid cannot be dragged <b>at all</b> -- it is pinned while you
+            work on its surface. It can still be painted, cut and torched, and its{' '}
             <b>Position</b> and <b>Rotation</b> still typed.
           </>,
         ],
@@ -802,13 +807,13 @@ export const HELP_SECTIONS: HelpSection[] = [
           { action: 'Scale', result: 'Its ring sizes the guide square.' },
           { action: 'Apply cut', result: 'Makes the cut.' },
           { action: 'Reset plane', result: 'Puts the blade back where arming would drop it now.' },
-          { action: 'The caret on Cut', result: "Reopens the tool's panel if you close it." },
         ],
         notes: [
           <>
-            The tool's panel opens beside the island when you arm it, and says what the cut is
-            about to take: the selected object, or every solid if nothing is selected. A locked
-            solid is left whole either way.
+            Both buttons stand at the foot of the Tools island for as long as the plane is armed,
+            where the laser cutter keeps its own Apply. The cut takes the selected object, or
+            every solid if nothing is selected -- the button says <b>all</b> and how many. A
+            locked solid is left whole either way.
           </>,
         ],
       },

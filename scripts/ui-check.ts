@@ -341,7 +341,7 @@ import {
 } from '../src/store/toolStore'
 import { RulerReadouts, stripeFraction } from '../src/viewport/Rulers'
 import { BrushScopePanel } from '../src/viewport/BrushScopePanel'
-import { bodyCanBeDragged, selectionWearsGizmo } from '../src/viewport/SceneObjects'
+import { selectionWearsGizmo } from '../src/viewport/SceneObjects'
 import { brushAllows } from '../src/viewport/brushTarget'
 import { viewQuaternion } from '../src/viewport/compassViews'
 import {
@@ -830,10 +830,12 @@ doc().selectObject(pyramidId)
   // is noise rather than help.
   hides('and no hover bubble', cut, 'nav-tip')
   hides('nor does snap', markupOf('SnapTool (no tip)', SnapTool), 'nav-tip')
-  // DISARMED IT IS A BARE SWITCH. The caret comes with the panel, and the
-  // panel is the two things you do to a plane that exists -- so there is
-  // nothing behind it until one does.
-  hides('and carries no caret while it is disarmed', cut, 'nav-caret')
+  // A BARE SWITCH, armed or not. For a while it grew a caret and a flyout once
+  // the plane was armed, holding Apply and Reset -- and a flyout shuts on any
+  // press outside the island, which is what aiming the plane is. The two
+  // actions dock at the foot of the island instead (see below, once it is
+  // armed), and Cut itself never has a panel to put a caret on.
+  hides('and carries no caret', cut, 'nav-caret')
   // Not `markupOf`, which counts an empty render as a failure: rendering
   // nothing at all is exactly the claim here, and it is a stronger one than
   // "the markup happens not to contain a button".
@@ -846,6 +848,7 @@ doc().selectObject(pyramidId)
   // The island over the scene: the two tools, and the strip that shuts it.
   const island = markupOf('ToolIsland', ToolIsland)
   shows('the island carries the cut tool', island, '>Cut<')
+  hides('with no cut dock at its foot while the plane is down', island, 'cut-dock')
   shows('the move tool', island, '>Move<')
   shows('the rotate tool', island, '>Rotate<')
   shows('and the scale tool', island, '>Scale<')
@@ -1329,11 +1332,6 @@ doc().selectObject(pyramidId)
       !selectionWearsGizmo({ ...wearing, locked: true }),
       'hidden'
     )
-    check(
-      'which takes the body with it, in Move and all',
-      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: true }),
-      'fixed'
-    )
     // A brush in particular, since that is the tool the rule was extended
     // for: arming one must clear the handles without the user asking twice.
     check(
@@ -1344,75 +1342,21 @@ doc().selectObject(pyramidId)
     )
   }
 
-  // AND THE BODY GOES WITH THE HANDLES. Taking the arrows away is only half of
-  // turning the tool off: the solid itself is draggable, invisibly, and an
-  // object that still walks across the scene on the first press is the opposite
-  // of what a dark picker says.
+  // AND THE BODY IS NO HANDLE AT ALL. A press on the solid itself used to
+  // slide it across the ground -- in Move, with the handles up, on an unlocked
+  // object -- and every clause that narrowed it was a patch on the same fault:
+  // an invisible handle the size of the whole object, under exactly the press
+  // meant to pick it. The rule went with the gesture, and so did the store's
+  // way in: nothing starts a drag on an object except one of its gizmo's
+  // handles, each of which says on screen which way it will go.
   {
     check(
-      'an object wearing handles can be dragged by its body',
-      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: false }),
-      'draggable'
+      'the store offers no way to pick an object up by its body',
+      !('startMovingObject' in doc()),
+      Object.keys(doc())
+        .filter((k) => /moving/i.test(k))
+        .join(', ')
     )
-    check(
-      'putting the handles down stops that too',
-      !bodyCanBeDragged({ mode: 'move', hidden: true, brushArmed: false, locked: false }),
-      'fixed'
-    )
-    check(
-      'and so does arming a brush',
-      !bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: true, locked: false }),
-      'fixed'
-    )
-
-    // AND THE MODE. The body offers exactly one gesture -- a slide across the
-    // ground -- so in the two modes that are not about sliding it is a handle
-    // for something the tool does not do. Pressing a solid in Rotate and having
-    // it slide is the same lie as pressing one under a dark picker and having
-    // it move: the gizmo says one thing and the object does another.
-    check(
-      'Rotate does not slide a solid by its body',
-      !bodyCanBeDragged({ mode: 'rotate', hidden: false, brushArmed: false, locked: false }),
-      'fixed'
-    )
-    check(
-      'nor does Scale',
-      !bodyCanBeDragged({ mode: 'scale', hidden: false, brushArmed: false, locked: false }),
-      'fixed'
-    )
-    check(
-      'and Move still does',
-      bodyCanBeDragged({ mode: 'move', hidden: false, brushArmed: false, locked: false }),
-      'draggable'
-    )
-
-    // The two rules have to agree in the direction that matters: a body that
-    // can be dragged must be wearing handles, or the solid would move on a
-    // press with nothing on screen to say it could. The converse is NOT
-    // claimed, and stopped being true when the mode joined the rule -- Rotate
-    // wears three rings and refuses the body, which is the whole point of it.
-    for (const mode of ['move', 'rotate', 'scale'] as const) {
-      for (const hidden of [false, true]) {
-        for (const brushArmed of [false, true]) {
-          const wearing = selectionWearsGizmo({
-            selected: true,
-            hidden,
-            brushArmed,
-            cutActive: false,
-            rulerSelected: false,
-            sketchSelected: false,
-            marqueeing: false,
-            locked: false,
-          })
-          const draggable = bodyCanBeDragged({ mode, hidden, brushArmed, locked: false })
-          check(
-            `${mode} hidden=${hidden} brush=${brushArmed}: a draggable body wears handles`,
-            !draggable || wearing,
-            `${wearing ? 'arrows' : 'none'} / ${draggable ? 'draggable' : 'fixed'}`
-          )
-        }
-      }
-    }
   }
 
 
@@ -1908,8 +1852,8 @@ tools().setCutActive(true)
 // The prism is 0.9 tall and rests on the grid, so this plane is halfway up it.
 tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 {
-  // Arming puts the two ACTIONS behind the tool's own caret, a short travel
-  // from the gizmo that just aimed the plane. The plane's numbers stay in the
+  // Arming puts the two ACTIONS at the foot of the island, a short travel from
+  // the gizmo that just aimed the plane. The plane's numbers stay in the
   // console.
   const panel = markupOf('CutActions (armed)', CutActions)
   hides('the actions carry no placement of their own', panel, '>Position<')
@@ -1931,52 +1875,68 @@ tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
     placed,
     trackOf(-3, CUT_POSITION_LIMIT)
   )
-  shows('it says what it will cut', panel, 'Cuts the selected object')
-  shows('and offers the button', panel, '>Apply cut</button>')
+  shows('it offers the button', panel, '>Apply cut</button>')
   shows('and the one that re-aims the plane', panel, '>Reset plane</button>')
+  // NO HOVER TEXT. The sentence about what the cut was about to take rode
+  // Apply as a title; the count in the label carries the half that must not be
+  // missed, and the rest is in Help, which is where explaining goes.
+  hides('and neither carries a title', panel, ' title="')
 
-  // AND THEY ARE A DROPDOWN OFF THE CUT BUTTON, like every other tool's
-  // controls on this island -- not two rows hanging under the whole of it,
-  // which is what made arming the tool shove the column about.
+  // AND THEY ARE THE ISLAND'S OWN DOCK, not a flyout off the Cut button. A
+  // flyout shuts on any pointerdown outside the island -- `NavBar`'s
+  // outside-press listener, which is what makes every flyout dismiss by
+  // clicking away -- and aiming the plane IS a pointerdown on the canvas, so
+  // the button that fired the cut was shut by the drag that aimed it, every
+  // time. The dock is a child of the island, and nothing about pressing the
+  // scene closes it. The same classes as the laser's `CutPanel`, so the two
+  // screens' Apply buttons cannot drift apart in size or placement.
+  shows('the actions are the island dock', panel, 'class="cut-dock"')
+  shows('sized above every other button in it', panel, 'cut-action cut-action-primary')
   const armedTool = markupOf('CutTool (armed)', CutTool)
-  shows('an armed cut grows a caret of its own', armedTool, 'nav-caret')
+  hides('and the Cut button grows no caret', armedTool, 'nav-caret')
+  hides('nor a panel', armedTool, 'class="nav-panel"')
+  hides('so Apply is not behind it', armedTool, '>Apply cut<')
+  check('and arming opened no panel', tools().openPanel === null, `${tools().openPanel}`)
+  const armedIsland = markupOf('ToolIsland (cut armed)', ToolIsland)
+  shows('the dock hangs at the foot of the island', armedIsland, 'class="cut-dock"')
+  shows('which is where Apply cut lives', armedIsland, '>Apply cut</button>')
+  // After the LAST tool rather than under Cut's own row, so arming shoves none
+  // of the tools about: what grows is the end of the column.
   check(
-    'and arming opened its panel, so the button that fires it is up',
-    tools().openPanel === 'cut',
-    `${tools().openPanel}`
-  )
-  shows('which is where Apply cut lives', armedTool, '>Apply cut</button>')
-  shows('in a panel of its own', armedTool, 'class="nav-panel"')
-  // Nothing hangs under the island any more, so it is the same height armed or
-  // not and the brushes below Cut stay where the hand left them.
-  hides(
-    'and nothing hangs under the island',
-    markupOf('ToolIsland (cut armed)', ToolIsland),
-    'class="nav-cut"'
+    'after every tool rather than under Cut',
+    armedIsland.lastIndexOf('class="nav-tool') < armedIsland.indexOf('class="cut-dock"'),
+    `${armedIsland.lastIndexOf('class="nav-tool')} vs ${armedIsland.indexOf('class="cut-dock"')}`
   )
 
-  // PUTTING THE TOOL DOWN TAKES THE PANEL WITH IT, and it is the STORE that
-  // says so rather than the button -- the same rule `setIslandCollapsed`
-  // states in the same place, and for the same reason: the invariant is about
-  // the state, and the button is only one of the ways in.
+  // AND IT GOES WITH THE TOOL, which is what keeps the island the height it
+  // always was until the plane is armed.
   tools().setCutActive(false)
-  check('disarming shuts the panel', tools().openPanel === null, `${tools().openPanel}`)
-  // But only its OWN. A tool that closed whatever happened to be open would be
-  // reaching outside itself.
+  check(
+    'disarming takes the dock with it',
+    renderToStaticMarkup(createElement(CutActions)) === '',
+    'the island goes back to its rows'
+  )
+  hides(
+    'and the island foot is empty again',
+    markupOf('ToolIsland (cut disarmed)', ToolIsland),
+    'cut-dock'
+  )
+  // Disarming touches no panel either: there is none of its own to shut, and a
+  // tool that closed whatever happened to be open would be reaching outside
+  // itself.
   tools().setOpenPanel('snap')
   tools().setCutActive(false)
-  check('and leaves another panel alone', tools().openPanel === 'snap', `${tools().openPanel}`)
+  check('and leaves an open panel alone', tools().openPanel === 'snap', `${tools().openPanel}`)
   tools().setOpenPanel(null)
   tools().setCutActive(true)
   tools().setCutPlane({ position: [-3, 0.45, 0], rotation: [0, 0, 0] })
 
   // Deselect and the button says out loud that it is about to cut everything.
-  // On a 176px island the target sentence lives in a title; the COUNT does not,
-  // because "this will cut all of them" is the half that must not be missed.
+  // The COUNT rides the label, because "this will cut all of them" is the half
+  // that must not be missed, and the label is the one part always read.
   doc().selectObject(null)
   const wide = markupOf('CutActions (nothing selected)', CutActions)
   shows('with nothing selected it warns it will cut the lot', wide, 'Apply cut · all ')
-  shows('and says how many that is', wide, 'Cuts every object in the scene')
   doc().selectObject(prismId)
 }
 
@@ -2210,10 +2170,12 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
 {
   // The left-drag half of an arrow, which is a genuinely different code path
   // from the right-drag half: sizing goes through `resizeObjectTo`, moving goes
-  // through `moveObjectTo` -- the same action the body drag uses. That action
-  // guarded on the body-drag kind alone, so every arrow silently did nothing
-  // while the ring and the right-drag worked, which is exactly the shape of bug
-  // a suite that only exercised sizing could not see.
+  // through `moveObjectTo`. That action once guarded on the body drag's kind
+  // alone -- back when a press on the solid could slide it -- so every arrow
+  // silently did nothing while the ring and the right-drag worked, which is
+  // exactly the shape of bug a suite that only exercised sizing could not see.
+  // The body drag is gone and the gizmo is the only way in now, so this is the
+  // path that has to work.
   const entries = doc().past.length
   const start = positionOf(gizmoCube)
 
@@ -2236,8 +2198,8 @@ const gizmoCube = doc().addObject({ kind: 'box', size: [2, 2, 2] }, [0, 1, 0])
   doc().undo()
   near('and undo returns it', positionOf(gizmoCube)[0], start[0], 1e-9)
 
-  // Outside a gizmo or body drag the action must still refuse: it is the live
-  // half of a gesture, and the panel's typed values go through setObjectTransform.
+  // Outside a gizmo drag the action must still refuse: it is the live half of
+  // a gesture, and the panel's typed values go through setObjectTransform.
   const idle = doc().doc
   doc().moveObjectTo([99, 99, 99])
   check('but it does nothing with no drag running', doc().doc === idle)
@@ -6685,14 +6647,14 @@ console.log('\nThe Smoother is the brush that arrives somewhere and stops')
   doc().setObjectColor([held], '#123456')
   check('and its colour', at()?.color === '#123456', at()?.color)
 
-  // The two gestures that would move it, at the store: each still SELECTS,
-  // so the panels describe the thing that was pressed, and neither begins.
+  // The one gesture that would move it, at the store: it still SELECTS, so
+  // the panels describe the thing that was pressed, and it never begins. There
+  // is no second gesture to refuse -- the body of a solid is no handle on any
+  // object, locked or not.
   doc().selectObject(null)
-  doc().startMovingObject(held)
-  check('pressing its body picks it', primarySelection(doc()) === held)
-  check('but never picks it up', doc().drag.kind === 'idle', doc().drag.kind)
   doc().startGizmo(held, { mode: 'move', axis: 0 })
-  check('nor does a handle', doc().drag.kind === 'idle', doc().drag.kind)
+  check('pressing a handle picks it', primarySelection(doc()) === held)
+  check('but never picks it up', doc().drag.kind === 'idle', doc().drag.kind)
 
   // Mirror skips it, and the tool says so by going dark.
   const flips = doc().past.length
@@ -6713,12 +6675,11 @@ console.log('\nThe Smoother is the brush that arrives somewhere and stops')
   shows(
     'Apply cut is dark while it is selected',
     markupOf('CutActions (locked)', CutActions),
-    'class="nav-action nav-action-primary" disabled=""'
+    'class="cut-action cut-action-primary" disabled=""'
   )
   doc().selectObject(null)
   const wide = markupOf('CutActions (locked, nothing selected)', CutActions)
   shows('with nothing selected the count leaves it out', wide, `Apply cut · all ${others}<`)
-  shows('and says so', wide, 'unlocked object')
   tools().setCutActive(false)
   doc().selectObject(held)
 

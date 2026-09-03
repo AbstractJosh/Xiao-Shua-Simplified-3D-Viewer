@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import {
+  CutActions,
   CutTool,
   ErodeTool,
   MirrorTool,
@@ -222,10 +223,11 @@ export function IslandShell({ children }: { children: ReactNode }) {
  * that decide which gizmo is up, the mirror that flips a solid outright, Ruler,
  * Cut and the three brushes.
  *
- * ONE ROW PER TOOL, and the island is the same height whatever is armed. The
- * cut's Apply and Reset used to hang under the column as two more rows, which
- * made arming it shove everything above them about; they are behind Cut's own
- * caret now, like every other tool's controls. See `CutActions`.
+ * ONE ROW PER TOOL, and one exception at the foot: the cut's Apply and Reset
+ * dock under the whole column for as long as the plane is armed, exactly as
+ * the laser's do. They were behind Cut's own caret for a while, like every
+ * other tool's controls, and that put the button that fires the cut in a
+ * flyout that shuts on the very drag that aims the plane. See `CutActions`.
  *
  * They were in the bar across the top. Every one of them is aimed at the SCENE
  * -- a gizmo is dragged on the solid it belongs to, a ruler is laid beside the
@@ -301,6 +303,14 @@ export function ToolIsland() {
           first, since it is the one that was here already. */}
       <ErodeTool />
       <SculptTool />
+      {/* AND WHAT TO DO WITH THE PLANE, docked at the foot. Nothing at all
+          with the plane disarmed, so the island is the height it always was
+          until Cut is pressed. A child of the island rather than a flyout
+          hanging off the Cut button, which is the distinction the whole
+          section exists to record: a flyout shuts on the first press against
+          the scene, and dragging the plane's gizmo is a press against the
+          scene. See `CutActions`. */}
+      <CutActions />
     </IslandShell>
   )
 }
