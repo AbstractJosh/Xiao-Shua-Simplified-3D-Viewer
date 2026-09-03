@@ -15,7 +15,19 @@
  *
  * Run: npx tsx scripts/ui-check.ts
  */
-import { Box3, Matrix4, PlaneGeometry, Quaternion, ShaderChunk, ShaderLib, Vector3 } from 'three'
+import {
+  Box3,
+  Group,
+  Matrix4,
+  Mesh,
+  MeshBasicMaterial,
+  PlaneGeometry,
+  Quaternion,
+  Raycaster,
+  ShaderChunk,
+  ShaderLib,
+  Vector3,
+} from 'three'
 import type { BufferAttribute, BufferGeometry, WebGLProgramParametersWithUniforms } from 'three'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -107,7 +119,7 @@ import {
   useReference,
   visiblePlacements,
 } from '../src/store/referenceStore'
-import type { Placement } from '../src/store/referenceStore'
+import type { Face, Placement } from '../src/store/referenceStore'
 import {
   CROP_RATIOS,
   aspectOf,
@@ -120,15 +132,16 @@ import {
   turnedSize,
 } from '../src/console/referenceImage'
 import {
+  BOARD_LIFT,
   CORNERS,
   FACES,
   MIN_DECAL,
   clampCentre,
   coversPoint,
   dropSize,
+  faceBoard,
   faceFrame,
   faceOffset,
-  faceOfNormal,
   placementRect,
   pointUv,
   resizeFromCorner,
@@ -9448,13 +9461,29 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
           frame.centre[1] * frame.normal[1] +
           frame.centre[2] * frame.normal[2]
         check(`${face}: its plane is where its middle is`, Math.abs(depth - frame.depth) < 1e-9, `${depth} vs ${frame.depth}`)
+        // AND THE SHEET THE POINTER READS IT THROUGH stands on that plane, a
+        // hair proud of it, the same way round and exactly as big. The
+        // arithmetic is `faceBoard`'s; what it is FOR is checked further down,
+        // against a block the laser has been through.
+        const board = faceBoard(face, dims)
+        const lift =
+          board.centre[0] * board.normal[0] +
+          board.centre[1] * board.normal[1] +
+          board.centre[2] * board.normal[2] -
+          frame.depth
+        near(`${face}: its sheet stands a hair proud of it`, lift, BOARD_LIFT, 1e-12)
+        const same = (a: readonly number[], b: readonly number[]) =>
+          a.length === b.length && a.every((n, i) => n === b[i])
         check(
-          `${face}: a normal off the block finds it again`,
-          faceOfNormal(frame.normal) === face,
-          `${faceOfNormal(frame.normal)}`
+          `${face}: facing the same way, and exactly as big`,
+          same(board.normal, frame.normal) &&
+            same(board.u, frame.u) &&
+            same(board.v, frame.v) &&
+            board.w === frame.uSpan &&
+            board.h === frame.vSpan,
+          `${board.w} x ${board.h} on ${frame.uSpan} x ${frame.vSpan}`
         )
       }
-      check('and a slanted surface is no face at all', faceOfNormal([0.7, 0.7, 0]) === null, '')
 
       // A DROP FITS THE FACE AND KEEPS ITS SHAPE. A reference stretched out of
       // aspect is a drawing that would be cut wrong.
@@ -9765,6 +9794,200 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
         'and it is turned by the face own axes, which is what makes that true',
         decals.includes('makeBasis(') && decals.includes('geometry={GHOST_QUAD}'),
         'no ordering of Euler angles is right for all six faces'
+      )
+    }
+
+    // --- THE SHEET THE POINTER READS THE FACE THROUGH -----------------------
+    //
+    // A picture is dropped, slid and sized by pointing at the block, and the
+    // block used to be what caught the pointer. That held until the laser had
+    // been through it: over a hole there was no material left to hit, a face
+    // cut clean away from another axis had nothing under the pointer anywhere,
+    // and the curved wall a freehand loop leaves has no face a picture can lie
+    // flat on. The drawing hung on where the material had been -- the ghost
+    // above -- and could no longer be reached: not dropped on, not slid, not
+    // sized.
+    //
+    // So the pointer is read against six invisible sheets instead, one on each
+    // face of the STOCK, and nothing the laser does moves them. See `faceBoard`
+    // for the numbers and `ReferenceBoards` for the objects. What is pinned
+    // here is the geometry, against a block that really has been cut: a ray
+    // aimed at a face where the material has gone still lands, on that face,
+    // at the place it was aimed; a ray over surviving material reads the same
+    // place off the sheet as off the material; and from square on exactly one
+    // sheet answers, since the far one faces away and the four sides are
+    // edge-on.
+    {
+      const pt = (p: Vector3): [number, number, number] => [p.x, p.y, p.z]
+      // A sheet as the component builds one: a plane turned by the face's own
+      // axes, facing outward only -- the material's default side, and what
+      // keeps the far sheet from answering a ray that has gone through the
+      // near one.
+      const sheet = (face: Face, dims: [number, number, number]): Mesh => {
+        const board = faceBoard(face, dims)
+        const mesh = new Mesh(new PlaneGeometry(board.w, board.h), new MeshBasicMaterial())
+        mesh.position.set(...board.centre)
+        mesh.quaternion.setFromRotationMatrix(
+          new Matrix4().makeBasis(
+            new Vector3(...board.u),
+            new Vector3(...board.v),
+            new Vector3(...board.normal)
+          )
+        )
+        mesh.updateMatrixWorld()
+        return mesh
+      }
+      // A ray square on to a face from outside the block, aimed at (u, v) on
+      // it -- which is where a pointer over that spot is, under the projection
+      // this screen looks through.
+      const rayAt = (face: Face, dims: [number, number, number], u: number, v: number) => {
+        const frame = faceFrame(face, dims)
+        const normal = new Vector3(...frame.normal)
+        const origin = new Vector3(...frame.centre)
+          .addScaledVector(new Vector3(...frame.u), u)
+          .addScaledVector(new Vector3(...frame.v), v)
+          .addScaledVector(normal, Math.max(...dims) * 2)
+        return new Raycaster(origin, normal.clone().negate())
+      }
+
+      // A strip cut off the right-hand side of the block from the front and
+      // thrown away: the front face now stops short of its own edge, and the
+      // right-hand face is gone altogether.
+      laser().freshStock()
+      const dims = laser().dims
+      laser().cut([[[0.2, -0.6], [0.2, 0.6]]], { axis: 2, sign: 1 })
+      laser().discardOffcut()
+      check(
+        'a strip cut off the block and thrown away',
+        laser().pieces.length === 1 && laser().pieces[0].volume < 0.75,
+        `${laser().pieces.length} piece of ${laser().pieces[0]?.volume.toFixed(3)}`
+      )
+      // The bed as the screen stands it: block space scaled by the sides and
+      // lifted so the block stands on the ground. See `Pieces`.
+      const bed = new Group()
+      bed.position.set(0, dims[1] / 2, 0)
+      bed.scale.set(dims[0], dims[1], dims[2])
+      for (const piece of laser().pieces) bed.add(new Mesh(piece.geometry, new MeshBasicMaterial()))
+      bed.updateMatrixWorld(true)
+      const sheets = FACES.map((face) => sheet(face, dims))
+      const sheetOf = (face: Face) => sheets[FACES.indexOf(face)]
+      // One answer per sheet. A ray down the seam between a plane's two
+      // triangles is reported by both of them, and fiber folds those into one
+      // event by the object's id -- see its `makeId` -- so the check counts
+      // the same way it does.
+      const sheetsHit = (ray: Raycaster) => {
+        const seen = new Set<Mesh>()
+        return ray.intersectObjects(sheets).filter((hit) => {
+          if (seen.has(hit.object as Mesh)) return false
+          seen.add(hit.object as Mesh)
+          return true
+        })
+      }
+
+      // OVER THE GAP. The block has nothing there any more, which is exactly
+      // the pointer the old hand let fall through.
+      const gone = rayAt('+z', dims, 0.35 * dims[0], 0.1 * dims[1])
+      check(
+        'over material the laser took away, the block catches nothing',
+        gone.intersectObject(bed, true).length === 0,
+        `${gone.intersectObject(bed, true).length} hits`
+      )
+      const landed = sheetsHit(gone)
+      check(
+        'and the sheet on that face catches the pointer anyway',
+        landed.length === 1 && landed[0].object === sheetOf('+z'),
+        `${landed.length} sheets`
+      )
+      if (landed.length > 0) {
+        const at = faceOffset(pt(landed[0].point), '+z', dims)
+        near('at the place it was aimed, across', at.u, 0.35 * dims[0], 1e-9)
+        near('and up', at.v, 0.1 * dims[1], 1e-9)
+      }
+
+      // ON THE MISSING FACE. The whole of the right-hand face went with the
+      // strip; its sheet did not.
+      const side = sheetsHit(rayAt('+x', dims, 0, 0))
+      check(
+        'a face the cut took clean away still has its sheet',
+        side.length === 1 && side[0].object === sheetOf('+x'),
+        `${side.length} sheets`
+      )
+
+      // OVER WHAT IS LEFT. Both answer, the sheet a hair first, and they read
+      // the same place -- so nothing about a drop or a slide changed on the
+      // part of the block that is still there.
+      const kept = rayAt('+z', dims, -0.2 * dims[0], -0.1 * dims[1])
+      const onBlock = kept.intersectObject(bed, true)
+      const onSheet = sheetsHit(kept)
+      check(
+        'over surviving material the block and the sheet both answer',
+        onBlock.length > 0 && onSheet.length === 1,
+        `${onBlock.length} on the block, ${onSheet.length} sheets`
+      )
+      if (onBlock.length > 0 && onSheet.length > 0) {
+        near(
+          'the sheet a hair before the face',
+          onBlock[0].distance - onSheet[0].distance,
+          BOARD_LIFT,
+          1e-6
+        )
+        const offBlock = faceOffset(pt(onBlock[0].point), '+z', dims)
+        const offSheet = faceOffset(pt(onSheet[0].point), '+z', dims)
+        check(
+          'and reading the same place on the face',
+          Math.abs(offBlock.u - offSheet.u) < 1e-6 && Math.abs(offBlock.v - offSheet.v) < 1e-6,
+          `${offSheet.u - offBlock.u}, ${offSheet.v - offBlock.v}`
+        )
+      }
+
+      // FROM SQUARE ON, ONE SHEET, on every face: the near one. The far one
+      // faces away and the four sides are edge-on, so nothing else can be
+      // what a pointer means.
+      for (const face of FACES) {
+        const hits = sheetsHit(rayAt(face, dims, 0, 0))
+        check(
+          `${face}: one sheet answers a ray square on to it, and it is its own`,
+          hits.length === 1 && hits[0].object === sheetOf(face),
+          `${hits.length}`
+        )
+      }
+      // And exactly the face: the corner is on it, just past the edge is not
+      // -- which is what keeps a release beside the block a release beside it.
+      const front = faceFrame('+z', dims)
+      const corner = sheetsHit(
+        rayAt('+z', dims, front.uSpan / 2 - 1e-6, front.vSpan / 2 - 1e-6)
+      )
+      check('the sheet reaches the corner of its face', corner.length === 1, `${corner.length}`)
+      const past = sheetsHit(rayAt('+z', dims, front.uSpan / 2 + 1e-3, 0))
+      check('and stops at its edge', past.length === 0, `${past.length}`)
+
+      // Left as it was found: the bed whole and the history empty, since a
+      // step left here would light Undo in the bar and be read downstream as
+      // this screen having work to walk back.
+      laser().resetBlock()
+      laser().past.length = 0
+      laser().future.length = 0
+
+      // WHERE THE SHEETS ARE MOUNTED AND WHAT THEY ARE MADE OF, which the
+      // raycast above cannot see: the screen has to put them up, the pieces
+      // have to have given the hand up, and the sheet the check just built has
+      // to be the sheet the component builds.
+      const decals = readFileSync(new URL('../src/viewport/ReferenceDecals.tsx', import.meta.url), 'utf8')
+      const viewport = readFileSync(new URL('../src/viewport/LaserViewport.tsx', import.meta.url), 'utf8')
+      shows('the laser screen mounts the sheets', viewport, '<ReferenceBoards />')
+      hides('and the pieces no longer carry the hand', viewport, 'useReferencePointer')
+      shows('one sheet on every face of the stock', decals, 'FACES.map((face) =>')
+      shows('built from the numbers just raycast', decals, 'faceBoard(face, dims)')
+      hides(
+        'reading the face off the sheet rather than off a normal it might refuse',
+        decals,
+        'faceOfNormal'
+      )
+      hides('and facing outward only, so the far sheet never answers', decals, 'DoubleSide')
+      shows(
+        'a drag that leaves the sheet is put down rather than dropped where it last was',
+        decals,
+        'onPointerOut'
       )
     }
   }

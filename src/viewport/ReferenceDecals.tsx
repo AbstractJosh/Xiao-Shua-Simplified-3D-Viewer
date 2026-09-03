@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Line } from '@react-three/drei'
 import {
   FrontSide,
-  Matrix3,
   Matrix4,
   PlaneGeometry,
   Quaternion,
@@ -23,11 +22,12 @@ import { makeDecalUniforms, paintDecals, writeDecal } from './decalMaterial'
 import type { BlockDims, DecalRect } from './decalPlacement'
 import {
   CORNERS,
+  FACES,
   MIN_DECAL,
   PLANE_EPSILON,
   clampCentre,
   dropSize,
-  faceOfNormal,
+  faceBoard,
   faceOffset,
   placementRect,
   resizeFromCorner,
@@ -42,9 +42,12 @@ import { useSceneColors } from './useSceneColors'
  * cannot be a quad if a laser is going to cut it. The HANDLES are little
  * objects floating a hair off the face: an outline so you can see where the
  * picture ends, and four corners to pull. The HAND is a set of pointer handlers
- * that belong to the BLOCK rather than to any of them, because a drag that
- * starts on a corner finishes wherever the pointer has got to, and the block is
- * the only thing out there wide enough to catch it.
+ * that belong to neither of those but to six invisible SHEETS, one a hair off
+ * each face of the block as it arrived: a drag that starts on a corner finishes
+ * wherever the pointer has got to, and a sheet is the one thing out there wide
+ * enough to catch it that the laser cannot take away. The hand used to belong
+ * to the block itself, which was exactly as wide until it was cut. See
+ * `ReferenceBoards`.
  *
  * THE HANDLES ARE THE MOVE TOOL'S, and they exist only while it is in hand.
  * There used to be a padlock on every decal instead, pinning it so that a cut
@@ -278,28 +281,22 @@ export function ReferenceMaterial({
   )
 }
 
-const NORMALS = new Matrix3()
-
-/** Which face was hit, and where -- or null for a surface that is not a face. */
-function faceHit(e: ThreeEvent<PointerEvent>): { face: Face; point: Vector3 } | null {
-  if (!e.face) return null
-  const normal = e.face.normal
-    .clone()
-    .applyMatrix3(NORMALS.getNormalMatrix(e.object.matrixWorld))
-    .normalize()
-  const face = faceOfNormal([normal.x, normal.y, normal.z])
-  return face ? { face, point: e.point } : null
-}
-
 /**
- * The pointer handler the BLOCK wears while references are about.
+ * The pointer handler the SHEETS wear while references are about.
  *
- * Spread onto the block's mesh, and doing three jobs with one event: following
- * a drag out of the panel, sliding a decal about on its face, and pulling one
- * bigger or smaller. All three are the same question -- where on which face is
- * the pointer -- which is why they are one handler and not three.
+ * Worn by all six -- see `ReferenceBoards` -- and doing three jobs with one
+ * event: following a drag out of the panel, sliding a decal about on its face,
+ * and pulling one bigger or smaller. All three are the same question -- where
+ * on which face is the pointer -- which is why they are one handler and not
+ * three.
+ *
+ * WHICH FACE IS THE SHEET'S OWN. This used to be read off the block: the
+ * normal of the triangle under the pointer, refused unless it was one of the
+ * six, which is what made a picture unreachable over a hole -- no triangle --
+ * and on the curved wall a loop leaves -- the wrong triangle. A sheet stands
+ * on exactly one face, so there is nothing to read and nothing to refuse.
  */
-export function useReferencePointer() {
+function useReferencePointer() {
   const dims = useBlockDims()
   const drag = useReference((s) => s.drag)
   const grab = useReference((s) => s.grab)
@@ -309,17 +306,12 @@ export function useReferencePointer() {
   const movePlacement = useReference((s) => s.movePlacement)
   const sizePlacement = useReference((s) => s.sizePlacement)
 
-  const onPointerMove = (e: ThreeEvent<PointerEvent>) => {
+  const onPointerMove = (face: Face, e: ThreeEvent<PointerEvent>) => {
     if (!drag && !grab) return
-    const hit = faceHit(e)
-    if (!hit) {
-      if (drag) dragOver(null)
-      return
-    }
-    const here = faceOffset([hit.point.x, hit.point.y, hit.point.z], hit.face, dims)
+    const here = faceOffset([e.point.x, e.point.y, e.point.z], face, dims)
 
     if (drag) {
-      dragOver({ face: hit.face, u: here.u, v: here.v })
+      dragOver({ face, u: here.u, v: here.v })
       return
     }
     if (!grab) return
@@ -328,12 +320,12 @@ export function useReferencePointer() {
     // A drag that has wandered onto another face does nothing rather than
     // teleporting the picture round the corner: a decal belongs to the face it
     // was dropped on, and moving it to another one is a new drop.
-    if (!placement || placement.face !== hit.face) return
+    if (!placement || placement.face !== face) return
     const image = preset.slots.find((held) => held?.id === placement.imageId)
     if (!image) return
 
     if (grab.mode === 'move') {
-      const centred = clampCentre(here.u, here.v, placement.w, placement.h, hit.face, dims)
+      const centred = clampCentre(here.u, here.v, placement.w, placement.h, face, dims)
       movePlacement(placement.id, centred.u, centred.v)
       return
     }
@@ -348,7 +340,95 @@ export function useReferencePointer() {
     )
   }
 
-  return { onPointerMove }
+  /**
+   * The pointer has left the sheet, over the edge of the face or out of the
+   * window altogether.
+   *
+   * A DRAG IS PUT DOWN. `dropDrag` places nothing when there is nowhere to
+   * place it -- a release beside the block is a drag abandoned, not a drop at
+   * the last place the pointer was over one -- and this is what makes that
+   * true on screen rather than only in the store: the dashed outline goes
+   * with the pointer, so what is about to happen is what is shown. A grab is
+   * left alone; a picture slid off the edge of its face is already pinned to
+   * that edge by `clampCentre`, and stops there.
+   */
+  const onPointerOut = () => {
+    if (drag) dragOver(null)
+  }
+
+  return { onPointerMove, onPointerOut }
+}
+
+/**
+ * THE SHEETS: six invisible planes, one a hair off each face of the block as
+ * it arrived, and the only things on this screen a reference is dropped on,
+ * slid across or sized against.
+ *
+ * WHY NOT THE BLOCK, which is what wore the hand before. The block is what the
+ * laser is cutting, so it is the one surface here that is not going to stay
+ * put: a cut opens a hole in a face, a cut from another axis takes a face
+ * clean away, a loop leaves a curved wall where a flat one was. The picture
+ * survives all of that -- it is painted on what is left and hangs in the air
+ * over what is not, see `DecalGhosts` -- but a hand that could only find the
+ * picture through the material found nothing over the hole, nothing on the
+ * missing face, and refused the wall. A picture that can be seen and not
+ * reached is the reference panel's whole job left half done.
+ *
+ * So the pointer is read against the STOCK instead: the six faces the block
+ * had before the laser touched it, which are three numbers in the panel and
+ * nothing a cut can change. Where the material is still there the sheet lies
+ * a hair over it and reads the same place; where it has gone the sheet is
+ * still there. See `faceBoard` for the numbers.
+ *
+ * NEVER SEEN AND NEVER IN THE WAY. A sheet is drawn with no colour and no
+ * depth, so it neither shows nor hides anything; it faces outward only, so a
+ * ray from square on meets the near sheet and never the far one; and it wears
+ * only the move handler, so a press goes straight through it to the grips,
+ * the grab surface and the block, exactly as if it were not there.
+ */
+export function ReferenceBoards() {
+  const dims = useBlockDims()
+  const pointer = useReferencePointer()
+
+  return (
+    <>
+      {FACES.map((face) => (
+        <ReferenceBoard key={face} face={face} dims={dims} pointer={pointer} />
+      ))}
+    </>
+  )
+}
+
+function ReferenceBoard({
+  face,
+  dims,
+  pointer,
+}: {
+  face: Face
+  dims: BlockDims
+  pointer: ReturnType<typeof useReferencePointer>
+}) {
+  const board = useMemo(() => faceBoard(face, dims), [face, dims])
+  const frame: Frame = useMemo(
+    () => ({
+      u: new Vector3(...board.u),
+      v: new Vector3(...board.v),
+      normal: new Vector3(...board.normal),
+    }),
+    [board]
+  )
+  const position = useMemo(() => new Vector3(...board.centre), [board])
+
+  return (
+    <FacePlane
+      frame={frame}
+      position={position}
+      width={board.w}
+      height={board.h}
+      onPointerMove={(e) => pointer.onPointerMove(face, e)}
+      onPointerOut={pointer.onPointerOut}
+    />
+  )
 }
 
 /**
@@ -678,7 +758,16 @@ function RectOutline({
   )
 }
 
-/** A little square lying flat on the face: visible or not, and always pressable. */
+/**
+ * A square lying flat on the face: visible or not, and always in reach of the
+ * pointer.
+ *
+ * Three things wear it -- the grab surface and the four grips, which take a
+ * PRESS, and the sheets, which take a MOVE -- so the handlers are whichever
+ * are handed in. Fiber drops the ones left undefined rather than registering
+ * them, so a grip is not raycast on every pointer move and a sheet never
+ * catches a press.
+ */
 function FacePlane({
   frame,
   position,
@@ -687,6 +776,8 @@ function FacePlane({
   color,
   visible = false,
   onPointerDown,
+  onPointerMove,
+  onPointerOut,
 }: {
   frame: Frame
   position: Vector3
@@ -694,7 +785,9 @@ function FacePlane({
   height: number
   color?: string
   visible?: boolean
-  onPointerDown: (e: ThreeEvent<PointerEvent>) => void
+  onPointerDown?: (e: ThreeEvent<PointerEvent>) => void
+  onPointerMove?: (e: ThreeEvent<PointerEvent>) => void
+  onPointerOut?: (e: ThreeEvent<PointerEvent>) => void
 }) {
   // Built from the face's own axes rather than from Euler angles: there is no
   // ordering of angles that is right for all six faces, and three of them come
@@ -708,7 +801,13 @@ function FacePlane({
   )
 
   return (
-    <mesh position={position} quaternion={quaternion} onPointerDown={onPointerDown}>
+    <mesh
+      position={position}
+      quaternion={quaternion}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerOut={onPointerOut}
+    >
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial
         color={color ?? '#ffffff'}

@@ -84,7 +84,7 @@ The tabs at the left of the bar pick a screen. A screen is a viewport and the co
 - **Freehand** drags a line out behind the pointer on a length of rope, so a tremor inside the slack moves nothing. **Point Cut** places the line a point at a time: straight segments, a fitted curve, or a curve with a handle on every point.
 - Both ends of a line are carried to the border along their own tangent, so a stroke across a tenth of the face still separates the block. **Apply** burns through the whole block at once. The offcut is lit; **Del** throws it away.
 - **Symmetry** stands a mirror through the middle of the face, at any angle or as a cross, and burns every copy in one act.
-- **Reference** images pin to a face at a chosen opacity, so a drawing can be traced.
+- **Reference** images pin to a face at a chosen opacity, so a drawing can be traced. They belong to the face the stock arrived with, so a cut can neither take one away nor put it out of reach.
 
 ## Projects, help and settings
 

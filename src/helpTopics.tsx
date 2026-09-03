@@ -1298,6 +1298,14 @@ export const HELP_SECTIONS: HelpSection[] = [
             out again -- one picture can be on as many faces as you like.
           </>,
           <>
+            <b>Cutting the block does not put a picture out of reach.</b> The drop, the slide and
+            the corner pull are all read against an invisible sheet lying a hair off each face of
+            the block as it arrived, not against whatever the laser has left of it. So a face with
+            a hole in it, or one a cut has taken away altogether, still takes a picture and still
+            lets one be moved -- and a picture straddling a gap can be taken hold of on either side
+            of it.
+          </>,
+          <>
             <b>The handles belong to Move AND to the lit slot.</b> The tool says what you are doing
             and the panel says which picture you are doing it to, so a face wearing three drawings
             wears one set of grips rather than three. With any other tool in hand only the outline

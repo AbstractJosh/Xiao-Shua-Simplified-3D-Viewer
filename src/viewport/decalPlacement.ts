@@ -82,22 +82,6 @@ export function faceFrame(face: Face, dims: BlockDims): FaceFrame {
 
 const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
-/**
- * Which face a surface normal belongs to, or null if it belongs to none.
- *
- * Strict on purpose. A raycast against the block hands back the normal of the
- * triangle under the pointer, and on a box that is always one of the six --
- * but the block is about to be something a laser has been through, and a face
- * a cut has left at an angle is not a face a reference can lie flat on. So
- * anything that is not square on is refused rather than rounded to the nearest.
- */
-export function faceOfNormal(normal: Vec3): Face | null {
-  for (const face of FACES) {
-    if (dot(faceFrame(face, [1, 1, 1]).normal, normal) > 0.999) return face
-  }
-  return null
-}
-
 /** Where a point on a face sits, as an offset from the middle of that face. */
 export function faceOffset(point: Vec3, face: Face, dims: BlockDims): { u: number; v: number } {
   const frame = faceFrame(face, dims)
@@ -301,6 +285,76 @@ export function placementRect(placement: Placement, dims: BlockDims): DecalRect 
  * taken nothing off.
  */
 export const PLANE_EPSILON = 0.001
+
+/**
+ * How far off its face the sheet the pointer reads references through stands.
+ *
+ * PROUD OF THE FACE, like the outline and the grips, because it is a thing
+ * laid OVER the block rather than a part of it -- and by half the plane
+ * tolerance, so that by this file's own test it is still on the face: a point
+ * read off the sheet is within `PLANE_EPSILON` of the plane the picture is
+ * painted on, exactly as a point read off the material would be. See
+ * `faceBoard`.
+ */
+export const BOARD_LIFT = PLANE_EPSILON / 2
+
+/**
+ * The sheet the pointer reads one face through: the whole face, as it was
+ * before the laser touched it, standing `BOARD_LIFT` proud of where it was.
+ *
+ * THE FACE THE STOCK ARRIVED WITH, NOT THE SURFACE THAT IS LEFT. A reference
+ * is put down, slid and sized by pointing at the block, and for a long time
+ * the block itself was what caught the pointer -- which was fine until the
+ * laser had been through it. Over a hole a cut had opened there was nothing
+ * under the pointer; a face a cut from another axis had taken clean away had
+ * nothing under it anywhere; and the curved wall a freehand loop leaves is no
+ * face a picture can lie flat on, so a press on it was refused. The drawing
+ * was still there, hanging where the material had been -- see `DecalGhosts`
+ * -- and could no longer be reached.
+ *
+ * So each face keeps a sheet of its own, invisible and exactly its own size,
+ * and that is what the pointer is read against. It is a fact about the STOCK
+ * -- three sides and a footprint, the same three numbers `faceFrame` reads --
+ * and nothing the laser does moves it, which is the whole point: a picture
+ * can be dropped over a hole, and one already straddling a gap can still be
+ * taken hold of on either side of it.
+ *
+ * ITS OWN SIZE AND NO BIGGER, so that a pointer off the face is still off the
+ * face: a drag let go beside the block is a drag abandoned, and a sheet that
+ * ran past the edge would turn it into a drop.
+ *
+ * Pure, and next to `placementRect` rather than in the component that mounts
+ * it, for the reason everything here is: whether a sheet stands exactly over
+ * its face, the right way round and the right size, is a question of numbers
+ * that an eye cannot settle on a block with nothing left under half of it.
+ */
+export type FaceBoard = {
+  /** The middle of the sheet, in world space: the face's middle, lifted. */
+  centre: Vec3
+  /** The face's own frame, so a hit on the sheet reads through `faceOffset`. */
+  normal: Vec3
+  u: Vec3
+  v: Vec3
+  /** How far the sheet runs along u and along v: the face's own spans. */
+  w: number
+  h: number
+}
+
+export function faceBoard(face: Face, dims: BlockDims): FaceBoard {
+  const frame = faceFrame(face, dims)
+  return {
+    centre: [
+      frame.centre[0] + frame.normal[0] * BOARD_LIFT,
+      frame.centre[1] + frame.normal[1] * BOARD_LIFT,
+      frame.centre[2] + frame.normal[2] * BOARD_LIFT,
+    ],
+    normal: frame.normal,
+    u: frame.u,
+    v: frame.v,
+    w: frame.uSpan,
+    h: frame.vSpan,
+  }
+}
 
 /**
  * Whether a point on a surface is under this placement's picture.
