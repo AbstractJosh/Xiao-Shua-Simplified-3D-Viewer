@@ -708,7 +708,8 @@ export const HELP_SECTIONS: HelpSection[] = [
           <>
             <b>It burns through.</b> Held against a wall thinner than the brush, the surface sags
             until a hole opens, widening with each pass to about the brush's width and cutting a
-            slot if you drag. The solid stays closed, so it still exports. A wall much thicker than
+            slot if you drag. At the edge of a panel it burns a notch; a bar thinner than the brush
+            is cut in two. The solid stays closed, so it still exports. A wall much thicker than
             the brush cannot be burnt through -- it only dishes.
           </>,
           <>

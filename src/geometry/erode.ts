@@ -61,10 +61,13 @@ import type { BaseSolid, ErodeDab } from './types'
  * So the torch punches through. When a dab would consume the last of the wall
  * under it, the material there is removed and the two faces are sewn into the
  * wall of a tunnel -- see `burnList` and `breakThrough` -- and the object comes
- * out closed, one hole larger. It is the only stage that changes the topology,
- * it is all-or-nothing, and it declines rather than leaving a rim it cannot
- * close. The sculpt tool never reaches it: raising drives the two faces of a
- * wall apart.
+ * out closed, one hole larger. Where the wound runs off the edge of the wall
+ * the two faces are sewn into a strip across its thickness instead, where it
+ * cuts a rod clean through each stump is capped, and where it takes the last
+ * of a chip the chip is gone. It is the only stage that changes the topology,
+ * it is all-or-nothing, and where it must decline it holds the wall where it
+ * stood rather than letting the two faces drive on through each other. The
+ * sculpt tool never reaches it: raising drives the two faces of a wall apart.
  *
  * Everything here runs in OBJECT-LOCAL space, like every other stage of the
  * pipeline, so a dab is stored once and survives the object being moved,
@@ -464,8 +467,9 @@ const ROUND_GAIN = 3.4
  * Three twentieths, chosen on the stroke rather than on the press, because the
  * stroke is where the difference shows. On the panel this was written for --
  * three units across, a twelfth of a unit thick, under a third-of-a-unit brush
- * -- one press opens a hole of about three fifths of the brush radius, and
- * every press after widens it toward the brush. Dragged across, that is a
+ * -- one press opens a hole of about two thirds of the brush radius, and
+ * every press after widens it toward the brush (see BURN_STEP for the ring it
+ * grows by, and BURN_REACH for where it stops). Dragged across, that is a
  * continuous slot in one pass.
  *
  * A SIXTEENTH WAS TRIED FIRST AND IT LEFT A LADDER. The pilot hole was a
@@ -484,6 +488,63 @@ const ROUND_GAIN = 3.4
 const BURN_WALL = 0.15
 
 /**
+ * How much of the brush the flame can consume, as a fraction of its radius.
+ * Nothing beyond it burns, and the rim of a wound is held to it.
+ *
+ * The outer tenth of the brush is where the falloff has all but died away --
+ * a vertex there is moved by less than a twentieth of a bite -- and it is the
+ * one part of the brush a wound must not reach, for a reason that only shows
+ * over several dabs. The rim of a wound is drawn in to where the wall runs out
+ * (see `breakThrough`), and on a wall too thin to have any such place the
+ * only thing bounding the wound is the brush itself. A rim vertex drawn onto
+ * the very edge of the brush lands, by the chord it was drawn along, a hair
+ * inside it; the next dab reaches it, finds no wall under it, burns it, and
+ * draws the next vertex out in. Measured on a two-millimetre panel: six dabs
+ * of a centimetre brush held still ate the panel to its corners, ring by ring,
+ * with the surface between pulled into slivers. Held to nine tenths, a vertex
+ * drawn to the boundary is out of reach of the next dab, and the wound stops
+ * where the flame does. What the last tenth buys is a lip that is dished and
+ * smoothed but never consumed, which is what the edge of a flame does.
+ */
+const BURN_REACH = 0.9
+
+/**
+ * The least room an edge touching the lip of a wound is given in the closing
+ * clamp, as a fraction of the brush radius: half a refined edge, which is the
+ * shortest thing refinement itself makes. See the note at the point of use in
+ * `dab`.
+ */
+const LIP_ROOM = REFINE_EDGE / 2
+
+/**
+ * How far past the outermost burnt vertex the wound's disc extends, as a
+ * fraction of the brush radius: the ring a hole grows by per dab once it is
+ * open, and the margin the pilot hole gets on the first. A quarter of a
+ * refined edge. At half of one a panel thicker than the threshold opened,
+ * on its first press, a hole already at the reach, and holding the torch
+ * there did nothing more; at a quarter the first press leaves a hole of
+ * about seven tenths of the brush that the next widens, and a lip it cannot
+ * burn still melts back a little with every dab. See the disc in
+ * `breakThrough`.
+ */
+const BURN_STEP = 0.1
+
+/**
+ * How much thicker than BURN_WALL a vertex inside the disc may be and still go
+ * with it. Half again: enough that a wall of one thickness burns as one disc
+ * rather than as the vertices whose own reading happened to fall under the
+ * threshold, not so much that a genuinely thicker spot beside a thin one is
+ * taken for thin.
+ */
+const BURN_EXTEND = 1.5
+
+/**
+ * The largest scrap a wound may leave standing on its own, as a fraction of
+ * the brush radius. See the crumbs in `breakThrough`.
+ */
+const CRUMB = 0.35
+
+/**
  * How squarely two surfaces must face each other to be two sides of one wall.
  *
  * The wall of a panel, a shell or a web is the case this is for, and there the
@@ -498,8 +559,51 @@ const BURN_WALL = 0.15
  */
 const BURN_FACING = -0.7
 
+/**
+ * The longest rim `fillSmoothest` is asked to close on its own; anything longer
+ * gets a fan.
+ *
+ * The triangulation is cubic in the length of the rim. That is nothing for the
+ * rims a brush leaves -- a few dozen vertices, a couple of hundred on a wide
+ * brush over a fine mesh, a few milliseconds once in the dab that opened the
+ * wound -- and a stall on the thousands the tessellation of an imported model
+ * could hand over. Past this a fan is laid instead, which is wrong across a
+ * band but at least closed, and a lone rim of that length is a wound the size
+ * of the object.
+ */
+const FILL_LIMIT = 256
+
+/**
+ * How far a fill may fold against the surface it meets before it is charged
+ * for it, as one minus the cosine of the angle between the two normals.
+ *
+ * Three halves is a hundred and twenty degrees. The strip across a burnt-out
+ * wall meets each face at about a right angle, and on a lip that has curled
+ * in under the flame at somewhat more than that, so the limit sits well clear
+ * of anything a fill has to do; a triangle laid back over a cape of the rim
+ * folds a hundred and eighty, and that is the one thing it must not do. See
+ * `fillSmoothest`.
+ */
+const FOLD_LIMIT = 1.5
+
+
 /** Handed back where nothing burnt, which is almost every dab ever laid. */
 const NO_BURN: number[] = []
+
+/**
+ * What `burnList` found: the vertices whose wall is about to run out, and the
+ * wall it measured under every vertex it could -- burnt or not -- as the
+ * thickness that will be left once this dab has moved both faces.
+ *
+ * The second is what lets `breakThrough` put the rim of the wound where the
+ * wall actually runs out rather than where the tessellation happened to put
+ * the next vertex. A vertex the search found nothing behind is absent, which
+ * means its wall is thicker than the search reached.
+ */
+type Burn = {
+  vertices: number[]
+  wall: Map<number, number>
+}
 
 
 
@@ -1042,12 +1146,14 @@ type Work = {
   group: Uint32Array
   triangleCount: number
   /**
-   * Which triangles are the wall of a hole this stroke burnt, one flag each.
+   * Which triangles were sewn by this stroke -- the wall of a tunnel, the
+   * strip across a notch, the lid on a stump -- one flag each.
    *
-   * Kept because a tunnel has to be treated as a single thing when the flame
-   * comes back to it: burning part of one away leaves a boundary that is not a
-   * pair of rims and cannot be sewn up. See `breakThrough`, which swallows the
-   * rest of any tunnel it touches so the wound stays a shape it can close.
+   * Kept because the lip of a wound has no wall behind it for the flame to
+   * measure: the far side of a tunnel faces it across the hole, further off
+   * than any wall the flame could take. So when the flame comes back to a lip,
+   * what says it burns is that it is sewn and inside the disc. See
+   * `breakThrough`.
    */
   rim: Uint8Array
   /**
@@ -1389,7 +1495,45 @@ function refine(work: Work, dabs: ErodeDab[]): void {
   const patch: number[] = []
   const settle = (): void => {
     for (const t of patch) {
-      if (work.atTarget[t] > minTarget) work.atTarget[t] = minTarget
+      if (work.atTarget[t] <= minTarget) continue
+      // A PIECE THE BRUSH NEVER REACHED IS NOT RECORDED AS DONE. Splitting
+      // stops at the edge of the brush's reach, so the far pieces of a
+      // triangle that straddled it are cut as far as the reach and no further,
+      // and can be left with an edge several times the target. Recording those
+      // as done -- which this did, for every piece emitted -- meant a stroke
+      // moving into them never split them: the next dab found them within
+      // reach, read the record, and skipped. Measured on a drag across a thin
+      // panel, the side faces ahead of the brush stayed at pieces twice the
+      // target, and the wound that reached them ran along them to the panel's
+      // corners. So a piece whose long edges all lie beyond the reach stays
+      // Infinity, and is refined by whichever dab first reaches it.
+      //
+      // A piece with a long edge WITHIN reach is recorded all the same, which
+      // is the rounds giving up on it rather than a claim that it is at
+      // target. Refinement does not converge at the reach's edge: a long edge
+      // that only ends inside the reach is split at its middle, far from the
+      // brush, and closing the triangle beside it lays a new edge from the
+      // midpoint back to a far vertex, as long as the last -- so the fan of
+      // slivers there would go on halving every round of every dab. Measured
+      // on a cube under a held brush: recording only pieces at target added
+      // two hundred and forty triangles a dab for two more dabs, none of them
+      // anywhere the dish could be seen. The ten rounds are the budget, and
+      // what they leave at the fringe is left.
+      let unfinished = false
+      let reached = false
+      for (let e = 0; e < 3; e++) {
+        const va = work.corner[t * 3 + e]
+        const vb = work.corner[t * 3 + ((e + 1) % 3)]
+        a.fromArray(work.position, va * 3)
+        b.fromArray(work.position, vb * 3)
+        if (a.distanceToSquared(b) <= minTarget * minTarget) continue
+        unfinished = true
+        for (let d = 0; d < dabs.length && !reached; d++) {
+          const reach = dabs[d].radius * REFINE_REACH
+          if (nearestOnEdge(centres[d]) <= reach * reach) reached = true
+        }
+      }
+      if (!unfinished || reached) work.atTarget[t] = minTarget
     }
   }
 
@@ -1625,6 +1769,71 @@ const nC = new Vector3()
 const nAB = new Vector3()
 const nAC = new Vector3()
 
+/**
+ * The normals of the FACES a vertex stands on: the triangles around it, less
+ * anything this stroke sewed, gathered into up to three directions no two of
+ * which are within forty-five degrees. Written into `out` from `at`, three
+ * floats each, and the count handed back -- zero where the vertex has no
+ * unsewn triangle at all. See the note at the point of use in `dab`.
+ *
+ * Forty-five degrees, because the two things this has to tell apart are a
+ * surface bending under the brush, where neighbouring triangles differ by a
+ * few degrees, and two faces of a solid meeting, which is ninety on every
+ * primitive here and rarely under sixty on anything a user would call an
+ * edge. Three directions, because a corner is three faces and nothing here
+ * has more.
+ */
+function faceNormals(
+  work: Work,
+  adj: Adjacency,
+  v: number,
+  out: Float32Array,
+  at: number
+): number {
+  let count = 0
+  for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
+    const t = adj.triangle[i]
+    if (work.rim[t]) continue
+    nA.fromArray(work.position, work.corner[t * 3] * 3)
+    nB.fromArray(work.position, work.corner[t * 3 + 1] * 3)
+    nC.fromArray(work.position, work.corner[t * 3 + 2] * 3)
+    nAB.subVectors(nB, nA)
+    nAC.subVectors(nC, nA)
+    nAB.cross(nAC)
+    const area = nAB.length()
+    if (area < 1e-30) continue
+    // Which direction, if any, this triangle belongs to. Compared unit to
+    // unit, and accumulated weighted by area, as `vertexNormal` weights.
+    let best = -1
+    let bestDot = 0.7
+    for (let k = 0; k < count; k++) {
+      const o = at + k * 3
+      const l = Math.hypot(out[o], out[o + 1], out[o + 2])
+      if (l < 1e-30) continue
+      const d = (out[o] * nAB.x + out[o + 1] * nAB.y + out[o + 2] * nAB.z) / (l * area)
+      if (d > bestDot) {
+        bestDot = d
+        best = k
+      }
+    }
+    if (best < 0 && count < 3) best = count++
+    if (best < 0) continue
+    const o = at + best * 3
+    out[o] += nAB.x
+    out[o + 1] += nAB.y
+    out[o + 2] += nAB.z
+  }
+  for (let k = 0; k < count; k++) {
+    const o = at + k * 3
+    const l = Math.hypot(out[o], out[o + 1], out[o + 2])
+    if (l < 1e-30) continue
+    out[o] /= l
+    out[o + 1] /= l
+    out[o + 2] /= l
+  }
+  return count
+}
+
 function vertexNormal(work: Work, adj: Adjacency, v: number, out: Vector3): Vector3 {
   out.set(0, 0, 0)
   const a = nA
@@ -1835,6 +2044,41 @@ function dab(
   const step = new Float32Array(hit.length)
   for (let i = 0; i < hit.length; i++) step[i] = bite * weight[i]
 
+  // THE WALL UNDER A VERTEX IS MEASURED ALONG EACH FACE IT STANDS ON, not
+  // along the normal it sinks by. The normal above is the right one to move
+  // along -- a corner melts straight in, a lip melts down and back -- but as a
+  // direction to look for the far side of the wall in it is wrong wherever
+  // faces meet, and thin objects are all faces meeting. A vertex on a panel's
+  // edge carries a normal halfway between the front face and the side, and
+  // the vertex behind it on the back edge carries one halfway between the
+  // back and the side: the two are at right angles, not facing, and the wall
+  // between them is never read. Measured on a chip: the edge vertices were the
+  // ones left standing inside the flame, and they sank through each other.
+  // A vertex on the lip of a hole this stroke has sewn is the same case worse
+  // -- the tunnel wall is the larger triangle, the normal leans into the hole,
+  // and the search finds the far side of the tunnel across it, further off
+  // than any wall the flame could take: a press on a panel opened a hole, and
+  // five more presses left it exactly that size.
+  //
+  // So every vertex offers the search one normal PER FACE it belongs to --
+  // the triangles around it, less anything sewn, gathered into up to three
+  // directions -- and the wall is whichever of them finds the least behind it.
+  // On a vertex in the middle of one face that is the one normal it always
+  // had, and nothing is spent.
+  const probes = new Float32Array(hit.length * 9)
+  const probeCount = new Uint8Array(hit.length)
+  for (let i = 0; i < hit.length; i++) {
+    const found = faceNormals(work, adj, hit[i], probes, i * 9)
+    if (found > 0) {
+      probeCount[i] = found
+      continue
+    }
+    probeCount[i] = 1
+    probes[i * 9] = normals[i * 3]
+    probes[i * 9 + 1] = normals[i * 3 + 1]
+    probes[i * 9 + 2] = normals[i * 3 + 2]
+  }
+
   // NO EDGE MAY CHANGE LENGTH FASTER THAN THE FLOW CAN PUT IT BACK. Each
   // vertex is about to move along its own normal, so an edge whose two ends
   // disagree about which way that is gets shorter -- or, under the sculpt
@@ -1848,6 +2092,13 @@ function dab(
   // inside it. That step is the cliff this clamp exists to stop.
   let scale = 1
   for (let i = 0; i < hit.length; i++) slot[hit[i]] = i
+  /** Whether a vertex touches anything this stroke sewed. */
+  const lip = (u: number): boolean => {
+    for (let k = adj.triangleStart[u]; k < adj.triangleStart[u + 1]; k++) {
+      if (work.rim[adj.triangle[k]]) return true
+    }
+    return false
+  }
   for (let i = 0; i < hit.length; i++) {
     const v = hit[i]
     const vx = dir * normals[i * 3] * step[i]
@@ -1870,7 +2121,18 @@ function dab(
       // parting is the sculpt tool's. See DAB_CLOSE.
       const change =
         Math.abs(((nx - vx) * ex + (ny - vy) * ey + (nz - vz) * ez) / length)
-      const room = DAB_CLOSE * length
+      // A SLIVER AT THE LIP DOES NOT GET A VOTE. Cutting a wound out along a
+      // sphere (see `breakThrough`) leaves, beside the rim, whatever was left
+      // of each triangle it crossed, and where the sphere passed a hair from
+      // a vertex that is a piece with an edge a hair long. Held to eight
+      // hundredths of THAT, the whole dab was scaled to nothing -- measured,
+      // a press on a panel opened a hole and five more presses left it the
+      // same size, the lip unable to move for a sliver beside it. An edge
+      // that touches the lip is given at least the room of a half-refined
+      // edge; the worst a step that size can do to a sliver is fold the
+      // sliver, which is invisible and gone with the lip on the next burn.
+      const floor = lip(v) || lip(n) ? LIP_ROOM * radius : 0
+      const room = DAB_CLOSE * Math.max(length, floor)
       if (change > room) scale = Math.min(scale, room / change)
     }
   }
@@ -1882,8 +2144,24 @@ function dab(
   // faces of a wall apart rather than together. The surgery itself waits until
   // the end of the dab: it changes the topology, and the flow below is still
   // reading the adjacency this dab was built on.
-  const burned = dir < 0 ? burnList(work, hit, normals, step, bite, radius) : NO_BURN
+  const burn = dir < 0 ? burnList(work, hit, probes, probeCount, step, bite, spec) : null
+  const burned = burn ? burn.vertices : NO_BURN
   for (let i = 0; i < hit.length; i++) slot[hit[i]] = -1
+
+  // AND WHERE IT IS ABOUT TO RUN OUT, REMEMBER WHERE IT STOOD. The surgery at
+  // the end of this dab is all-or-nothing, and the vertices it was asked about
+  // are exactly the ones about to be sunk to within a bite of the surface
+  // behind them. When it declines they are put back -- see the end of this
+  // function -- so a wall the flame cannot open cleanly is held where the test
+  // first fired, rather than driven through itself on the very next press.
+  const stood = burned.length > 0 ? new Float32Array(burned.length * 3) : null
+  if (stood) {
+    for (let i = 0; i < burned.length; i++) {
+      stood[i * 3] = work.position[burned[i] * 3]
+      stood[i * 3 + 1] = work.position[burned[i] * 3 + 1]
+      stood[i * 3 + 2] = work.position[burned[i] * 3 + 2]
+    }
+  }
 
   for (let i = 0; i < hit.length; i++) {
     const v = hit[i]
@@ -1976,7 +2254,22 @@ function dab(
 
   // Last, so everything above ran on the mesh it was built against. True means
   // the topology moved and the caller owes itself a fresh adjacency.
-  return burned.length > 0 && breakThrough(work, adj, burned, touched)
+  if (!stood || !burn) return false
+  if (breakThrough(work, adj, burn, hit, spec, touched)) return true
+
+  // Declined: a rim the surgery could not walk home. The wall is put back where
+  // it stood at the top of this dab, sink and flow both, and it will be asked
+  // again next dab and put back again -- which is a wall the tool has stopped
+  // thinning, and that is the honest outcome for material the flame cannot
+  // take without leaving a wound it cannot close. What it must never be is a
+  // wall thinned on past the point where the test fires, because the test
+  // fires one dab before the two faces meet.
+  for (let i = 0; i < burned.length; i++) {
+    work.position[burned[i] * 3] = stood[i * 3]
+    work.position[burned[i] * 3 + 1] = stood[i * 3 + 1]
+    work.position[burned[i] * 3 + 2] = stood[i * 3 + 2]
+  }
+  return false
 }
 
 // --- Rounding ---------------------------------------------------------------
@@ -2391,22 +2684,30 @@ function facingRoom(
  * The search space is the brush own hit list and nothing wider. A dab cannot
  * sink deeper than its own radius -- a vertex that has sagged out of reach
  * stops being melted, see `dab` -- so a wall this dab could break through is a
- * wall whose far side is inside the sphere.
+ * wall whose far side is inside the sphere. And nothing outside BURN_REACH of
+ * the brush is asked at all: the outer tenth is the flame's fringe, where the
+ * wound is bounded rather than grown. A vertex out there can still burn as the
+ * partner of one inside, since a pair is the finding.
  */
 function burnList(
   work: Work,
   hit: number[],
-  normals: Float32Array,
+  /** Up to three face normals per hit vertex, three floats each -- see
+   *  `faceNormals` -- and how many each vertex has. */
+  probes: Float32Array,
+  probeCount: Uint8Array,
   step: Float32Array,
   bite: number,
-  radius: number
-): number[] {
+  spec: ErodeDab
+): Burn | null {
   // A cold brush moves nothing, so there is no wall for it to consume. Stated
   // here rather than left to fall out of the arithmetic: with no bite the test
   // below would still burn anything already thinner than the threshold, and a
   // tool set to no heat at all must not be the one that opens a hole.
-  if (bite <= 0) return NO_BURN
+  if (bite <= 0) return null
+  const radius = spec.radius
   const limit = BURN_WALL * radius
+  const reachSq = BURN_REACH * BURN_REACH * radius * radius
   // Both faces of the wall may close by a whole bite before the next dab looks
   // again, so anything nearer than this is worth measuring properly.
   const search = limit + bite * 2
@@ -2421,9 +2722,11 @@ function burnList(
   let ay = 0
   let az = 0
   for (let i = 0; i < hit.length; i++) {
-    ax += normals[i * 3]
-    ay += normals[i * 3 + 1]
-    az += normals[i * 3 + 2]
+    for (let p = 0; p < probeCount[i]; p++) {
+      ax += probes[i * 9 + p * 3]
+      ay += probes[i * 9 + p * 3 + 1]
+      az += probes[i * 9 + p * 3 + 2]
+    }
   }
   const spread = Math.sqrt(ax * ax + ay * ay + az * az)
   if (spread > 1e-12) {
@@ -2432,10 +2735,13 @@ function burnList(
     az /= spread
     let worst = 1
     for (let i = 0; i < hit.length; i++) {
-      const d = normals[i * 3] * ax + normals[i * 3 + 1] * ay + normals[i * 3 + 2] * az
-      if (d < worst) worst = d
+      for (let p = 0; p < probeCount[i]; p++) {
+        const o = i * 9 + p * 3
+        const d = probes[o] * ax + probes[o + 1] * ay + probes[o + 2] * az
+        if (d < worst) worst = d
+      }
     }
-    if (worst > 0.5) return NO_BURN
+    if (worst > 0.5) return null
   }
 
   // A grid one search radius to a cell, so the far side of a wall is found in
@@ -2469,61 +2775,96 @@ function burnList(
   // whatever it was measured AGAINST as well: the pair is the finding, not the
   // vertex.
   const marked = new Uint8Array(hit.length)
+  // Which of the hit are within the flame's reach. Out on the fringe of the
+  // brush a vertex is bounded, not burnt, whether on its own account or as the
+  // partner of one inside -- see BURN_REACH, and `breakThrough`, which relies
+  // on every burnt vertex being inside the reach to bound the rim to it.
+  const inside = new Uint8Array(hit.length)
   for (let i = 0; i < hit.length; i++) {
+    const v = hit[i]
+    const rx = work.position[v * 3] - spec.at[0]
+    const ry = work.position[v * 3 + 1] - spec.at[1]
+    const rz = work.position[v * 3 + 2] - spec.at[2]
+    if (rx * rx + ry * ry + rz * rz < reachSq) inside[i] = 1
+  }
+  // The thinnest wall found under each vertex, once this dab has moved both
+  // faces; Infinity where the search found nothing behind it. Kept for every
+  // vertex, not only the ones that burn, because the rim of the wound is put
+  // where this crosses the threshold -- see `breakThrough`.
+  const thinnest = new Float32Array(hit.length).fill(Infinity)
+  for (let i = 0; i < hit.length; i++) {
+    if (!inside[i]) continue
     const v = hit[i]
     const px = work.position[v * 3]
     const py = work.position[v * 3 + 1]
     const pz = work.position[v * 3 + 2]
-    const nx = normals[i * 3]
-    const ny = normals[i * 3 + 1]
-    const nz = normals[i * 3 + 2]
     const cx = Math.floor(px / search)
     const cy = Math.floor(py / search)
     const cz = Math.floor(pz / search)
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dz = -1; dz <= 1; dz++) {
-          const bucket = cells.get(cellKey(cx + dx, cy + dy, cz + dz))
-          if (!bucket) continue
-          for (const j of bucket) {
-            const u = hit[j]
-            if (u === v) continue
-            const away =
-              normals[j * 3] * nx + normals[j * 3 + 1] * ny + normals[j * 3 + 2] * nz
-            if (away >= BURN_FACING) continue
-            const dxu = px - work.position[u * 3]
-            const dyu = py - work.position[u * 3 + 1]
-            const dzu = pz - work.position[u * 3 + 2]
-            // ALONG THE INWARD NORMAL, and the sideways part discarded rather
-            // than added in. The far face of a wall is tessellated on its own,
-            // so the vertex opposite this one is generally not opposite at all
-            // -- it sits half an edge to one side, and its straight-line
-            // distance is the wall plus that offset. What is wanted is the wall
-            // it stands on, which is the part of the offset that runs along the
-            // normal: on any flat stretch that is exactly the thickness however
-            // far to the side the vertex lies, and on a curved one it is out by
-            // the curvature over that half edge, which is nothing.
-            const gap = dxu * nx + dyu * ny + dzu * nz
-            // Positive is material between the two faces, negative is air --
-            // and that sign is the whole difference between a thin wall and a
-            // sharp inside corner. See the note above.
-            if (gap <= 0 || gap > search) continue
-            // Too far to the side to be standing on the same wall.
-            if (dxu * dxu + dyu * dyu + dzu * dzu - gap * gap > search * search) continue
-            // What the far face brings to the meeting, resolved along the same
-            // normal: it moves along its own, which points back at this one.
-            if (gap - step[i] + away * step[j] >= limit) continue
-            marked[i] = 1
-            marked[j] = 1
+    for (let p = 0; p < probeCount[i]; p++) {
+      const nx = probes[i * 9 + p * 3]
+      const ny = probes[i * 9 + p * 3 + 1]
+      const nz = probes[i * 9 + p * 3 + 2]
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const bucket = cells.get(cellKey(cx + dx, cy + dy, cz + dz))
+            if (!bucket) continue
+            for (const j of bucket) {
+              const u = hit[j]
+              if (u === v) continue
+              // The far vertex faces back along whichever of ITS faces faces
+              // back most: a vertex on the far edge of a panel has a side to
+              // it as well as a back.
+              let away = 1
+              for (let q = 0; q < probeCount[j]; q++) {
+                const o = j * 9 + q * 3
+                const d = probes[o] * nx + probes[o + 1] * ny + probes[o + 2] * nz
+                if (d < away) away = d
+              }
+              if (away >= BURN_FACING) continue
+              const dxu = px - work.position[u * 3]
+              const dyu = py - work.position[u * 3 + 1]
+              const dzu = pz - work.position[u * 3 + 2]
+              // ALONG THE INWARD NORMAL, and the sideways part discarded rather
+              // than added in. The far face of a wall is tessellated on its own,
+              // so the vertex opposite this one is generally not opposite at all
+              // -- it sits half an edge to one side, and its straight-line
+              // distance is the wall plus that offset. What is wanted is the wall
+              // it stands on, which is the part of the offset that runs along the
+              // normal: on any flat stretch that is exactly the thickness however
+              // far to the side the vertex lies, and on a curved one it is out by
+              // the curvature over that half edge, which is nothing.
+              const gap = dxu * nx + dyu * ny + dzu * nz
+              // Positive is material between the two faces, negative is air --
+              // and that sign is the whole difference between a thin wall and a
+              // sharp inside corner. See the note above.
+              if (gap <= 0 || gap > search) continue
+              // Too far to the side to be standing on the same wall.
+              if (dxu * dxu + dyu * dyu + dzu * dzu - gap * gap > search * search) continue
+              // What the far face brings to the meeting, resolved along the same
+              // normal: it moves along its own, which points back at this one.
+              const left = gap - step[i] + away * step[j]
+              if (left < thinnest[i]) thinnest[i] = left
+              if (left < thinnest[j]) thinnest[j] = left
+              if (left >= limit) continue
+              marked[i] = 1
+              if (inside[j]) marked[j] = 1
+            }
           }
         }
       }
     }
   }
 
-  const burned: number[] = []
-  for (let i = 0; i < hit.length; i++) if (marked[i]) burned.push(hit[i])
-  return burned
+  const vertices: number[] = []
+  for (let i = 0; i < hit.length; i++) if (marked[i]) vertices.push(hit[i])
+  if (vertices.length === 0) return null
+  const wall = new Map<number, number>()
+  for (let i = 0; i < hit.length; i++) {
+    if (thinnest[i] < Infinity) wall.set(hit[i], thinnest[i])
+  }
+  return { vertices, wall }
 }
 
 /**
@@ -2536,28 +2877,287 @@ function burnList(
  */
 type Loop = {
   ring: number[]
+  /** The surviving triangle across each edge of the ring, `ring[k]` to
+   *  `ring[k + 1]`: what a fill has to meet without folding. */
+  owners: number[]
   centre: Vector3
   area: Vector3
+  /** About how wide the loop is: its perimeter over pi, which is the diameter
+   *  of the circle with that perimeter. */
+  extent: number
 }
 
 /**
- * Take the burnt material out and sew the two faces of the wall into a tunnel.
+ * Close one rim on its own with the triangulation of least area that does not
+ * double back on the surface it meets.
+ *
+ * Dynamic programming over the chords of the ring, which is the classic way to
+ * triangulate a polygon that is not flat: the best closing of the run from
+ * vertex i to vertex j is the best closing of i..k and of k..j plus the
+ * triangle i-k-j, for whichever k does best. Cubic in the length of the ring
+ * and exact, and exact is the point -- a greedy walk gets the strip across a
+ * band right everywhere except the corners, which is where it then folds.
+ *
+ * LEAST AREA IS THE RIGHT MEASURE, with one thing it must not be allowed to
+ * do. Across a band -- the two rims of a tunnel joined into one loop, see
+ * `breakThrough` -- the least area is the strip across the thickness of the
+ * wall, because every triangle of it spans the wall and nothing more; across
+ * a flat ring it is the lid; across a scrap it is the patch. Nothing here has
+ * to decide which of the three it is looking at. But least area alone has a
+ * failure that thin objects hit every time: wherever the rim runs out into a
+ * cape -- two survivors meeting at a sharp tip on the lip of the hole -- the
+ * cheapest way to consume the tip is a triangle of almost no area laid flat
+ * back over the cape, coincident with it and facing the other way. Closed,
+ * and doubled. So a fold is measured at every edge a triangle meets --
+ * against the survivor across a rim edge, against its neighbour across a
+ * chord -- and a fold past FOLD_LIMIT is charged for, at a rate that no
+ * saving in area can pay: the cap over the cape doubles back by the whole of
+ * its width, and the fill runs on round the cape instead.
+ *
+ * A PENALTY RATHER THAN A RULE, because the obvious rule -- prefer the closing
+ * whose sharpest fold is gentlest, and only then the smallest -- was tried and
+ * fills the wound back in. On a lip that has curled inward under the flame,
+ * a lid that carries the curled face on across the hole folds less than the
+ * strip that turns down through the wall, and it was chosen: measured, a
+ * press near the edge of a two-millimetre panel put a third of the panel's
+ * volume back. Below the limit a fold costs nothing and area decides, which is
+ * what keeps the strip; only doubling back is paid for.
+ *
+ * A triangle with no area has no normal to fold about and is charged as
+ * doubled flat, which is what keeps a fill from being built of slivers along
+ * a jagged rim.
+ *
+ * Triangles are handed back wound to cover the REVERSE of the rim's edges, so
+ * a rim walked with the material on its left is closed by a surface facing the
+ * way that material faces -- and that is also what lets the fold against the
+ * survivor across each edge be read straight off the two normals.
+ */
+function fillSmoothest(
+  ring: number[],
+  owners: number[],
+  work: Work,
+  /** Whether two vertices are already joined by an edge of the surviving mesh. */
+  joined: (a: number, b: number) => boolean,
+  cover: (a: number, b: number, c: number) => void
+): void {
+  const n = ring.length
+  const px = new Float64Array(n)
+  const py = new Float64Array(n)
+  const pz = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    px[i] = work.position[ring[i] * 3]
+    py[i] = work.position[ring[i] * 3 + 1]
+    pz[i] = work.position[ring[i] * 3 + 2]
+  }
+  // What lies across each rim edge: the unit normal of the survivor there, or
+  // nothing at all for a survivor with no area, which then folds against
+  // nothing.
+  const ex = new Float64Array(n)
+  const ey = new Float64Array(n)
+  const ez = new Float64Array(n)
+  for (let k = 0; k < n; k++) {
+    const t = owners[k]
+    const a = work.corner[t * 3] * 3
+    const b = work.corner[t * 3 + 1] * 3
+    const c = work.corner[t * 3 + 2] * 3
+    const abx = work.position[b] - work.position[a]
+    const aby = work.position[b + 1] - work.position[a + 1]
+    const abz = work.position[b + 2] - work.position[a + 2]
+    const acx = work.position[c] - work.position[a]
+    const acy = work.position[c + 1] - work.position[a + 1]
+    const acz = work.position[c + 2] - work.position[a + 2]
+    const x = aby * acz - abz * acy
+    const y = abz * acx - abx * acz
+    const z = abx * acy - aby * acx
+    const len = Math.sqrt(x * x + y * y + z * z)
+    if (len < 1e-30) continue
+    ex[k] = x / len
+    ey[k] = y / len
+    ez[k] = z / len
+  }
+  // What a fold past the limit costs, per unit of excess: an area the size of
+  // the whole rim, so that one such fold outweighs any saving in area a
+  // triangulation could make by folding. Excess is measured in one minus the
+  // cosine, so it runs from zero at the limit to half a unit at a surface
+  // doubled flat back on itself.
+  let perimeter = 0
+  for (let k = 0; k < n; k++) {
+    const m = (k + 1) % n
+    perimeter += Math.sqrt(
+      (px[m] - px[k]) ** 2 + (py[m] - py[k]) ** 2 + (pz[m] - pz[k]) ** 2
+    )
+  }
+  const penalty = perimeter * perimeter
+  // Per run i..j: the cost of its best closing -- twice the area, plus the
+  // penalties -- where it splits, and the unit normal of the triangle that
+  // closes it, (i, split, j), which is what the run's parent is scored
+  // against. A run of one edge is closed by nothing: what lies across it is the
+  // rim's own survivor.
+  const cost = new Float64Array(n * n).fill(Infinity)
+  const split = new Int32Array(n * n).fill(-1)
+  const nx = new Float64Array(n * n)
+  const ny = new Float64Array(n * n)
+  const nz = new Float64Array(n * n)
+  for (let i = 0; i + 1 < n; i++) {
+    const o = i * n + i + 1
+    cost[o] = 0
+    nx[o] = ex[i]
+    ny[o] = ey[i]
+    nz[o] = ez[i]
+  }
+  for (let span = 2; span < n; span++) {
+    for (let i = 0; i + span < n; i++) {
+      const j = i + span
+      const ax = px[j] - px[i]
+      const ay = py[j] - py[i]
+      const az = pz[j] - pz[i]
+      let best = Infinity
+      let at = -1
+      let bnx = 0
+      let bny = 0
+      let bnz = 0
+      for (let k = i + 1; k < j; k++) {
+        const ik = i * n + k
+        const kj = k * n + j
+        // The two halves alone already lose: skip the cross product.
+        const halves = cost[ik] + cost[kj]
+        if (halves >= best) continue
+        // A CHORD THAT IS ALREADY AN EDGE IS OUT. Where the wound reaches a
+        // side face, two vertices of the rim that are not neighbours along it
+        // can still be joined by a surviving edge -- the side face's own rung
+        // across the thickness, both ends on the rim and the triangles either
+        // side of it standing. It is the shortest chord there is, exactly the
+        // rung a strip wants, and laying the strip along it puts four
+        // triangles on one edge, two of them face to face. Measured on a disc
+        // as one fold at the rim, on the last dab of every drag that reached
+        // it.
+        if (k > i + 1 && joined(ring[i], ring[k])) continue
+        if (j > k + 1 && joined(ring[k], ring[j])) continue
+        const bx = px[k] - px[i]
+        const by = py[k] - py[i]
+        const bz = pz[k] - pz[i]
+        // The triangle as it will be laid, (ring[i], ring[j], ring[k]).
+        let cx = ay * bz - az * by
+        let cy = az * bx - ax * bz
+        let cz = ax * by - ay * bx
+        const len = Math.sqrt(cx * cx + cy * cy + cz * cz)
+        let total = halves + len
+        if (len < 1e-30) {
+          // No area, so no normal to fold about: scored as doubled flat.
+          total += penalty * (2 - FOLD_LIMIT)
+          cx = 0
+          cy = 0
+          cz = 0
+        } else {
+          cx /= len
+          cy /= len
+          cz /= len
+          // One minus the cosine: zero where the surface carries straight on,
+          // two where it doubles back on itself.
+          const f1 = 1 - (cx * nx[ik] + cy * ny[ik] + cz * nz[ik])
+          const f2 = 1 - (cx * nx[kj] + cy * ny[kj] + cz * nz[kj])
+          if (f1 > FOLD_LIMIT) total += penalty * (f1 - FOLD_LIMIT)
+          if (f2 > FOLD_LIMIT) total += penalty * (f2 - FOLD_LIMIT)
+          // The outermost run is closed against the rim's last edge as well.
+          if (i === 0 && j === n - 1) {
+            const f3 = 1 - (cx * ex[n - 1] + cy * ey[n - 1] + cz * ez[n - 1])
+            if (f3 > FOLD_LIMIT) total += penalty * (f3 - FOLD_LIMIT)
+          }
+        }
+        if (total < best) {
+          best = total
+          at = k
+          bnx = cx
+          bny = cy
+          bnz = cz
+        }
+      }
+      const o = i * n + j
+      cost[o] = best
+      split[o] = at
+      nx[o] = bnx
+      ny[o] = bny
+      nz[o] = bnz
+    }
+  }
+  // Read the triangulation back off the split table, from the chord that is
+  // the ring's own closing edge inward. A run that no chord was allowed to
+  // close -- every one of them an edge already -- is fanned from its first
+  // vertex instead, which is the one place this can still double an edge, and
+  // one nobody has produced.
+  const stack: number[] = [0, n - 1]
+  while (stack.length > 0) {
+    const j = stack.pop() as number
+    const i = stack.pop() as number
+    if (j - i < 2) continue
+    const k = split[i * n + j]
+    if (k < 0) {
+      for (let m = i + 1; m < j; m++) cover(ring[i], ring[m + 1], ring[m])
+      continue
+    }
+    cover(ring[i], ring[j], ring[k])
+    stack.push(i, k, k, j)
+  }
+}
+
+/**
+ * Take the burnt material out and sew what is left.
  *
  * The one operation in this file that changes the TOPOLOGY rather than merely
  * the shape, and it is deliberately all or nothing: everything is measured
- * first, and if what comes back is not two rims for every hole then nothing is
- * removed and the dab is left to sag the way it always did. That is what makes
- * it safe to run on any mesh a user can produce. A wound that cannot be closed
- * is never opened, so the object cannot be left with a raw edge -- which would
+ * first, and if any rim that comes back cannot be walked home then nothing is
+ * removed and the dab puts the wall back where it stood. That is what makes it
+ * safe to run on any mesh a user can produce. A wound that cannot be closed is
+ * never opened, so the object cannot be left with a raw edge -- which would
  * not merely look wrong but would leak, and every solid here is expected to be
  * closed enough to measure, to boolean against and to export.
  *
+ * THE WOUND IS A DISC, AND IT IS CUT OUT, NOT PICKED OUT. What the flame does
+ * is round: the wall thins under the falloff, which is a function of distance
+ * from the middle of the brush and nothing else, so on any wall of one
+ * thickness the place it has run out is a disc about that middle. Its radius
+ * is read off the burnt vertices -- the furthest of them from the middle, and
+ * a step beyond, so a hole opened by the innermost vertices grows a ring at a
+ * time as the wall around it thins -- and held to BURN_REACH, which bounds it
+ * on a wall so thin the whole footprint has gone at once. Then the surface is
+ * CLIPPED against that sphere: every triangle that touches a burnt vertex is
+ * cut where its edges cross the sphere, the part outside is kept and the part
+ * inside goes, and the crossing points are minted as the rim. So the rim lies
+ * ON the sphere, to the float, on every face the flame went through; nothing
+ * that was in the mesh before is moved; and nothing outside the sphere is
+ * touched at all.
+ *
+ * Everything else was tried first, and this is why none of it survived.
+ * Removing whole triangles -- every one that touches a burnt vertex -- leaves
+ * a rim wherever the tessellation had put the next ring of vertices: up to an
+ * edge beyond the flame and ragged, since the burnt set is decided vertex by
+ * vertex on two faces tessellated independently. The hole a press opened in a
+ * two-millimetre panel was an octagon wider than the brush; a notch at the
+ * edge was a bite half again as wide as the flame with teeth all round it.
+ * Drawing the rim's vertices in to the sphere instead of cutting new ones
+ * stretched the triangles behind them; when those vertices burnt on the next
+ * dab, the stretched triangles were the wound, and their far vertices -- a
+ * ring further out each time -- became the rim and were drawn in in turn,
+ * until six dabs held still had bent a panel's corners in toward the notch.
+ * Cutting has no such memory: the rim is new vertices, and the triangle
+ * behind each of them is the piece of the old one that lay outside.
+ *
+ * WHAT A WOUND LEAVES IS NOT ALWAYS TWO RIMS, and this is where a thin object
+ * differs from a hole in the middle of a wall. Two rims facing each other
+ * across the material that has gone are the two faces of one wall, and they
+ * are zipped into a tunnel. Anything else -- a band where the wound has run
+ * off the edge of a panel, the ring at the end of a rod the flame has cut
+ * through, a scrap of one face left standing where the other has gone -- is a
+ * rim on its own, and is closed on its own; see the pairing rule below for
+ * what is and is not a pair, and `fillSmoothest` for the closing. No rim at
+ * all means the wound was the whole of the piece, and the piece is gone.
+ *
  * The rims are ZIPPED rather than filled. Each face of the wall leaves a ring
- * of surviving vertices around the hole; walking the two rings together and
- * laying a triangle across at each step turns them into the wall of a tunnel,
- * with no new vertices minted and every new triangle carrying the reverse of a
- * boundary edge that was left open. That last part is what makes the result
- * closed rather than merely convincing.
+ * of vertices around the hole; walking the two rings together and laying a
+ * triangle across at each step turns them into the wall of a tunnel, with
+ * every new triangle carrying the reverse of a boundary edge that was left
+ * open. That last part is what makes the result closed rather than merely
+ * convincing.
  *
  * WHICH WAY EACH RING IS WALKED IS NOT A CHOICE. A boundary edge of a
  * consistently wound mesh runs with the material on its left, so the two rims
@@ -2571,10 +3171,47 @@ type Loop = {
 function breakThrough(
   work: Work,
   adj: Adjacency,
-  burned: number[],
+  burn: Burn,
+  hit: number[],
+  spec: ErodeDab,
   touched: Uint8Array
 ): boolean {
-  const dead = new Uint8Array(work.triangleCount)
+  const limit = BURN_WALL * spec.radius
+  const reach = BURN_REACH * spec.radius
+  const [cx, cy, cz] = spec.at
+  /** How far a vertex stands from the middle of the brush. */
+  const apart = (v: number): number =>
+    Math.hypot(
+      work.position[v * 3] - cx,
+      work.position[v * 3 + 1] - cy,
+      work.position[v * 3 + 2] - cz
+    )
+
+  // The disc -- see the note above -- and everything thin inside it, whichever
+  // face it is on, so the wound has one edge rather than two faces' worth of
+  // raggedness. A hair outside the disc is where the rim will be cut, so that
+  // a rim held at the reach is out of the next dab's reach: cut on the very
+  // edge of the flame, it would burn on the next dab and the wound would walk
+  // outward a ring at a time. See BURN_REACH.
+  let extent = 0
+  for (const v of burn.vertices) extent = Math.max(extent, apart(v))
+  const disc = Math.min(reach, extent + BURN_STEP * spec.radius)
+  const rim = disc * (1 + 1e-3)
+  const isBurnt = new Uint8Array(work.vertexCount)
+  for (const v of burn.vertices) isBurnt[v] = 1
+  const burned = burn.vertices.slice()
+  for (const v of hit) {
+    if (isBurnt[v]) continue
+    const wall = burn.wall.get(v)
+    if (wall === undefined || wall >= limit * BURN_EXTEND) continue
+    if (apart(v) >= disc) continue
+    isBurnt[v] = 1
+    burned.push(v)
+  }
+
+  const entered = work.triangleCount
+  const minted = work.vertexCount
+  let dead: Uint8Array = new Uint8Array(entered)
   const doomed: number[] = []
   for (const v of burned) {
     for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
@@ -2586,188 +3223,335 @@ function breakThrough(
   }
   if (doomed.length === 0) return false
 
+  /**
+   * Undo the surgery: the pieces and the rim are all past the counts the
+   * function came in with, and nothing that was already in the mesh has been
+   * moved, so the counts are the whole of it.
+   */
+  const decline = (): boolean => {
+    work.triangleCount = entered
+    work.vertexCount = minted
+    return false
+  }
+
   const edgeKey = (a: number, b: number) => (a < b ? a * 1048576 + b : b * 1048576 + a)
 
   /**
-   * Take the peninsulas off the wound, so the rim it leaves is a rim.
-   *
-   * A triangle standing in the wound with two of its three sides on the
-   * boundary is not part of the surface any more -- it is a spur of material
-   * the burn happened to leave, hanging into a hole by one edge or one vertex.
-   * The two faces of a wall are tessellated independently and burn to slightly
-   * different outlines, so they are produced constantly, and every one of them
-   * is a spike on the lip of the hole and a rim of its own for the sewing below
-   * to worry about.
-   *
-   * Twice is enough to matter and cheap: a spur two triangles long comes off in
-   * two rounds, and the round after a round that found nothing finds nothing.
-   * It cannot run away, because the surface outside the brush is a sheet whose
-   * triangles have no burnt neighbours at all.
-   *
-   * BEFORE THE TUNNEL RULE BELOW, and the order is not arbitrary: a spur can be
-   * part of a tunnel this stroke sewed earlier, and taking it off would leave
-   * that tunnel in pieces -- which is the exact state the rule below exists to
-   * put right. Peel first and the rule sees the finished wound.
+   * Where the edge from a burnt vertex to a kept one crosses the sphere, as a
+   * vertex minted ONCE for the edge and shared by both triangles on it, which
+   * is what keeps the cut surface closed. An edge whose kept end is itself
+   * inside the sphere -- thicker than the wound takes, and standing in it --
+   * has no crossing, and the rim runs through that vertex instead.
    */
-  for (let round = 0; round < 2; round++) {
-    const beside = new Set<number>()
-    for (const t of doomed) {
-      for (let e = 0; e < 3; e++) {
-        const v = work.corner[t * 3 + e]
-        for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
-          if (!dead[adj.triangle[i]]) beside.add(adj.triangle[i])
-        }
-      }
+  const cut = new Map<number, { at: number; t: number }>()
+  const crossing = (i: number, o: number): { at: number; t: number } => {
+    const key = edgeKey(i, o)
+    const had = cut.get(key)
+    if (had) return had
+    const ix = work.position[i * 3]
+    const iy = work.position[i * 3 + 1]
+    const iz = work.position[i * 3 + 2]
+    const ex = work.position[o * 3] - ix
+    const ey = work.position[o * 3 + 1] - iy
+    const ez = work.position[o * 3 + 2] - iz
+    const aa = ex * ex + ey * ey + ez * ez
+    let t = 1
+    if (aa > 1e-30) {
+      // The root in (0, 1) of |i + t e - c|^2 = rim^2 walking out from the
+      // burnt end, which is inside: the larger of the two.
+      const ox = ix - cx
+      const oy = iy - cy
+      const oz = iz - cz
+      const bb = ex * ox + ey * oy + ez * oz
+      const cc = ox * ox + oy * oy + oz * oz - rim * rim
+      const root = Math.sqrt(Math.max(0, bb * bb - aa * cc))
+      t = (-bb + root) / aa
     }
-    let peeled = false
-    for (const s of beside) {
-      let sides = 0
-      for (let e = 0; e < 3; e++) {
-        const a = work.corner[s * 3 + e]
-        const b = work.corner[s * 3 + ((e + 1) % 3)]
-        for (let i = adj.triangleStart[a]; i < adj.triangleStart[a + 1]; i++) {
-          const o = adj.triangle[i]
-          if (o === s || !dead[o]) continue
-          if (work.corner[o * 3] !== b && work.corner[o * 3 + 1] !== b) {
-            if (work.corner[o * 3 + 2] !== b) continue
-          }
-          sides++
-          break
-        }
-      }
-      if (sides < 2) continue
-      dead[s] = 1
-      doomed.push(s)
-      peeled = true
+    let found: { at: number; t: number }
+    if (t >= 1 - 1e-6) {
+      found = { at: o, t: 1 }
+    } else {
+      // Never quite at the burnt end, so the piece that keeps it has width.
+      if (t < 1e-3) t = 1e-3
+      const at = work.vertexCount++
+      work.position = grow32(work.position, work.vertexCount * 3)
+      work.position[at * 3] = ix + t * ex
+      work.position[at * 3 + 1] = iy + t * ey
+      work.position[at * 3 + 2] = iz + t * ez
+      found = { at, t }
     }
-    if (!peeled) break
+    cut.set(key, found)
+    return found
   }
 
-  // A TUNNEL GOES WHOLE OR NOT AT ALL, and this is the rule that keeps a
-  // widening hole from tearing. The flame comes back to the rim it just made
-  // and eats part of the tunnel wall; what is left is one boundary running down
-  // the front face, along the surviving strip and back up the far side, which
-  // is not two rims and cannot be zipped. Swallowing the rest of the tunnel
-  // with it puts the wound back to a ring on each face, which is exactly the
-  // shape the zip below understands -- and the tunnel it lays in place of the
-  // old one is the same tunnel, one size larger.
-  let rimmed = false
-  for (const t of doomed) {
-    if (work.rim[t]) {
-      rimmed = true
-      break
-    }
-  }
-  if (rimmed) {
-    const sides = new Map<number, number[]>()
-    for (let t = 0; t < work.triangleCount; t++) {
-      if (!work.rim[t]) continue
-      for (let e = 0; e < 3; e++) {
-        const key = edgeKey(work.corner[t * 3 + e], work.corner[t * 3 + ((e + 1) % 3)])
-        const bucket = sides.get(key)
-        if (bucket) bucket.push(t)
-        else sides.set(key, [t])
-      }
-    }
-    // `doomed` is the queue as well as the record: anything appended here is
-    // walked by the same loop.
-    for (let head = 0; head < doomed.length; head++) {
-      const t = doomed[head]
-      if (!work.rim[t]) continue
-      for (let e = 0; e < 3; e++) {
-        const bucket = sides.get(
-          edgeKey(work.corner[t * 3 + e], work.corner[t * 3 + ((e + 1) % 3)])
-        )
-        if (!bucket) continue
-        for (const s of bucket) {
-          if (dead[s]) continue
-          dead[s] = 1
-          doomed.push(s)
-        }
-      }
-    }
+  /** Append one triangle with explicit corner normals. */
+  const lay = (
+    a: number,
+    b: number,
+    c: number,
+    na: Vector3,
+    nb: Vector3,
+    nc: Vector3,
+    group: number,
+    target: number,
+    isRim: number
+  ): number => {
+    const t = work.triangleCount++
+    work.corner = growU32(work.corner, work.triangleCount * 3)
+    work.cornerNormal = grow32(work.cornerNormal, work.triangleCount * 9)
+    work.group = growU32(work.group, work.triangleCount)
+    work.rim = growU8(work.rim, work.triangleCount)
+    const had = work.atTarget.length
+    work.atTarget = grow64(work.atTarget, work.triangleCount)
+    if (work.atTarget.length > had) work.atTarget.fill(Infinity, had)
+    work.atTarget[t] = target
+    work.corner[t * 3] = a
+    work.corner[t * 3 + 1] = b
+    work.corner[t * 3 + 2] = c
+    work.group[t] = group
+    work.rim[t] = isRim
+    na.toArray(work.cornerNormal, t * 9)
+    nb.toArray(work.cornerNormal, t * 9 + 3)
+    nc.toArray(work.cornerNormal, t * 9 + 6)
+    return t
   }
 
-  // The rim, as half-edges of the SURVIVING triangles. An edge of a doomed
-  // triangle whose other user lives is an edge that has just been left open,
-  // and it is stored pointing the way that survivor winds -- so following
-  // `onward` from any vertex walks the boundary with the material on its left.
+  // THE CUT. Every doomed triangle is one of three things: burnt at all three
+  // corners and simply gone; burnt at one, leaving a quad outside the sphere;
+  // or burnt at two, leaving a corner. The kept part is laid as pieces past the
+  // end of the mesh, inheriting the paint, the corner normals (interpolated to
+  // the crossing) and the refinement record of the triangle it came from.
   //
-  // A LIST PER VERTEX RATHER THAN ONE EDGE, because a wound is allowed to be
-  // pinched. Burn two patches that touch at a single vertex and that vertex has
-  // two rims running through it, one for each patch; hold only the second and
-  // the walk below chases the wrong one, never comes home, and the whole
-  // surgery is abandoned over a shape that is perfectly closeable. Each edge is
-  // spent once, so the walk simply takes whichever of them is left.
+  // THE RIM, as half-edges of the kept pieces with the wound on their right:
+  // each piece polygon's closing edge, running from the crossing on the
+  // triangle's last edge to the crossing on its first. Where nothing was
+  // kept but two corners stood inside the sphere unburnt, the open edge is
+  // the survivor's beyond it, and is recorded for that survivor. Each entry is
+  // the vertex the edge leads to AND the triangle it belongs to, in pairs,
+  // because the fill has to know what it meets across every edge of the rim
+  // -- see `fillSmoothest`.
   const onward = new Map<number, number[]>()
   const paint = new Map<number, number>()
+  const n0 = new Vector3()
+  const n1 = new Vector3()
+  const n2 = new Vector3()
+  const normals = [n0, n1, n2]
+  const lerped = [new Vector3(), new Vector3(), new Vector3(), new Vector3()]
+  /** A surviving triangle carrying the half-edge from -> to, if there is one. */
+  const acrossFrom = (from: number, to: number): number => {
+    for (let i = adj.triangleStart[from]; i < adj.triangleStart[from + 1]; i++) {
+      const s = adj.triangle[i]
+      if (dead[s]) continue
+      for (let f = 0; f < 3; f++) {
+        if (work.corner[s * 3 + f] === from && work.corner[s * 3 + ((f + 1) % 3)] === to) return s
+      }
+    }
+    return -1
+  }
+  const record = (from: number, to: number, owner: number, group: number): void => {
+    if (from === to || owner < 0) return
+    const out = onward.get(from)
+    if (out) out.push(to, owner)
+    else onward.set(from, [to, owner])
+    paint.set(from, group)
+    paint.set(to, group)
+    // An existing vertex the rim runs through shades as melt like the rest of
+    // it; a minted one is marked by the caller, which alone can grow the map.
+    if (from < minted) touched[from] = 1
+    if (to < minted) touched[to] = 1
+  }
+
   for (const t of doomed) {
-    for (let e = 0; e < 3; e++) {
-      const u = work.corner[t * 3 + e]
-      const v = work.corner[t * 3 + ((e + 1) % 3)]
-      for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
-        const s = adj.triangle[i]
-        if (dead[s]) continue
-        for (let f = 0; f < 3; f++) {
-          if (work.corner[s * 3 + f] !== v) continue
-          if (work.corner[s * 3 + ((f + 1) % 3)] !== u) continue
-          const out = onward.get(v)
-          if (out) out.push(u)
-          else onward.set(v, [u])
-          paint.set(v, work.group[s])
-        }
+    const v = [work.corner[t * 3], work.corner[t * 3 + 1], work.corner[t * 3 + 2]]
+    const burnt = [isBurnt[v[0]], isBurnt[v[1]], isBurnt[v[2]]]
+    const count = burnt[0] + burnt[1] + burnt[2]
+    if (count === 3) continue
+    for (let s = 0; s < 3; s++) normals[s].fromArray(work.cornerNormal, (t * 3 + s) * 3)
+    const group = work.group[t]
+    const target = work.atTarget[t]
+
+    // The kept polygon, in the triangle's own winding, and the chord that
+    // closes it.
+    const poly: { at: number; normal: Vector3 }[] = []
+    if (count === 1) {
+      const k = burnt[0] ? 0 : burnt[1] ? 1 : 2
+      const a = k
+      const b = (k + 1) % 3
+      const c = (k + 2) % 3
+      const p = crossing(v[a], v[b])
+      const q = crossing(v[a], v[c])
+      lerped[0].copy(normals[a]).lerp(normals[b], p.t).normalize()
+      lerped[1].copy(normals[a]).lerp(normals[c], q.t).normalize()
+      poly.push(
+        { at: p.at, normal: lerped[0] },
+        { at: v[b], normal: normals[b] },
+        { at: v[c], normal: normals[c] },
+        { at: q.at, normal: lerped[1] }
+      )
+    } else {
+      const k = !burnt[0] ? 0 : !burnt[1] ? 1 : 2
+      const c = k
+      const a = (k + 1) % 3
+      const b = (k + 2) % 3
+      const p = crossing(v[b], v[c])
+      const q = crossing(v[a], v[c])
+      lerped[0].copy(normals[b]).lerp(normals[c], p.t).normalize()
+      lerped[1].copy(normals[a]).lerp(normals[c], q.t).normalize()
+      poly.push(
+        { at: p.at, normal: lerped[0] },
+        { at: v[c], normal: normals[c] },
+        { at: q.at, normal: lerped[1] }
+      )
+    }
+    // A crossing that landed on a corner appears twice; once is enough.
+    const kept: { at: number; normal: Vector3 }[] = []
+    for (const point of poly) {
+      if (kept.length > 0 && kept[kept.length - 1].at === point.at) continue
+      kept.push(point)
+    }
+    while (kept.length > 1 && kept[kept.length - 1].at === kept[0].at) kept.pop()
+
+    if (kept.length >= 3) {
+      let owner = -1
+      for (let i = 1; i + 1 < kept.length; i++) {
+        owner = lay(
+          kept[0].at,
+          kept[i].at,
+          kept[i + 1].at,
+          kept[0].normal,
+          kept[i].normal,
+          kept[i + 1].normal,
+          group,
+          target,
+          0
+        )
+      }
+      record(kept[kept.length - 1].at, kept[0].at, owner, group)
+    } else if (kept.length === 2) {
+      // Nothing of this triangle stands outside the sphere, but the edge
+      // between its two unburnt corners is still an edge of the survivor
+      // beyond, and that is now the rim.
+      record(kept[1].at, kept[0].at, acrossFrom(kept[1].at, kept[0].at), group)
+    }
+  }
+
+  // Every edge still standing at the rim, so a fill can tell a chord it may lay
+  // from one that is already there. See `fillSmoothest`.
+  const standing = new Set<number>()
+  for (const v of onward.keys()) {
+    if (v >= adj.triangleStart.length - 1) continue
+    for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
+      const t = adj.triangle[i]
+      if (dead[t]) continue
+      for (let e = 0; e < 3; e++) {
+        standing.add(edgeKey(work.corner[t * 3 + e], work.corner[t * 3 + ((e + 1) % 3)]))
       }
     }
   }
-  if (onward.size === 0) return false
+  for (let t = entered; t < work.triangleCount; t++) {
+    for (let e = 0; e < 3; e++) {
+      standing.add(edgeKey(work.corner[t * 3 + e], work.corner[t * 3 + ((e + 1) % 3)]))
+    }
+  }
+  const joined = (a: number, b: number): boolean => standing.has(edgeKey(a, b))
+
+  // NO RIM AT ALL MEANS NOTHING WAS LEFT STANDING: the flame has consumed the
+  // whole of what it was held against -- a chip smaller than the brush, or one
+  // part of an assembly -- and there is nothing to sew because there is
+  // nothing left to sew it to. The material goes, and the loops below are
+  // simply none. Declining here instead was measured on a chip one and a half
+  // brushes wide and a tenth of a brush thick: the dab was refused on every
+  // press, the two faces went on sinking, and by the third press the chip was
+  // inside out with its volume reading negative.
 
   const loops: Loop[] = []
   const at = new Vector3()
   const on = new Vector3()
+  /** Measure a closed ring and keep it. */
+  const keep = (ring: number[], owners: number[]): void => {
+    // Two vertices with an edge each way between them is a crack, not a hole:
+    // the survivors either side of it already meet along it, and gluing them
+    // takes no triangle at all. Dropped, rather than the whole surgery being
+    // declined over it.
+    if (ring.length < 3) return
+    const centre = new Vector3()
+    const area = new Vector3()
+    let perimeter = 0
+    for (let i = 0; i < ring.length; i++) {
+      at.fromArray(work.position, ring[i] * 3)
+      on.fromArray(work.position, ring[(i + 1) % ring.length] * 3)
+      centre.add(at)
+      area.add(on.cross(at))
+      perimeter += at.distanceTo(on)
+    }
+    centre.multiplyScalar(1 / ring.length)
+    loops.push({ ring, owners, centre, area, extent: perimeter / Math.PI })
+  }
   for (const start of onward.keys()) {
     for (;;) {
       const first = onward.get(start)
       if (!first || first.length === 0) break
       const ring: number[] = []
+      const owners: number[] = []
+      // Where each vertex of the ring so far sits in it, for the pinch below.
+      const where = new Map<number, number>()
       let v = start
       let closed = false
       for (;;) {
         const out = onward.get(v)
         if (!out || out.length === 0) break
+        where.set(v, ring.length)
         ring.push(v)
+        // Pushed as (vertex, survivor), so the survivor comes off first.
+        owners.push(out.pop() as number)
         v = out.pop() as number
         if (v === start) {
           closed = true
           break
         }
-        // A rim that arrives somewhere it has already been, other than home. It
-        // cannot happen while every vertex holds one edge each way, and the
-        // guard is here so a mesh that manages it is declined rather than spun
-        // on forever.
+        // A PINCHED WOUND: the walk has come round to a vertex it has already
+        // passed through, which is a vertex two rims share -- burn two patches
+        // that touch at a corner and both rims run through that corner. What
+        // the walk has laid down since it was last there is one whole rim on
+        // its own, so that is cut off and kept as one, and the walk carries on
+        // from the shared vertex along the other. Left in one ring the shared
+        // vertex would appear twice, and every triangle the fill laid between
+        // its two appearances would have no width.
+        const before = where.get(v)
+        if (before !== undefined) {
+          keep(ring.splice(before), owners.splice(before))
+          for (const [u, i] of where) if (i >= before) where.delete(u)
+        }
+        // The pinch above spends an edge every step, so this cannot trip on a
+        // mesh where every vertex holds one edge each way; it is here so that
+        // one that does not is declined rather than spun on forever.
         if (ring.length > onward.size) break
       }
       // A boundary that does not come back to where it started is a rim this
-      // cannot close -- a hole that has run off the edge of the sheet, say.
-      // Nothing at all is removed in that case.
-      if (!closed || ring.length < 3) return false
-      const centre = new Vector3()
-      const area = new Vector3()
-      for (let i = 0; i < ring.length; i++) {
-        at.fromArray(work.position, ring[i] * 3)
-        on.fromArray(work.position, ring[(i + 1) % ring.length] * 3)
-        centre.add(at)
-        area.add(on.cross(at))
-      }
-      centre.multiplyScalar(1 / ring.length)
-      loops.push({ ring, centre, area })
+      // cannot close -- an edge that three triangles meet along, say. Nothing
+      // at all is removed in that case.
+      if (!closed) return decline()
+      keep(ring, owners)
     }
   }
 
   // Two rims to a tunnel, paired nearest first, and only ever with a rim that
   // winds the other way -- which is what stops two rings left on the SAME face
   // from being sewn to each other into a lid.
+  //
+  // AND ONLY EVER WITH A RIM THAT FACES AWAY FROM IT. Winding alone is not
+  // enough, because two other things wind opposite ways too: the two ends of a
+  // rod the flame has cut through, and two islands left standing either side
+  // of a wound that took the material between them. A rim's `area` points away
+  // from the material it still borders, so the two faces of one wall point
+  // away from EACH OTHER -- the wall was between them -- while two stumps
+  // point at each other across the gap where the material used to be. Zipping
+  // the stumps was measured: a rod a tenth of the brush across was cut in two
+  // and, one dab later, zipped back into exactly the rod it had been, at
+  // fourteen times the triangle count, and then cut again.
   const pairs: [Loop, Loop][] = []
   const taken = new Uint8Array(loops.length)
+  const between = new Vector3()
   for (;;) {
     let bi = -1
     let bj = -1
@@ -2777,7 +3561,19 @@ function breakThrough(
       for (let j = i + 1; j < loops.length; j++) {
         if (taken[j]) continue
         if (loops[i].area.dot(loops[j].area) >= 0) continue
-        const apart = loops[i].centre.distanceToSquared(loops[j].centre)
+        between.subVectors(loops[j].centre, loops[i].centre)
+        if (loops[i].area.dot(between) >= 0 || loops[j].area.dot(between) <= 0) continue
+        // AND NEARER TO EACH OTHER THAN EITHER IS WIDE. The two faces of one
+        // wall are a wall's thickness apart, and a wall the flame has burnt
+        // through is thinner than a fraction of the brush -- so two rims that
+        // are further apart than the smaller of them is across cannot be that.
+        // What they were, when this was measured, was a scrap of three
+        // vertices and a wound thirty times its size on the far side of the
+        // slot, facing the right way by chance and zipped into a tube across
+        // the slot that put eight percent of the panel back.
+        const apart = between.lengthSq()
+        const width = Math.min(loops[i].extent, loops[j].extent)
+        if (apart >= width * width) continue
         if (apart >= best) continue
         best = apart
         bi = i
@@ -2795,34 +3591,18 @@ function breakThrough(
   const fc = new Vector3()
   const fn = new Vector3()
   const emit = (a: number, b: number, c: number, group: number): void => {
-    const t = work.triangleCount++
-    work.corner = growU32(work.corner, work.triangleCount * 3)
-    work.cornerNormal = grow32(work.cornerNormal, work.triangleCount * 9)
-    work.group = growU32(work.group, work.triangleCount)
-    work.rim = growU8(work.rim, work.triangleCount)
     // A tunnel wall is surface that did not exist a moment ago, so it is
     // unrefined ground however fine the face it was cut out of happened to be.
-    const had = work.atTarget.length
-    work.atTarget = grow64(work.atTarget, work.triangleCount)
-    if (work.atTarget.length > had) work.atTarget.fill(Infinity, had)
-    work.atTarget[t] = Infinity
-    work.corner[t * 3] = a
-    work.corner[t * 3 + 1] = b
-    work.corner[t * 3 + 2] = c
-    work.group[t] = group
-    work.rim[t] = 1
     fa.fromArray(work.position, a * 3)
     fb.fromArray(work.position, b * 3)
     fc.fromArray(work.position, c * 3)
     fn.subVectors(fb, fa).cross(fc.sub(fa))
     if (fn.lengthSq() < 1e-30) fn.set(0, 1, 0)
     else fn.normalize()
-    // A stand-in: every vertex of a fresh tunnel is marked touched below, so
-    // the smooth normal computed at the end is what actually ships. This is
-    // what the corner would shade as if it were not.
-    for (let corner = 0; corner < 3; corner++) {
-      fn.toArray(work.cornerNormal, (t * 3 + corner) * 3)
-    }
+    // A stand-in: every vertex of a fresh tunnel is marked touched, so the
+    // smooth normal computed at the end is what actually ships. This is what
+    // the corner would shade as if it were not.
+    lay(a, b, c, fn, fn, fn, group, Infinity, 1)
   }
 
   const span = (a: number, b: number): number => {
@@ -2869,36 +3649,135 @@ function breakThrough(
     }
   }
 
-  // A RIM WITH NOBODY TO PAIR WITH IS HEALED SHUT, and this is what lets the
-  // surgery go ahead at all on a wound that is not simply one hole through one
-  // wall.
+  // A RIM WITH NOBODY TO PAIR WITH IS CLOSED ON ITS OWN, and this is what lets
+  // the surgery go ahead at all on a wound that is not simply one hole through
+  // one wall. Three shapes of rim arrive here.
   //
-  // They turn up constantly, and small. The two faces of a wall are tessellated
-  // independently and burn to slightly different outlines, so a scrap of the
-  // near face is left standing where the far face has gone, or a stray triangle
-  // survives inside the wound; either leaves a rim of a handful of vertices
-  // with no opposite number. Refusing the whole surgery over one of those is
-  // what used to leave a stroke as a ladder -- material still bridging a slot
-  // at every point where the dab that should have cleared it was declined.
+  // Scraps are the common one, and small: a piece of one face left standing
+  // where the other has gone leaves a rim of a handful of vertices with no
+  // opposite number, and refusing the whole surgery over one of those is what
+  // used to leave a stroke as a ladder -- material still bridging a slot at
+  // every point where the dab that should have cleared it was declined. A
+  // flat patch is right.
   //
-  // A fan from the rim first vertex, which needs no new vertex and covers the
-  // reverse of every edge left open. It is a flat patch across a hole of a few
-  // millimetres and it does the honest thing on the one case where a rim is
-  // BOTH large and alone: a point burnt off a cone leaves a single ring, and
-  // this lands it flat, which is what melting a point off looks like.
+  // A stump is the end of something the flame has cut clean through -- a rod, a
+  // thin bar, the point of a cone. One ring, more or less flat, and what
+  // melting the end off looks like is a lid across it.
+  //
+  // THE THIRD IS A WOUND THAT HAS RUN OFF THE EDGE, and it is the one that
+  // decides whether the tool works on anything thin, because a brush wider than
+  // a panel is thick reaches the panel's edge almost as soon as it is put down.
+  // Burn a notch out of the side of a panel and what is left is not two rims
+  // but ONE: along the front face, across the panel's edge, back along the rear
+  // face and across the edge again. It is the two rims of a tunnel joined into
+  // a single band, and the surface that closes it is the tunnel wall run out to
+  // the edge -- a strip across the thickness of the panel, between the front
+  // run and the rear run. A fan across it is a disaster: it lays a lid over the
+  // notch on the front face and another on the back, inside out, and the panel
+  // comes out with its wound filled back in. Measured, one press near the edge
+  // of a two-millimetre panel put seven percent of the panel's volume BACK.
+  //
+  // One rule covers all three, and it is the closing of LEAST AREA that does
+  // not double back on the surface it meets. Across a band that is the strip,
+  // since every triangle of it spans the thickness of the wall and nothing
+  // more; across a flat ring it is the lid; across a scrap it is the patch.
+  // Nothing here has to decide which of the three it is looking at. See
+  // `fillSmoothest` for why the fold matters as well as the area, and
+  // FILL_LIMIT for the one rim it is too expensive for, which falls back to
+  // the fan.
   for (let i = 0; i < loops.length; i++) {
     if (taken[i]) continue
     const ring = loops[i].ring
-    for (let k = 1; k + 1 < ring.length; k++) {
-      emit(ring[0], ring[k + 1], ring[k], paint.get(ring[k]) ?? 0)
+    const cover = (a: number, b: number, c: number): void =>
+      emit(a, b, c, paint.get(c) ?? 0)
+    if (ring.length <= FILL_LIMIT) fillSmoothest(ring, loops[i].owners, work, joined, cover)
+    else for (let k = 1; k + 1 < ring.length; k++) cover(ring[0], ring[k + 1], ring[k])
+  }
+
+  // CRUMBS. A wound can leave a scrap standing on its own -- a sliver of a
+  // side face cut off at both ends, a corner of a chip whose middle the
+  // flame took -- and a scrap much smaller than the brush that has just been
+  // cut loose is not a solid the torch is going to go on melting. It sits in
+  // the flame with a lid over each side, and it was measured floating beside
+  // the notch in a disc a tenth of a brush across. It goes with the material
+  // it was cut from.
+  //
+  // Only pieces THIS WOUND TOUCHES are looked at -- a piece is found by walking
+  // out from a rim -- so a small part of an assembly standing clear of the
+  // brush is not a crumb however small it is; and the bound is well under the
+  // brush, so the stump of a rod the flame has cut through is not one either.
+  {
+    // Vertex -> the triangles laid above, which `adj` predates.
+    const laid = new Map<number, number[]>()
+    for (let t = entered; t < work.triangleCount; t++) {
+      for (let e = 0; e < 3; e++) {
+        const v = work.corner[t * 3 + e]
+        const list = laid.get(v)
+        if (list) list.push(t)
+        else laid.set(v, [t])
+      }
+    }
+    dead = growU8(dead, work.triangleCount)
+    const seen = new Uint8Array(work.triangleCount)
+    const visited = new Uint8Array(work.vertexCount)
+    const small = CRUMB * spec.radius * (CRUMB * spec.radius)
+    for (const loop of loops) {
+      for (const seed of loop.ring) {
+        if (visited[seed]) continue
+        visited[seed] = 1
+        const piece: number[] = []
+        const stack: number[] = [seed]
+        let lox = Infinity
+        let loy = Infinity
+        let loz = Infinity
+        let hix = -Infinity
+        let hiy = -Infinity
+        let hiz = -Infinity
+        const gather = (t: number): void => {
+          if (dead[t] || seen[t]) return
+          seen[t] = 1
+          piece.push(t)
+          for (let e = 0; e < 3; e++) {
+            const u = work.corner[t * 3 + e]
+            if (visited[u]) continue
+            visited[u] = 1
+            stack.push(u)
+          }
+        }
+        while (stack.length > 0) {
+          const v = stack.pop() as number
+          const x = work.position[v * 3]
+          const y = work.position[v * 3 + 1]
+          const z = work.position[v * 3 + 2]
+          if (x < lox) lox = x
+          if (x > hix) hix = x
+          if (y < loy) loy = y
+          if (y > hiy) hiy = y
+          if (z < loz) loz = z
+          if (z > hiz) hiz = z
+          if (v < minted) {
+            for (let i = adj.triangleStart[v]; i < adj.triangleStart[v + 1]; i++) {
+              gather(adj.triangle[i])
+            }
+          }
+          const more = laid.get(v)
+          if (more) for (const t of more) gather(t)
+        }
+        const dx = hix - lox
+        const dy = hiy - loy
+        const dz = hiz - loz
+        if (dx * dx + dy * dy + dz * dz >= small) continue
+        for (const t of piece) dead[t] = 1
+      }
     }
   }
 
-  // Out with the burnt material. The tunnel triangles were appended past the
-  // end of `dead`, so they survive this by construction.
+  // Out with the burnt material. The pieces and the tunnel triangles were
+  // appended past the end of the mesh as it came in, so they survive this by
+  // construction unless a crumb took them.
   let kept = 0
   for (let t = 0; t < work.triangleCount; t++) {
-    if (t < dead.length && dead[t]) continue
+    if (dead[t]) continue
     if (kept !== t) {
       for (let k = 0; k < 3; k++) work.corner[kept * 3 + k] = work.corner[t * 3 + k]
       for (let k = 0; k < 9; k++) {
@@ -2911,9 +3790,6 @@ function breakThrough(
     kept++
   }
   work.triangleCount = kept
-
-  // The rim shades as melt rather than as the face it was cut out of.
-  for (const loop of loops) for (const v of loop.ring) touched[v] = 1
   return true
 }
 
@@ -3055,17 +3931,28 @@ export function erodeGeometry(geom: BufferGeometry, dabs: ErodeDab[]): BufferGeo
   // Grown rather than replaced, so what earlier dabs marked survives into the
   // shading pass -- the batch replay marked the whole stroke on one array, and
   // this has to end up saying the same thing.
-  const touched = carried
+  let touched = carried
     ? growU8(carried.touched, work.vertexCount)
     : new Uint8Array(work.vertexCount)
-  const reachable = reachableVertices(work, fresh)
-  const slot = new Int32Array(work.vertexCount).fill(-1)
+  let reachable = reachableVertices(work, fresh)
+  let slot = new Int32Array(work.vertexCount).fill(-1)
   // REBUILT ONLY WHEN A DAB BURNS THROUGH. Refinement has finished, so for an
   // ordinary stroke the topology is fixed and this is built once for the whole
   // of it; a dab that opens a hole has taken triangles out and put a tunnel in,
-  // and everything after it has to be told.
+  // and everything after it has to be told. A burn also mints the rim of its
+  // wound as new vertices -- see `breakThrough` -- and every one of them is
+  // melt, in reach of the dabs that follow, and past the end of the arrays
+  // sized before the stroke began.
   for (const spec of fresh) {
-    if (dab(work, adj, spec, reachable, touched, slot)) adj = buildAdjacency(work)
+    const had = work.vertexCount
+    if (!dab(work, adj, spec, reachable, touched, slot)) continue
+    adj = buildAdjacency(work)
+    if (work.vertexCount > had) {
+      touched = growU8(touched, work.vertexCount)
+      touched.fill(1, had, work.vertexCount)
+      slot = new Int32Array(work.vertexCount).fill(-1)
+      reachable = reachableVertices(work, fresh)
+    }
   }
 
   meltCache.set(geom, { dabs: dabs.slice(), work, adj, touched })
