@@ -536,11 +536,49 @@ export const HELP_SECTIONS: HelpSection[] = [
         ),
       },
       {
+        title: 'Parents',
+        summary: (
+          <>
+            One object can ride on another. Move, turn or scale the <b>parent</b> and its children
+            go with it; a child still moves on its own.
+          </>
+        ),
+        steps: [
+          {
+            action: 'Right-click an object, then Choose Parent',
+            result:
+              'Click the object it should ride on. Escape, a right-click or the cross on the box cancels.',
+          },
+          { action: 'Clear Parent', result: 'Lets it go. It stays exactly where it is.' },
+          {
+            action: 'Copy Parent Tree',
+            result: 'Copies the object with everything riding on it, to paste as one branch.',
+          },
+          { action: 'The arrow on a Scene row', result: 'Folds that branch away.' },
+        ],
+        notes: [
+          <>
+            A child resting on its parent stays on it. Make the parent taller or wider and the
+            child rides the face it stands on, keeping its own size; scale either one and their
+            surfaces stay together, curved ones included.
+          </>,
+          <>
+            With several objects selected, Choose Parent gives them all the one you click. An
+            object cannot ride on itself or on anything riding on it, and erasers take no part.
+          </>,
+          <>
+            Deleting a parent keeps its children: they move up a level. Merging one hands its
+            children to the merged object. Ctrl+C copies the object alone.
+          </>,
+        ],
+      },
+      {
         title: 'Draw order',
         summary: (
           <>
-            The <b>Scene</b> list is a priority order. Use a row's arrows to move it; where two
-            objects share a surface, the higher one is drawn.
+            The <b>Scene</b> list is a priority order. Use a row's arrows to move it past the row
+            beside it, at its own depth, with its children; where two objects share a surface, the
+            higher one is drawn.
           </>
         ),
       },
@@ -549,7 +587,7 @@ export const HELP_SECTIONS: HelpSection[] = [
         steps: [
           { action: 'Ctrl+C, Ctrl+V', result: 'Copies the selection and pastes it beside itself.' },
           {
-            action: 'Right-click an object',
+            action: 'Right-click an object, or its Scene row',
             result: 'Copy, paste, and Save as custom object, which sends it to the Clipboard.',
           },
         ],

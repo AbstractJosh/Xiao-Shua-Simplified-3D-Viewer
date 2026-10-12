@@ -594,13 +594,15 @@ export function objectSnapTargets(
 
 export function collectSnapTargets(
   entries: SnapEntry[],
-  excludeObjectId?: string
+  exclude?: string | ReadonlySet<string>
 ): SnapTarget[] {
   const out: SnapTarget[] = []
   for (const entry of entries) {
     // Nothing snaps to itself: every one of its own corners is already at zero
-    // distance, so the drag would freeze the moment it started.
-    if (entry.id === excludeObjectId) continue
+    // distance, so the drag would freeze the moment it started. A SET is the
+    // dragged object and everything riding on it, which moves with it and so
+    // sits at whatever distance it already sat -- see `snapTargets`.
+    if (typeof exclude === 'string' ? entry.id === exclude : exclude?.has(entry.id)) continue
     for (const target of objectSnapTargets(
       entry.id,
       entry.geometry,

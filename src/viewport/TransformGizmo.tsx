@@ -12,6 +12,7 @@ import { AXIS_COLORS } from './axisColors'
 import { flyingHere, useTools } from '../store/toolStore'
 import { useSceneColors } from './useSceneColors'
 import type { TransformMode } from '../store/toolStore'
+import { picking, useParentPick } from './ParentPick'
 
 /**
  * Arrows, quads and rings, drawn at a point and turned into that point's own
@@ -826,7 +827,20 @@ function RotateRing({
   )
 }
 
-export function TransformGizmo({
+/**
+ * Every gizmo in the scene -- the object's, a sketch's, the cut plane's, a
+ * ruler's -- with the one rule they all share: while a parent is being chosen
+ * none of them is drawn. The next click names a parent, and a set of arrows
+ * still on screen would be a second thing it could mean. Here rather than at
+ * each of the four places a gizmo is mounted, so a fifth cannot forget. See
+ * `ParentPick`.
+ */
+export function TransformGizmo(props: Parameters<typeof GizmoHandles>[0]) {
+  const choosingParent = useParentPick(picking)
+  return choosingParent ? null : <GizmoHandles {...props} />
+}
+
+function GizmoHandles({
   position,
   rotation,
   quaternion,

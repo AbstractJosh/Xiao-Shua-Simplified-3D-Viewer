@@ -21,6 +21,8 @@ import { hostSurfaceFor } from '../geometry/surfaces'
 import { objectMatrix } from '../geometry/transform'
 import { IDENTITY_TRANSFORM } from '../geometry/types'
 import type { SceneObject, Vec3 } from '../geometry/types'
+import { descendantIds } from '../geometry/hierarchy'
+import { useDoc } from '../store/docStore'
 import { useTools } from '../store/toolStore'
 
 /**
@@ -89,7 +91,7 @@ export function publishScene(next: SnapEntry[]): void {
   // from accumulating a slot per object the scene has ever held.
   const live = new Set(next.map((e) => e.id))
   for (const key of targetCache.keys()) {
-    if (key !== ALL_KEY && !live.has(key)) targetCache.delete(key)
+    if (key !== ALL_KEY && !key.split(',').every((id) => live.has(id))) targetCache.delete(key)
   }
 }
 
@@ -107,10 +109,10 @@ function entryFor(objectId: string): SnapEntry | undefined {
  * excluded -- so leaving it out of the signature is what lets the drag reuse
  * one collected target set for its whole duration.
  */
-function signatureFor(exclude: string): string {
+function signatureFor(exclude: ReadonlySet<string>): string {
   let signature = ''
   for (const e of entries) {
-    if (e.id === exclude) continue
+    if (exclude.has(e.id)) continue
     const [px, py, pz] = e.transform.position
     const [rx, ry, rz] = e.transform.rotation
     signature += `${e.id}:${e.geometry.uuid}:${px},${py},${pz}:${rx},${ry},${rz}:${sketchKey(e)};`
@@ -156,12 +158,30 @@ export function sketchCentres(object: SceneObject): SketchCentre[] {
 }
 
 export function snapTargets(excludeObjectId?: string): SnapTarget[] {
-  const key = excludeObjectId ?? ALL_KEY
-  const signature = signatureFor(key)
+  return targetsExcluding(excludeObjectId === undefined ? [] : [excludeObjectId])
+}
+
+/**
+ * What a dragged OBJECT may catch: the scene less itself and everything riding
+ * on it.
+ *
+ * The riders go with it -- see `carryRiders` -- so each one stays at exactly the
+ * distance it already sat at, and a vase standing on a table is a target the
+ * table's own corners are touching from the first frame. Left in, a drag of the
+ * table would catch its own vase and refuse to leave.
+ */
+function objectTargets(objectId: string): SnapTarget[] {
+  return targetsExcluding([objectId, ...descendantIds(useDoc.getState().doc.objects, objectId)])
+}
+
+function targetsExcluding(ids: string[]): SnapTarget[] {
+  const key = ids.join(',') || ALL_KEY
+  const exclude = new Set(ids)
+  const signature = signatureFor(exclude)
   const cached = targetCache.get(key)
   if (cached && cached.signature === signature) return cached.targets
 
-  const targets = collectSnapTargets(entries, excludeObjectId)
+  const targets = collectSnapTargets(entries, exclude)
   targetCache.set(key, { signature, targets })
   return targets
 }
@@ -376,7 +396,7 @@ export function resolveObjectMove(objectId: string, desired: Vec3): Vec3 {
     entry.geometry,
     desired,
     entry.transform.rotation,
-    snapTargets(objectId),
+    objectTargets(objectId),
     snapDistance
   )
 }
@@ -452,7 +472,7 @@ export function resolveAxisMove(objectId: string, desired: Vec3, axis: Vector3):
 
   const matrix = objectMatrix({ position: desired, rotation: entry.transform.rotation })
   const sources = dragSources(entry.geometry, matrix)
-  const targets = snapTargets(objectId)
+  const targets = objectTargets(objectId)
 
   const hit = snapAlongAxis(sources, targets, axis, snapDistance)
   if (hit) {

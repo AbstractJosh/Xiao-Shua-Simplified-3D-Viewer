@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { MouseEvent } from 'react'
 import type { Feature, SceneObject } from '../geometry/types'
 import { solidLabel } from '../geometry/types'
@@ -8,6 +9,7 @@ import type { Unit } from '../units'
 import { formatLength, formatSize } from '../units'
 import { Section } from './Field'
 import { MergeIcon } from './navIcons'
+import { useObjectMenu } from '../viewport/ObjectMenu'
 
 /**
  * How big the sketch is, IN THE UNIT THE APP IS SET TO.
@@ -184,6 +186,41 @@ function OrderButtons({ id, rank, count }: { id: string; rank: number; count: nu
   )
 }
 
+/**
+ * The arrow that folds a branch of the tree away, on a row with riders.
+ *
+ * The console's own collapse idiom -- the same caret the sections and the
+ * Tools island use, turned by CSS off `aria-expanded` -- so the open state is
+ * written in one place. Folding is a way of LOOKING at the tree, not an edit
+ * to it, so it lives in the panel and costs no undo step.
+ */
+function BranchToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="icon-btn tree-caret"
+      aria-expanded={open}
+      aria-label={open ? 'Collapse' : 'Expand'}
+      onClick={(e) => {
+        // The row selects on click, and folding is not selecting.
+        e.stopPropagation()
+        onToggle()
+      }}
+    >
+      <svg className="collapse-caret" viewBox="0 0 10 10" aria-hidden>
+        <path
+          d="M3.2 1.6 L6.8 5 L3.2 8.4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  )
+}
+
 export function SceneTree() {
   const objects = useDoc((s) => s.doc.objects)
   const selectedObjectId = useDoc(primarySelection)
@@ -196,6 +233,7 @@ export function SceneTree() {
   const removeObject = useDoc((s) => s.removeObject)
   const removeFeature = useDoc((s) => s.removeFeature)
   const toggleFeature = useDoc((s) => s.toggleFeature)
+  const openMenu = useObjectMenu((s) => s.openMenu)
   // Mixed bag of feature, cut and object ids. Every lookup below matches one
   // exact id it can name, so an unrecognised entry simply lights nothing up
   // rather than mislabelling the row it happens to sit beside.
@@ -203,6 +241,9 @@ export function SceneTree() {
   // The tree is a readout like any other, so its sizes follow the app-wide
   // unit -- see `shapeLabel`.
   const displayUnit = useTools((s) => s.displayUnit)
+  // Branches folded away, by the id of the row they hang off. The panel's own
+  // state rather than the document's: see `BranchToggle`.
+  const [shut, setShut] = useState<ReadonlySet<string>>(() => new Set())
 
   if (objects.length === 0) {
     return (
@@ -212,6 +253,192 @@ export function SceneTree() {
     )
   }
 
+  // The list is in TREE ORDER -- every row followed by its whole branch, see
+  // `tidyTree` -- so a row's place in it is still its priority, and the number
+  // on the row is that place whatever depth it is drawn at.
+  const rank = new Map(objects.map((o, i) => [o.id, i]))
+  const ridersOf = (id: string | undefined) => objects.filter((o) => o.parentId === id)
+  // Only a scene with a tree in it spends a column on carets: in a flat one
+  // every row would carry the same empty gap.
+  const nested = objects.some((o) => o.parentId !== undefined)
+  const fold = (id: string) =>
+    setShut((was) => {
+      const next = new Set(was)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+
+  const row = (o: SceneObject, siblings: SceneObject[]) => {
+    const i = rank.get(o.id) ?? 0
+    const riders = ridersOf(o.id)
+    const open = !shut.has(o.id)
+    const cutFailed = o.cuts.some((c) => failed.includes(c.id))
+    return (
+      <li key={o.id} className="tree-object">
+        <div
+          className={`tree-object-head${
+            chosen.has(o.id) ? ' tree-selected' : ''
+          }${o.id === selectedObjectId ? ' tree-primary' : ''}`}
+          onClick={(e) => (e.shiftKey ? toggleObjectSelection(o.id) : selectObject(o.id))}
+          // The SAME menu a right-click on the solid opens -- Copy, Paste,
+          // Choose Parent and the rest -- because it is the same object. It
+          // takes the selection first unless the row is already part of it,
+          // so the menu acts on what the user can see highlighted.
+          onContextMenu={(e) => {
+            e.preventDefault()
+            if (!chosen.has(o.id)) selectObject(o.id)
+            openMenu(e.clientX, e.clientY, o.id)
+          }}
+        >
+          {nested &&
+            (riders.length > 0 ? (
+              <BranchToggle open={open} onToggle={() => fold(o.id)} />
+            ) : (
+              <span className="tree-caret-gap" aria-hidden />
+            ))}
+          <span className="feature-index" title={`Priority ${i + 1} of ${objects.length}`}>
+            {i + 1}
+          </span>
+          <span className="tree-object-name">{objectLabel(o)}</span>
+          {/* Counts what the list below it will SHOW. A badge reading
+              "3f" over an empty list is a worse answer than no badge:
+              confirmed features are baked into the solid and have no row,
+              so they are no longer things this object has -- they are
+              part of its shape. */}
+          {live(o).length > 0 && (
+            <span
+              className="section-hint tree-count"
+              title={`${live(o).length} feature${live(o).length === 1 ? '' : 's'}`}
+            >
+              {live(o).length}f
+            </span>
+          )}
+          {/* A merged object is ONE row, because it is one object. The
+              chip is the only thing saying that more than one solid went
+              into it -- without it a scene that merged two cubes looks
+              like a scene that lost one. */}
+          {o.parts.length > 0 && (
+            <span
+              className="section-hint tree-merged"
+              title={`${o.parts.length + 1} solids merged into one object`}
+            >
+              {o.parts.length + 1} merged
+            </span>
+          )}
+          {/* A red ghost in the scene has an ordinary-looking row, and
+              the one thing worth knowing about it is that it takes
+              material away rather than adding it. */}
+          {o.erase && (
+            <span
+              className="tree-erase"
+              title="An eraser. Aim it, then confirm the subtraction under Position & Rotation."
+            >
+              erase
+            </span>
+          )}
+          {/* A locked solid looks exactly like a loose one in the scene
+              -- the lock only shows itself when something refuses to
+              move -- so the row is the one place it is said. */}
+          {o.locked && <span className="section-hint tree-lock">locked</span>}
+          {/* Two halves of a cut solid look like two unrelated objects
+              until this chip explains where the second one came from. */}
+          {o.cuts.length > 0 &&
+            (cutFailed ? (
+              <span className="feature-error" title="A cut on this object could not be applied">
+                cut
+              </span>
+            ) : (
+              <span
+                className="section-hint tree-cut"
+                title={`Kept half of ${o.cuts.length} cut plane${
+                  o.cuts.length === 1 ? '' : 's'
+                }`}
+              >
+                {o.cuts.length === 1 ? 'cut' : `cut x${o.cuts.length}`}
+              </span>
+            ))}
+          {failed.includes(o.id) && (
+            <span className="feature-error" title="This solid could not be built">
+              failed
+            </span>
+          )}
+          {/* Among its SIBLINGS: a row steps past the row above it at its
+              own depth, carrying its branch. See `moveObject`. */}
+          <OrderButtons id={o.id} rank={siblings.indexOf(o)} count={siblings.length} />
+          <button
+            type="button"
+            className="icon-btn"
+            title="Delete object"
+            onClick={(e) => {
+              e.stopPropagation()
+              removeObject(o.id)
+            }}
+          >
+            {'×'}
+          </button>
+        </div>
+        {live(o).length > 0 && (
+          <ul className="tree-features">
+            {live(o).map((f, j) => (
+              <li
+                key={f.id}
+                // Feature ids come from one global counter, so a match
+                // here cannot belong to a different object's sketch --
+                // and selecting a feature selects its object too, which
+                // is what highlights the head row above.
+                className={`tree-feature${
+                  f.id === selectedFeatureId ? ' tree-selected' : ''
+                }${f.enabled ? '' : ' tree-off'}`}
+                onClick={() => selectFeature(o.id, f.id)}
+              >
+                <span className="feature-index">{j + 1}</span>
+                <span className="feature-text">
+                  {shapeLabel(f, displayUnit)} -{' '}
+                  <span className={`feature-action${action(f, displayUnit).tone}`}>
+                    {action(f, displayUnit).text}
+                  </span>
+                  {failed.includes(f.id) && (
+                    <span className="feature-error" title="This feature could not be applied">
+                      failed
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={f.enabled ? 'Suppress' : 'Enable'}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggleFeature(o.id, f.id)
+                  }}
+                >
+                  {f.enabled ? '●' : '○'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Delete"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    removeFeature(o.id, f.id)
+                  }}
+                >
+                  {'×'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {/* The riders, one level in, under the sketches: a sketch is part
+            of this object, a rider is an object of its own standing on it. */}
+        {riders.length > 0 && open && (
+          <ul className="tree tree-children">{riders.map((r) => row(r, riders))}</ul>
+        )}
+      </li>
+    )
+  }
+
+  const roots = ridersOf(undefined)
   return (
     <Section
       title="Scene"
@@ -219,154 +446,7 @@ export function SceneTree() {
       tip="The list is a priority order, top to bottom. Where two objects present the same surface -- two overlapping solids cut by one plane, say -- the higher one is drawn and the lower gives way. The arrows on a row move it."
     >
       <MergeButton />
-      <ul className="tree">
-        {objects.map((o, i) => {
-          const cutFailed = o.cuts.some((c) => failed.includes(c.id))
-          return (
-            <li key={o.id} className="tree-object">
-              <div
-                className={`tree-object-head${
-                  chosen.has(o.id) ? ' tree-selected' : ''
-                }${o.id === selectedObjectId ? ' tree-primary' : ''}`}
-                onClick={(e) =>
-                  e.shiftKey ? toggleObjectSelection(o.id) : selectObject(o.id)
-                }
-              >
-                <span className="feature-index" title={`Priority ${i + 1} of ${objects.length}`}>
-                  {i + 1}
-                </span>
-                <span className="tree-object-name">{objectLabel(o)}</span>
-                {/* Counts what the list below it will SHOW. A badge reading
-                    "3f" over an empty list is a worse answer than no badge:
-                    confirmed features are baked into the solid and have no row,
-                    so they are no longer things this object has -- they are
-                    part of its shape. */}
-                {live(o).length > 0 && (
-                  <span
-                    className="section-hint tree-count"
-                    title={`${live(o).length} feature${live(o).length === 1 ? '' : 's'}`}
-                  >
-                    {live(o).length}f
-                  </span>
-                )}
-                {/* A merged object is ONE row, because it is one object. The
-                    chip is the only thing saying that more than one solid went
-                    into it -- without it a scene that merged two cubes looks
-                    like a scene that lost one. */}
-                {o.parts.length > 0 && (
-                  <span
-                    className="section-hint tree-merged"
-                    title={`${o.parts.length + 1} solids merged into one object`}
-                  >
-                    {o.parts.length + 1} merged
-                  </span>
-                )}
-                {/* A red ghost in the scene has an ordinary-looking row, and
-                    the one thing worth knowing about it is that it takes
-                    material away rather than adding it. */}
-                {o.erase && (
-                  <span
-                    className="tree-erase"
-                    title="An eraser. Aim it, then confirm the subtraction under Position & Rotation."
-                  >
-                    erase
-                  </span>
-                )}
-                {/* A locked solid looks exactly like a loose one in the scene
-                    -- the lock only shows itself when something refuses to
-                    move -- so the row is the one place it is said. */}
-                {o.locked && <span className="section-hint tree-lock">locked</span>}
-                {/* Two halves of a cut solid look like two unrelated objects
-                    until this chip explains where the second one came from. */}
-                {o.cuts.length > 0 &&
-                  (cutFailed ? (
-                    <span className="feature-error" title="A cut on this object could not be applied">
-                      cut
-                    </span>
-                  ) : (
-                    <span
-                      className="section-hint tree-cut"
-                      title={`Kept half of ${o.cuts.length} cut plane${
-                        o.cuts.length === 1 ? '' : 's'
-                      }`}
-                    >
-                      {o.cuts.length === 1 ? 'cut' : `cut x${o.cuts.length}`}
-                    </span>
-                  ))}
-                {failed.includes(o.id) && (
-                  <span className="feature-error" title="This solid could not be built">
-                    failed
-                  </span>
-                )}
-                <OrderButtons id={o.id} rank={i} count={objects.length} />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="Delete object"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    removeObject(o.id)
-                  }}
-                >
-                  {'×'}
-                </button>
-              </div>
-              {live(o).length > 0 && (
-                <ul className="tree-features">
-                  {live(o).map((f, j) => (
-                    <li
-                      key={f.id}
-                      // Feature ids come from one global counter, so a match
-                      // here cannot belong to a different object's sketch --
-                      // and selecting a feature selects its object too, which
-                      // is what highlights the head row above.
-                      className={`tree-feature${
-                        f.id === selectedFeatureId ? ' tree-selected' : ''
-                      }${f.enabled ? '' : ' tree-off'}`}
-                      onClick={() => selectFeature(o.id, f.id)}
-                    >
-                      <span className="feature-index">{j + 1}</span>
-                      <span className="feature-text">
-                        {shapeLabel(f, displayUnit)} -{' '}
-                        <span className={`feature-action${action(f, displayUnit).tone}`}>
-                          {action(f, displayUnit).text}
-                        </span>
-                        {failed.includes(f.id) && (
-                          <span className="feature-error" title="This feature could not be applied">
-                            failed
-                          </span>
-                        )}
-                      </span>
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        title={f.enabled ? 'Suppress' : 'Enable'}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleFeature(o.id, f.id)
-                        }}
-                      >
-                        {f.enabled ? '●' : '○'}
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        title="Delete"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          removeFeature(o.id, f.id)
-                        }}
-                      >
-                        {'×'}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </li>
-          )
-        })}
-      </ul>
+      <ul className="tree">{roots.map((o) => row(o, roots))}</ul>
     </Section>
   )
 }

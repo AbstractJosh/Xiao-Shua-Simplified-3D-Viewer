@@ -247,6 +247,10 @@ export function objectFrom(raw: unknown): SceneObject | undefined {
     // Read the way `erase` is: only a literal true locks, and a solid saved
     // without the key comes back without it.
     ...(stored.locked === true ? { locked: true } : {}),
+    // Taken as written: whether it names an object that came back is a
+    // question about the whole scene, which `tidyTree` answers once the scene
+    // is in. See `applyProject`.
+    ...(typeof stored.parentId === 'string' ? { parentId: stored.parentId } : {}),
     ...(erased ? { erased } : {}),
     ...(Array.isArray(stored.erosion) ? { erosion: stored.erosion as SceneObject['erosion'] } : {}),
   }

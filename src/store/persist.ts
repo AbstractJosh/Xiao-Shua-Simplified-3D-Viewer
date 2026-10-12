@@ -314,6 +314,12 @@ export type Shelf = {
   version: 2
   customs: CustomObject[]
   clipboard: SceneObject | null
+  /**
+   * What rode on the clipboard's object, for a tree copy -- see
+   * `LibraryState.clipboardTree`. Optional so a shelf written before trees
+   * existed still reads, as the plain copy it was.
+   */
+  clipboardTree?: SceneObject[]
   presets: Preset[]
   activePresetId: string
   opacity: number
@@ -397,11 +403,13 @@ export function shelfOf(): Shelf {
   const tickets = new Set<string>()
   for (const custom of library.customs) meshTickets(custom.object, tickets)
   if (library.clipboard) meshTickets(library.clipboard, tickets)
+  for (const rider of library.clipboardTree) meshTickets(rider, tickets)
 
   return {
     version: 2,
     customs: library.customs,
     clipboard: library.clipboard,
+    clipboardTree: library.clipboardTree,
     presets: reference.presets,
     activePresetId: reference.activePresetId,
     opacity: reference.opacity,
@@ -431,6 +439,7 @@ export function shelfFrom(raw: unknown): Shelf | null {
     return id === undefined || name === undefined || !object ? undefined : { id, name, object }
   })
   const clipboard = objectFrom(stored.clipboard) ?? null
+  const clipboardTree = clipboard ? list(stored.clipboardTree, 500, objectFrom) : []
   const presets = list(stored.presets, MAX_PRESETS, presetFrom)
   const opacity = num(0, 1)(stored.opacity)
   const meshIds = list(stored.meshIds, 200, text)
@@ -445,6 +454,7 @@ export function shelfFrom(raw: unknown): Shelf | null {
     version: 2,
     customs,
     clipboard,
+    clipboardTree,
     presets,
     activePresetId,
     opacity: opacity ?? DEFAULT_REFERENCE_OPACITY,
@@ -485,7 +495,16 @@ export function applyShelf(shelf: Shelf): void {
 
   useLibrary.setState({
     customs: shelf.customs.filter((c) => whole(c.object)),
-    clipboard: shelf.clipboard && whole(shelf.clipboard) ? shelf.clipboard : null,
+    // A tree comes back whole or not at all: a branch with one rider missing
+    // would paste as a different branch from the one that was copied.
+    ...(shelf.clipboard && whole(shelf.clipboard)
+      ? {
+          clipboard: shelf.clipboard,
+          clipboardTree: (shelf.clipboardTree ?? []).every(whole)
+            ? (shelf.clipboardTree ?? [])
+            : [],
+        }
+      : { clipboard: null, clipboardTree: [] }),
   })
 
   useReference.setState({
@@ -623,6 +642,7 @@ function writeShelf(): void {
         meshIds: [],
         customs: shelf.customs.filter((c) => standsAlone(c.object)),
         clipboard: shelf.clipboard && standsAlone(shelf.clipboard) ? shelf.clipboard : null,
+        clipboardTree: (shelf.clipboardTree ?? []).every(standsAlone) ? shelf.clipboardTree : [],
       }
       const record = heavy ? shelf : light
 
@@ -724,6 +744,7 @@ export function remember(): void {
         return [
           library.customs,
           library.clipboard,
+          library.clipboardTree,
           reference.presets,
           reference.activePresetId,
           reference.opacity,

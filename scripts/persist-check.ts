@@ -65,7 +65,7 @@ const reference = () => useReference.getState()
 /** The stores as a fresh page has them, so a restore is tested against the
  *  state it will actually meet rather than against its own leftovers. */
 function blank(): void {
-  useLibrary.setState({ customs: [], clipboard: null })
+  useLibrary.setState({ customs: [], clipboard: null, clipboardTree: [] })
   useReference.setState({
     presets: [{ id: 'p0', name: 'Preset 1', slots: [null, null, null] }],
     activePresetId: 'p0',
@@ -565,6 +565,56 @@ check(
   projectFrom(bentScene)?.doc.objects.length === 0,
   `${projectFrom(bentScene)?.doc.objects.length}`
 )
+
+// A TREE comes back a tree, and a child whose parent did not come back opens
+// loose, exactly where it stood, rather than riding on nothing.
+{
+  console.log('\nParents\n')
+  blankBenches()
+  const table = useDoc.getState().addObject({ kind: 'box', size: [2, 1, 2] }, [0, 0.5, 0])
+  const vase = useDoc.getState().addObject({ kind: 'box', size: [0.5, 0.5, 0.5] }, [0.3, 1.25, 0])
+  useDoc.getState().setParent([vase], table)
+  const tree = structuredClone(captureProject({ id: 'pj-t', name: 'Tree', created: 1, edited: 2 }))
+
+  const opened = projectFrom(structuredClone(tree))
+  if (opened) applyProject(opened)
+  const back = useDoc.getState().doc.objects
+  check(
+    'a vase saved riding on its table opens riding on it',
+    back.find((o) => o.id === vase)?.parentId === table,
+    `${back.find((o) => o.id === vase)?.parentId}`
+  )
+
+  const lost = structuredClone(tree)
+  ;(lost.doc.objects.find((o) => o.id === table)!.base as { size?: unknown }).size = 'wide'
+  const orphan = projectFrom(lost)
+  if (orphan) applyProject(orphan)
+  const left = useDoc.getState().doc.objects
+  check('a table that did not come back is dropped', !left.some((o) => o.id === table))
+  check(
+    'and its vase opens loose, with no link to nothing',
+    left.length === 1 && !('parentId' in left[0]),
+    left.map((o) => `${o.id}->${o.parentId}`).join(' ')
+  )
+  check(
+    'where it stood',
+    left[0]?.transform.position.join() === '0.3,1.25,0',
+    `${left[0]?.transform.position.join()}`
+  )
+
+  // The clipboard's branch is on the shelf too.
+  library().copyObject(back.find((o) => o.id === table)!, [back.find((o) => o.id === vase)!])
+  const shelf = shelfFrom(structuredClone(shelfOf()))
+  blank()
+  if (shelf) applyShelf(shelf)
+  check('a tree copy survives a reload as a tree', library().clipboardTree.length === 1, `${library().clipboardTree.length}`)
+  check(
+    'still pointing at the copied table',
+    library().clipboardTree[0]?.parentId === library().clipboard?.id,
+    `${library().clipboardTree[0]?.parentId} vs ${library().clipboard?.id}`
+  )
+  blankBenches()
+}
 
 console.log(
   failures === 0

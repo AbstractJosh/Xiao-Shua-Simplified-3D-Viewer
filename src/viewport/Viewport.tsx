@@ -69,6 +69,7 @@ import { PerfHud, PerfProbe } from './PerfHud'
 import { PERF_ON } from './perfProbe'
 import { dropCacheFor, releaseDropCache } from './dropCache'
 import { ObjectMenu, useObjectMenu } from './ObjectMenu'
+import { ParentPickBanner, picking, useParentPick } from './ParentPick'
 import type { DropCache } from './dropCache'
 import { PlacingSolidPreview } from './PlacingSolidPreview'
 import { AxisCompass, CompassControl } from './AxisCompass'
@@ -1628,7 +1629,10 @@ function BrushGhost({ meshes }: { meshes: RefObject<Map<string, Mesh>> }) {
     const mesh = ghost.current
     if (!mesh) return
     const s = useDoc.getState()
-    if (!tool || s.drag.kind === 'erode') {
+    // Down while a parent is being chosen, too: the press is not going to lay
+    // a dab, and a brush outline over the solid would say it was. See
+    // `ParentPick`.
+    if (!tool || s.drag.kind === 'erode' || picking(useParentPick.getState())) {
       mesh.visible = false
       return
     }
@@ -2199,6 +2203,8 @@ export function Viewport() {
   // a React-rendered attribute, so it has to come through a render.
   // Either brush: the crosshair is about a brush being aimed, not about which.
   const brushArmed = useTools((s) => s.brushTool !== null)
+  // And while a parent is being chosen the pointer says the next click picks.
+  const choosingParent = useParentPick(picking)
 
   // The gesture ends wherever the pointer happens to be -- including outside
   // the window -- so completion is owned by a global listener, not the canvas.
@@ -2269,6 +2275,18 @@ export function Viewport() {
           target.tagName === 'SELECT' ||
           target.tagName === 'TEXTAREA')
       ) {
+        return
+      }
+
+      // CHOOSING A PARENT TAKES THE KEYBOARD, and gives back one key. Escape
+      // ends the choice and does nothing else -- the selection waiting for its
+      // parent stays selected -- and every other key is ignored for its length:
+      // a Delete or an undo landing on the objects about to be linked would
+      // leave the choice pointing at something that is no longer there. See
+      // `ParentPick`.
+      const pick = useParentPick.getState()
+      if (pick.childIds) {
+        if (e.key === 'Escape') pick.cancel()
         return
       }
 
@@ -2361,10 +2379,10 @@ export function Viewport() {
           useLibrary.getState().copyObject(object)
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-        const { clipboard } = useLibrary.getState()
+        const { clipboard, clipboardTree } = useLibrary.getState()
         if (clipboard) {
           e.preventDefault()
-          s.pasteObject(clipboard)
+          s.pasteObject(clipboard, clipboardTree)
         }
       }
     }
@@ -2396,7 +2414,9 @@ export function Viewport() {
     // armed, and it stays through the stroke -- while the brush is in use the
     // ghost stands down and the cursor is all the aiming there is.
     <div
-      className={`viewport${brushArmed ? ' viewport-brush' : ''}`}
+      className={`viewport${brushArmed ? ' viewport-brush' : ''}${
+        choosingParent ? ' viewport-picking' : ''
+      }`}
       onContextMenu={(e) => e.preventDefault()}
     >
       <Canvas
@@ -2419,6 +2439,9 @@ export function Viewport() {
         // on a press that drew no box -- so only the other buttons are answered
         // here, and the two can never both fire on one gesture.
         onPointerMissed={(e) => {
+          // A miss while choosing a parent names nothing and clears nothing:
+          // the selection is what the parent is being chosen for.
+          if (picking(useParentPick.getState())) return
           if (e.button !== 0) selectObject(null)
           // Whichever button: a press that reached nothing in the scene reached
           // no ruler either, and a selected ruler holds the only gizmo on
@@ -2443,6 +2466,7 @@ export function Viewport() {
       <DragHint />
       <PerfHud />
       <ObjectMenu />
+      <ParentPickBanner />
     </div>
   )
 }

@@ -3453,6 +3453,49 @@ console.log('A level ruler on the lathe is pushed by its middle and its ends fol
   }
 }
 
+{
+  // A PARENT DRAGGED DOES NOT CATCH ITS OWN RIDERS. They go with it, so each
+  // sits at whatever distance it already sat -- and a vase standing on a table
+  // is a target in reach of the table from the very first frame. Measured
+  // first with the vase loose, to show it IS a target the drag would catch,
+  // and then riding on the table, where it must not be.
+  console.log('\nA parent drag ignores what rides on it')
+  resetEvaluator()
+  const TABLE: BaseSolid = { kind: 'box', size: [2, 1, 2] }
+  const VASE: BaseSolid = { kind: 'box', size: [0.5, 0.5, 0.5] }
+  const loose = scene(object(TABLE, 'table', [0, 0.5, 0]), object(VASE, 'vase', [0, 1.25, 0]))
+  const riding = scene(loose.objects[0], { ...loose.objects[1], parentId: 'table' })
+  const evaluated = evaluateDoc(loose)
+  publishScene(
+    loose.objects.map((o) => ({
+      id: o.id,
+      geometry: evaluated.objects.find((e) => e.id === o.id)!.geometry,
+      transform: o.transform,
+      sketches: sketchCentres(o),
+    }))
+  )
+  useTools.getState().setSnap(true)
+  useTools.getState().setSnapDistance(DEFAULT_SNAP_DISTANCE)
+
+  useDoc.setState({ doc: loose })
+  const caught = resolveObjectMove('table', [0.1, 0.5, 0])
+  check('a loose vase on top is something the table catches', Math.abs(caught[0] - 0.1) > 1e-6, `${caught[0]}`)
+  const along = resolveAxisMove('table', [0.1, 0.5, 0], new Vector3(1, 0, 0))
+  check('along an arrow too', Math.abs(along[0] - 0.1) > 1e-6, `${along[0]}`)
+
+  useDoc.setState({ doc: riding })
+  near('riding on it, the table goes where it is dragged', resolveObjectMove('table', [0.1, 0.5, 0])[0], 0.1, 1e-9)
+  near('and along an arrow', resolveAxisMove('table', [0.1, 0.5, 0], new Vector3(1, 0, 0))[0], 0.1, 1e-9)
+  check('catching nothing', snapIndicator.hit === null, `${snapIndicator.hit?.target.kind}`)
+  // The rider is moved on its own and its parent stays put, so the parent is
+  // as much a target for it as anything else in the scene.
+  const vase = resolveObjectMove('vase', [0.1, 1.25, 0])
+  check('while the vase dragged alone still catches the table', Math.abs(vase[0] - 0.1) > 1e-6, `${vase[0]}`)
+
+  useDoc.setState({ doc: { objects: [] } })
+  publishScene([])
+}
+
 console.log(
   failures === 0
     ? '\nAll interaction checks passed.\n'

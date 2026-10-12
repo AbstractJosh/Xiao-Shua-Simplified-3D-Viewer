@@ -3045,6 +3045,28 @@ body {
   background: var(--panel-2);
 }
 
+/* Riders, one level in, with the same indent and rule the sketches take: in a
+   column this narrow the rule is what carries the depth. The list itself is a
+   `.tree` like the top one, so it keeps the same gap between rows. */
+.tree-children {
+  margin: 2px 0 2px 9px;
+  padding-left: 9px;
+  border-left: 1px solid var(--border);
+}
+
+/* The fold arrow on a row with riders, and the gap that holds its place on a
+   row without any, so names at one depth line up whichever they have. */
+.tree-caret,
+.tree-caret-gap {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.tree-caret[aria-expanded='true'] .collapse-caret {
+  transform: rotate(90deg);
+}
+
 .tree-empty {
   margin: 0;
   padding: 3px 7px;
@@ -4072,6 +4094,56 @@ body {
 .flight-speed-shown {
   opacity: 1;
   transition-duration: 0.08s;
+}
+
+/* CHOOSING A PARENT: the box at the top of the viewport saying what the next
+   click does, in the same slot and on the same floating surface as the flight
+   readout. That one only flashes up while its speed is being changed, so the
+   two seldom meet, and when they do this one is on top: it is the one that
+   says what a click will do.
+
+   Unlike that readout it DOES take a press, because it carries the way out for
+   a hand with no Escape key to reach: its cancel button. See `ParentPick`. */
+.parent-pick {
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 14px;
+  background: var(--surface-float);
+  border: var(--edge) solid color-mix(in srgb, var(--accent) 55%, var(--line-2));
+  border-radius: var(--radius);
+  box-shadow: var(--lift-1);
+  color: var(--text);
+  font-size: var(--t-body);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The pointer says the next click picks, over the scene. */
+.viewport-picking canvas {
+  cursor: crosshair;
+}
+
+/* Everything that is not the scene, while a parent is being chosen: still
+   there, so nothing jumps, but grey and out of reach -- `inert` on the same
+   element takes it away from the pointer and the keyboard both.
+
+   DIMMED, NOT FADED. The selection HUD and the island float over the canvas,
+   and turning their opacity down lets the grid show through them -- a panel
+   with the scene's lines running across its numbers reads as broken, not as
+   resting. A filter darkens the panel and keeps it solid. */
+.picking-muted {
+  filter: grayscale(1) brightness(0.45);
+  transition: filter 0.15s;
+}
+
+:root[data-motion='reduce'] .picking-muted {
+  transition: none;
 }
 
 /* The selection box.

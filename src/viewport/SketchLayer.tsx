@@ -6,6 +6,7 @@ import { hostSurfaceFor } from '../geometry/surfaces'
 import { buildCapGeometry, outlineOnSurface, outlinePolyline } from '../geometry/prism'
 import type { BaseSolid, SceneObject, Shape2D, SurfaceAnchor } from '../geometry/types'
 import { selectedObjectId as primarySelection, useDoc } from '../store/docStore'
+import { pickParent, useParentPick } from './ParentPick'
 import { useSceneColors } from './useSceneColors'
 
 /** Lift of the projection above the solid; enough to clear z-fighting. */
@@ -133,6 +134,13 @@ export function ObjectSketches({
             onTop={isSelected}
             onPointerDown={(e) => {
               e.stopPropagation()
+              // A sketch is part of the solid it is drawn on, so while a parent
+              // is being chosen a click on one names that solid -- and starts no
+              // slide. See `ParentPick`.
+              if (useParentPick.getState().childIds) {
+                if (e.nativeEvent.button === 0) pickParent(object.id)
+                return
+              }
               // OrbitControls listens on the canvas directly, so a React-level
               // stopPropagation will not reach it. Disable it synchronously or
               // the camera orbits while the sketch is being dragged.

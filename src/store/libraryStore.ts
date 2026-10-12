@@ -65,9 +65,18 @@ function nextCustomName(customs: CustomObject[]): string {
 type LibraryState = {
   /** The one object Ctrl+C put aside, or null before anything has been copied. */
   clipboard: SceneObject | null
+  /**
+   * What rode on the clipboard's object when it was copied, in tree order --
+   * empty for a plain Ctrl+C, which copies the one object, and filled by "Copy
+   * Parent Tree", which copies the branch. Kept beside `clipboard` rather than
+   * replacing it with a list, so everything that only ever wanted one object
+   * -- the shelf, the thumbnails -- still finds exactly one.
+   */
+  clipboardTree: SceneObject[]
   customs: CustomObject[]
 
-  copyObject: (object: SceneObject) => void
+  /** `riders` makes it a tree copy. See `clipboardTree`. */
+  copyObject: (object: SceneObject, riders?: SceneObject[]) => void
   /** Returns the new entry's id, so the panel can focus the name it just made. */
   saveCustom: (object: SceneObject) => string
   renameCustom: (id: string, name: string) => void
@@ -76,12 +85,13 @@ type LibraryState = {
 
 export const useLibrary = create<LibraryState>((set) => ({
   clipboard: null,
+  clipboardTree: [],
   customs: [],
 
   // Stored as it stands, not cloned: the document is immutable, so the object
   // handed in can never change underneath this, and holding the original means
   // a copy still pastes after the thing it came from has been deleted.
-  copyObject: (object) => set({ clipboard: object }),
+  copyObject: (object, riders = []) => set({ clipboard: object, clipboardTree: riders }),
 
   saveCustom: (object) => {
     const id = nextCustomId()
