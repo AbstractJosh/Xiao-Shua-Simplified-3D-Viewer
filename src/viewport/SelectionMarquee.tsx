@@ -11,6 +11,7 @@ import {
   useMarquee,
 } from './marquee'
 import type { MarqueeBox } from './marquee'
+import { useParentPick } from './ParentPick'
 
 /**
  * The rubber-band selection, in two halves: the listener that drives it, which
@@ -61,7 +62,9 @@ export function MarqueeControl() {
         hits: internal.initialHits.length,
         dragging: useDoc.getState().drag.kind !== 'idle',
       }
-      if (!claimsPress(press)) return
+      // No box while a parent is being chosen: the next click names a parent,
+      // and a click on empty space names nothing. See `ParentPick`.
+      if (!claimsPress(press) || useParentPick.getState().childIds) return
       useMarquee.getState().begin(e.clientX, e.clientY, useDoc.getState().selectedObjectIds)
     }
 

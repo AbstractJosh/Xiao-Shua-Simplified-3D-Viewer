@@ -3,6 +3,7 @@ import { ColorPanel } from './ColorPanel'
 import { SceneTree } from './SceneTree'
 import { ShapePalette } from './ShapePalette'
 import { SolidPalette } from './SolidPalette'
+import { picking, useParentPick } from '../viewport/ParentPick'
 
 /**
  * The console on the right: one column, and everything in it is true of the
@@ -30,8 +31,11 @@ import { SolidPalette } from './SolidPalette'
  * scroll. Five is not.
  */
 export function Console() {
+  // Greyed out and out of reach while a parent is being chosen: the scene is
+  // the only thing the next click is about. See `ParentPick`.
+  const muted = useParentPick(picking)
   return (
-    <aside className="console">
+    <aside className={`console${muted ? ' picking-muted' : ''}`} inert={muted}>
       {/* Above the fixed catalogue below it: what you saved is yours and
           specific to this scene, so it is the first thing to reach for rather
           than something to scroll past ten primitives to find. */}

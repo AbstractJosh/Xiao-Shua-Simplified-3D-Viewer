@@ -315,6 +315,9 @@ import {
 import { useEvalStatus } from '../src/store/evalStore'
 import { templateOf, useLibrary } from '../src/store/libraryStore'
 import { ObjectMenu, useObjectMenu } from '../src/viewport/ObjectMenu'
+import { ParentPickBanner, pickParent, useParentPick } from '../src/viewport/ParentPick'
+import { TransformGizmo } from '../src/viewport/TransformGizmo'
+import { canParent, descendantIds, tidyTree } from '../src/geometry/hierarchy'
 import {
   CUT_POSITION_LIMIT,
   CUT_SIZE_MAX,
@@ -11435,6 +11438,384 @@ console.log('\nThe welcome screen: no project open, and a bar that says so')
   hides('and every one of them comes back on at a bench', back, 'class="screen-tab" disabled=""')
   shows('with the bench you left still current', back, 'aria-current="page">Modelling<')
 }
+
+// --- Parents: one object riding on another ----------------------------------
+console.log('\nParents: one object riding on another')
+
+resetEvaluator()
+doc().reset()
+useParentPick.getState().cancel()
+
+{
+  // A table, a vase standing on it off to one side, flowers standing in the
+  // vase, and a lamp hanging over the table touching nothing. Every one of them
+  // is placed exactly: the vase's foot is ON the table top, the flowers' foot
+  // ON the vase's top, so "touching" is the snapped case, not a near miss.
+  const table = doc().addObject({ kind: 'box', size: [2, 1, 2] }, [0, 0.5, 0])
+  const vase = doc().addObject({ kind: 'box', size: [0.5, 0.5, 0.5] }, [0.3, 1.25, 0])
+  const lamp = doc().addObject({ kind: 'box', size: [0.2, 0.2, 0.2] }, [0, 3, 0])
+  const flowers = doc().addObject({ kind: 'box', size: [0.1, 0.4, 0.1] }, [0.3, 1.7, 0])
+  const at = (id: string) => doc().doc.objects.find((o) => o.id === id)!
+  const pos = (id: string) => at(id).transform.position
+  const size = (id: string) => (at(id).base as { size: Vec3 }).size
+  const order = () => doc().doc.objects.map((o) => o.id).join(',')
+  const nearVec = (label: string, got: readonly number[], want: readonly number[]) =>
+    check(
+      label,
+      got.every((v, i) => Math.abs(v - want[i]) <= 1e-6),
+      `got ${got.map((v) => v.toFixed(4)).join(', ')}, expected ${want.join(', ')}`
+    )
+
+  const steps = doc().past.length
+  check('linking a vase to a table', doc().setParent([vase], table) === 1)
+  check('makes it ride on the table', at(vase).parentId === table, `${at(vase).parentId}`)
+  check('as one undo step', doc().past.length === steps + 1, `${doc().past.length - steps}`)
+  nearVec('and moves nothing', pos(vase), [0.3, 1.25, 0])
+  doc().setParent([flowers], vase)
+  doc().setParent([lamp], table)
+  check(
+    'the list reads as the tree: each parent followed by its branch',
+    order() === [table, vase, flowers, lamp].join(','),
+    order()
+  )
+
+  // What cannot ride where.
+  check('a table cannot ride on its own vase', doc().setParent([table], vase) === 0)
+  check('nor on anything further down', doc().setParent([table], flowers) === 0)
+  check('nothing rides on itself', doc().setParent([vase], vase) === 0)
+  const before = doc().past.length
+  check('linking it where it already rides links nothing', doc().setParent([vase], table) === 0)
+  check('and costs no undo step', doc().past.length === before, `${doc().past.length - before}`)
+  const eraser = doc().addObject({ kind: 'box', size: [0.3, 0.3, 0.3] }, [5, 0.15, 0], true)
+  check('an eraser rides on nothing', doc().setParent([eraser], table) === 0)
+  check('and nothing rides on an eraser', doc().setParent([lamp], eraser) === 0)
+  check('canParent agrees', !canParent(doc().doc.objects, eraser, table))
+  doc().removeObject(eraser)
+
+  // MOVING THE PARENT carries the whole branch; two frames of one drag land
+  // exactly, carried from where they stood at the press rather than nudged
+  // from the frame before.
+  const press = doc().past.length
+  doc().startGizmo(table, { mode: 'move', axis: 0 })
+  doc().moveObjectTo([1, 0.5, 0])
+  doc().moveObjectTo([2, 0.5, 0])
+  doc().endDrag()
+  nearVec('a table dragged takes its vase with it', pos(vase), [2.3, 1.25, 0])
+  nearVec('and the flowers in the vase', pos(flowers), [2.3, 1.7, 0])
+  nearVec('and the lamp over it', pos(lamp), [2, 3, 0])
+  check('in one undo step', doc().past.length === press + 1, `${doc().past.length - press}`)
+  doc().undo()
+  nearVec('which undo takes back for all of them', pos(flowers), [0.3, 1.7, 0])
+
+  // MOVING THE CHILD moves the child: the table stays put, and what rides on
+  // the vase goes with the vase.
+  doc().startGizmo(vase, { mode: 'move', axis: 0 })
+  doc().moveObjectTo([0.6, 1.25, 0])
+  doc().endDrag()
+  nearVec('a vase dragged leaves the table where it is', pos(table), [0, 0.5, 0])
+  nearVec('and takes its flowers', pos(flowers), [0.6, 1.7, 0])
+  doc().undo()
+
+  // TURNING THE PARENT swings the branch round it.
+  doc().setObjectTransform(table, { position: [0, 0.5, 0], rotation: [0, Math.PI / 2, 0] })
+  nearVec('a quarter turn of the table swings the vase round with it', pos(vase), [0, 1.25, -0.3])
+  near('and turns it the same way', at(vase).transform.rotation[1], Math.PI / 2, 1e-9)
+  doc().undo()
+
+  // SCALING THE PARENT scales the branch, and every foot stays where it
+  // stands: the vase on the table top, the flowers in the vase.
+  doc().scaleObject(table, 2)
+  nearVec('a table scaled up', size(table), [4, 2, 4])
+  nearVec('grows the vase with it', size(vase), [1, 1, 1])
+  nearVec('standing on the new top, as far out as before in proportion', pos(vase), [0.6, 2, 0])
+  nearVec('and the flowers in it', pos(flowers), [0.6, 2.9, 0])
+  nearVec('grown too', size(flowers), [0.2, 0.8, 0.2])
+  nearVec('and the lamp the same group, only bigger', pos(lamp), [0, 5.5, 0])
+  doc().undo()
+
+  // RESIZING THE PARENT along one axis moves the riders and leaves them their
+  // size: taller legs do not make a taller vase.
+  doc().patchObject(table, { base: { kind: 'box', size: [2, 2, 2] } })
+  nearVec('a table made taller', size(table), [2, 2, 2])
+  nearVec('leaves the vase its size', size(vase), [0.5, 0.5, 0.5])
+  nearVec('riding up with the top it stands on', pos(vase), [0.3, 1.75, 0])
+  nearVec('the flowers with it', pos(flowers), [0.3, 2.2, 0])
+  nearVec('and the lamp the same height above the top it was', pos(lamp), [0, 3.5, 0])
+  doc().undo()
+  // The same edit off the gizmo, about the centre, a frame at a time.
+  doc().startGizmo(table, { mode: 'size', axis: 1, from: 'centre' })
+  doc().resizeObjectTo({ kind: 'box', size: [2, 1.5, 2] })
+  doc().resizeObjectTo({ kind: 'box', size: [2, 2, 2] })
+  doc().endDrag()
+  nearVec('a resize drag lands the vase on the top as well', pos(vase), [0.3, 1.75, 0])
+  doc().undo()
+
+  // SCALING THE CHILD keeps its foot on the parent: a vase scaled about its
+  // own middle would sink into the table, so it is slid back up onto it -- and
+  // its flowers stay standing in it.
+  doc().scaleObject(vase, 2)
+  nearVec('a vase scaled up', size(vase), [1, 1, 1])
+  nearVec('keeps its foot on the table', pos(vase), [0.3, 1.5, 0])
+  nearVec('with its flowers on its new top', pos(flowers), [0.3, 2.4, 0])
+  nearVec('and the table untouched', size(table), [2, 1, 2])
+  doc().undo()
+
+  // A LOCKED rider is locked against being moved on its own, not against
+  // the thing it stands on.
+  doc().setObjectLocked(vase, true)
+  doc().startGizmo(table, { mode: 'move', axis: 2 })
+  doc().moveObjectTo([0, 0.5, 1])
+  doc().endDrag()
+  nearVec('a locked vase still rides its table', pos(vase), [0.3, 1.25, 1])
+  doc().undo()
+  doc().undo()
+
+  // MIRRORING THE PARENT carries the vase across to its mirrored place.
+  doc().mirrorObjects([table], 0)
+  nearVec('a table mirrored carries the vase to the other side', pos(vase), [-0.3, 1.25, 0])
+  doc().undo()
+
+  // THE ARROWS move a row among its siblings, and its branch goes with it.
+  doc().moveObject(lamp, -1)
+  check(
+    'the lamp steps past the vase, the flowers staying with the vase',
+    order() === [table, lamp, vase, flowers].join(','),
+    order()
+  )
+  doc().moveObject(lamp, -1)
+  check('and at the top of its branch it stops', order() === [table, lamp, vase, flowers].join(','), order())
+  doc().undo()
+
+  // A TREE COPIED lands as a tree.
+  const riders = doc().doc.objects.filter((o) => descendantIds(doc().doc.objects, table).has(o.id))
+  library().copyObject(at(table), riders)
+  check('Copy Parent Tree holds the branch', library().clipboardTree.length === 3, `${library().clipboardTree.length}`)
+  const count = doc().doc.objects.length
+  const pasted = doc().pasteObject(library().clipboard!, library().clipboardTree)
+  check('and pastes all four', doc().doc.objects.length === count + 4, `${doc().doc.objects.length - count}`)
+  const copies = descendantIds(doc().doc.objects, pasted)
+  check('riding on the new table, not the old one', copies.size === 3, `${copies.size}`)
+  check('the pasted table at the top of the tree', at(pasted).parentId === undefined)
+  doc().undo()
+  library().copyObject(at(vase))
+  check('a plain copy carries no branch', library().clipboardTree.length === 0)
+  const lone = doc().pasteObject(library().clipboard!, library().clipboardTree)
+  check('and lands loose, riding on nothing', at(lone).parentId === undefined)
+  doc().undo()
+
+  // DELETING A PARENT keeps what rode on it, a level up and where it stood.
+  doc().removeObject(vase)
+  check('deleting the vase keeps its flowers', doc().doc.objects.some((o) => o.id === flowers))
+  check('riding on the table now', at(flowers).parentId === table, `${at(flowers).parentId}`)
+  nearVec('exactly where they stood', pos(flowers), [0.3, 1.7, 0])
+  doc().undo()
+  doc().removeObject(table)
+  check('deleting the table leaves the vase at the top', at(vase).parentId === undefined)
+  check('with its flowers still in it', at(flowers).parentId === vase)
+  doc().undo()
+
+  // CLEARING a parent lets it go, and its own riders stay on it.
+  doc().clearParent([vase])
+  check('Clear Parent lets the vase go', at(vase).parentId === undefined)
+  check('its flowers still riding on it', at(flowers).parentId === vase)
+  check(
+    'and it lands just after the branch it left',
+    order() === [table, lamp, vase, flowers].join(','),
+    order()
+  )
+  nearVec('without moving', pos(vase), [0.3, 1.25, 0])
+  doc().undo()
+
+  // MERGING hands the absorbed object's riders to the merged one.
+  const bench = doc().addObject({ kind: 'box', size: [1, 1, 1] }, [3, 0.5, 0])
+  doc().mergeObjects([bench, table])
+  check('a table merged into a bench', !doc().doc.objects.some((o) => o.id === table))
+  check('hands its vase to the bench', at(vase).parentId === bench, `${at(vase).parentId}`)
+  check('and its lamp', at(lamp).parentId === bench, `${at(lamp).parentId}`)
+  check('while the parts it became ride on nothing', at(bench).parts.every((p) => p.parentId === undefined))
+  doc().undo()
+  doc().mergeObjects([vase, table])
+  check('a vase merged with its own table rides on nothing', at(vase).parentId === undefined)
+  check('and takes the lamp', at(lamp).parentId === vase, `${at(lamp).parentId}`)
+  doc().undo()
+  doc().removeObject(bench)
+
+  // CUTTING a parent leaves its riders on the half that inherits the selection.
+  const split = doc().applyCut([0, 0.5, 0], [1, 0, 0], [table])
+  check('the table is cut', split === 1, `${split}`)
+  const halves = doc().doc.objects.filter((o) => o.cuts.length === 1)
+  check('the vase rides on the first half', at(vase).parentId === halves[0]?.id, `${at(vase).parentId}`)
+  doc().undo()
+
+  // A TIDY of a list holding bad links -- a dangling parent, a loop -- drops
+  // them and keeps everything else.
+  const loose = tidyTree([
+    { ...at(vase), parentId: 'nobody' },
+    { ...at(table), parentId: lamp },
+    { ...at(lamp), parentId: table },
+  ])
+  check('a link to nothing is dropped', loose.find((o) => o.id === vase)?.parentId === undefined)
+  check(
+    'and a loop is broken in one place',
+    loose.filter((o) => o.parentId !== undefined).length === 1,
+    loose.map((o) => `${o.id}->${o.parentId}`).join(' ')
+  )
+  check('with every object kept', loose.length === 3)
+  check('unchanged objects come back as themselves', tidyTree(doc().doc.objects).every((o, i) => o === doc().doc.objects[i]))
+}
+
+{
+  // CURVED SURFACES COUNT AS TOUCHING. A cube stood on the top of a sphere,
+  // and one leant against the side of a cylinder: scale either and its foot
+  // has to stay on the curve -- measured against the meshes, not the boxes.
+  doc().reset()
+  const ball = doc().addObject({ kind: 'sphere', radius: 1 }, [10, 1, 0])
+  const cap = doc().addObject({ kind: 'box', size: [0.4, 0.4, 0.4] }, [10, 2.2, 0])
+  const drum = doc().addObject({ kind: 'cylinder', radius: 1, height: 2 }, [20, 1, 0])
+  const leaner = doc().addObject({ kind: 'box', size: [0.4, 0.4, 0.4] }, [20, 1, 1.2])
+  doc().setParent([cap], ball)
+  doc().setParent([leaner], drum)
+  const pos = (id: string) => doc().doc.objects.find((o) => o.id === id)!.transform.position
+
+  doc().scaleObject(cap, 2)
+  near('a cube scaled on top of a sphere keeps its foot on the top', pos(cap)[1], 2.4, 1e-6)
+  doc().scaleObject(leaner, 2)
+  near('one against a cylinder keeps its face on the side', pos(leaner)[2], 1.4, 1e-6)
+  near('and stays at the height it leant', pos(leaner)[1], 1, 1e-6)
+
+  // And from the parent's side: a sphere made bigger lifts the cube on it.
+  doc().patchObject(ball, { base: { kind: 'sphere', radius: 1.5 } })
+  near('a bigger sphere lifts the cube with its top', pos(cap)[1] - 0.4, 2.5, 1e-6)
+
+  // A rider that touches nothing is held at its middle, so the cube lifted
+  // clear of the sphere scales about where it is.
+  doc().reset()
+  const ball2 = doc().addObject({ kind: 'sphere', radius: 1 }, [10, 1, 0])
+  const floater = doc().addObject({ kind: 'box', size: [0.4, 0.4, 0.4] }, [10, 2.5, 0])
+  doc().setParent([floater], ball2)
+  doc().scaleObject(floater, 2)
+  near('one clear of its parent scales about its own middle', pos(floater)[1], 2.5, 1e-9)
+}
+
+{
+  // THE SCENE PANEL is the tree.
+  doc().reset()
+  const table = doc().addObject({ kind: 'box', size: [2, 1, 2] }, [0, 0.5, 0])
+  const vase = doc().addObject({ kind: 'box', size: [0.5, 0.5, 0.5] }, [0.3, 1.25, 0])
+  const lamp = doc().addObject({ kind: 'box', size: [0.2, 0.2, 0.2] }, [3, 0.1, 0])
+  doc().patchObject(table, { name: 'Table' })
+  doc().patchObject(vase, { name: 'Vase' })
+  doc().patchObject(lamp, { name: 'Lamp' })
+  const flat = markupOf('SceneTree (flat)', SceneTree)
+  hides('a flat scene spends no column on carets', flat, 'tree-caret')
+
+  doc().setParent([vase], table)
+  const tree = markupOf('SceneTree (nested)', SceneTree)
+  shows('a rider is drawn one level in', tree, 'class="tree tree-children"')
+  check(
+    'under the row it rides on, and before the next top-level row',
+    tree.indexOf('>Table<') < tree.indexOf('tree-children') &&
+      tree.indexOf('tree-children') < tree.indexOf('>Vase<') &&
+      tree.indexOf('>Vase<') < tree.indexOf('>Lamp<'),
+    'the nested list is not between the table and the lamp'
+  )
+  shows('the parent row carries a fold arrow, open', tree, 'aria-expanded="true"')
+  check('only the one row with riders does', occurrences(tree, 'tree-caret"') === 1, `${occurrences(tree, 'tree-caret"')}`)
+  check('the others hold its place', occurrences(tree, 'tree-caret-gap') === 2, `${occurrences(tree, 'tree-caret-gap')}`)
+  // The arrows are per sibling group now: the table's branch and the lamp
+  // are the two top-level rows, and the vase is alone in its own.
+  check(
+    'every group has one top and one bottom',
+    occurrences(tree, 'Already at the top') === 2 && occurrences(tree, 'Already at the bottom') === 2,
+    `${occurrences(tree, 'Already at the top')} tops, ${occurrences(tree, 'Already at the bottom')} bottoms`
+  )
+  // CLAUDE.md: what is NEW here carries no hover text. The fold arrow is a
+  // name (its aria-label) and the control.
+  const caret = tree.slice(tree.indexOf('<button type="button" class="icon-btn tree-caret"'))
+  hides('and the fold arrow carries no tooltip', caret.slice(0, caret.indexOf('</button>')), ' title="')
+
+  // THE MENU, from either end of the screen.
+  doc().selectObject(vase)
+  useObjectMenu.getState().openMenu(10, 10, vase)
+  const menu = markupOf('ObjectMenu (rider)', ObjectMenu)
+  shows('the menu offers Choose Parent', menu, '>Choose Parent<')
+  shows('and Clear Parent, for something that has one', menu, '>Clear Parent<')
+  shows('and Copy Parent Tree, dimmed with nothing riding on it', menu, 'disabled=""><span class="menu-label">Copy Parent Tree<')
+  hides('with no hover text on any of it', menu, ' title="')
+  useObjectMenu.getState().openMenu(10, 10, table)
+  const tableMenu = markupOf('ObjectMenu (parent)', ObjectMenu)
+  hides('a parent can copy its tree', tableMenu, 'disabled=""><span class="menu-label">Copy Parent Tree<')
+  shows('and has no parent to clear', tableMenu, 'disabled=""><span class="menu-label">Clear Parent<')
+  useObjectMenu.getState().closeMenu()
+
+  // CHOOSING A PARENT, as the viewport drives it.
+  doc().selectObject(lamp)
+  useParentPick.getState().begin([lamp])
+  const banner = markupOf('ParentPickBanner', ParentPickBanner)
+  shows('the box at the top says what the next click does', banner, '>Choose Parent...<')
+  shows('with a way out for a hand with no Escape key', banner, 'aria-label="Cancel"')
+  hides('and no hover text', banner, ' title="')
+  const panel = markupOf('Console (choosing a parent)', Console)
+  shows('the console is greyed out', panel, 'class="console picking-muted"')
+  shows('and out of reach', panel, 'inert=""')
+  check(
+    'the gizmo stands down',
+    !selectionWearsGizmo({
+      selected: true,
+      hidden: false,
+      cutActive: false,
+      brushArmed: false,
+      rulerSelected: false,
+      sketchSelected: false,
+      marqueeing: false,
+      locked: false,
+      picking: true,
+    })
+  )
+  // THE SCENE ANSWERS THE POINTER: what a click would make the parent lights
+  // up, and nothing else does.
+  useParentPick.getState().hover(lamp)
+  check('hovering the object waiting lights nothing', useParentPick.getState().hoverId === null)
+  useParentPick.getState().hover(vase)
+  check('hovering one it could ride on lights that one', useParentPick.getState().hoverId === vase)
+  useParentPick.getState().hover(null)
+  check('and the pointer leaving puts it out', useParentPick.getState().hoverId === null)
+  useParentPick.getState().hover(vase)
+  // Every gizmo is drawn through this one component -- the object's, a
+  // sketch's, the cut plane's, a ruler's -- so this is all of them.
+  check(
+    'and no gizmo of any kind is drawn',
+    renderToStaticMarkup(
+      createElement(TransformGizmo, { position: [0, 0, 0], controlsRef: { current: null }, onGrab: () => {} })
+    ) === ''
+  )
+  pickParent(lamp)
+  check('a click on the object itself does nothing', useParentPick.getState().childIds !== null)
+  check('and links nothing', doc().doc.objects.find((o) => o.id === lamp)?.parentId === undefined)
+  pickParent(vase)
+  check('a click on another object links it', doc().doc.objects.find((o) => o.id === lamp)?.parentId === vase)
+  check('and ends the choice', useParentPick.getState().childIds === null)
+  check('the parent just chosen glows a moment longer', useParentPick.getState().flashId === vase)
+  check('while the hover goes with the choice', useParentPick.getState().hoverId === null)
+  hides('the console comes back', markupOf('Console (chosen)', Console), 'picking-muted')
+  check('the banner goes', renderToStaticMarkup(createElement(ParentPickBanner)) === '')
+
+  // A whole selection is given the one parent.
+  doc().clearParent([lamp])
+  doc().selectObjects([lamp, vase])
+  useParentPick.getState().begin([lamp, vase])
+  pickParent(vase)
+  check('the selection cannot be given one of its own members', useParentPick.getState().childIds !== null)
+  pickParent(table)
+  check(
+    'but is given the table, all of it',
+    doc().doc.objects.filter((o) => o.parentId === table).length === 2,
+    doc().doc.objects.map((o) => `${o.id}->${o.parentId}`).join(' ')
+  )
+  useParentPick.getState().cancel()
+}
+
+doc().reset()
 
 console.log(
   failures === 0

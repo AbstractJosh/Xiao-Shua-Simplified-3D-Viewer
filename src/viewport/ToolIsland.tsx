@@ -13,6 +13,7 @@ import {
   SmootherTool,
 } from '../console/NavTools'
 import { dockIsland, useTools } from '../store/toolStore'
+import { picking, useParentPick } from './ParentPick'
 
 /**
  * How far the pointer travels before a press on the title strip is a drag
@@ -46,6 +47,10 @@ export function IslandShell({ children }: { children: ReactNode }) {
   const collapsed = useTools((s) => s.islandCollapsed)
   const setCollapsed = useTools((s) => s.setIslandCollapsed)
   const placement = useTools((s) => s.islandPlacement)
+  // Greyed out and out of reach while a parent is being chosen. See
+  // `ParentPick`. Only the modelling screen can start one, so on the other
+  // benches this is always false.
+  const muted = useParentPick(picking)
 
   const ref = useRef<HTMLDivElement>(null)
   // Whether the gesture that just ended moved the island. Read by the click
@@ -164,7 +169,10 @@ export function IslandShell({ children }: { children: ReactNode }) {
 
   return (
     <div
-      className={`tool-island ${side}${collapsed ? ' tool-island-shut' : ''}`}
+      className={`tool-island ${side}${collapsed ? ' tool-island-shut' : ''}${
+        muted ? ' picking-muted' : ''
+      }`}
+      inert={muted}
       ref={ref}
       style={style}
     >

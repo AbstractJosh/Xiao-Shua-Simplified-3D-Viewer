@@ -1,6 +1,7 @@
 import { useDoc } from '../store/docStore'
 import { useTools } from '../store/toolStore'
 import type { BrushScope, BrushTool } from '../store/toolStore'
+import { picking, useParentPick } from './ParentPick'
 
 /**
  * What the armed brush is allowed to touch, over the scene rather than in a
@@ -73,6 +74,8 @@ export function BrushScopePanel() {
   // Only what the wording depends on. The document itself is read at the moment
   // a dab lands, so building a solid never re-renders this.
   const selectedCount = useDoc((s) => s.selectedObjectIds.length)
+  // Greyed out while a parent is being chosen, with the rest of the tools.
+  const muted = useParentPick(picking)
 
   if (!brushTool) return null
   const words = WORDING[brushTool]
@@ -83,7 +86,10 @@ export function BrushScopePanel() {
   ]
 
   return (
-    <div className={`brush-scope-panel brush-scope-${brushTool}`}>
+    <div
+      className={`brush-scope-panel brush-scope-${brushTool}${muted ? ' picking-muted' : ''}`}
+      inert={muted}
+    >
       <div className="brush-scope-head">{words.head}</div>
       <div className="seg" role="group" aria-label={words.group}>
         {scopes.map((option) => (

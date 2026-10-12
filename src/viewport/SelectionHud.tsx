@@ -3,6 +3,7 @@ import { ObjectPanel } from '../console/ObjectPanel'
 import { PlacementPanel } from '../console/PlacementPanel'
 import { selectedFeature, selectedObject, useDoc } from '../store/docStore'
 import { useTools } from '../store/toolStore'
+import { picking, useParentPick } from './ParentPick'
 
 /**
  * The controls for whatever is being aimed, in the bottom-right of the
@@ -45,6 +46,9 @@ export function SelectionHud() {
   const cutActive = useTools((s) => s.cutActive)
 
   const aiming = !!object || cutActive
+  // Still shown while a parent is being chosen -- it is the selection that is
+  // waiting for one -- but greyed out and out of reach. See `ParentPick`.
+  const muted = useParentPick(picking)
 
   return (
     // `inert` rather than `aria-hidden`: the panel slides out but stays in the
@@ -52,7 +56,10 @@ export function SelectionHud() {
     // tab order. `inert` takes the whole subtree out of focus and pointer
     // handling at once, which is the honest version of what the transform is
     // already doing visually.
-    <div className={`selection-hud${aiming ? ' selection-hud-in' : ''}`} inert={!aiming}>
+    <div
+      className={`selection-hud${aiming ? ' selection-hud-in' : ''}${muted ? ' picking-muted' : ''}`}
+      inert={!aiming || muted}
+    >
       {aiming && <PlacementPanel />}
       {object && <ObjectPanel />}
       {object && feature && <Inspector />}

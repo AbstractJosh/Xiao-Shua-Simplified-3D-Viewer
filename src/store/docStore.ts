@@ -27,6 +27,16 @@ import {
   scaleAssemblyFromFar,
 } from '../geometry/assembly'
 import { mirrorAssembly } from '../geometry/mirror'
+import {
+  canParent,
+  carryRiders,
+  mirrorMotion,
+  motionOf,
+  pinToParent,
+  rehome,
+  tidyTree,
+  withParent,
+} from '../geometry/hierarchy'
 import { baseParams } from '../geometry/dimensions'
 import type { Axis } from '../geometry/dimensions'
 import { carryErosion } from '../geometry/erode'
@@ -289,8 +299,31 @@ type State = {
   /**
    * Drop a copy of an object into the scene, clear of whatever it was copied
    * from. Returns the new object's id.
+   *
+   * `riders` are the objects that rode on it when it was copied -- what "Copy
+   * Parent Tree" puts on the clipboard beside it, in tree order -- and they
+   * land with it, riding on the copy exactly as they rode on the original. The
+   * copy itself always lands at the top of the tree.
    */
-  pasteObject: (object: SceneObject) => string
+  pasteObject: (object: SceneObject, riders?: SceneObject[]) => string
+  /**
+   * Make each of these objects RIDE ON `parentId`: move, turn or scale the
+   * parent and they go with it. See `SceneObject.parentId`.
+   *
+   * Nothing moves. Each one becomes the parent's last child, so the Scene list
+   * shows it at the foot of that branch. An id that cannot ride there -- the
+   * parent itself, anything the parent already rides on, an eraser at either
+   * end -- is skipped rather than refusing the rest, and one that already rides
+   * there is not an edit. Returns how many were linked; a call that links
+   * nothing costs no undo step.
+   */
+  setParent: (ids: string[], parentId: string) => number
+  /**
+   * Let each of these objects go from whatever it rides on. It stays exactly
+   * where it is, and its own riders stay on it. Ids with no parent are skipped,
+   * and a call that frees nothing costs no undo step.
+   */
+  clearParent: (ids: string[]) => void
   removeObject: (id: string) => void
   /**
    * Delete a whole selection at once.
@@ -304,6 +337,10 @@ type State = {
   /**
    * Move an object up or down the scene list -- `-1` toward the top, `+1`
    * toward the bottom -- and with it, its rendering priority.
+   *
+   * AMONG ITS SIBLINGS, the objects that ride on the same parent (or on none),
+   * and carrying its whole subtree with it: the list is a tree now, and a step
+   * up is a step past the sibling above, not into the middle of its branch.
    *
    * The list has always been an order; this is what makes the order MEAN
    * something. Where two solids present the very same surface -- the commonest
@@ -522,6 +559,38 @@ const mapObject =
     objects: doc.objects.map((o) => (o.id === id ? fn(o) : o)),
   })
 
+/** Write a set of rewritten objects, by id, into whatever the document is now. */
+const writeIn =
+  (changed: ReadonlyMap<string, SceneObject>) =>
+  (doc: Doc): Doc => ({
+    ...doc,
+    objects: doc.objects.map((o) => changed.get(o.id) ?? o),
+  })
+
+/**
+ * An edit to one object, and everything riding on it carried along -- every
+ * object the edit rewrites, by id. See `carryRiders`.
+ *
+ * `from` is the scene the edit was computed against: as it stood at the press,
+ * for a drag. `scaled` says the edit was a uniform scale, which the riders grow
+ * with; anything else leaves them their size. `pin` holds the object's foot on
+ * its OWN parent where it rests on one -- what an edit about the object's
+ * centre wants, and one about a face the user chose to hold does not. See
+ * `pinToParent`.
+ */
+const ridersOf = (
+  from: readonly SceneObject[],
+  before: SceneObject,
+  edited: SceneObject,
+  scaled = false,
+  pin = false
+): Map<string, SceneObject> => {
+  let motion = motionOf(before, edited, scaled)
+  let next = edited
+  if (pin) ({ edited: next, motion } = pinToParent(from, before, edited, motion))
+  return carryRiders(from, before, next, motion)
+}
+
 const mapFeature = (
   objectId: string,
   featureId: string,
@@ -606,13 +675,25 @@ const prune = (
 }
 
 export const useDoc = create<State>((set, get) => {
-  /** Mutate the document and record a history entry. */
+  /**
+   * Mutate the document and record a history entry.
+   *
+   * The tree is TIDIED on the way through -- see `tidyTree` -- because this is
+   * where every edit that adds, removes, reorders or re-links objects lands.
+   * One pass here rather than one in each of those actions, so an action added
+   * later cannot leave a child riding on an object that is gone, or the list
+   * out of the order the Scene panel reads it in. The coalesced and silent
+   * paths below skip it: they only ever move and resize what is already there.
+   */
   const commit = (fn: (doc: Doc) => Doc) =>
-    set((s) => ({
-      doc: fn(s.doc),
-      past: [...s.past, s.doc].slice(-HISTORY_LIMIT),
-      future: [],
-    }))
+    set((s) => {
+      const next = fn(s.doc)
+      return {
+        doc: { ...next, objects: tidyTree(next.objects) },
+        past: [...s.past, s.doc].slice(-HISTORY_LIMIT),
+        future: [],
+      }
+    })
 
   /**
    * Mutate without touching history. Used for the continuous part of a drag:
@@ -661,12 +742,30 @@ export const useDoc = create<State>((set, get) => {
       const drag = s.drag
       if (!('snapshot' in drag) || drag.snapshot) return {}
       const moved: MovingDrag = { ...drag, snapshot: true }
+      gestureBase = s.doc
       return {
         past: [...s.past, s.doc].slice(-HISTORY_LIMIT),
         future: [],
         drag: moved,
       }
     })
+
+  /**
+   * The scene as it stood when the gesture in flight began: what its riders are
+   * carried FROM on every frame. See `carryRiders`.
+   *
+   * Kept beside the history entry rather than read back out of `past`, which
+   * holds the same document only until something else commits mid-drag -- a
+   * Delete pressed with the other hand, say -- and a rider carried from the
+   * wrong scene would bring back whatever that commit removed.
+   */
+  let gestureBase: Doc | null = null
+  const startOf = (s: State): Doc =>
+    'snapshot' in s.drag && s.drag.snapshot && gestureBase ? gestureBase : s.doc
+
+  /** The object a gesture began with: its state at the press, or now. */
+  const startObject = (s: State, id: string): SceneObject | undefined =>
+    startOf(s).objects.find((o) => o.id === id) ?? s.doc.objects.find((o) => o.id === id)
 
   return {
     doc: DEFAULT_DOC,
@@ -734,14 +833,19 @@ export const useDoc = create<State>((set, get) => {
       // its own parts -- and only its transform is rewritten, from world space
       // into the host's. So it does not move a millimetre, and an unmerge would
       // have everything it needs to put it back.
+      // A part is inside its host, not riding on anything, so the link is left
+      // behind with the rest of what made it a separate object.
       const parts = rest.map((other) => ({
-        ...other,
+        ...withParent(other, undefined),
         transform: relativeTransform(host.transform, other.transform),
       }))
       const absorbed = new Set(rest.map((o) => o.id))
 
+      // Whatever rode on an absorbed object rides on the merged one now, and
+      // does not move: the thing it was standing on is still there, it is
+      // simply part of something bigger. See `rehome` for the one exception.
       commit((d) => ({
-        objects: d.objects
+        objects: rehome(d.objects, absorbed, host.id)
           .filter((o) => !absorbed.has(o.id))
           .map((o) => (o.id === host.id ? { ...o, parts: [...o.parts, ...parts] } : o)),
       }))
@@ -813,7 +917,7 @@ export const useDoc = create<State>((set, get) => {
       return object.id
     },
 
-    pasteObject: (object) => {
+    pasteObject: (object, riders = []) => {
       const copy = cloneObject(object)
       // Set down beside the original rather than exactly on top of it: pasted
       // in place, a copy is invisible, and the user's next move is to drag one
@@ -821,32 +925,93 @@ export const useDoc = create<State>((set, get) => {
       // Cleared by the object's OWN width, so the gap reads the same whether
       // the thing copied is a bead or a wall.
       const bounds = assemblyBounds(copy)
-      const width = Math.max(0, bounds.max.x - bounds.min.x)
-      const [x, y, z] = copy.transform.position
-      const placed: SceneObject = {
-        ...copy,
-        transform: { ...copy.transform, position: [x + width + PASTE_GAP, y, z] },
+      const shift = Math.max(0, bounds.max.x - bounds.min.x) + PASTE_GAP
+      const beside = (o: SceneObject): SceneObject => {
+        const [x, y, z] = o.transform.position
+        return { ...o, transform: { ...o.transform, position: [x + shift, y, z] } }
       }
-      commit((d) => ({ objects: [...d.objects, placed] }))
+      const placed = beside(copy)
+
+      // A copied tree lands as a tree: every rider is reminted, set down the
+      // same distance over, and linked to the copy of whatever it rode on. The
+      // ids are all minted before any is linked, so the order the riders come
+      // in only has to put each one after the root -- which tree order does.
+      const minted = new Map([[object.id, placed.id]])
+      const copies = riders.map((rider) => {
+        const fresh = cloneObject(rider)
+        minted.set(rider.id, fresh.id)
+        return fresh
+      })
+      const linked = copies.map((fresh, i) => {
+        const up = riders[i].parentId
+        return withParent(beside(fresh), up === undefined ? undefined : minted.get(up))
+      })
+
+      commit((d) => ({ objects: [...d.objects, placed, ...linked] }))
       set({ selectedObjectIds: [placed.id], selectedFeatureId: null })
       return placed.id
     },
 
+    setParent: (ids, parentId) => {
+      const { objects } = get().doc
+      const linking = ids.filter(
+        (id) =>
+          canParent(objects, id, parentId) &&
+          objects.find((o) => o.id === id)?.parentId !== parentId
+      )
+      if (linking.length === 0) return 0
+
+      // Taken out and put back at the END of the list, which is what makes each
+      // the parent's LAST child once the tree is tidied: siblings keep the
+      // order the list holds them in, and nothing comes after the end.
+      const moving = new Set(linking)
+      commit((d) => ({
+        ...d,
+        objects: [
+          ...d.objects.filter((o) => !moving.has(o.id)),
+          ...d.objects.filter((o) => moving.has(o.id)).map((o) => withParent(o, parentId)),
+        ],
+      }))
+      return linking.length
+    },
+
+    clearParent: (ids) => {
+      const freeing = new Set(
+        ids.filter((id) => get().doc.objects.some((o) => o.id === id && o.parentId !== undefined))
+      )
+      if (freeing.size === 0) return
+      // Left where it is in the list. Tidied, a top-level object sorts among
+      // the others by its place in the list -- which is inside the top-level
+      // branch it just left -- so it lands directly after that branch rather
+      // than at the far end of the scene.
+      commit((d) => ({
+        ...d,
+        objects: d.objects.map((o) => (freeing.has(o.id) ? withParent(o, undefined) : o)),
+      }))
+    },
+
     moveObject: (id, delta) => {
       const { doc } = get()
-      const from = doc.objects.findIndex((o) => o.id === id)
-      if (from < 0 || delta === 0) return
-      const to = Math.min(doc.objects.length - 1, Math.max(0, from + delta))
+      const moved = doc.objects.find((o) => o.id === id)
+      if (!moved || delta === 0) return
+      const siblings = doc.objects.filter((o) => o.parentId === moved.parentId)
+      const from = siblings.indexOf(moved)
+      const to = Math.min(siblings.length - 1, Math.max(0, from + delta))
       // Already at the end it was asked to move toward. Not an edit, and an
       // undo step for it would bury the edit before it -- the same rule Apply
       // follows in `setObjectColor`.
       if (to === from) return
+      const past = siblings[to].id
 
+      // Only the moved row is placed, just before or just after the sibling it
+      // steps past. Its riders are not moved with it in the list -- tidying the
+      // tree puts every subtree back under its own parent -- and siblings keep
+      // the order the list holds them in, which is all that changed.
       commit((d) => {
-        const objects = [...d.objects]
-        const [moved] = objects.splice(from, 1)
-        objects.splice(to, 0, moved)
-        return { objects }
+        const objects = d.objects.filter((o) => o.id !== id)
+        const at = objects.findIndex((o) => o.id === past) + (delta > 0 ? 1 : 0)
+        objects.splice(at, 0, moved)
+        return { ...d, objects }
       })
     },
 
@@ -859,7 +1024,10 @@ export const useDoc = create<State>((set, get) => {
       // it, the same rule `moveObject` follows.
       if (!get().doc.objects.some((o) => doomed.has(o.id))) return
 
-      commit((d) => ({ objects: d.objects.filter((o) => !doomed.has(o.id)) }))
+      // Deleting a parent never deletes what rides on it: those drop to the
+      // nearest ancestor that is staying, or to the top, and stay where they
+      // stand. See `rehome`.
+      commit((d) => ({ objects: rehome(d.objects, doomed).filter((o) => !doomed.has(o.id)) }))
       set((s) => ({
         ...prune(s.doc, s.selectedObjectIds, s.selectedFeatureId),
         // A drag pointing at a deleted object has nothing left to move.
@@ -892,13 +1060,22 @@ export const useDoc = create<State>((set, get) => {
         ) {
           return
         }
+        // Whatever rides on it turns with it, carried from where everything
+        // stood at the press. See `carryRiders`.
+        const s = get()
+        const before = startObject(s, id)
+        if (!before) return
+        const changed = ridersOf(startOf(s).objects, before, { ...before, transform })
         snapshotOnce()
-        silent(mapObject(id, (o) => ({ ...o, transform })))
+        silent(writeIn(changed))
         return
       }
       // Outside a drag this is a typed-in or nudged value, which deserves its
       // own undo step -- coalesced, because arrow keys repeat.
-      commitCoalesced(`transform:${id}`, mapObject(id, (o) => ({ ...o, transform })))
+      commitCoalesced(`transform:${id}`, (d) => {
+        const before = d.objects.find((o) => o.id === id)
+        return before ? writeIn(ridersOf(d.objects, before, { ...before, transform }))(d) : d
+      })
     },
 
     patchObject: (id, patch) => {
@@ -911,31 +1088,39 @@ export const useDoc = create<State>((set, get) => {
       if ((patch.base !== undefined || patch.transform !== undefined) && lockedIn(get().doc, id)) {
         return
       }
-      commitCoalesced(
-        `object:${id}:${Object.keys(patch).join(',')}`,
-        mapObject(id, (o) => {
-          const next = { ...o, ...patch }
-          if (patch.base === undefined) return next
-          // Anchors live in their surface's own parameter space, so they only
-          // survive a base edit that keeps the same KIND of surface: a box
-          // growing, not a box turning into a sphere. Stranded sketches would
-          // otherwise float beside the solid with no way to grab them.
-          const kept =
-            surfaceFor(o.base).kind === surfaceFor(next.base).kind ? next.features : []
-          return {
-            ...next,
-            features: kept.map((f) => conform(next.base, f)),
-            // The torch marks are lengths in this object's own space rather
-            // than anchors, so they are carried by the amount each axis
-            // stretched instead of being reseated. They survive a change of
-            // kind that the sketches do not: a dab is a place, and a place is
-            // still a place on a solid with two more sides.
-            ...(next.erosion
-              ? { erosion: carryErosion(next.erosion, o.base, next.base) }
-              : {}),
-          }
-        })
-      )
+      const patched = (o: SceneObject): SceneObject => {
+        const next = { ...o, ...patch }
+        if (patch.base === undefined) return next
+        // Anchors live in their surface's own parameter space, so they only
+        // survive a base edit that keeps the same KIND of surface: a box
+        // growing, not a box turning into a sphere. Stranded sketches would
+        // otherwise float beside the solid with no way to grab them.
+        const kept =
+          surfaceFor(o.base).kind === surfaceFor(next.base).kind ? next.features : []
+        return {
+          ...next,
+          features: kept.map((f) => conform(next.base, f)),
+          // The torch marks are lengths in this object's own space rather
+          // than anchors, so they are carried by the amount each axis
+          // stretched instead of being reseated. They survive a change of
+          // kind that the sketches do not: a dab is a place, and a place is
+          // still a place on a solid with two more sides.
+          ...(next.erosion
+            ? { erosion: carryErosion(next.erosion, o.base, next.base) }
+            : {}),
+        }
+      }
+      // A patch that moves or resizes the object carries its riders, and a
+      // typed size keeps its foot on its own parent -- the same rule a resize
+      // about the centre keeps on the gizmo. A name or a colour moves nothing.
+      const moves = patch.base !== undefined || patch.transform !== undefined
+      commitCoalesced(`object:${id}:${Object.keys(patch).join(',')}`, (d) => {
+        const before = d.objects.find((o) => o.id === id)
+        if (!before) return d
+        if (!moves) return mapObject(id, patched)(d)
+        const pin = patch.transform === undefined
+        return writeIn(ridersOf(d.objects, before, patched(before), false, pin))(d)
+      })
     },
 
     setObjectLocked: (id, locked) => {
@@ -1111,10 +1296,16 @@ export const useDoc = create<State>((set, get) => {
       // not an edit, and must not cost an undo step.
       if (sameNumbers(object.transform.position, position)) return
 
+      // The riders go with it -- a slide is a rigid motion, so this costs no
+      // evaluation however many there are.
+      const s = get()
+      const before = startObject(s, drag.objectId) ?? object
+      const changed = ridersOf(startOf(s).objects, before, {
+        ...before,
+        transform: { ...before.transform, position },
+      })
       snapshotOnce()
-      silent(
-        mapObject(drag.objectId, (o) => ({ ...o, transform: { ...o.transform, position } }))
-      )
+      silent(writeIn(changed))
     },
 
     startGizmo: (objectId, handle) =>
@@ -1187,10 +1378,13 @@ export const useDoc = create<State>((set, get) => {
     scaleObject: (id, factor) => {
       // Locked is locked in size as well as in place. See `SceneObject.locked`.
       if (lockedIn(get().doc, id)) return
-      commitCoalesced(
-        `scale:${id}`,
-        mapObject(id, (o) => scaleAssembly(o, factor))
-      )
+      // The riders grow with it, and it keeps its own foot where it stands on
+      // a parent. See `ridersOf`.
+      commitCoalesced(`scale:${id}`, (d) => {
+        const before = d.objects.find((o) => o.id === id)
+        if (!before) return d
+        return writeIn(ridersOf(d.objects, before, scaleAssembly(before, factor), true, true))(d)
+      })
     },
 
     scaleObjectTo: (snapshot, factor, far) => {
@@ -1202,10 +1396,21 @@ export const useDoc = create<State>((set, get) => {
       // resizes nothing either way.
       if (object.locked) return
 
-      const next =
+      const scaled =
         far === undefined
           ? scaleAssembly(snapshot, factor)
           : scaleAssemblyFromFar(snapshot, factor, far)
+      // The riders grow with it, from where they stood at the press. A scale
+      // about the centre also keeps the object's own foot on its parent; one
+      // holding a face still has already said which part of it stays put.
+      const changed = ridersOf(
+        startOf(get()).objects,
+        snapshot,
+        scaled,
+        true,
+        far === undefined
+      )
+      const next = changed.get(snapshot.id) ?? scaled
       // A frame that resolved to the size the object already has is not an
       // edit, and must not cost an undo step -- which is exactly what every
       // frame is once a runaway drag has pinned the scale at its limit. The
@@ -1218,7 +1423,7 @@ export const useDoc = create<State>((set, get) => {
       }
 
       snapshotOnce()
-      silent(mapObject(drag.objectId, () => next))
+      silent(writeIn(changed))
     },
 
     mirrorObjects: (ids, axis) => {
@@ -1232,9 +1437,27 @@ export const useDoc = create<State>((set, get) => {
       // rewrite nothing must not cost an undo step.
       if (!get().doc.objects.some((o) => targets.has(o.id))) return
 
-      commit((d) => ({
-        objects: d.objects.map((o) => (targets.has(o.id) ? mirrorAssembly(o, axis) : o)),
-      }))
+      // One at a time, in TREE ORDER, so a parent is flipped -- and carries its
+      // riders to their mirrored places -- before any of those riders is
+      // flipped in turn about wherever that left it. A table and the vase on it
+      // mirrored together is then the vase carried across and flipped, rather
+      // than the vase flipped where it stood and carried from there.
+      commit((d) => {
+        let objects = d.objects
+        for (const { id } of d.objects) {
+          if (!targets.has(id)) continue
+          const before = objects.find((o) => o.id === id)
+          if (!before) continue
+          const changed = carryRiders(
+            objects,
+            before,
+            mirrorAssembly(before, axis),
+            mirrorMotion(before, axis)
+          )
+          objects = objects.map((o) => changed.get(o.id) ?? o)
+        }
+        return { ...d, objects }
+      })
     },
 
     resizeObjectTo: (base, position) => {
@@ -1259,20 +1482,31 @@ export const useDoc = create<State>((set, get) => {
       // The position, where one is given, rides in the same object: the far
       // face a one-sided resize holds still is held by the two changing
       // together, and a frame is not an edit unless one of them did.
-      const next = {
-        ...object,
+      //
+      // Built from the object AS IT WAS AT THE PRESS, like the riders are, so
+      // the sketches are conformed once from where they began rather than
+      // dragged a frame at a time through every size in between.
+      const s = get()
+      const before = startObject(s, drag.objectId) ?? object
+      const resized = {
+        ...before,
         base,
-        ...(position ? { transform: { ...object.transform, position } } : {}),
-        features: object.features.map((f) => conform(base, f)),
-        ...(object.erosion
-          ? { erosion: carryErosion(object.erosion, object.base, base) }
+        ...(position ? { transform: { ...before.transform, position } } : {}),
+        features: before.features.map((f) => conform(base, f)),
+        ...(before.erosion
+          ? { erosion: carryErosion(before.erosion, before.base, base) }
           : {}),
       }
-      const moved = position !== undefined && !sameNumbers(object.transform.position, position)
+      // The riders ride the face they stand on, keeping their size. A resize
+      // about the centre also keeps the object's own foot on its parent; one
+      // from the far face has already said which face stays.
+      const changed = ridersOf(startOf(s).objects, before, resized, false, position === undefined)
+      const next = changed.get(before.id) ?? resized
+      const moved = !sameNumbers(object.transform.position, next.transform.position)
       if (sameBase(object.base, base) && !moved) return
 
       snapshotOnce()
-      silent(mapObject(drag.objectId, () => next))
+      silent(writeIn(changed))
     },
 
     startMovingFace: (objectId, featureId) =>
@@ -1455,7 +1689,16 @@ export const useDoc = create<State>((set, get) => {
 
       // One history entry for the whole operation: undo puts the scene back
       // together in a single step, however many objects the plane crossed.
-      commit(() => ({ objects }))
+      // Whatever rode on a severed object rides on its first half, the one
+      // that inherits the selection too -- both halves keep the severed
+      // object's own parent, having been copied from it.
+      commit(() => ({
+        objects: objects.map((o) =>
+          o.parentId !== undefined && renamed.has(o.parentId)
+            ? withParent(o, renamed.get(o.parentId))
+            : o
+        ),
+      }))
       // A selected object that was severed lives on as its first half, so the
       // inspector keeps showing something the user recognises.
       set((s) => ({

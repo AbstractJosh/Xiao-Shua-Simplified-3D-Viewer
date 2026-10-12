@@ -56,6 +56,7 @@ import {
   freshClay,
 } from '../geometry/clay'
 import type { Clay, Hollow } from '../geometry/clay'
+import { tidyTree } from '../geometry/hierarchy'
 import { seedIds } from '../geometry/types'
 import type { Doc, SceneObject } from '../geometry/types'
 import { SCREENS } from '../screens'
@@ -327,7 +328,10 @@ export function applyProject(project: Project): void {
   seedPieceIds(project.bed.pieces.map((piece) => piece.id))
 
   useDoc.setState({
-    doc: project.doc,
+    // Tidied, because a scene that lost an object on the way in -- its model
+    // did not come back -- may still hold a child pointing at it. That child
+    // is left at the top level, exactly where it stands. See `tidyTree`.
+    doc: { ...project.doc, objects: tidyTree(project.doc.objects) },
     selectedObjectIds: [],
     selectedFeatureId: null,
     past: [],

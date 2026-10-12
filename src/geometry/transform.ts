@@ -13,7 +13,7 @@ import type { ObjectTransform } from './types'
 
 const UNIT_SCALE = new Vector3(1, 1, 1)
 
-function quaternionOf(t: ObjectTransform): Quaternion {
+export function quaternionOf(t: ObjectTransform): Quaternion {
   return new Quaternion().setFromEuler(
     new Euler(t.rotation[0], t.rotation[1], t.rotation[2], 'XYZ')
   )

@@ -21,6 +21,7 @@ import { SketchGizmo } from './SketchGizmo'
 import { ObjectSketches } from './SketchLayer'
 import { publishScene, sketchCentres } from './snapping'
 import { isRightClick, noteRightPress, useObjectMenu } from './ObjectMenu'
+import { pickParent, picking, useParentPick } from './ParentPick'
 import { brushAllows } from './brushTarget'
 import { useMarquee } from './marquee'
 import type { SceneColors } from './sceneColors'
@@ -260,6 +261,26 @@ export function bodyPaint(
 }
 
 /**
+ * The solid a click would make the PARENT, while one is being chosen -- and
+ * the one just chosen, for the moment it glows after the click. See
+ * `ParentPick`.
+ *
+ * In the theme's `out` colour rather than the accent: the accent already means
+ * selected, and the selection is exactly what is waiting for this parent, so
+ * the two are on screen together and must not read as one thing. Its own
+ * colour is kept under the glow, for the reason `bodyPaint` keeps it -- a red
+ * table pointed at is still the red table.
+ */
+const PARENT_EMISSIVE_INTENSITY = 0.5
+
+export function parentPaint(
+  color: string | undefined,
+  scene: SceneColors
+): { color: string; emissive: string; emissiveIntensity: number } {
+  return { color: color ?? SOLID_COLOR, emissive: scene.out, emissiveIntensity: PARENT_EMISSIVE_INTENSITY }
+}
+
+/**
  * The material -- or materials -- a solid's body wears.
  *
  * An unmerged object is one solid and takes one material, which is the whole of
@@ -299,19 +320,24 @@ function Body({
   paints,
   colors,
   selected,
+  parent,
   bias,
 }: {
   paints: string[]
   colors: Map<string, string | undefined>
   selected: boolean
+  /** This is the solid a click would make the parent. See `parentPaint`. */
+  parent: boolean
   /** The object's place in the scene tree, as a depth offset. See `depthBias`. */
   bias: ReturnType<typeof depthBias>
 }) {
   const scene = useSceneColors()
+  const paint = (color: string | undefined) =>
+    parent ? parentPaint(color, scene) : bodyPaint(color, selected, scene)
   if (paints.length === 1) {
     return (
       <biasedStandardMaterial
-        {...bodyPaint(colors.get(paints[0]), selected, scene)}
+        {...paint(colors.get(paints[0]))}
         {...bias}
         metalness={0.15}
         roughness={0.55}
@@ -324,11 +350,11 @@ function Body({
   // there is nothing here to break a tie between. The tie is between OBJECTS.
   return (
     <>
-      {paints.map((paint, i) => (
+      {paints.map((key, i) => (
         <biasedStandardMaterial
-          key={paint}
+          key={key}
           attach={`material-${i}`}
-          {...bodyPaint(colors.get(paint), selected, scene)}
+          {...paint(colors.get(key))}
           {...bias}
           metalness={0.15}
           roughness={0.55}
@@ -370,6 +396,13 @@ export type GizmoClaims = {
    * avoid.
    */
   locked: boolean
+  /**
+   * A parent is being chosen. See `ParentPick`. Optional, and absent means no:
+   * the one claim that is not about the selection at all -- for the length of
+   * it, a click on a solid names a parent, and arrows that could still be
+   * grabbed would be a second meaning for the same press.
+   */
+  picking?: boolean
 }
 
 /**
@@ -406,7 +439,8 @@ export function selectionWearsGizmo(claims: GizmoClaims): boolean {
     !claims.rulerSelected &&
     !claims.sketchSelected &&
     !claims.marqueeing &&
-    !claims.locked
+    !claims.locked &&
+    !claims.picking
   )
 }
 
@@ -455,6 +489,14 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
   // wanting to work on the sketch, and the same precedence already governs the
   // Delete key -- a feature goes before the object that hosts it.
   const sketchSelected = selectedFeatureId !== null
+  // Choosing a parent stands every handle down: the next click names the
+  // parent, and a gizmo still on screen would be a second thing it could mean.
+  const choosingParent = useParentPick(picking)
+  // The solid a click would make the parent, and the one just made it. Both
+  // light the same way: see `parentPaint`.
+  const parentHover = useParentPick((s) => s.hoverId)
+  const parentFlash = useParentPick((s) => s.flashId)
+  const hoverParent = useParentPick((s) => s.hover)
   const publish = useEvalStatus((s) => s.publish)
 
   // The viewport is a pure function of the document: every edit replays the
@@ -532,6 +574,14 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
     // A placement gesture already owns the pointer; letting a press through
     // here would abandon the drop half-finished and grab something else.
     if (s.drag.kind !== 'idle') return
+
+    // CHOOSING A PARENT OUTRANKS EVERYTHING BELOW. The left button names the
+    // parent and does nothing else -- no selecting, no stroke -- and the right
+    // button is the way out, which the banner listens for. See `ParentPick`.
+    if (useParentPick.getState().childIds) {
+      if (e.nativeEvent.button === 0) pickParent(id)
+      return
+    }
 
     // A press on a solid is a claim on the gizmo, and a selected ruler is
     // holding it. Handed over here rather than left for Escape, so the rule
@@ -677,6 +727,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
         sketchSelected,
         marqueeing,
         locked: selected?.locked === true,
+        picking: choosingParent,
       }) &&
         selected && (
           <TransformGizmo
@@ -694,6 +745,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
         if (!geometry) return null
 
         const isSelected = chosen.has(object.id)
+        const isParent = object.id === parentHover || object.id === parentFlash
         const bodyPaints = paints.get(object.id) ?? [object.id]
         const feature =
           object.id === selectedObjectId
@@ -725,11 +777,32 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
               castShadow={!object.erase}
               receiveShadow={!object.erase}
               onPointerDown={(e) => onObjectPointerDown(e, object.id)}
+              // Hover is listened for only while a parent is being chosen: a
+              // mesh with hover handlers is raycast on every pointer move, and
+              // nothing else here needs to know where the pointer is. The
+              // nearest solid takes it -- the one a click would land on.
+              onPointerOver={
+                choosingParent
+                  ? (e) => {
+                      e.stopPropagation()
+                      hoverParent(object.id)
+                    }
+                  : undefined
+              }
+              onPointerOut={
+                choosingParent
+                  ? () => {
+                      if (useParentPick.getState().hoverId === object.id) hoverParent(null)
+                    }
+                  : undefined
+              }
               onContextMenu={(e) => {
                 e.stopPropagation()
                 const { clientX, clientY } = e.nativeEvent
-                // Only a click, never the tail of a pan. See ObjectMenu.
-                if (!isRightClick(clientX, clientY)) return
+                // Only a click, never the tail of a pan. See ObjectMenu. And no
+                // menu at all while a parent is being chosen: a right-click is
+                // the way out of that, not a way into something else.
+                if (!isRightClick(clientX, clientY) || picking(useParentPick.getState())) return
                 openMenu(clientX, clientY, object.id)
               }}
             >
@@ -743,6 +816,7 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                   paints={bodyPaints}
                   colors={assemblyColors(object)}
                   selected={isSelected}
+                  parent={isParent}
                   bias={depthBias(rank, doc.objects.length)}
                 />
               )}
@@ -766,11 +840,13 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                     color={
                       object.erase
                         ? scene.eraseEdge
-                        : isSelected
-                          ? scene.edgeSelected
-                          : scene.edgeIdle
+                        : isParent
+                          ? scene.out
+                          : isSelected
+                            ? scene.edgeSelected
+                            : scene.edgeIdle
                     }
-                    lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
+                    lineWidth={isSelected || isParent ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
                   />
                 ) : (
                   <Edges
@@ -778,11 +854,13 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                     color={
                       object.erase
                         ? scene.eraseEdge
-                        : isSelected
-                          ? scene.edgeSelected
-                          : scene.edgeIdle
+                        : isParent
+                          ? scene.out
+                          : isSelected
+                            ? scene.edgeSelected
+                            : scene.edgeIdle
                     }
-                    lineWidth={isSelected ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
+                    lineWidth={isSelected || isParent ? EDGE_WIDTH_SELECTED : EDGE_WIDTH_IDLE}
                   />
                 ))}
             </mesh>
@@ -799,14 +877,16 @@ export function SceneObjects({ meshes, controlsRef }: Props) {
                     the picker governs both, and a torch held against a solid is
                     no more able to work around a sketch's arrows than around an
                     object's. */}
-                {!cutActive && !brushArmed && !gizmoHidden && (
+                {!cutActive && !brushArmed && !gizmoHidden && !choosingParent && (
                   <SketchGizmo
                     object={object}
                     feature={feature}
                     controlsRef={controlsRef}
                   />
                 )}
-                <FaceHandle object={object} feature={feature} controlsRef={controlsRef} />
+                {!choosingParent && (
+                  <FaceHandle object={object} feature={feature} controlsRef={controlsRef} />
+                )}
               </>
             )}
           </group>

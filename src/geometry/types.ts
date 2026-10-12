@@ -454,6 +454,28 @@ export type SceneObject = {
    * evaluator can skip the whole stage on an identity test.
    */
   erosion?: ErodeDab[]
+  /**
+   * The object this one RIDES ON: move, turn or scale that one and this one
+   * goes with it, while this one can still be moved on its own.
+   *
+   * A LINK, NOT A NESTING. Unlike `parts`, a child stays a whole object of its
+   * own in `Doc.objects` -- its own row, its own gizmo, its own transform --
+   * and that transform stays in WORLD space. Nothing that reads where an object
+   * is (picking, snapping, the gizmo, cuts, rulers, export) has to know a tree
+   * exists. What the tree does is done at the moment the parent is edited: the
+   * store carries every descendant along in the same write. See
+   * `hierarchy.ts`.
+   *
+   * `Doc.objects` is kept in TREE ORDER -- every parent immediately followed by
+   * its whole subtree -- so the list's order is still the priority order the
+   * Scene panel reads top to bottom. `tidyTree` is what keeps it so, and what
+   * drops a link naming an object that is gone, an eraser, or a loop.
+   *
+   * Absent on a top-level object, for the reason `locked` is: a scene nobody
+   * has parented is exactly the document it was before the tree existed. A copy
+   * never inherits it -- see `cloneObject`.
+   */
+  parentId?: string
 }
 
 export type Doc = { objects: SceneObject[] }
@@ -617,6 +639,11 @@ export function cloneObject(obj: SceneObject): SceneObject {
     // document an unlocked solid is. See `SceneObject.locked`.
     const rest: SceneObject = { ...o }
     delete rest.locked
+    // The parent stays behind too. A copy lands loose, at the top of the tree:
+    // pasted beside a vase, it would otherwise ride on the table the original
+    // sits on from wherever it was set down. A whole tree copied together
+    // re-links its own members afterwards -- see `pasteObject`.
+    delete rest.parentId
     return {
       ...rest,
       id: nextObjectId(),
