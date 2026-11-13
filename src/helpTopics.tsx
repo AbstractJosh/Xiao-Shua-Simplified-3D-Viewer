@@ -210,6 +210,13 @@ export const HELP_SECTIONS: HelpSection[] = [
           },
           { action: 'Scroll', result: 'Zoom.' },
         ],
+        notes: [
+          <>
+            These are the <b>Default</b> controls. <b>Controls</b>, in Settings, puts the same three
+            gestures where Blender, Maya or Fusion 360 have them -- see <b>Controls</b> under Colour
+            and files.
+          </>,
+        ],
       },
       {
         title: 'The axis compass',
@@ -228,7 +235,7 @@ export const HELP_SECTIONS: HelpSection[] = [
           { action: 'Drag the compass', result: 'Turns by hand, then settles on the nearest face.' },
           {
             action: 'Middle-drag',
-            result: 'Orbits, then settles on the nearest face. No Alt+left here -- left draws the cut.',
+            result: 'Orbits, then settles on the nearest face. Alt+left-drag does the same.',
           },
           { action: 'Scroll', result: 'Zoom. It cannot tip the view off a face.' },
           {
@@ -1491,11 +1498,67 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
       },
       {
-        title: 'Game Controls',
+        title: 'Controls',
         summary: (
           <>
             The last row on that screen, and the only one that changes what your HANDS do rather
-            than what the app looks like. Switched on, the modelling camera is driven the way a
+            than what the app looks like: which mouse button turns the camera, which slides it,
+            which way the wheel runs, and which letters pick a gizmo. <b>Default</b> is the app's
+            own. The others put the same things where another application already taught you to
+            look for them.
+          </>
+        ),
+        steps: [
+          {
+            action: 'Default',
+            result:
+              'Middle-drag or Alt+left-drag orbits, right-drag pans, the wheel zooms. M, R and S pick Move, Rotate and Scale.',
+          },
+          {
+            action: 'Blender',
+            result:
+              'Middle-drag orbits, Shift+middle-drag pans, Ctrl+middle-drag zooms. G, R and S pick Move, Rotate and Scale, and X deletes.',
+          },
+          {
+            action: 'Maya',
+            result:
+              'Alt+left-drag orbits, Alt+middle-drag pans, Alt+right-drag zooms. W, E and R pick Move, Rotate and Scale.',
+          },
+          {
+            action: 'Fusion 360',
+            result:
+              'Shift+middle-drag orbits, middle-drag pans, and the wheel runs the other way: rolling it away backs off. M, R and S pick Move, Rotate and Scale.',
+          },
+          {
+            action: 'Game',
+            result: 'Default, with the keyboard flying the camera on the modelling screen. See Game, next.',
+          },
+        ],
+        notes: [
+          <>
+            <b>Everything else is the same under all five.</b> The left button selects and draws
+            the box, a right-click opens the object menu, right-drag on an arrow resizes, and Esc,
+            Delete and the Ctrl chords are where they always were.
+          </>,
+          <>
+            <b>Only Default pans on a bare right-drag.</b> Under Blender, Maya and Fusion 360 a
+            right-drag across empty space does nothing, as in those applications.
+          </>,
+          <>
+            <b>A press chorded for the camera is the camera's alone.</b> Alt+left over a solid
+            orbits without selecting it, and without starting a stroke when a brush is armed.
+          </>,
+          <>
+            <b>Every screen follows it.</b> The laser cutter takes the same buttons. The lathe
+            draws one flat picture, so it answers the pan and the zoom and has no orbit to give.
+          </>,
+        ],
+      },
+      {
+        title: 'Game',
+        summary: (
+          <>
+            One of the five <b>Controls</b>. Picked, the modelling camera is driven the way a
             game's is: <b>W A S D</b> to walk, <b>Space</b> and <b>C</b> to rise and sink, and the
             right mouse button held down to look about. The cursor disappears while you look,
             so a turn can carry on as far as your hand does.
@@ -1509,7 +1572,7 @@ export const HELP_SECTIONS: HelpSection[] = [
           <>
             The wheel no longer closes in on anything -- <b>W</b> does that now -- so it sets how
             fast you fly instead. The speed appears at the top of the viewport as you turn it, and
-            the <b>Speed</b> field under the switch says the same number.
+            the <b>Speed</b> field under the row says the same number.
           </>,
           <>
             Middle-drag still orbits, and with something selected it swings around THAT rather than
@@ -1521,8 +1584,8 @@ export const HELP_SECTIONS: HelpSection[] = [
             else answers as usual: Ctrl+Z, Delete and Esc are untouched.
           </>,
           <>
-            Only the modelling screen has a room to walk about in, so the switch is dimmed on the
-            lathe and the laser cutter. It keeps its setting while you are over there.
+            Only the modelling screen has a room to walk about in, so on the lathe and the laser
+            cutter <b>Game</b> drives the camera the way <b>Default</b> does.
           </>,
         ],
       },
@@ -1586,15 +1649,34 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
         notes: [
           <>
-            <b>M</b>, <b>R</b> and <b>S</b> are bare rather than chorded, which is where every 3D
-            application puts them -- and they are ignored mid-drag, so a gesture in flight cannot
-            have its gizmo swapped out from under it. With <b>Game Controls</b> on they stand down
-            entirely: <b>S</b> is the key that walks backwards.
+            <b>M</b>, <b>R</b> and <b>S</b> are bare rather than chorded, being a mode you reach
+            for between every other gesture -- and they are ignored mid-drag, so a gesture in
+            flight cannot have its gizmo swapped out from under it. With the <b>Game</b> scheme
+            picked they stand down entirely: <b>S</b> is the key that walks backwards.
+          </>,
+          <>
+            These are the <b>Default</b> scheme's letters and its orbit. The other schemes' are
+            below.
           </>,
         ],
       },
       {
-        title: 'Game Controls',
+        title: 'Other control schemes',
+        steps: [
+          { action: 'G, R, S', result: 'Blender: Move, Rotate and Scale gizmos.' },
+          { action: 'X', result: 'Blender: removes what Delete would, on every screen.' },
+          { action: 'W, E, R', result: 'Maya: Move, Rotate and Scale gizmos.' },
+          { action: 'M, R, S', result: 'Fusion 360: Move, Rotate and Scale gizmos, as in Default.' },
+        ],
+        notes: [
+          <>
+            Picked under <b>Settings</b>, as <b>Controls</b>. Which mouse button turns, slides and
+            zooms the camera changes with it -- see <b>Controls</b> under Colour and files.
+          </>,
+        ],
+      },
+      {
+        title: 'The Game scheme',
         steps: [
           { action: 'W, S', result: 'Walk forward and back, along the ground, whichever way you are looking.' },
           { action: 'A, D', result: 'Strafe left and right. This is what panning used to do.' },
@@ -1607,8 +1689,9 @@ export const HELP_SECTIONS: HelpSection[] = [
         ],
         notes: [
           <>
-            Switched on under <b>Settings</b>, and only on the modelling screen -- the lathe and the
-            laser cutter each draw one flat picture with nowhere to walk to.
+            Picked under <b>Settings</b>, as <b>Game</b> in the Controls row, and it flies only on
+            the modelling screen -- the lathe and the laser cutter each draw one flat picture with
+            nowhere to walk to.
           </>,
           <>
             <b>C</b> sinks rather than Ctrl, which is what this scheme normally uses. Ctrl+W closes

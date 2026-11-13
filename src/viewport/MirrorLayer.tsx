@@ -11,6 +11,7 @@ import {
   partsIn,
   snapAxisAngle,
 } from '../geometry/faceMirror'
+import { cameraClaims } from '../controlScheme'
 import { mirrorOn, useTools } from '../store/toolStore'
 import { GRAB_PX, stalk } from './CutLayer'
 import { LIFT, facePixels, pointerToFace } from './facePointer'
@@ -169,6 +170,8 @@ export function MirrorLayer({
       // Left button only. The wheel zooms and the right button pans, the way
       // they do everywhere else over this viewport.
       if (e.button !== 0) return
+      // Nor a left press chorded for the camera. See `cameraClaims`.
+      if (cameraClaims(useTools.getState().controlScheme, e)) return
       const at = pointerToFace(e, camera, el, face, dims)
       if (!at) return
       const held = mirrorOn(face)(useTools.getState())

@@ -105,7 +105,7 @@ export const SCREEN_SNAPS: Record<ScreenId, boolean> = {
 
 
 /**
- * Whether this screen can be WALKED, which is what the Game Controls switch
+ * Whether this screen can be WALKED, which is what the `game` control scheme
  * turns on.
  *
  * A third table rather than a reading of either of the other two, because it is
@@ -117,10 +117,9 @@ export const SCREEN_SNAPS: Record<ScreenId, boolean> = {
  * ground to walk on, no depth to walk into, and nothing behind you to turn
  * round and see. Given WASD they would have nowhere to go.
  *
- * The switch is still SHOWN on all three, dimmed where it is false -- see
- * `SettingsTool`. Settings is one panel that follows you between screens, and a
- * preference that vanished on two of them would be a feature nobody could find
- * from the screen they happened to be on.
+ * The scheme can still be CHOSEN from all three -- see `SettingsScreen`.
+ * Settings is one panel that follows you between screens, and on the two that
+ * cannot be walked `game` simply drives the camera the way Default does.
  */
 export const SCREEN_HAS_GAME_CONTROLS: Record<ScreenId, boolean> = {
   modelling: true,

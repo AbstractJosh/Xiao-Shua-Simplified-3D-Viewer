@@ -1,5 +1,6 @@
+import { CONTROL_SCHEMES, CONTROL_SCHEME_LABELS } from '../controlScheme'
 import { MOTION_LABELS, MOTION_MODES } from '../motion'
-import { OPEN_TO, OPEN_TO_LABELS, SCREEN_HAS_GAME_CONTROLS } from '../screens'
+import { OPEN_TO, OPEN_TO_LABELS } from '../screens'
 import { useTools } from '../store/toolStore'
 import { THEMES, THEME_LABELS } from '../theme'
 import { UNITS } from '../units'
@@ -28,6 +29,13 @@ const THEME_CHOICES = THEMES.map((name) => ({ value: name, label: THEME_LABELS[n
 /** And the three answers about movement, under the names the motion table
  *  gives them. */
 const MOTION_CHOICES = MOTION_MODES.map((mode) => ({ value: mode, label: MOTION_LABELS[mode] }))
+
+/** And whose controls the app is driven with, under the names the scheme table
+ *  gives them. */
+const SCHEME_CHOICES = CONTROL_SCHEMES.map((scheme) => ({
+  value: scheme,
+  label: CONTROL_SCHEME_LABELS[scheme],
+}))
 
 /**
  * Everything about how the app is READ and DRIVEN, as a screen over the whole
@@ -64,29 +72,10 @@ export function SettingsScreen() {
   const setShowOutlines = useTools((s) => s.setShowOutlines)
   const motion = useTools((s) => s.motion)
   const setMotion = useTools((s) => s.setMotion)
-  const gameControls = useTools((s) => s.gameControls)
-  const setGameControls = useTools((s) => s.setGameControls)
+  const controlScheme = useTools((s) => s.controlScheme)
+  const setControlScheme = useTools((s) => s.setControlScheme)
   const flightSpeed = useTools((s) => s.flightSpeed)
   const setFlightSpeed = useTools((s) => s.setFlightSpeed)
-  // Dimmed rather than hidden on the screens with no room to walk about in.
-  // The same bargain the bar strikes with the document controls: a screen that
-  // changed shape between screens would hide the feature from the two screens
-  // it is most likely to be looked for from. See `SCREEN_HAS_GAME_CONTROLS`.
-  // And dead at the front door too, which is not a screen with a room to walk
-  // about in either -- it is a list of projects. The check is `atWelcome` rather
-  // than another column in that table for the reason the table has no row for
-  // it: Welcome is not a screen. See `atWelcome` in `toolStore`.
-  //
-  // BOTH READ BEFORE EITHER IS TESTED, and that is not a style preference. The
-  // screen used to be read inside the expression -- `!atWelcome &&
-  // SCREEN_HAS_GAME_CONTROLS[useTools((s) => s.screen)]` -- which puts a HOOK
-  // behind a short circuit: at the front door the second operand never ran, so
-  // this component called one hook fewer than it had the render before, and the
-  // first press of New Project tore the app down with React error #310. A hook
-  // is not an expression and cannot be skipped.
-  const atWelcome = useTools((s) => s.atWelcome)
-  const screen = useTools((s) => s.screen)
-  const flies = !atWelcome && SCREEN_HAS_GAME_CONTROLS[screen]
 
   return (
     <ScreenOverlay id="settings" card="settings-screen" title="Settings" closeLabel="Close settings">
@@ -142,19 +131,21 @@ export function SettingsScreen() {
           <Switch options={MOTION_CHOICES} value={motion} onPick={setMotion} />
         </div>
 
-        {/* LAST, because it is the largest claim of the four. The three above
+        {/* LAST, because it is the largest claim of them all. The rows above
             change what you are looking at; this one changes what your hands do,
-            and a row that rebinds the keyboard belongs below the rows that
-            recolour the background rather than above them.
+            and a row that rebinds the mouse and the keyboard belongs below the
+            rows that recolour the background rather than above them.
 
-            A fieldset rather than a dimmed div, so the disabled state reaches
-            both buttons and the field without either having to be told
-            separately -- and so a screen reader is told the group is off rather
-            than finding four controls that happen to be grey. */}
-        <fieldset className="tool-group settings-row game-modes" disabled={!flies}>
-          <p className="subhead">Game Controls</p>
+            LIVE ON EVERY SCREEN, where the switch it replaced was dimmed on two
+            of them: that one only offered flying, which the lathe and the laser
+            cutter have no room for, and this one says which button turns the
+            camera, which is a question all three screens ask. `Game` picked
+            from a screen that cannot be walked simply drives like Default there
+            -- see `flyingHere`. */}
+        <div className="tool-group settings-row control-modes">
+          <p className="subhead">Controls</p>
           <div className="settings-row-control">
-            <Switch options={OFF_ON} value={gameControls} onPick={setGameControls} />
+            <Switch options={SCHEME_CHOICES} value={controlScheme} onPick={setControlScheme} />
             {/* The one control on this screen that is not a segment, and it
                 earns the exception: a speed is a number over a two-hundred-to-
                 one range and there is no pair of words that names it. It stays
@@ -175,7 +166,10 @@ export function SettingsScreen() {
                 `hoverText` off, like everything else here: it is what keeps the
                 field's own two browser tooltips -- the scrub hint and the reset
                 button's -- off a screen that carries none. */}
-            <fieldset className="tool-group game-speed" disabled={!gameControls}>
+            {/* A fieldset rather than a dimmed div, so a screen reader is told
+                the field is off rather than finding one that happens to be
+                grey. It means something under one scheme of the five. */}
+            <fieldset className="tool-group game-speed" disabled={controlScheme !== 'game'}>
               <NumberField
                 label="Speed"
                 pinUnit={displayUnit}
@@ -189,7 +183,7 @@ export function SettingsScreen() {
               />
             </fieldset>
           </div>
-        </fieldset>
+        </div>
       </div>
     </ScreenOverlay>
   )

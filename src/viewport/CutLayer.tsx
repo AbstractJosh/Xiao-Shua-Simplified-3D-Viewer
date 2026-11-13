@@ -4,6 +4,7 @@ import { BufferAttribute, BufferGeometry, SphereGeometry, Vector3 } from 'three'
 import type { Object3D } from 'three'
 import { BLOCK_HALF, faceBasis, faceToBlock } from '../geometry/laserCut'
 import type { FaceAxis, Pt } from '../geometry/laserCut'
+import { cameraClaims } from '../controlScheme'
 import { MAX_ROPE, isCutTool, mirrorOn, useTools } from '../store/toolStore'
 import { curveHandles, draftCut, useCutDraft } from './cutDraft'
 import { LIFT, facePixelsFrom, pointerToFace } from './facePointer'
@@ -539,6 +540,10 @@ export function CutLayer({ face, dims }: { face: FaceAxis; dims: [number, number
       // Left button only. The wheel zooms and the right button is left alone,
       // the way they are everywhere else over a viewport.
       if (e.button !== 0) return
+      // And not a left press chorded for the camera -- Alt+left orbits, and a
+      // line begun under an orbit would be drawn on a face that is turning
+      // away. See `cameraClaims`.
+      if (cameraClaims(useTools.getState().controlScheme, e)) return
       const at = toFace(e)
       if (!at) return
       const draft = useCutDraft.getState()

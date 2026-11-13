@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { baseName } from '../console/BasePanel'
+import { SCHEME_BINDINGS, cameraPress, deletes } from '../controlScheme'
 import { HollowTool } from '../console/HollowTool'
 import { LatheRulerTool } from '../console/LatheRulerTool'
 import { PointSculptTool, PullTool, PushTool, SmoothTool } from '../console/LatheTools'
@@ -179,14 +180,15 @@ export function LatheViewport() {
   const held = useRef<{ x: number; y: number; radius: number } | null>(null)
 
   /**
-   * The right-drag that slides the view, or null when nothing is being dragged.
+   * The drag that slides the view or zooms it, or null when nothing is being
+   * dragged.
    *
    * A ref rather than state, because nothing about it is DRAWN: what the drag
-   * produces is a new pan in the store, and the store is what re-renders. Only
-   * the previous pointer position is kept -- each move is worth its own delta,
-   * so the gesture needs no memory of where it started.
+   * produces is a new pan or a new zoom in the store, and the store is what
+   * re-renders. Only the previous pointer position is kept -- each move is
+   * worth its own delta, so the gesture needs no memory of where it started.
    */
-  const sliding = useRef<{ id: number; x: number; y: number } | null>(null)
+  const sliding = useRef<{ id: number; x: number; y: number; zoom: boolean } | null>(null)
 
   const zoom = useTools((s) => s.latheZoom)
   const pan = useTools((s) => s.lathePan)
@@ -300,7 +302,7 @@ export function LatheViewport() {
         useTools.getState().selectLatheRuler(null)
         return
       }
-      if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (deletes(useTools.getState().controlScheme, e)) {
         // THE KNOT IN HAND FIRST, and only while Point Sculpt is the tool
         // held. A press on a knot already makes it the live one -- that is how
         // its handles come out -- so "click a point, press Delete" needs no
@@ -361,11 +363,19 @@ export function LatheViewport() {
   const track = (e: ReactPointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
 
-    // THE VIEW FIRST, and it returns: with the right button down the pointer is
-    // moving the window rather than aiming anything, so the ghost has nothing
-    // to follow and `held` must not be rewritten from a frame that is sliding.
+    // THE VIEW FIRST, and it returns: with the camera's button down the pointer
+    // is moving the window rather than aiming anything, so the ghost has
+    // nothing to follow and `held` must not be rewritten from a frame that is
+    // sliding.
     const slide = sliding.current
     if (slide && slide.id === e.pointerId) {
+      if (slide.zoom) {
+        // Up is closer, which is the way the other two screens' rig reads the
+        // same drag. A pixel of it is worth a pixel of wheel.
+        useTools.getState().zoomLathe(Math.exp(-(e.clientY - slide.y) / WHEEL_PER_DOUBLING))
+        slide.y = e.clientY
+        return
+      }
       const per = unitsPerPixel(rect)
       // NEGATED, which is what makes it feel like dragging the drawing rather
       // than the window: the hand goes right, so the window goes left and the
@@ -390,11 +400,26 @@ export function LatheViewport() {
     // shows the whole lump, the rim is somewhere off the top of the window and
     // the wheel alone cannot reach it.
     //
+    // THE RIGHT BUTTON UNDER DEFAULT, that is. Which press slides is the
+    // control scheme's to say, and so is which one zooms, for the schemes that
+    // have a drag for it. An ORBIT is the one camera gesture this screen has no
+    // answer to -- it draws one flat picture -- so a press that asks for one
+    // falls through to whatever the button meant anyway.
+    //
     // It is the only gesture on this screen that works with EMPTY HANDS as
     // readily as with a tool, because it is not aimed at the clay at all.
-    if (e.button === 2) {
+    const camera = cameraPress(useTools.getState().controlScheme, e)
+    if (camera && camera.does !== 'orbit') {
+      // The middle button is a camera under three of the schemes, and left to
+      // itself the browser answers it with its own scroll-anywhere cursor.
+      if (e.button === 1) e.preventDefault()
       capture(e, true)
-      sliding.current = { id: e.pointerId, x: e.clientX, y: e.clientY }
+      sliding.current = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        zoom: camera.does === 'zoom',
+      }
       return
     }
 
@@ -453,9 +478,12 @@ export function LatheViewport() {
    */
   const onWheel = (e: ReactWheelEvent<SVGSVGElement>) => {
     const lines = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
-    // Negative delta is a scroll UP, which everywhere in this app and every
-    // other means closer.
-    useTools.getState().zoomLathe(Math.exp((-e.deltaY * lines) / WHEEL_PER_DOUBLING))
+    // Negative delta is a scroll UP, which everywhere in this app means closer
+    // -- except under the one control scheme whose own application runs its
+    // wheel the other way. See `SCHEME_BINDINGS`.
+    const { controlScheme, zoomLathe } = useTools.getState()
+    const way = SCHEME_BINDINGS[controlScheme].wheel
+    zoomLathe(Math.exp((-e.deltaY * lines * way) / WHEEL_PER_DOUBLING))
   }
 
   const widest = widestRadius(clay)

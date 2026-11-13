@@ -18,6 +18,7 @@ import {
   DoubleSide,
   Euler,
   Group,
+  MOUSE,
   Mesh,
   MeshBasicMaterial,
   OrthographicCamera,
@@ -109,7 +110,18 @@ import {
   hoverHandlers,
 } from '../src/viewport/TransformGizmo'
 import { modifiers, clearModifiers } from '../src/viewport/modifiers'
-import { MODE_KEYS, dragErode, forgetStroke, pauseStroke } from '../src/viewport/Viewport'
+import { dragErode, forgetStroke, pauseStroke } from '../src/viewport/Viewport'
+import {
+  CONTROL_SCHEMES,
+  SCHEME_BINDINGS,
+  cameraClaims,
+  deletes,
+  rigButtons,
+} from '../src/controlScheme'
+import type { CameraGesture, ControlScheme, PressKeys } from '../src/controlScheme'
+
+/** The Default scheme's gizmo letters, which is what the app opens on. */
+const MODE_KEYS = SCHEME_BINDINGS.default.modeKeys
 import {
   advanceTurn,
   beginPlaneDrag,
@@ -1286,7 +1298,7 @@ console.log('\n11d. The box only takes the presses nothing else wanted')
   const bare: Press = {
     button: 0,
     pointerType: 'mouse',
-    altKey: false,
+    camera: false,
     onCanvas: true,
     hits: 0,
     dragging: false,
@@ -1305,7 +1317,7 @@ console.log('\n11d. The box only takes the presses nothing else wanted')
   check('nor one finger on a touchscreen', !claims({ pointerType: 'touch' }))
   // Alt is what puts orbit back on the left button for a mouse with no wheel
   // to press.
-  check('nor a left press with Alt held, which orbits', !claims({ altKey: true }))
+  check('nor a left press the control scheme gives the camera', !claims({ camera: true }))
   // The hint, the object menu and the box itself all sit inside the viewport
   // without being the scene.
   check('nor a press on an overlay rather than the canvas', !claims({ onCanvas: false }))
@@ -1314,6 +1326,114 @@ console.log('\n11d. The box only takes the presses nothing else wanted')
   // A solid dragged off the palette is released over the canvas, but the press
   // that started it happened on a console chip.
   check('nor a press while a placement is already running', !claims({ dragging: true }))
+}
+
+// --- 11d+. Whose camera it is ----------------------------------------------
+console.log('\n11d+. Each control scheme puts the camera where its own application does')
+{
+  const bare: PressKeys = {
+    button: 0,
+    altKey: false,
+    shiftKey: false,
+    ctrlKey: false,
+    metaKey: false,
+  }
+  // What the rig will actually DO with the map it is handed, which is the only
+  // honest test of `rigButtons`: with Shift, Ctrl or Meta down the rig swaps
+  // orbit and pan on its own account, so the map alone is not the gesture.
+  const rig = (scheme: ControlScheme, patch: Partial<PressKeys>): CameraGesture | null => {
+    const press = { ...bare, ...patch }
+    const map = rigButtons(scheme, press)
+    const asked = [map.LEFT, map.MIDDLE, map.RIGHT][press.button]
+    if (asked === null) return null
+    if (asked === MOUSE.DOLLY) return 'zoom'
+    const swap = press.shiftKey || press.ctrlKey || press.metaKey
+    return (asked === MOUSE.ROTATE) !== swap ? 'orbit' : 'pan'
+  }
+
+  check('Default orbits on the middle button', rig('default', { button: 1 }) === 'orbit')
+  check('and on Alt+left', rig('default', { altKey: true }) === 'orbit')
+  check('and pans on the right', rig('default', { button: 2 }) === 'pan')
+  check('a bare left press is not the camera', rig('default', {}) === null)
+  check(
+    'Shift+middle still pans under Default, as the rig always had it',
+    rig('default', { button: 1, shiftKey: true }) === 'pan'
+  )
+
+  check('Blender orbits on the middle button', rig('blender', { button: 1 }) === 'orbit')
+  check('pans on Shift+middle', rig('blender', { button: 1, shiftKey: true }) === 'pan')
+  check('zooms on Ctrl+middle', rig('blender', { button: 1, ctrlKey: true }) === 'zoom')
+  check('leaves the right button alone', rig('blender', { button: 2 }) === null)
+  check('and has no Alt+left orbit', rig('blender', { altKey: true }) === null)
+
+  check('Maya orbits on Alt+left', rig('maya', { altKey: true }) === 'orbit')
+  check('pans on Alt+middle', rig('maya', { button: 1, altKey: true }) === 'pan')
+  check('zooms on Alt+right', rig('maya', { button: 2, altKey: true }) === 'zoom')
+  check(
+    'and does nothing without Alt',
+    [0, 1, 2].every((button) => rig('maya', { button }) === null)
+  )
+  check(
+    'Alt+Shift+left is still an orbit, the rig swap undone',
+    rig('maya', { altKey: true, shiftKey: true }) === 'orbit'
+  )
+
+  check(
+    'Fusion 360 orbits on Shift+middle',
+    rig('fusion', { button: 1, shiftKey: true }) === 'orbit'
+  )
+  check('pans on the bare middle button', rig('fusion', { button: 1 }) === 'pan')
+  check(
+    'and is the one scheme whose wheel runs the other way',
+    CONTROL_SCHEMES.filter((s) => SCHEME_BINDINGS[s].wheel === -1).join() === 'fusion'
+  )
+
+  check('Game drives the camera as Default does', SCHEME_BINDINGS.game === SCHEME_BINDINGS.default)
+
+  const armed = rigButtons('default', { ...bare, button: 1 })
+  check(
+    'only the button pressed is armed',
+    armed.LEFT === null && armed.RIGHT === null && armed.MIDDLE === MOUSE.ROTATE
+  )
+
+  // A chord is the camera alone; a bare button is shared with the scene.
+  check(
+    'a chorded camera press is kept from the scene',
+    cameraClaims('maya', { ...bare, altKey: true }) &&
+      cameraClaims('default', { ...bare, altKey: true }) &&
+      cameraClaims('blender', { ...bare, button: 1, shiftKey: true })
+  )
+  check(
+    'a bare one is shared with it, as it always was',
+    !cameraClaims('default', { ...bare, button: 2 }) &&
+      !cameraClaims('default', { ...bare, button: 1 }) &&
+      !cameraClaims('fusion', { ...bare, button: 1 })
+  )
+  check(
+    'and a press that is not the camera claims nothing',
+    !cameraClaims('blender', { ...bare, altKey: true })
+  )
+
+  const key = (k: string, ctrlKey = false) => ({ key: k, ctrlKey, metaKey: false, altKey: false })
+  check(
+    'Delete and Backspace delete under every scheme',
+    CONTROL_SCHEMES.every((s) => deletes(s, key('Delete')) && deletes(s, key('Backspace')))
+  )
+  check('X deletes under Blender', deletes('blender', key('x')) && deletes('blender', key('X')))
+  check(
+    'and under nothing else',
+    CONTROL_SCHEMES.filter((s) => deletes(s, key('x'))).join() === 'blender'
+  )
+  check('while Ctrl+X is still a chord', !deletes('blender', key('x', true)))
+
+  const letters = (scheme: ControlScheme) =>
+    Object.entries(SCHEME_BINDINGS[scheme].modeKeys)
+      .map(([k, mode]) => `${k}:${mode}`)
+      .sort()
+      .join()
+  check('Blender picks the gizmo with G, R and S', letters('blender') === 'g:move,r:rotate,s:scale')
+  check('Maya with W, E and R', letters('maya') === 'e:rotate,r:scale,w:move')
+  check('and Fusion 360 keeps the Default letters', letters('fusion') === letters('default'))
 }
 
 // --- 11e. Delete empties the whole box, in one press ------------------------

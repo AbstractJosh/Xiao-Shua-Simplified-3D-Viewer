@@ -2,9 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { MOUSE } from 'three'
-import type { Object3D } from 'three'
+import type { MOUSE, Object3D } from 'three'
 import { FreehandTool, MoveRefTool, PointCutTool, SymmetryTool } from '../console/LaserTools'
+import { SCHEME_BINDINGS, deletes, rigButtons } from '../controlScheme'
 import { ReferenceEditor } from '../console/ReferenceEditor'
 import { outlineOf } from '../geometry/laserCut'
 import type { FaceAxis } from '../geometry/laserCut'
@@ -26,7 +26,13 @@ import { ReferenceBoards, ReferenceHandles, ReferenceMaterial } from './Referenc
 import { useCutDraft } from './cutDraft'
 import { NO_PAN, panCorrection, panLimits } from './facePan'
 import { frameOf, perspectiveFrame, zoomFor } from './orthoFrame'
-import { STAGE_CAMERA, STAGE_MAX_DISTANCE, STAGE_MIN_DISTANCE, Stage } from './Stage'
+import {
+  STAGE_CAMERA,
+  STAGE_MAX_DISTANCE,
+  STAGE_MIN_DISTANCE,
+  Stage,
+  yieldToCamera,
+} from './Stage'
 import { IslandShell } from './ToolIsland'
 import { useSceneColors } from './useSceneColors'
 
@@ -43,7 +49,9 @@ import { useSceneColors } from './useSceneColors'
  * face. See `CompassControl`'s `settle`, and `nearestView` for what "nearest"
  * means.
  *
- * THE MIDDLE BUTTON ORBITS, on the same binding the modelling screen uses. This
+ * THE MIDDLE BUTTON ORBITS, on the same binding the modelling screen uses --
+ * under the Default control scheme, that is; the others put the camera on their
+ * own chords, and this screen follows them. See `controlScheme.ts`. This
  * screen used to refuse the camera outright, on the reasoning above; that made
  * the compass the only way to look at the block at all, and left the middle
  * button doing the one thing nobody wanted from it here, which was dolly.
@@ -74,9 +82,10 @@ import { useSceneColors } from './useSceneColors'
  * the window -- and the edges are where a cut has to be aimed. Without a pan the
  * zoom can only be used on the middle of the stock.
  *
- * The left button is not a camera either -- it draws, which is the whole screen
- * -- so there is no Alt+left orbit here to match the modelling screen's, and the
- * pan took the one button that was still free.
+ * The BARE left button is not a camera either -- it draws, which is the whole
+ * screen -- and the pan took the one button that was still free. A left press
+ * chorded for the camera is another matter: Alt+left orbits here as it does on
+ * the modelling screen, and the layers that draw stand down for it.
  *
  * That is what makes the drawing possible at all. Square on to a face, the
  * pointer maps to a place on that face by one plane intersection, and what is
@@ -451,8 +460,9 @@ function FaceWatch({ onFace }: { onFace: (face: FaceAxis) => void }) {
 }
 
 /**
- * The controls as this screen holds them: the compass's `Orbit`, and the two
- * fields only a projection has any use for.
+ * The controls as this screen holds them: the compass's `Orbit`, the two
+ * fields only a projection has any use for, and the map of what each mouse
+ * button does, which is rewritten before every press.
  *
  * `Orbit` is the contract the COMPASS needs -- where the camera is aimed, and
  * how to make it so -- and it is deliberately no wider than that, because every
@@ -460,7 +470,13 @@ function FaceWatch({ onFace }: { onFace: (face: FaceAxis) => void }) {
  * zoom is not a fact about aiming and belongs to nobody but this screen, so it
  * is added here rather than there.
  */
-type LaserOrbit = (NonNullable<Orbit> & { minZoom: number; maxZoom: number }) | null
+type LaserOrbit =
+  | (NonNullable<Orbit> & {
+      minZoom: number
+      maxZoom: number
+      mouseButtons: { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null }
+    })
+  | null
 
 /**
  * Keeps a fixed slice of the world in the height of the window, and tells the
@@ -689,6 +705,30 @@ export function LaserViewport() {
   /** Whether a reference slot is lit -- which is what Move's handles hang on. */
   const lit = useReference((s) => s.highlightId !== null)
   const [face, setFace] = useState<FaceAxis>(FRONT)
+  // Which way the wheel runs is the control scheme's to say. See
+  // `SCHEME_BINDINGS`.
+  const wheel = useTools((s) => SCHEME_BINDINGS[s.controlScheme].wheel)
+
+  /**
+   * What each mouse button does to the camera, re-decided before every press.
+   *
+   * The same arrangement the modelling screen has, for the same two reasons:
+   * which button turns and which slides is the control scheme's to say, and the
+   * rig reads its map at pointer-down and never again during the drag -- so a
+   * chord has to be answered at the press. See `rigButtons`.
+   *
+   * Capture phase on the window, so it lands before the rig's own listener
+   * sees the same press.
+   */
+  useEffect(() => {
+    const armCamera = (e: PointerEvent) => {
+      const controls = controlsRef.current
+      if (!controls) return
+      Object.assign(controls.mouseButtons, rigButtons(useTools.getState().controlScheme, e))
+    }
+    window.addEventListener('pointerdown', armCamera, true)
+    return () => window.removeEventListener('pointerdown', armCamera, true)
+  }, [])
 
   /**
    * The three keys this screen answers, and its own listener to answer them
@@ -731,7 +771,7 @@ export function LaserViewport() {
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (deletes(useTools.getState().controlScheme, e)) {
         // A LIT SLOT COMES FIRST. Delete has always thrown the offcut away, and
         // it still does with nothing lit -- but a lit slot is a picture in
         // hand, and the thing in hand is what a key acts on. It takes every
@@ -805,6 +845,8 @@ export function LaserViewport() {
         // three tenths of a millimetre. See `Viewport` for the case that does
         // need it, and `depthBias.ts` for what a log buffer costs elsewhere.
         dpr={[1, 2]}
+        // A press chorded for the camera reaches nothing in the scene.
+        onCreated={yieldToCamera}
       >
         {/* The room, with its ground cut down to the bed -- see `GROUND_REACH`
             for why the one screen that does not travel is the one that asks for
@@ -812,10 +854,11 @@ export function LaserViewport() {
         <Stage reach={Math.max(...dims) * GROUND_REACH} />
         <Pieces dims={dims} />
 
-        {/* ORBIT ON THE MIDDLE BUTTON, exactly where the modelling screen puts
-            it, and nowhere else. The left button DRAWS here -- that is the
-            whole screen -- so it cannot also be a camera, which is why there is
-            no Alt+left fallback to match the other screen's.
+        {/* ORBIT WHEREVER THE CONTROL SCHEME PUTS IT, which under Default is
+            the middle button, exactly where the modelling screen has it. The
+            bare left button DRAWS here -- that is the whole screen -- so it is
+            never a camera on its own; a left press CHORDED for the camera is,
+            and the layers that draw stand down for it. See `cameraClaims`.
 
             AND PAN ON THE RIGHT, which used to be the button that did nothing.
             It is not a convenience: a projection cannot be walked closer, so
@@ -826,10 +869,8 @@ export function LaserViewport() {
             `PanAcrossFace`, which is what bounds it: `enablePan` here only
             gives the gesture a button.
 
-            The buttons are a static map rather than the modelling screen's
-            re-armed-per-press one, because none of it is conditional here --
-            there is no modifier to read and no second gesture competing for a
-            button.
+            Which button is which is written before every press rather than
+            said here -- see `armCamera` above.
 
             The wheel is left alone, as it always was: zooming does not tip the
             camera off the axis the compass put it on, and the block runs from a
@@ -844,11 +885,8 @@ export function LaserViewport() {
           makeDefault
           enableDamping
           dampingFactor={0.12}
-          // `undefined`, not a "none" value -- OrbitControls has no such
-          // constant. Its button switch falls through to `STATE.NONE` for
-          // anything it does not recognise, which is what leaves the left
-          // button free to draw and the right doing nothing at all.
-          mouseButtons={{ LEFT: undefined, MIDDLE: MOUSE.ROTATE, RIGHT: MOUSE.PAN }}
+          // A sign and nothing else: -1 turns every notch into its inverse.
+          zoomSpeed={wheel}
           // In the plane of the screen rather than of the ground, which square
           // on to a face is the plane of the FACE -- so up on a side view is up
           // the block rather than back along the bed. Three's own default, said
