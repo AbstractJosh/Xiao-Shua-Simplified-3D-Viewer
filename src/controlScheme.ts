@@ -198,6 +198,10 @@ export function cameraClaims(scheme: ControlScheme, press: PressKeys): boolean {
  * those three is held, and the rig's swap lands it on the right one. A bare
  * binding is passed through as it stands, which leaves Default's middle button
  * doing exactly what it did before any of this existed.
+ *
+ * A ZOOM IS NOT HANDED TO THE RIG AT ALL. It has a dolly drag, and it is the
+ * wrong one -- see `zoomDrag` -- so the button is left unarmed and the screen
+ * answers the drag itself.
  */
 export function rigButtons(
   scheme: ControlScheme,
@@ -205,9 +209,7 @@ export function rigButtons(
 ): { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null } {
   const binding = cameraPress(scheme, press)
   let action: MOUSE | null = null
-  if (binding?.does === 'zoom') {
-    action = MOUSE.DOLLY
-  } else if (binding) {
+  if (binding && binding.does !== 'zoom') {
     const swapped =
       binding.mod !== undefined && (press.shiftKey || press.ctrlKey || press.metaKey)
     action = (binding.does === 'orbit') !== swapped ? MOUSE.ROTATE : MOUSE.PAN
@@ -217,6 +219,39 @@ export function rigButtons(
     MIDDLE: press.button === 1 ? action : null,
     RIGHT: press.button === 2 ? action : null,
   }
+}
+
+/**
+ * How many pixels of a zoom drag double the view, or halve it.
+ *
+ * Two hundred, so a drag across a third of a laptop screen is about four times
+ * closer. A feel and nothing else: this is the number to turn if the drag ever
+ * reads as sluggish or as twitchy.
+ */
+const ZOOM_DRAG_PER_DOUBLING = 200
+
+/**
+ * How much closer a zoom drag of this many pixels brings the view: above 1 is
+ * closer, below it is farther, and 1 is where it was.
+ *
+ * RIGHT AND UP CLOSE IN, LEFT AND DOWN BACK OFF, and the two are summed, so the
+ * hand may go whichever way it likes. Maya's dolly is driven sideways as often
+ * as not, and a zoom that answers one axis leaves the other doing nothing.
+ *
+ * WHY THE RIG'S OWN DOLLY DRAG IS NOT USED, which is what a zoom press used to
+ * be handed to. It reads the SIGN of the vertical movement and nothing else,
+ * and takes one fixed step for every mouse event. So a drag to the left zoomed
+ * in or out by whichever way the hand wobbled on that event -- both, by turns
+ * -- and how far it went depended on how many events the mouse sent rather
+ * than on how far it travelled. Here the answer is a function of the distance
+ * alone: a pixel of wobble is worth a pixel, and there and back again is
+ * exactly where the view started.
+ *
+ * One rule for all three screens. The lathe has no rig and always answered this
+ * drag itself; it asks here too, so the same hand gets the same zoom.
+ */
+export function zoomDrag(dx: number, dy: number): number {
+  return 2 ** ((dx - dy) / ZOOM_DRAG_PER_DOUBLING)
 }
 
 /** Whether this key press deletes: Delete and Backspace always, and the

@@ -115,10 +115,14 @@ import {
   CONTROL_SCHEMES,
   SCHEME_BINDINGS,
   cameraClaims,
+  cameraPress,
   deletes,
   rigButtons,
+  zoomDrag,
 } from '../src/controlScheme'
 import type { CameraGesture, ControlScheme, PressKeys } from '../src/controlScheme'
+import { dragZoom } from '../src/viewport/Stage'
+import { OrbitControls } from 'three-stdlib'
 
 /** The Default scheme's gizmo letters, which is what the app opens on. */
 const MODE_KEYS = SCHEME_BINDINGS.default.modeKeys
@@ -1346,7 +1350,6 @@ console.log('\n11d+. Each control scheme puts the camera where its own applicati
     const map = rigButtons(scheme, press)
     const asked = [map.LEFT, map.MIDDLE, map.RIGHT][press.button]
     if (asked === null) return null
-    if (asked === MOUSE.DOLLY) return 'zoom'
     const swap = press.shiftKey || press.ctrlKey || press.metaKey
     return (asked === MOUSE.ROTATE) !== swap ? 'orbit' : 'pan'
   }
@@ -1362,13 +1365,85 @@ console.log('\n11d+. Each control scheme puts the camera where its own applicati
 
   check('Blender orbits on the middle button', rig('blender', { button: 1 }) === 'orbit')
   check('pans on Shift+middle', rig('blender', { button: 1, shiftKey: true }) === 'pan')
-  check('zooms on Ctrl+middle', rig('blender', { button: 1, ctrlKey: true }) === 'zoom')
+  // A ZOOM IS THE SCHEME'S AND NOT THE RIG'S. The rig's own dolly drag reads
+  // one axis and steps once per mouse event, so the press is kept from it and
+  // answered by `zoomDrag` instead.
+  const zooms = (scheme: ControlScheme, patch: Partial<PressKeys>) =>
+    cameraPress(scheme, { ...bare, ...patch })?.does === 'zoom' && rig(scheme, patch) === null
+  check('zooms on Ctrl+middle', zooms('blender', { button: 1, ctrlKey: true }))
   check('leaves the right button alone', rig('blender', { button: 2 }) === null)
   check('and has no Alt+left orbit', rig('blender', { altKey: true }) === null)
 
   check('Maya orbits on Alt+left', rig('maya', { altKey: true }) === 'orbit')
   check('pans on Alt+middle', rig('maya', { button: 1, altKey: true }) === 'pan')
-  check('zooms on Alt+right', rig('maya', { button: 2, altKey: true }) === 'zoom')
+  check('zooms on Alt+right', zooms('maya', { button: 2, altKey: true }))
+  // Which way, and by how much. Sideways is the half that was missing: the rig
+  // read the vertical alone, so a drag to the left zoomed whichever way the
+  // hand happened to wobble.
+  check('a zoom drag to the right closes in', zoomDrag(40, 0) > 1)
+  check('and one to the left backs off', zoomDrag(-40, 0) < 1)
+  check('up is closer and down is farther, as before', zoomDrag(0, -40) > 1 && zoomDrag(0, 40) < 1)
+  check(
+    'a pixel of wobble does not turn a sideways drag round',
+    zoomDrag(-40, -1) < 1 && zoomDrag(40, 1) > 1
+  )
+  check(
+    'and there and back is where it started',
+    Math.abs(zoomDrag(40, -10) * zoomDrag(-40, 10) - 1) < 1e-12
+  )
+
+  // AND THE DRAG ITSELF, on the rig the app actually mounts -- drei's controls
+  // are this class. The rule above says which way is closer; this is what says
+  // the rig was told the same thing, since its scale is a distance and runs the
+  // other way. A window for the length of the block and no longer: half this
+  // file's imports ask whether there is one.
+  {
+    const camera = new PerspectiveCamera(45, 1, 0.1, 200)
+    camera.position.set(0, 0, 10)
+    const orbit = new OrbitControls(camera)
+    const win = new EventTarget()
+    const host = globalThis as { window?: unknown }
+    host.window = win
+    const was = useTools.getState().controlScheme
+    useTools.setState({ controlScheme: 'maya' })
+
+    const el = { contains: () => true } as unknown as HTMLElement
+    const press = (patch: Partial<PressKeys>) =>
+      ({ ...bare, pointerId: 1, clientX: 100, clientY: 100, target: el, ...patch }) as unknown as PointerEvent
+    const move = (clientX: number, clientY: number, buttons = 2) =>
+      win.dispatchEvent(
+        Object.assign(new Event('pointermove'), { pointerId: 1, buttons, clientX, clientY })
+      )
+    const rig = { enabled: true, domElement: el, dollyIn: orbit.dollyIn }
+    const far = () => camera.position.length()
+
+    dragZoom(rig, press({ button: 2 }))
+    move(300, 100)
+    near('a press that is not a zoom is not answered', far(), 10, 1e-9)
+
+    dragZoom(rig, press({ button: 2, altKey: true }))
+    move(300, 100)
+    near('Alt+right dragged right comes twice as close', far(), 5, 1e-9)
+    move(100, 100)
+    near('dragged back left, it is where it was', far(), 10, 1e-9)
+    move(100, 300)
+    near('and dragged down, it backs off', far(), 20, 1e-9)
+    win.dispatchEvent(new Event('pointerup'))
+    move(900, 100)
+    near('the release ends it', far(), 20, 1e-9)
+
+    dragZoom(rig, press({ button: 2, altKey: true }))
+    move(300, 100, 0)
+    move(500, 100)
+    near('and so does a move with nothing held', far(), 20, 1e-9)
+
+    dragZoom({ ...rig, enabled: false }, press({ button: 2, altKey: true }))
+    move(300, 100)
+    near('a camera that is switched off does not zoom', far(), 20, 1e-9)
+
+    useTools.setState({ controlScheme: was })
+    delete host.window
+  }
   check(
     'and does nothing without Alt',
     [0, 1, 2].every((button) => rig('maya', { button }) === null)

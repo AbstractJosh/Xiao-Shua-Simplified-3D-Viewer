@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { baseName } from '../console/BasePanel'
-import { SCHEME_BINDINGS, cameraPress, deletes } from '../controlScheme'
+import { SCHEME_BINDINGS, cameraPress, deletes, zoomDrag } from '../controlScheme'
 import { HollowTool } from '../console/HollowTool'
 import { LatheRulerTool } from '../console/LatheRulerTool'
 import { PointSculptTool, PullTool, PushTool, SmoothTool } from '../console/LatheTools'
@@ -370,9 +370,10 @@ export function LatheViewport() {
     const slide = sliding.current
     if (slide && slide.id === e.pointerId) {
       if (slide.zoom) {
-        // Up is closer, which is the way the other two screens' rig reads the
-        // same drag. A pixel of it is worth a pixel of wheel.
-        useTools.getState().zoomLathe(Math.exp(-(e.clientY - slide.y) / WHEEL_PER_DOUBLING))
+        // Right and up are closer, by the rule the other two screens answer the
+        // same drag with. See `zoomDrag`.
+        useTools.getState().zoomLathe(zoomDrag(e.clientX - slide.x, e.clientY - slide.y))
+        slide.x = e.clientX
         slide.y = e.clientY
         return
       }
