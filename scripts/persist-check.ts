@@ -88,7 +88,7 @@ for (const key of [
   'theme',
   'showOutlines',
   'motion',
-  'gameControls',
+  'controlScheme',
   'flightSpeed',
   'snap',
   'snapDistance',
@@ -140,7 +140,7 @@ const MOVED: Prefs = {
   theme: 'light',
   showOutlines: false,
   motion: 'off',
-  gameControls: true,
+  controlScheme: 'maya',
   flightSpeed: 9,
   snap: false,
   snapDistance: 0.5,
@@ -207,6 +207,26 @@ applyPrefs(prefsFrom(storedPrefs))
 const restored = prefsOf(tools()) as unknown as Record<string, unknown>
 const lost = KEYS.filter((key) => shown(restored[key]) !== shown(movedAt[key]))
 check('every preference survives the round trip', lost.length === 0, lost.join(', '))
+
+// THE SWITCH THE SCHEME REPLACED. Flying was a yes-or-no of its own before
+// there was anything else to choose between, and a browser that stored a yes
+// still has it.
+check(
+  'a stored Game Controls switch comes back as the Game scheme',
+  prefsFrom({ gameControls: true }).controlScheme === 'game'
+)
+check(
+  'one stored off leaves the default alone',
+  prefsFrom({ gameControls: false }).controlScheme === undefined
+)
+check(
+  'and a stored scheme outranks the old switch',
+  prefsFrom({ gameControls: true, controlScheme: 'blender' }).controlScheme === 'blender'
+)
+check(
+  'a scheme this app has never heard of is refused',
+  prefsFrom({ controlScheme: 'solidworks' }).controlScheme === undefined
+)
 
 console.log('\nPreferences that should not be trusted\n')
 

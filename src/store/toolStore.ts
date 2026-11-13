@@ -42,6 +42,8 @@ import { DEFAULT_THEME } from '../theme'
 import type { Theme } from '../theme'
 import { DEFAULT_MOTION } from '../motion'
 import type { Motion } from '../motion'
+import { DEFAULT_CONTROL_SCHEME } from '../controlScheme'
+import type { ControlScheme } from '../controlScheme'
 import { NO_PAN, clampPan, clampZoom } from '../viewport/latheView'
 import type { LathePan } from '../viewport/latheView'
 import type { Unit } from '../units'
@@ -935,30 +937,34 @@ export type ToolState = {
    */
   motion: Motion
   /**
-   * Whether the modelling viewport is driven like a game rather than orbited.
+   * Whose controls the app is driven with: its own, or the ones a hand already
+   * knows from Blender, Maya, Fusion 360 or a game. See `controlScheme.ts`,
+   * which holds what each of them binds.
    *
    * IT IS HERE TO LOWER THE DOOR. The orbit rig this app has always used is
    * what every CAD package uses and it is not what anybody arrives knowing:
-   * middle-drag to turn, right-drag to slide, wheel to close in, and the whole
-   * scheme built on a pivot point that is invisible and has to be guessed at.
-   * WASD is the one 3D control scheme a person can be assumed to have already
-   * learned somewhere else. Switching this on hands them that instead -- walk
-   * with the letters, rise and sink with Space and C, hold the right button to
-   * look about -- and nothing in the document changes by it.
+   * middle-drag to turn, right-drag to slide, wheel to close in. Somebody
+   * arriving from another package knows a DIFFERENT set of chords for the same
+   * three things, and somebody arriving from nowhere knows WASD. Each is one
+   * press away rather than a week of unlearning, and nothing in the document
+   * changes by it.
+   *
+   * `game` WAS A SWITCH OF ITS OWN, called Game Controls, before there was
+   * anything else to choose between. It is one of the answers now, because it
+   * is an answer to the same question -- and two rows that both said how the
+   * mouse drives the camera could be set to contradict each other.
    *
    * A PREFERENCE rather than a tool, which is why it sits with the unit, the
    * theme and the outlines instead of on the island: it says how you drive this
    * app, and it is still true of the next document you open. Nothing in the
    * scene, the file or an export knows it exists.
    *
-   * SHOWN EVERYWHERE, LIVE ON ONE SCREEN. The lathe and the laser cutter draw a
-   * flat picture with no room to walk about in, so the switch is dimmed on both
-   * -- see `SCREEN_HAS_GAME_CONTROLS`, which owns that judgement, and
-   * `SettingsScreen`, which draws it. The flag itself is left alone by the screen
-   * you are on, so coming back to the modelling screen finds the camera the way
-   * you left it.
+   * TRUE OF EVERY SCREEN, THOUGH ONLY ONE CAN BE WALKED. The lathe and the
+   * laser cutter take their camera gestures from the same table; what they have
+   * no room for is flying, so `game` falls back to Default's bindings on both
+   * -- see `flyingHere`, which owns that judgement.
    */
-  gameControls: boolean
+  controlScheme: ControlScheme
   /**
    * How fast that camera travels, in scene units a second.
    *
@@ -1417,7 +1423,7 @@ export type ToolState = {
   setTheme: (theme: Theme) => void
   setShowOutlines: (on: boolean) => void
   setMotion: (motion: Motion) => void
-  setGameControls: (on: boolean) => void
+  setControlScheme: (scheme: ControlScheme) => void
   /** Clamped to the range the camera will actually fly at, because this one can
    *  be typed into as well as wheeled. See `FLIGHT_SPEED_MIN`. */
   setFlightSpeed: (speed: number) => void
@@ -1623,11 +1629,11 @@ export const useTools = create<ToolState>((set) => ({
   // On. Everything moves until somebody says otherwise -- see `motion.ts` for
   // why that is the default rather than the system's answer.
   motion: DEFAULT_MOTION,
-  // Off. The orbit rig is what this app has always been driven with and what
-  // its own documentation describes, so it stays the camera you get; this is an
-  // alternative offered to somebody who has gone looking for one, not a change
-  // of scheme sprung on everybody who opens the app.
-  gameControls: false,
+  // The app's own. The orbit rig is what it has always been driven with and
+  // what its documentation describes first, so it stays the camera you get; the
+  // others are offered to somebody who has gone looking for one, not sprung on
+  // everybody who opens the app.
+  controlScheme: DEFAULT_CONTROL_SCHEME,
   flightSpeed: FLIGHT_SPEED_DEFAULT,
   cutActive: false,
   cutPlane: DEFAULT_CUT_PLANE,
@@ -1793,14 +1799,14 @@ export const useTools = create<ToolState>((set) => ({
 
   setMotion: (motion) => set({ motion }),
 
-  // Every held key forgotten on the way through, in BOTH directions. Off with
-  // a hand still on W, the key-up lands on a mode that is no longer listening
-  // and the direction would stay held -- so switching back on later would set
-  // the camera off on its own. On is cleared for the mirror of the same
-  // reason: whatever was held before the mode existed was never a movement.
-  setGameControls: (gameControls) => {
+  // Every held key forgotten on the way through, in BOTH directions. Out of
+  // `game` with a hand still on W, the key-up lands on a scheme that is no
+  // longer listening and the direction would stay held -- so switching back
+  // later would set the camera off on its own. Into it is cleared for the
+  // mirror of the same reason: whatever was held before was never a movement.
+  setControlScheme: (controlScheme) => {
     clearMoves()
-    set({ gameControls })
+    set({ controlScheme })
   },
 
   setFlightSpeed: (speed) =>
@@ -2235,8 +2241,8 @@ export const anyMirror = (s: ToolState): boolean =>
 /**
  * Is the camera being driven from the keyboard RIGHT NOW?
  *
- * Two facts, and both have to hold: the switch is on, and this screen is one
- * with a room to walk about in. Kept as one predicate rather than written out
+ * Two facts, and both have to hold: the scheme is `game`, and this screen is
+ * one with a room to walk about in. Kept as one predicate rather than written out
  * at each call site, because the sites are scattered across two folders -- the
  * viewport that flies, the palettes and panels that have to let a key past --
  * and half of them would be checking the switch alone. A screen where the
@@ -2244,7 +2250,7 @@ export const anyMirror = (s: ToolState): boolean =>
  * that is the case the second half exists to catch.
  */
 export const flyingHere = (s: ToolState): boolean =>
-  s.gameControls && SCREEN_HAS_GAME_CONTROLS[s.screen]
+  s.controlScheme === 'game' && SCREEN_HAS_GAME_CONTROLS[s.screen]
 
 /**
  * Does a bare key press still ACTIVATE the control it lands on?

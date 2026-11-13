@@ -54,6 +54,7 @@ import { BRUSH_SMOOTH_MIN, ROUND_MIN } from '../geometry/erode'
 import { meshEntry } from '../geometry/meshLibrary'
 import type { SceneObject } from '../geometry/types'
 import { MOTION_MODES } from '../motion'
+import { CONTROL_SCHEMES } from '../controlScheme'
 import { OPEN_TO } from '../screens'
 import { THEMES, THEME_ATTRIBUTE } from '../theme'
 import { UNITS } from '../units'
@@ -182,7 +183,7 @@ const PREFS = {
   theme: oneOf(THEMES),
   showOutlines: bool,
   motion: oneOf(MOTION_MODES),
-  gameControls: bool,
+  controlScheme: oneOf(CONTROL_SCHEMES),
   flightSpeed: num(FLIGHT_SPEED_MIN, FLIGHT_SPEED_MAX),
   // Where the app starts: the front door, or straight back into the project you
   // had open. A preference and not a place -- see the note above about
@@ -272,6 +273,13 @@ export function prefsFrom(raw: unknown): Partial<Prefs> {
   for (const key of PREF_KEYS) {
     const value = (PREFS[key] as Check<unknown>)(stored[key])
     if (value !== undefined) out[key] = value
+  }
+  // THE SWITCH THE SCHEME REPLACED. Flying used to be a yes-or-no of its own,
+  // `gameControls`, and a browser that stored a yes still has it. Read as the
+  // scheme it became, and only where no scheme was stored: once one has been,
+  // it is the newer answer.
+  if (out.controlScheme === undefined && stored.gameControls === true) {
+    out.controlScheme = 'game'
   }
   return out as Partial<Prefs>
 }

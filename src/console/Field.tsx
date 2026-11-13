@@ -830,7 +830,7 @@ export function Switch<T extends string | boolean>({
  * The two states of a yes-or-no switch, in the order the slider travels.
  *
  * Off first, and ordered by STATE rather than by default. Rows do not share a
- * default -- outlines start on, game controls start off -- so ordering each
+ * default -- outlines start on, an object's lock starts off -- so ordering each
  * from its own default outwards aimed two identical-looking tracks opposite
  * ways, and the slider sitting right would have meant "on" in one row and
  * "off" in the other. Off then On everywhere: the slider travels from nothing

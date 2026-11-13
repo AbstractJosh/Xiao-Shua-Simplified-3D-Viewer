@@ -278,6 +278,12 @@ import { COMPASS_FACE_SHADE, SCENE_CSS_VARS, SCENE_THEMES } from '../src/viewpor
 import { TRACKS, seamOf } from '../src/console/welcomeReel'
 import { DEFAULT_THEME, THEMES, THEME_LABELS } from '../src/theme'
 import { DEFAULT_MOTION, MOTION_LABELS, MOTION_MODES, reducedMotion } from '../src/motion'
+import {
+  CONTROL_SCHEMES,
+  CONTROL_SCHEME_LABELS,
+  DEFAULT_CONTROL_SCHEME,
+  SCHEME_BINDINGS,
+} from '../src/controlScheme'
 import type { Theme } from '../src/theme'
 import { HelpScreen } from '../src/console/HelpScreen'
 import { SettingsScreen } from '../src/console/SettingsScreen'
@@ -1065,8 +1071,15 @@ doc().selectObject(pyramidId)
     // The chords are checked by name below: `Ctrl+Z` is written in the source
     // as a `toLowerCase()` against a modifier and is not a literal to scrape.
     const heard = new Map<string, string>()
-    for (const file of ['Viewport', 'LatheViewport', 'LaserViewport']) {
-      const source = readFileSync(new URL(`../src/viewport/${file}.tsx`, import.meta.url), 'utf8')
+    // `controlScheme.ts` with them: Delete and Backspace are answered there
+    // now, on behalf of all three screens.
+    for (const file of [
+      'viewport/Viewport.tsx',
+      'viewport/LatheViewport.tsx',
+      'viewport/LaserViewport.tsx',
+      'controlScheme.ts',
+    ]) {
+      const source = readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8')
       // The lathe answers only a chord, so it contributes nothing here and that
       // is not a fault: what would be a fault is the scrape finding nothing
       // ANYWHERE, which is why the guard is on the total.
@@ -1083,13 +1096,17 @@ doc().selectObject(pyramidId)
 
     // And the three bare letters, read off the very map the handler switches
     // on, so a fourth gizmo key would have to be documented to pass.
+    // EVERY control scheme's letters, and the one that deletes: a letter any of
+    // them binds has to be on the page.
     const modeKeys = [
-      ...readFileSync(new URL('../src/viewport/Viewport.tsx', import.meta.url), 'utf8')
-        .split('export const MODE_KEYS')[1]
-        .split('}')[0]
-        .matchAll(/(\w+): '/g),
-    ].map((m) => m[1])
-    check('the gizmo keys were found to check against', modeKeys.length === 3, modeKeys.join(', '))
+      ...new Set(
+        CONTROL_SCHEMES.flatMap((scheme) => {
+          const { modeKeys: letters, deleteKey } = SCHEME_BINDINGS[scheme]
+          return [...Object.keys(letters), ...(deleteKey ? [deleteKey] : [])]
+        })
+      ),
+    ]
+    check('the gizmo keys were found to check against', modeKeys.length >= 3, modeKeys.join(', '))
     for (const key of modeKeys) {
       check(`the table names ${key}, which picks a gizmo`, listed.has(key.toLowerCase()), [...listed].join(' | '))
     }
@@ -5001,14 +5018,33 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     reducedMotion('system', true) === true && reducedMotion('system', false) === false
   )
 
-  shows('the settings screen carries a Game Controls row', settings, 'settings-row game-modes')
-  shows('captioned like the other three', settings, '<p class="subhead">Game Controls</p>')
+  shows('the settings screen carries a Controls row', settings, 'settings-row control-modes')
+  shows('captioned like the others', settings, '<p class="subhead">Controls</p>')
   shows('and drawn as the same chooser', settings, 'aria-pressed="true"')
+  for (const scheme of CONTROL_SCHEMES) {
+    shows(
+      `the row offers ${CONTROL_SCHEME_LABELS[scheme]}`,
+      settings,
+      `>${CONTROL_SCHEME_LABELS[scheme]}<`
+    )
+  }
   check(
-    'the app opens with the orbit camera, not the game one',
-    useTools.getState().gameControls === false,
-    String(useTools.getState().gameControls)
+    'with one cell on the track for each',
+    slider(settings, 'control-modes')[1] === String(CONTROL_SCHEMES.length),
+    `--of ${slider(settings, 'control-modes')[1]}`
   )
+  check(
+    'the app opens on its own controls, and they are the first cell',
+    useTools.getState().controlScheme === DEFAULT_CONTROL_SCHEME &&
+      CONTROL_SCHEMES[0] === 'default' &&
+      slider(settings, 'control-modes')[0] === '0',
+    useTools.getState().controlScheme
+  )
+  for (const scheme of CONTROL_SCHEMES) {
+    useTools.getState().setControlScheme(scheme)
+    check(`choosing ${scheme} holds`, useTools.getState().controlScheme === scheme)
+  }
+  useTools.getState().setControlScheme(DEFAULT_CONTROL_SCHEME)
   // The speed is the one control on the screen that is not a segment, and it is
   // MOUNTED with the mode off rather than appearing with it -- a row that
   // materialises only once you have found the switch is a row nobody knows the
@@ -5022,9 +5058,9 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // on cm here -- with centimetres as the fallback `auto` gets.
   shows('written in one settled unit so the scale cannot move mid-scrub', settings, '>cm<')
 
-  useTools.getState().setGameControls(true)
-  check('switching it on holds', useTools.getState().gameControls === true)
-  const flying = markupOf('SettingsScreen (game controls on)', SettingsScreen)
+  useTools.getState().setControlScheme('game')
+  check('picking Game holds', useTools.getState().controlScheme === 'game')
+  const flying = markupOf('SettingsScreen (game scheme)', SettingsScreen)
   hides('and the speed field wakes up with it', flying, 'game-speed" disabled=""')
 
   // ONLY THE MODELLING SCREEN FLIES, and the flag itself is not what says so --
@@ -5033,8 +5069,8 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // is one screen that follows you between screens.
   useTools.getState().setScreen('lathe')
   check(
-    'the switch keeps its state on a screen with nowhere to walk',
-    useTools.getState().gameControls === true
+    'the scheme keeps its state on a screen with nowhere to walk',
+    useTools.getState().controlScheme === 'game'
   )
   check('but nothing is flying there', flyingHere(useTools.getState()) === false)
   // Changing screens shuts whatever panel was open -- every one of them hangs
@@ -5042,8 +5078,11 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   // screens answer to the same field -- so it is opened again to read the row in
   // its dimmed state.
   useTools.setState({ openPanel: 'settings' })
-  const onLathe = markupOf('SettingsScreen (lathe, game controls on)', SettingsScreen)
-  shows('and the whole group is dimmed rather than taken away', onLathe, 'game-modes" disabled=""')
+  const onLathe = markupOf('SettingsScreen (lathe, game scheme)', SettingsScreen)
+  // LIVE THERE, where the switch this row replaced was dimmed: which button
+  // turns the camera is a question every screen asks.
+  shows('and the row is still offered there', onLathe, 'settings-row control-modes')
+  hides('and is not dimmed', onLathe, 'control-modes" disabled')
   useTools.getState().setScreen('modelling')
   useTools.setState({ openPanel: 'settings' })
   check('and it flies again back on the bench', flyingHere(useTools.getState()) === true)
@@ -5054,7 +5093,7 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   check('Enter activates whatever the mode', activates('Enter') === true)
   check('and Space does not, while flying', activates(' ') === false)
   check('nor does any other key, ever', activates('w') === false)
-  useTools.getState().setGameControls(false)
+  useTools.getState().setControlScheme('default')
   check('Space activates again with the camera parked', activates(' ') === true)
 
   // The keys themselves. CTRL IS NOT ONE OF THEM and must never become one:
@@ -5185,7 +5224,7 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
   )
   check(
     'and the right button stops panning, so it can look',
-    viewport.includes('flyingHere(useTools.getState()) ? null : MOUSE.PAN'),
+    viewport.includes('if (flyingHere(tools)) controls.mouseButtons.RIGHT = null'),
     'the scene would slide sideways every time you turned your head'
   )
   check(
@@ -5246,7 +5285,7 @@ console.log('\nA number box is dragged sideways, and typed into on a double clic
     'nothing could cancel a press that became a drag'
   )
 
-  useTools.getState().setGameControls(false)
+  useTools.getState().setControlScheme('default')
 
   // It is not an island panel any more, so collapsing the island must leave it
   // alone. The invariant that DOES shut a panel with the island is asserted
@@ -7261,7 +7300,9 @@ console.log('\nThe lathe screen: two tools, one lump, and a pointer that lands w
   // branches are correct on their own.
   {
     const screen = readFileSync(new URL('../src/viewport/LatheViewport.tsx', import.meta.url), 'utf8')
-    const key = screen.slice(screen.indexOf("e.key === 'Delete'"))
+    // The key is asked of the control scheme now -- Blender's X deletes too --
+    // so the branch is found by that question rather than by the key's name.
+    const key = screen.slice(screen.indexOf('if (deletes('))
     check(
       'the lathe asks the drawing before it asks the rulers',
       key.indexOf('.removePoint(') > 0 && key.indexOf('.removePoint(') < key.indexOf('.removeLatheRuler('),
@@ -8553,8 +8594,14 @@ console.log('\nThe laser cutter: one block, one console, and a camera that only 
     // the window, and the only way back to them is to slide the view. The right
     // button is the one this screen had spare: the left draws and the middle
     // orbits. What the pan is BOUNDED by is arithmetic and lives in
-    // `interaction-check`; what is pinned here is that the screen wires it.
-    shows('the right button pans', source, 'RIGHT: MOUSE.PAN')
+    // `interaction-check`, and so now does WHICH button it is on: that is the
+    // control scheme's to say, and Default's right button is checked there.
+    // What is pinned here is that the screen asks the scheme before each press.
+    shows(
+      'the buttons are armed from the control scheme',
+      source,
+      'rigButtons(useTools.getState().controlScheme, e)'
+    )
     hides('and the pan is not switched off under it', source, 'enablePan={false}')
     shows('with the clamp that keeps it on the face mounted', source, '<PanAcrossFace')
     // In the plane of the FACE rather than of the ground, which is the whole of
@@ -11428,9 +11475,10 @@ console.log('\nThe welcome screen: no project open, and a bar that says so')
     shows(`with ${OPEN_TO_LABELS[where]} named as a place`, cog, `>${OPEN_TO_LABELS[where]}<`)
   }
   check(
-    'and the walk-about switch is dead here too, there being no room to walk in',
-    occurrences(cog, 'class="tool-group settings-row game-modes" disabled=""') === 1,
-    `${occurrences(cog, 'class="tool-group settings-row game-modes" disabled=""')}`
+    'and the Controls row is live here too, being true of every screen',
+    occurrences(cog, 'class="tool-group settings-row control-modes"') === 1 &&
+      !cog.includes('control-modes" disabled'),
+    `${occurrences(cog, 'class="tool-group settings-row control-modes"')}`
   )
 
   useTools.setState({ atWelcome: false, openPanel: null })

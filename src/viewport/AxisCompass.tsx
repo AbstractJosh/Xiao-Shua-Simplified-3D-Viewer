@@ -13,6 +13,8 @@ import {
   Vector3,
 } from 'three'
 import type { Object3D, OrthographicCamera } from 'three'
+import { cameraPress } from '../controlScheme'
+import { useTools } from '../store/toolStore'
 import { AXIS_COLORS } from './axisColors'
 import { COMPASS_FACE_SHADE } from './sceneColors'
 import { useSceneColors } from './useSceneColors'
@@ -69,16 +71,6 @@ import type { CompassView } from './compassViews'
  * up. The same shape as `rotationIndicator`, for the same reason -- a value
  * that changes sixty times a second has no business in a store.
  */
-
-/**
- * `PointerEvent.button` for the middle button.
- *
- * Named because the number alone reads as a count. Not `three`'s `MOUSE.MIDDLE`,
- * which is the same 1 but is OrbitControls' vocabulary for which GESTURE a
- * button asks for -- this is the DOM's for which button was pressed, and the two
- * only happen to agree.
- */
-const MIDDLE_BUTTON = 1
 
 /** How far out the widget draws, in its own units. The canvas is fitted to
  *  this, so everything below is a fraction of the corner it occupies. */
@@ -578,7 +570,7 @@ export function CompassControl({
    * carry the camera with it rather than reel it in.
    */
   const flight = useRef<{ to: Quaternion; radius: number } | null>(null)
-  /** A middle-button orbit in the viewport has just ended, and owes a settle. */
+  /** An orbit in the viewport has just ended, and owes a settle. */
   const orbitEnded = useRef(false)
 
   // A press that TAKES THE CAMERA stands the flight down: carried on through an
@@ -586,17 +578,22 @@ export function CompassControl({
   // compass are how flights START, so they are the one place this never applies.
   //
   // Which presses those are is the screen's business, and the two screens differ
-  // because their buttons do. A settling screen binds the camera to the middle
-  // button ALONE -- its left button draws the cut -- so a left press there is
+  // because their buttons do. On a settling screen only an ORBIT takes the
+  // camera -- its bare left button draws the cut -- so a left press there is
   // not the user taking the camera back, and standing the flight down for it
   // would strand the view part-way to the axis it was settling on, off every
   // face, with the compass the only way out. Anywhere else every button is a
   // camera, so every press counts.
   //
-  // This is the join between the two, and it is why it is a `button` test rather
-  // than the `if (settle) return` it used to be: back when the laser cutter
-  // refused the camera outright, NO press in that viewport could fight a flight.
-  // One can now.
+  // WHICH PRESS IS AN ORBIT IS THE CONTROL SCHEME'S TO SAY -- the middle button
+  // under Default, Alt+left under Maya -- so it is asked rather than read off
+  // the button. And asked at the PRESS, then remembered: by the release the
+  // modifier that made it an orbit has often already been let go.
+  //
+  // This is the join between the two, and it is why it is a test of the press
+  // rather than the `if (settle) return` it used to be: back when the laser
+  // cutter refused the camera outright, NO press in that viewport could fight a
+  // flight. One can now.
   //
   // The RELEASE is the same fact read the other way, and only a settling screen
   // has any use for it: the press took the camera, so letting go is the end of a
@@ -611,13 +608,16 @@ export function CompassControl({
     // is not an element cannot be the compass, which is the only question here.
     const onCompass = (e: PointerEvent) =>
       e.target instanceof Element && e.target.closest('.axis-compass') !== null
+    let orbiting = false
     const interrupt = (e: PointerEvent) => {
       if (onCompass(e)) return
-      if (settle && e.button !== MIDDLE_BUTTON) return
+      orbiting = cameraPress(useTools.getState().controlScheme, e)?.does === 'orbit'
+      if (settle && !orbiting) return
       flight.current = null
     }
     const ended = (e: PointerEvent) => {
-      if (!settle || e.button !== MIDDLE_BUTTON || onCompass(e)) return
+      if (!settle || !orbiting || onCompass(e)) return
+      orbiting = false
       orbitEnded.current = true
     }
     window.addEventListener('pointerdown', interrupt, true)

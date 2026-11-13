@@ -3763,17 +3763,26 @@ body {
   border-bottom: 0;
 }
 
-/* The one row whose answer is TWO controls -- the switch and the speed it flies
-   at. Centring the name against the pair of them left it floating between the
-   two, level with neither; it belongs beside the switch, which is the control
-   it names. The offset is the segment's own top padding, so the name sits on
-   the same line as the word inside it -- see `.settings-row .seg-btn`. */
-.settings-row.game-modes {
-  align-items: start;
+/* The one row that does not fit the control column, and so does not use it.
+   Five schemes across 340px is 67px a cell, and `Fusion 360` set in tracked
+   capitals needs most of a hundred -- so the name goes above and the track
+   takes the whole measure of the card, which gives each cell about 113px. The
+   same shape every row already takes on a narrow window, reached one row early.
+
+   The cells give up half their side padding as well, which is what still fits
+   that word in the fallback stack, and anything that cannot fit even so is cut
+   short with an ellipsis rather than left to run into its neighbour: the track
+   is --of EQUAL cells and a label must never be what makes one of them wider. */
+.settings-row.control-modes {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
 }
 
-.settings-row.game-modes .subhead {
-  padding-top: 9px;
+.settings-row.control-modes .seg-btn {
+  padding-inline: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* The name of the setting, in the app's own display face, with the margin taken
@@ -3996,9 +4005,9 @@ body {
   text-transform: uppercase;
 }
 
-/* The Game Controls answer is two controls, not one: the switch, and the speed
-   it flies at. They stack in the row's right-hand column, closer to each other
-   than the rows are to their neighbours -- the rule between rows says
+/* The Controls answer is two controls, not one: the switch, and the speed the
+   `Game` scheme flies at. They stack under the row's name, closer to each
+   other than the rows are to their neighbours -- the rule between rows says
    "different question", and this is the same question's second half. */
 .settings-row-control {
   display: flex;

@@ -101,7 +101,7 @@ The tabs at the left of the bar pick a screen. A screen is a viewport and the co
   </tr>
 </table>
 
-Settings hold the few things that are true of every project: whether the app opens at the welcome screen or the last project, the display unit, the theme, outlines, motion and game controls.
+Settings hold the few things that are true of every project: whether the app opens at the welcome screen or the last project, the display unit, the theme, outlines, motion and the control scheme -- the app's own, Blender's, Maya's, Fusion 360's, or a game's.
 
 ## Themes
 

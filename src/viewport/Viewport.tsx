@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { Euler, MOUSE, Mesh, Quaternion, Raycaster, Vector2, Vector3 } from 'three'
+import { Euler, Mesh, Quaternion, Raycaster, Vector2, Vector3 } from 'three'
+import type { MOUSE } from 'three'
 import type { BufferAttribute, Camera, LineSegments, MeshBasicMaterial } from 'three'
 import {
   MAX_FACE_OFFSET,
@@ -39,7 +40,8 @@ import {
   flyingHere,
   useTools,
 } from '../store/toolStore'
-import type { StrokeBrush, TransformMode } from '../store/toolStore'
+import type { StrokeBrush } from '../store/toolStore'
+import { SCHEME_BINDINGS, deletes, rigButtons } from '../controlScheme'
 import { CutPlaneGizmo } from './CutPlaneGizmo'
 import { GameControls } from './GameControls'
 import { FlightSpeedReadout } from './FlightSpeedReadout'
@@ -51,6 +53,7 @@ import {
   STAGE_MIN_DISTANCE,
   Stage,
   groundReach,
+  yieldToCamera,
 } from './Stage'
 import { RulerReadouts, Rulers } from './Rulers'
 import type { ObjectHit } from './picking'
@@ -600,32 +603,6 @@ function ringRadius(
  * see and deliberately aim at.
  */
 const RING_EDGE_ON = 0.05
-
-/**
- * The keys that pick a gizmo, and the whole of what they are.
- *
- * M, R and S are where every 3D application in the world puts these three, and
- * none of them was spoken for here -- the app's other shortcuts are all held
- * behind Control. Bare, therefore: a mode you reach for between every other
- * gesture is not worth a chord.
- *
- * M is the odd one, since Move is where the gizmo rests and the other two
- * already fall back to it. It earns its key anyway: that fallback is reached by
- * pressing the tool you are IN, so leaving Move nameless made it the one mode
- * you could not ask for -- from Rotate the way back was R, which is not the key
- * for the thing you want.
- *
- * M pressed while already in Move takes the handles OFF the object, the same
- * thing the lit Move button does -- so the key is a full toggle rather than a
- * no-op, and a gizmo standing over the surface you are brushing can be put down
- * without reaching for the island. See `pressTransformMode`, which is where
- * what a press means actually lives.
- */
-export const MODE_KEYS: Record<string, TransformMode> = {
-  m: 'move',
-  r: 'rotate',
-  s: 'scale',
-}
 
 /**
  * Slide or resize an object with its gizmo.
@@ -1893,6 +1870,9 @@ function Scene({
 }) {
   const dragging = useDoc((s) => s.drag.kind !== 'idle')
   const game = useTools(flyingHere)
+  // Which way the wheel runs is the scheme's to say: Fusion 360's backs off
+  // where everyone else's closes in. See `SCHEME_BINDINGS`.
+  const wheel = useTools((s) => SCHEME_BINDINGS[s.controlScheme].wheel)
 
   return (
     <>
@@ -1942,6 +1922,9 @@ function Scene({
         // notch would be answered twice, and the camera would creep forward
         // every time the speed was set. See `onWheel` in `GameControls`.
         enableZoom={!game}
+        // A sign and nothing else. The rig raises a fixed step to this power,
+        // so -1 turns every notch into its own inverse.
+        zoomSpeed={wheel}
       />
     </>
   )
@@ -2230,18 +2213,21 @@ export function Viewport() {
     }
 
     /**
-     * Which mouse button orbits, re-decided before every press.
+     * What each mouse button does to the camera, re-decided before every press.
      *
-     * The left button used to orbit from empty space; the selection box now
-     * starts there, and two gestures cannot share one button. So orbit moves to
-     * the MIDDLE button, and stays reachable on the left with Alt held for the
-     * mice and trackpads that have no middle button to press. Panning is
-     * untouched on the right.
+     * WHICH BUTTON IS THE CONTROL SCHEME'S TO SAY -- see `rigButtons`. Under
+     * Default the left button used to orbit from empty space; the selection box
+     * now starts there, and two gestures cannot share one button. So orbit is
+     * on the MIDDLE button, and stays reachable on the left with Alt held for
+     * the mice and trackpads that have no middle button to press, with panning
+     * on the right. The other schemes put the same three gestures on the chords
+     * their own applications do.
      *
      * Written on every press rather than once at mount for two reasons: the
      * controls are created inside the canvas and the ref is empty when this
-     * effect first runs, and Alt is a per-press question, since OrbitControls
-     * reads this map at pointer-down and never again during the drag.
+     * effect first runs, and a modifier is a per-press question, since
+     * OrbitControls reads this map at pointer-down and never again during the
+     * drag.
      *
      * Capture phase on the window, so it lands before the controls' own
      * listener on the canvas sees the same press.
@@ -2249,8 +2235,8 @@ export function Viewport() {
     const armCamera = (e: PointerEvent) => {
       const controls = controlsRef.current
       if (!controls) return
-      controls.mouseButtons.LEFT = e.altKey ? MOUSE.ROTATE : null
-      controls.mouseButtons.MIDDLE = MOUSE.ROTATE
+      const tools = useTools.getState()
+      Object.assign(controls.mouseButtons, rigButtons(tools.controlScheme, e))
       // GAME CONTROLS TAKE THE RIGHT BUTTON, which is the one gesture the two
       // schemes cannot both have: holding right is how you look about, and a
       // pan running underneath it would slide the whole scene sideways every
@@ -2258,7 +2244,7 @@ export function Viewport() {
       // in that mode it has nothing to do -- walking is what moves you now, and
       // A and D strafe exactly where a pan used to. Read per press rather than
       // once, so switching the mode is felt on the very next press.
-      controls.mouseButtons.RIGHT = flyingHere(useTools.getState()) ? null : MOUSE.PAN
+      if (flyingHere(tools)) controls.mouseButtons.RIGHT = null
     }
     // A window that loses focus never sees the keyup, so a flag would stay
     // stuck on and the next object drag would go vertical -- or the next gizmo
@@ -2268,6 +2254,10 @@ export function Viewport() {
     const onKey = (e: KeyboardEvent) => {
       track(e)
       const s = useDoc.getState()
+      // The letters that pick a gizmo, and the one that deletes, are the
+      // control scheme's: G where Blender has it, W where Maya does.
+      const scheme = useTools.getState().controlScheme
+      const modeKeys = SCHEME_BINDINGS[scheme].modeKeys
       const target = e.target as HTMLElement | null
       if (
         target &&
@@ -2309,7 +2299,7 @@ export function Viewport() {
         // that took two snapped ends to place -- that is what the cross in the
         // ruler list is for.
         useTools.getState().selectRuler(null)
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      } else if (deletes(scheme, e)) {
         // WHAT DELETE TAKES is whatever is currently wearing the handles, and
         // the branches are in that order.
         //
@@ -2340,7 +2330,7 @@ export function Viewport() {
         !e.ctrlKey &&
         !e.metaKey &&
         !e.altKey &&
-        e.key.toLowerCase() in MODE_KEYS
+        e.key.toLowerCase() in modeKeys
       ) {
         // Ignored mid-gesture. The mode decides which handles exist at all, so
         // switching one out from under a drag in flight would leave the gesture
@@ -2357,7 +2347,7 @@ export function Viewport() {
         // buttons on the island do the same job and are always there. See
         // `gameControls`.
         if (flyingHere(useTools.getState())) return
-        const wanted = MODE_KEYS[e.key.toLowerCase()]
+        const wanted = modeKeys[e.key.toLowerCase()]
         const { pressTransformMode } = useTools.getState()
         // Deferred whole to the store, which is the only place that knows
         // what a press means -- the buttons on the island call the same action,
@@ -2435,6 +2425,8 @@ export function Viewport() {
         // stops happening.
         gl={{ logarithmicDepthBuffer: true, alpha: false }}
         dpr={[1, 2]}
+        // A press chorded for the camera reaches nothing in the scene.
+        onCreated={yieldToCamera}
         // The left button is the marquee's, and it clears the selection itself
         // on a press that drew no box -- so only the other buttons are answered
         // here, and the two can never both fire on one gesture.

@@ -137,7 +137,8 @@ export function selectionFor(base: string[], inside: string[], additive: boolean
 export type Press = {
   button: number
   pointerType: string
-  altKey: boolean
+  /** Whether the control scheme gives this press to the camera. */
+  camera: boolean
   onCanvas: boolean
   hits: number
   dragging: boolean
@@ -154,9 +155,9 @@ export function claimsPress(press: Press): boolean {
   // Left button only, and never the one-finger touch that turns the camera --
   // there is no second button on a touchscreen to move orbit onto.
   if (press.button !== 0 || press.pointerType === 'touch') return false
-  // Alt is the camera's: it is what puts orbit back on the left button, which
-  // this gesture otherwise takes.
-  if (press.altKey) return false
+  // The camera's, where the control scheme says so: Alt is what puts orbit on
+  // the left button under Default and Maya, which this gesture otherwise takes.
+  if (press.camera) return false
   // The overlays inside the viewport -- the hint, the object menu, the box
   // itself -- are not the canvas, and a press on one of them is not a press in
   // the scene.

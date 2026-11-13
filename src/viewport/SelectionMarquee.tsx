@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { useThree } from '@react-three/fiber'
+import { cameraPress } from '../controlScheme'
 import { useDoc } from '../store/docStore'
+import { useTools } from '../store/toolStore'
 import {
   MARQUEE_SLOP,
   boxSpan,
@@ -57,7 +59,7 @@ export function MarqueeControl() {
       const press = {
         button: e.button,
         pointerType: e.pointerType,
-        altKey: e.altKey,
+        camera: cameraPress(useTools.getState().controlScheme, e) !== null,
         onCanvas: e.target === canvas,
         hits: internal.initialHits.length,
         dragging: useDoc.getState().drag.kind !== 'idle',

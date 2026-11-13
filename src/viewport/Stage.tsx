@@ -1,4 +1,7 @@
+import type { RootState } from '@react-three/fiber'
 import type { Box3 } from 'three'
+import { cameraClaims } from '../controlScheme'
+import { useTools } from '../store/toolStore'
 import { GuideGrid } from './GuideGrid'
 import { useSceneColors } from './useSceneColors'
 
@@ -295,6 +298,37 @@ export const STAGE_CAMERA = {
   near: 0.005,
   far: 1000,
 } as const
+
+/**
+ * A PRESS CHORDED FOR THE CAMERA REACHES NOTHING IN THE SCENE. Handed to the
+ * `<Canvas>` of whichever screen is up, as its `onCreated`.
+ *
+ * Alt+left is how Maya orbits, and the pointer is nearly always over the model
+ * when it happens -- the model is what fills the view. Left to itself that
+ * press would also select the solid under it, or run an armed brush across it,
+ * or take hold of a gizmo arrow, all while the camera turned.
+ *
+ * ONE FILTER RATHER THAN A CLAUSE IN EVERY HANDLER, for the reason the marquee
+ * reads its press off the window: there are a dozen places a scene gesture can
+ * start, and telling each of them is telling eleven and forgetting the twelfth.
+ * Every one of them is reached through the raycast, so emptying what the
+ * raycast found for that one press stops all of them at once -- and the rig,
+ * which listens to the element rather than to the scene, still hears it.
+ *
+ * ONLY THE PRESS. Nothing can begin without one, so the moves and the release
+ * that follow are left alone. See `cameraClaims` for which presses these are,
+ * and why a bare button is not one of them.
+ */
+export function yieldToCamera(state: RootState): void {
+  state.setEvents({
+    filter: (hits, { internal }) => {
+      const e = internal.lastEvent.current
+      return e?.type === 'pointerdown' && cameraClaims(useTools.getState().controlScheme, e)
+        ? []
+        : hits
+    },
+  })
+}
 
 /** 114 is what it takes to frame the largest solid `dimensions.ts` allows; 200
  *  leaves room to stand off a scene of them. The near end drops far enough to
