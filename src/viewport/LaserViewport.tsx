@@ -31,6 +31,7 @@ import {
   STAGE_MAX_DISTANCE,
   STAGE_MIN_DISTANCE,
   Stage,
+  dragZoom,
   yieldToCamera,
 } from './Stage'
 import { IslandShell } from './ToolIsland'
@@ -475,6 +476,9 @@ type LaserOrbit =
       minZoom: number
       maxZoom: number
       mouseButtons: { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null }
+      /** What `dragZoom` needs: where the rig listens, and its zoom. */
+      domElement?: HTMLElement
+      dollyIn: (scale: number) => void
     })
   | null
 
@@ -725,6 +729,8 @@ export function LaserViewport() {
       const controls = controlsRef.current
       if (!controls) return
       Object.assign(controls.mouseButtons, rigButtons(useTools.getState().controlScheme, e))
+      // The one gesture the rig is not armed for. See `dragZoom`.
+      dragZoom(controls, e)
     }
     window.addEventListener('pointerdown', armCamera, true)
     return () => window.removeEventListener('pointerdown', armCamera, true)

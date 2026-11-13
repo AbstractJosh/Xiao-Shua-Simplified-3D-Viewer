@@ -1,6 +1,6 @@
 import type { RootState } from '@react-three/fiber'
 import type { Box3 } from 'three'
-import { cameraClaims } from '../controlScheme'
+import { cameraClaims, cameraPress, zoomDrag } from '../controlScheme'
 import { useTools } from '../store/toolStore'
 import { GuideGrid } from './GuideGrid'
 import { useSceneColors } from './useSceneColors'
@@ -328,6 +328,49 @@ export function yieldToCamera(state: RootState): void {
         : hits
     },
   })
+}
+
+/**
+ * THE DRAG THAT ZOOMS, for the schemes that have one: Alt+right under Maya,
+ * Ctrl+middle under Blender. Called with every press, beside `rigButtons`, by
+ * whichever screen is up; a press that is not a zoom is not answered.
+ *
+ * Done here rather than by the rig because the rig's own dolly drag reads one
+ * axis and steps once per mouse event -- see `zoomDrag`, which is the rule this
+ * applies. `rigButtons` leaves the button unarmed for the same press, so the
+ * two never both answer it.
+ *
+ * ON THE WINDOW, as the rig listens on the document: a drag that runs off the
+ * edge of the canvas keeps zooming, and the release is heard wherever it lands.
+ */
+export function dragZoom(
+  controls: { enabled: boolean; domElement?: HTMLElement; dollyIn: (scale: number) => void },
+  e: PointerEvent
+): void {
+  if (cameraPress(useTools.getState().controlScheme, e)?.does !== 'zoom') return
+  // The two things the rig asks of a press before it answers one: that nothing
+  // has switched the camera off, and that the press landed on its element.
+  if (!controls.enabled || !controls.domElement?.contains(e.target as Node)) return
+  let x = e.clientX
+  let y = e.clientY
+  function move(m: PointerEvent) {
+    if (m.pointerId !== e.pointerId) return
+    // A release nobody heard -- the window lost focus mid-drag -- would
+    // otherwise leave the view zooming under a pointer with nothing held.
+    if (m.buttons === 0) return stop()
+    // The rig's scale is a DISTANCE, so closer is its inverse.
+    controls.dollyIn(1 / zoomDrag(m.clientX - x, m.clientY - y))
+    x = m.clientX
+    y = m.clientY
+  }
+  function stop() {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', stop)
+    window.removeEventListener('pointercancel', stop)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop)
+  window.addEventListener('pointercancel', stop)
 }
 
 /** 114 is what it takes to frame the largest solid `dimensions.ts` allows; 200

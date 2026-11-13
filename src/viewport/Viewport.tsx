@@ -52,6 +52,7 @@ import {
   STAGE_MAX_DISTANCE,
   STAGE_MIN_DISTANCE,
   Stage,
+  dragZoom,
   groundReach,
   yieldToCamera,
 } from './Stage'
@@ -132,6 +133,9 @@ import {
  */
 type Controls = (NonNullable<Orbit> & {
   mouseButtons: { LEFT: MOUSE | null; MIDDLE: MOUSE | null; RIGHT: MOUSE | null }
+  /** What `dragZoom` needs: where the rig listens, and its zoom. */
+  domElement?: HTMLElement
+  dollyIn: (scale: number) => void
 }) | null
 type Store = ReturnType<typeof useDoc.getState>
 type DragOf<K extends Drag['kind']> = Extract<Drag, { kind: K }>
@@ -2237,6 +2241,8 @@ export function Viewport() {
       if (!controls) return
       const tools = useTools.getState()
       Object.assign(controls.mouseButtons, rigButtons(tools.controlScheme, e))
+      // The one gesture the rig is not armed for. See `dragZoom`.
+      dragZoom(controls, e)
       // GAME CONTROLS TAKE THE RIGHT BUTTON, which is the one gesture the two
       // schemes cannot both have: holding right is how you look about, and a
       // pan running underneath it would slide the whole scene sideways every
